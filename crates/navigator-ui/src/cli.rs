@@ -47,6 +47,13 @@ pub enum Command {
     /// node's descendant subtree (observed base + derived/ancestral status + evidence). For
     /// spot-checking placement and exchanging observations. Table by default; `--tsv` / `--json`.
     BranchReport(BranchReportArgs),
+    /// Diagnostic: explain why an alignment cannot be read. Probes the BAM/CRAM, its coordinate
+    /// index, the reference FASTA and that FASTA's `.fai` **separately**, so a failure names the
+    /// file actually at fault instead of whichever path the failing call happened to be handed —
+    /// and reports the raw errno, which on macOS is the only thing distinguishing a privacy (TCC)
+    /// denial from a Unix permission denial. Prints a report meant for pasting into a bug report.
+    /// Use `--file` to check a file that was never imported. Exits non-zero if a check failed.
+    Doctor(DoctorArgs),
     /// List projects with their subject counts.
     Projects(ProbeArgs),
     /// De-novo diploid variant calling → VCF (whole-genome, or a single `--contig`).
@@ -362,6 +369,7 @@ pub fn run(command: Command) -> i32 {
             Command::DebugCalls(a) => debug_calls(a).await,
             Command::PrivateY(a) => private_y(a).await,
             Command::BranchReport(a) => branch_report(a).await,
+            Command::Doctor(a) => doctor(a).await,
             Command::Projects(a) => projects(a).await,
             Command::Call(a) => call(a).await,
             Command::LiftVcf(a) => lift_vcf(a).await,
@@ -1417,6 +1425,71 @@ async fn show(args: ShowArgs) -> i32 {
 }
 
 /// Resolve the alignment id to call: the explicit `--alignment`, else the subject's sole alignment.
+#[derive(Args)]
+pub struct DoctorArgs {
+    /// Alignment id to diagnose.
+    #[arg(long)]
+    alignment: Option<i64>,
+    /// Subject donor identifier — used when `--alignment` is omitted and the subject has exactly one.
+    #[arg(long, short)]
+    subject: Option<String>,
+    /// Diagnose a BAM/CRAM path directly, bypassing the workspace (for a file that was never imported).
+    #[arg(long)]
+    file: Option<PathBuf>,
+    /// Reference FASTA to pair with `--file`. Required to decode a CRAM; ignored for a BAM.
+    #[arg(long)]
+    reference: Option<PathBuf>,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+    /// Emit JSON instead of the human-readable report.
+    #[arg(long)]
+    json: bool,
+}
+
+/// Run the alignment preflight and print it. Exits 1 when a check failed, so this is usable as a
+/// gate in a script and not just by eye.
+///
+/// `--file` deliberately skips opening the workspace: the file being undiagnosable is often *why*
+/// the user cannot import it, so requiring a workspace record first would make the diagnostic
+/// unavailable in the case it exists for.
+async fn doctor(args: DoctorArgs) -> i32 {
+    let diagnosis = if let Some(file) = args.file {
+        let reference = args.reference;
+        match tokio::task::spawn_blocking(move || {
+            navigator_app::diagnose_alignment_file(&file, reference.as_deref())
+        })
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("error: diagnosis task failed: {e}");
+                return 1;
+            }
+        }
+    } else {
+        let app = match open(args.db).await {
+            Ok(a) => a,
+            Err(c) => return c,
+        };
+        let id = match resolve_alignment(&app, args.subject.as_deref(), args.alignment).await {
+            Ok(id) => id,
+            Err(c) => return c,
+        };
+        match app.diagnose_alignment(id).await {
+            Ok(r) => r,
+            Err(e) => return report(e),
+        }
+    };
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&diagnosis).unwrap());
+    } else {
+        print!("{diagnosis}");
+    }
+    i32::from(diagnosis.failed())
+}
+
 async fn resolve_alignment(app: &App, subject: Option<&str>, explicit: Option<i64>) -> Result<i64, i32> {
     if let Some(id) = explicit {
         return Ok(id);

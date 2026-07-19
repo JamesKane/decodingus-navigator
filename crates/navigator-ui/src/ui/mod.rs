@@ -832,6 +832,14 @@ pub struct NavigatorApp {
     feed_publish_pds: bool,
     forms: Forms,
     status: String,
+    /// The file-level diagnosis behind the last failed alignment command, when there was one.
+    /// Set by [`Event::Diagnosed`], shown in a modal, and cleared when the user dismisses it or
+    /// starts something new. `Some` is what makes the status bar's "Details" affordance appear —
+    /// an error with no diagnosis must not offer one.
+    diagnosis: Option<String>,
+    /// Whether the diagnosis modal is open. Separate from [`Self::diagnosis`] so dismissing the
+    /// modal keeps the report reachable from the status bar instead of destroying it.
+    show_diagnosis: bool,
 }
 
 /// Sentinel option in the chip-provider dropdown that means "let the parser guess".
@@ -1186,6 +1194,8 @@ impl NavigatorApp {
                 ..Forms::default()
             },
             status: "Loading…".into(),
+            diagnosis: None,
+            show_diagnosis: false,
         }
     }
 }
@@ -1241,6 +1251,11 @@ impl eframe::App for NavigatorApp {
                 ui.separator();
                 ui.label(egui::RichText::new(self.tr("status.label")).weak());
                 ui.label(&self.status);
+                // Only offered when a diagnosis exists — an error without one must not imply
+                // there is more to see. Re-opens the modal after it has been dismissed.
+                if self.diagnosis.is_some() && ui.button(self.tr("status.details")).clicked() {
+                    self.show_diagnosis = true;
+                }
             });
         });
         // The action bar's batch/compare/add-to-project affordances are power-user features —
@@ -1256,6 +1271,7 @@ impl eframe::App for NavigatorApp {
             Nav::Community => self.community_central(ui),
         });
         self.analysis_modal(ctx);
+        self.diagnosis_modal(ctx);
         self.update_modal(ctx);
         self.edit_subject_modal(ctx);
         self.add_kit_modal(ctx);

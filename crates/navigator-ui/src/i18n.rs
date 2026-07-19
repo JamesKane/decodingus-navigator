@@ -125,6 +125,26 @@ mod tests {
         assert_eq!(tr(Lang::En, "totally.unknown.key"), "totally.unknown.key");
     }
 
+    /// The diagnosis modal exists to be read and pasted by someone filing a bug report, so a
+    /// missing key there renders a raw `diagnosis.title` into the exact artifact that is supposed
+    /// to be legible. `tr` falls back to the key itself, which fails silently — assert instead.
+    #[test]
+    fn diagnosis_strings_are_translated_in_every_language() {
+        for key in [
+            "diagnosis.title",
+            "diagnosis.subtitle",
+            "diagnosis.copy",
+            "diagnosis.copyHint",
+            "diagnosis.copied",
+            "diagnosis.copyFailed",
+            "status.details",
+        ] {
+            for lang in [Lang::En, Lang::Es] {
+                assert_ne!(tr(lang, key), key, "{key} is untranslated for {lang:?}");
+            }
+        }
+    }
+
     #[test]
     fn every_es_key_exists_in_en() {
         // Catch typos: a translated key with no English source would never be reachable.

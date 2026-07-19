@@ -1209,6 +1209,37 @@ pub enum Event {
     /// Notifications were marked read; reload them.
     NotificationsMarked,
     Error(String),
+    /// A command failed **and** a file-level preflight found a concrete cause. `message` is the
+    /// original error (still shown in the status bar); `report` is the pasteable diagnosis naming
+    /// the file actually at fault.
+    ///
+    /// Separate from [`Event::Error`] so the UI can offer the report without having to guess, from
+    /// a string, whether an error has one. Only emitted when the preflight actually failed a
+    /// check — a tree-download or network error must not raise a file report.
+    Diagnosed { message: String, report: String },
+}
+
+/// Attach a file-level diagnosis to a failed alignment command.
+///
+/// The errors this upgrades are the ones that name a path but not the *right* path: the reader
+/// helpers report whichever path the failing call was handed, so a bad index, an unreadable
+/// reference or a privacy-denied file all surface as `io error on <the alignment>`. Running
+/// [`App::diagnose_alignment`] probes each of those files separately and says which one it is.
+///
+/// Errors with no file-level cause pass through untouched — if every preflight check passes, the
+/// failure is genuinely elsewhere (tree fetch, liftover, appview) and a clean bill of health would
+/// be worse than saying nothing.
+async fn with_diagnosis(app: &App, alignment_id: i64, event: Event) -> Event {
+    let Event::Error(message) = event else {
+        return event;
+    };
+    match app.diagnose_alignment(alignment_id).await {
+        Ok(report) if report.failed() => Event::Diagnosed {
+            message,
+            report: report.to_string(),
+        },
+        _ => Event::Error(message),
+    }
 }
 
 /// Execute one command against the app, mapping success/failure to an [`Event`].
@@ -2364,9 +2395,12 @@ async fn ensure_index_streaming(
             total,
         });
     };
+    // This pre-flight is the first thing on a button's path to touch the file, so it is where an
+    // unreadable alignment/index surfaces first — and where the raw message is least informative
+    // (a failed *index build* reports the alignment's path). Diagnose before reporting.
     let event = match app.ensure_alignment_index(alignment_id, progress).await {
         Ok(built) => Event::IndexReady { built },
-        Err(e) => Event::Error(e.to_string()),
+        Err(e) => with_diagnosis(app, alignment_id, Event::Error(e.to_string())).await,
     };
     // Wake once at the start (the first progress tick may lag on a small file) and after completion.
     wake();
@@ -2577,7 +2611,10 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             fraction: (step as f32 - 1.0) / total as f32,
         });
         wake();
-        let ev = handle(app, cmd).await; // runs to completion; we may cancel before the next step
+        // Runs to completion; we may cancel before the next step. Steps here bypass the outer
+        // match's per-command pre-flight, so this is also the only place their failures can pick up
+        // a file-level diagnosis.
+        let ev = with_diagnosis(app, alignment_id, handle(app, cmd).await).await;
         let _ = evt_tx.send(ev);
         wake();
     }
@@ -2939,7 +2976,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::RunSv(alignment_id)).await;
+                                let event = with_diagnosis(&app, alignment_id, handle(&app, Command::RunSv(alignment_id)).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2948,7 +2985,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::LoadHeteroplasmy { alignment_id }).await;
+                                let event = with_diagnosis(&app, alignment_id, handle(&app, Command::LoadHeteroplasmy { alignment_id }).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2957,7 +2994,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::AssignYHaplogroup { alignment_id }).await;
+                                let event = with_diagnosis(&app, alignment_id, handle(&app, Command::AssignYHaplogroup { alignment_id }).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2966,7 +3003,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::YHaploReport { alignment_id }).await;
+                                let event = with_diagnosis(&app, alignment_id, handle(&app, Command::YHaploReport { alignment_id }).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2975,7 +3012,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::AssignMtdnaHaplogroupFromAlignment { alignment_id }).await;
+                                let event = with_diagnosis(&app, alignment_id, handle(&app, Command::AssignMtdnaHaplogroupFromAlignment { alignment_id }).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2984,7 +3021,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::FindPrivateY { alignment_id, mask }).await;
+                                let event = with_diagnosis(&app, alignment_id, handle(&app, Command::FindPrivateY { alignment_id, mask }).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2993,7 +3030,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::RunDenovo { alignment_id, contig }).await;
+                                let event = with_diagnosis(&app, alignment_id, handle(&app, Command::RunDenovo { alignment_id, contig }).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -3002,7 +3039,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::GenotypePanel { alignment_id, panel_id, ploidy }).await;
+                                let event = with_diagnosis(&app, alignment_id, handle(&app, Command::GenotypePanel { alignment_id, panel_id, ploidy }).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }

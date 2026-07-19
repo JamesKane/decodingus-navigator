@@ -946,6 +946,31 @@ impl App {
         Ok(built)
     }
 
+    /// Diagnose why an alignment can't be read, naming the **exact file** at fault rather than the
+    /// one the failing call happened to be handed. See [`navigator_analysis::preflight`] for why
+    /// that distinction is the whole point: an unreadable `.crai` and an unreadable CRAM produce
+    /// the same `io error on …cram` message today, and on macOS a privacy (TCC) denial and a Unix
+    /// permission denial are told apart only by the raw errno.
+    ///
+    /// Deliberately **cache-only** for the reference: a diagnostic has to describe the machine as
+    /// it is, so resolving (and silently downloading) a missing FASTA here would paper over exactly
+    /// the state we were asked to report. A CRAM with no cached reference is a finding, not a task.
+    pub async fn diagnose_alignment(
+        &self,
+        alignment_id: i64,
+    ) -> Result<navigator_analysis::preflight::Report, AppError> {
+        let aln = self.alignment_or_err(alignment_id).await?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let reference = match aln.reference_path {
+            Some(p) => Some(PathBuf::from(p)),
+            None => self.gateway.cached_reference(&aln.reference_build),
+        };
+        Ok(tokio::task::spawn_blocking(move || {
+            navigator_analysis::preflight::diagnose(&bam, reference.as_deref())
+        })
+        .await?)
+    }
+
     pub async fn run_denovo_for_alignment(
         &self,
         alignment_id: i64,

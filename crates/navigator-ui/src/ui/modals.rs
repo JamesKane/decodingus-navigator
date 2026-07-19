@@ -291,6 +291,73 @@ impl NavigatorApp {
         }
     }
 
+    /// The diagnosis modal: why the last alignment command actually failed, file by file.
+    ///
+    /// Shown when a command fails *and* the preflight found a concrete cause, because the one-line
+    /// status-bar message is exactly the part that isn't actionable — the reader helpers report
+    /// whichever path the failing call was handed, which is routinely not the file at fault. The
+    /// report is selectable and copyable so it can go straight into a bug report; that is the
+    /// primary job of this modal, not a convenience.
+    pub(crate) fn diagnosis_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_diagnosis {
+            return;
+        }
+        let Some(report) = self.diagnosis.clone() else {
+            self.show_diagnosis = false;
+            return;
+        };
+
+        // Deferred so only `self.tr` (immutable) is used inside the closure, matching the other
+        // modals here.
+        let (mut close, mut copy) = (false, false);
+        modal_frame(ctx, "diagnosis_modal", 640.0, |ui| {
+            ui.label(
+                egui::RichText::new(self.tr("diagnosis.title"))
+                    .strong()
+                    .size(16.0),
+            );
+            ui.label(egui::RichText::new(self.tr("diagnosis.subtitle")).weak());
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                // A read-only multiline edit rather than a label: it wraps, scrolls, and lets the
+                // user select a single line without dragging across the whole modal.
+                let mut text = report.as_str();
+                ui.add(
+                    egui::TextEdit::multiline(&mut text)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(18),
+                );
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button(self.tr("diagnosis.copy")).clicked() {
+                    copy = true;
+                }
+                ui.label(egui::RichText::new(self.tr("diagnosis.copyHint")).weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(self.tr("common.close")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        });
+
+        if copy {
+            // Write through egui *and* the system clipboard. egui's own copy is what an
+            // in-app paste sees; arboard is what survives to the browser tab where the bug report
+            // is being written, which is the only destination that matters here.
+            ctx.output_mut(|o| o.copied_text = report.clone());
+            self.status = match arboard::Clipboard::new().and_then(|mut c| c.set_text(report)) {
+                Ok(()) => self.tr("diagnosis.copied").to_string(),
+                Err(e) => format!("{}: {e}", self.tr("diagnosis.copyFailed")),
+            };
+        }
+        if close {
+            self.show_diagnosis = false;
+        }
+    }
+
     /// The Settings / Preferences modal: connection (AppView URL, Y-tree provider), appearance
     /// (theme, language, tree-cache TTL), reference genomes (local FASTA + auto-download per build),
     /// and a read-only advanced section. Self-mutation/dispatch is deferred until after the closure

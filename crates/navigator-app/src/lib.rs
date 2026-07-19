@@ -31,6 +31,19 @@ pub use navigator_analysis::haplo::{BranchEvidence, CallState, NodeEvidence, Sco
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::mask::YRegionClass;
 pub use navigator_analysis::mtvariants::{MtRegion, MtVariant, MtVariantKind};
+pub use navigator_analysis::preflight::{
+    Check as PreflightCheck, Report as PreflightReport, Status as PreflightStatus,
+};
+
+/// Diagnose a BAM/CRAM **path** with no workspace record behind it — the case that matters when a
+/// user is reporting a file the app refuses to read and we need the answer before deciding whether
+/// importing it is even possible. Blocking; call it off the async runtime.
+pub fn diagnose_alignment_file(
+    alignment: &std::path::Path,
+    reference: Option<&std::path::Path>,
+) -> PreflightReport {
+    navigator_analysis::preflight::diagnose(alignment, reference)
+}
 pub use navigator_analysis::probe::AlignmentProbe;
 pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
 pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
