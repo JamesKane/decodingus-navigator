@@ -48,7 +48,11 @@ fn main() -> anyhow::Result<()> {
     let called = gts.iter().filter(|g| g.dosage >= 0).count();
     eprintln!("{} panel sites, {} matched in TSV, {called} called", panel.sites.len(), gts.len());
 
-    let src_codes = ["WHG", "ANF", "Steppe"];
+    // Source codes: 3rd arg (comma-separated), else the default frequency-EM sources.
+    let src_codes: Vec<String> = std::env::args()
+        .nth(3)
+        .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+        .unwrap_or_else(|| vec!["WHG".into(), "ANF".into(), "Steppe".into()]);
     let sources: Vec<usize> = src_codes.iter().map(|c| panel.populations.iter().position(|p| p == c).unwrap()).collect();
     let outgroups: Vec<usize> = (0..panel.populations.len()).filter(|i| !sources.contains(i)).collect();
 

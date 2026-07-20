@@ -2479,22 +2479,13 @@ impl App {
             if let Some(pca) = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok()) {
                 result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, &pca));
             }
-            // Deep (ancient) ancestry: a supervised frequency-mixture EM over the WHG/ANF/Steppe
-            // panel, scoped by the modern estimate we just computed (it is a West-Eurasian model —
-            // see `ANCIENT_MIN_WEST_EURASIAN`). `estimate_ancient_admixture` returns None when the
-            // three sources cannot express this sample's ancestry, and None must stay None all the
-            // way out — persisting nothing is what keeps an inapplicable breakdown off the UI *and*
-            // out of the PDS (publish federates every persisted consensus method).
-            let ancient = if crate::ANCIENT_ANCESTRY_ENABLED {
-                ancient_bytes
-                    .and_then(|b| ancestry_analysis::AncestryPanel::from_bytes(&b).ok())
-                    .and_then(|ap| {
-                        ancestry_analysis::estimate_ancient_admixture(&genotypes, &ap, &result, &reference_version)
-                    })
-            } else {
-                let _ = &ancient_bytes;
-                None
-            };
+            // Deep (ancient) ancestry is NOT computed here anymore: the ~20k-site consensus cannot
+            // carry the ~1.15M full-1240k sites the qpAdm f4 model needs for a stable, ±1-2% fit
+            // (docs/design/ancient-ancestry-rebuild.md §7.14; the old frequency-EM over this panel
+            // failed the WGS-vs-chip stability gate). It is a separate, heavier on-demand path —
+            // `estimate_deep_ancestry` — which genotypes the alignment at the full 1240k.
+            let ancient: Option<AncestryResult> = None;
+            let _ = &ancient_bytes;
             (result, ancient, fine)
         })
         .await?;
@@ -2509,6 +2500,99 @@ impl App {
         ancestry_result::upsert(self.store.pool(), biosample_guid, CONSENSUS_SOURCE_ID, &result).await?;
         for extra in [ancient.as_ref(), fine.as_ref()].into_iter().flatten() {
             ancestry_result::upsert(self.store.pool(), biosample_guid, CONSENSUS_SOURCE_ID, extra).await?;
+        }
+        Ok(result)
+    }
+
+    /// **Deep (ancient) ancestry via qpAdm** (docs/design/ancient-ancestry-rebuild.md §7.14) — the
+    /// validated WHG / EEF / Steppe breakdown.
+    ///
+    /// Genotypes the subject's CHM13 alignment(s) at the ~1.15M full-1240k sites of the qpAdm panel
+    /// (the Patterson-2022 sources + sister outgroups), reconciles them to one consensus, and fits
+    /// `target = Σ wᵢ·sourcesᵢ` by qpAdm f4 ([`ancestry_analysis::estimate_qpadm_ancestry`]). The
+    /// result is persisted under the consensus pseudo-source. **Heavy** — a genotyping pass per
+    /// alignment over ~1.1M sites — so this is an explicit, on-demand action, not part of the fast
+    /// consensus ancestry path.
+    ///
+    /// Returns `Ok(None)` when the feature is gated off, the asset is not installed, the subject has
+    /// no CHM13 alignment to genotype (chip-only deep ancestry is future work), or the deep model
+    /// does not apply (non-European / model rejected / infeasible weights). `None` persists nothing —
+    /// that is what keeps an inapplicable breakdown off the UI *and* out of the PDS.
+    pub async fn estimate_deep_ancestry(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Option<AncestryResult>, AppError> {
+        if !crate::ANCIENT_ANCESTRY_ENABLED {
+            return Ok(None);
+        }
+        let build = ReferenceBuild::Chm13v2;
+        let reference_version = "chm13v2.0".to_string();
+        let qpadm_path = ancestry_qpadm_path(build);
+        let Some(qpadm_bytes) = read_verified_asset(build, &qpadm_path)? else {
+            return Ok(None); // asset not installed → deep ancestry unavailable
+        };
+        let panel = AncestryPanel::from_bytes(&qpadm_bytes)?;
+        let super_path = ancestry_panel_path(build);
+        let super_bytes = read_verified_asset(build, &super_path)?
+            .ok_or_else(|| AppError::AncestryPanelMissing(super_path.clone()))?;
+        let super_panel = AncestryPanel::from_bytes(&super_bytes)?;
+
+        // Every same-build (CHM13) alignment, genotyped at the panel sites and reconciled to one
+        // consensus — the chip-vs-WGS-stable input the qpAdm model wants.
+        let aln_ids = self.consensus_diploid_alignments(biosample_guid).await?;
+        if aln_ids.is_empty() {
+            return Ok(None); // no BAM/CRAM to genotype at 1240k (chip-only path is future work)
+        }
+        let sites: Vec<navigator_analysis::caller::Site> = panel
+            .sites
+            .iter()
+            .map(|s| navigator_analysis::caller::Site {
+                name: String::new(),
+                contig: s.contig.clone(),
+                position: s.position,
+                reference_allele: s.reference_allele.to_string(),
+                alternate_allele: s.alternate_allele.to_string(),
+            })
+            .collect();
+        let mut per_aln = Vec::new();
+        for id in &aln_ids {
+            let (bam, reference) = self.alignment_bam_reference(*id).await?;
+            let sites = sites.clone();
+            let g = tokio::task::spawn_blocking(move || {
+                navigator_analysis::caller::genotype_sites_all_contigs(
+                    &bam,
+                    &sites,
+                    2,
+                    &navigator_analysis::caller::HaploidCallerParams::default(),
+                    Some(&reference),
+                )
+            })
+            .await??;
+            per_aln.push(g);
+        }
+
+        let n_pops = panel.populations.len();
+        let result = tokio::task::spawn_blocking(move || {
+            let genotypes = navigator_analysis::caller::reconcile_site_genotypes(&per_aln, 2);
+            // Modern super-pop estimate over the same genotypes — the West-Eurasian scope gate.
+            let modern = ancestry_analysis::estimate_admixture(&genotypes, &super_panel, &reference_version);
+            // Committed Patterson layout: the first three populations are the sources, the rest the
+            // sister outgroups.
+            let sources: Vec<usize> = (0..3).collect();
+            let outgroups: Vec<usize> = (3..n_pops).collect();
+            ancestry_analysis::estimate_qpadm_ancestry(
+                &genotypes,
+                &panel,
+                &sources,
+                &outgroups,
+                &modern,
+                &reference_version,
+            )
+        })
+        .await?;
+
+        if let Some(r) = &result {
+            ancestry_result::upsert(self.store.pool(), biosample_guid, CONSENSUS_SOURCE_ID, r).await?;
         }
         Ok(result)
     }

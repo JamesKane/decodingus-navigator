@@ -1039,6 +1039,13 @@ fn ancestry_freq_ancient_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ANCESTRY_FREQ_ANCIENT", "ancestry_freq_ancient", build, "bin")
 }
 
+/// The qpAdm deep-ancestry panel asset path (`$NAVIGATOR_ANCESTRY_QPADM` override, else
+/// `<base>/ancestry/ancestry_qpadm_<build>.bin`). The full-1240k Patterson-2022 config (WHG/EEF/Steppe
+/// sources + sister outgroups) — see docs/design/ancient-ancestry-rebuild.md §7.14.
+fn ancestry_qpadm_path(build: ReferenceBuild) -> PathBuf {
+    ancestry_asset_path("NAVIGATOR_ANCESTRY_QPADM", "ancestry_qpadm", build, "bin")
+}
+
 /// The chip-compatible IBD panel asset path (`$NAVIGATOR_IBD_PANEL` override, else
 /// `<base>/ancestry/ibd_panel_<build>.bin`).
 fn ibd_panel_path(build: ReferenceBuild) -> PathBuf {
