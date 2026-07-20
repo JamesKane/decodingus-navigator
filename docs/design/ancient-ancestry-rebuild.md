@@ -300,15 +300,17 @@ on his own chips (§3.2).
 
 `ANCIENT_ANCESTRY_ENABLED = false`. The shipped `ancestry_freq_ancient_<build>.bin` is the full,
 unascertained panel (the A′ publish was rolled back). Modern/fine admixture stays enabled and is
-unaffected. The earlier attempts failed on real data — raw frequency-admixture (§3.1), consumer-array
-ascertainment (§3.2), target pseudo-haploidization (§5.1) — but the **qpAdm f4 estimator (Lever 2)** is
-now **built and validated**: on the same data, real `admixtools2` reproduces our estimator's answer
-(WHG ≈ 0 with SE ≈ 40%, model accepted — **§7.11**). Two false trails were cleared along the way: it
-is **not** the caller (GATK4 ≈ ours, §7.9) and **not** a structural batch effect (that was our
-outgroup *sourcing* — fixed by using AADR-native outgroups, §7.10). The real and final blocker is
-**SNP count**: we run on ~16 k AIM sites where a real 1240k qpAdm uses ~1.15 M, so WHG SE is ~8× too
-large. The fix is a full-1240k rebuild of the ancient asset (§7.11) — bounded, not a dead-end. Lever-2
-scope + results are **§7**.
+unaffected. The **qpAdm f4 estimator (Lever 2) now works end to end in the offline harness (§7.13)**:
+at the full 1240k, `huF98AFD`'s WGS fits **WHG 0 / ANF 57 / Steppe 43, ±6 %, model accepted (p=0.70)**,
+matching a 1000G-British AADR control — and a same-person concordance check (our genotyping vs the
+AADR's own `HG00160`) is **99.84 %**. Getting here cleared a chain of false walls: not the caller
+(GATK4 ≈ ours, §7.9), not a structural batch effect (that was our outgroup *sourcing* — fixed with
+AADR-native outgroups, §7.10), not our estimator (`admixtools2` reproduces it, §7.11), and finally not
+"target genotyping" either — §7.12 blamed the target, but that was a **genotype-labelling bug** in the
+`genotype_bed` example (§7.13). The two real levers turned out to be **SNP count** (16 k AIM → full
+1.15 M 1240k drops WHG SE ~8×) and **fixing that bug**. Remaining before enabling: the WGS-vs-chip
+stability gate, a WHG≈0 source-config refinement, and wiring the full-1240k asset into the app
+(tasks 4-5). Lever-2 scope + results are **§7**.
 
 ---
 
@@ -603,6 +605,11 @@ AADR by rsID (hg38↔hg19 is the clean mapping 1000G itself uses — no exotic T
 GRCh38-genotyped `huF98AFD` then fits like the English control, the feature is shippable; if it still
 fails, the target-side genotyping/reference-bias problem is the true wall.
 
+> **⚠️ §7.12 below reached a WRONG conclusion — see §7.13.** The "target genotyping is the wall"
+> finding was a bug in the `genotype_bed` example (genotypes mis-labelled to rsIDs), not a real batch
+> effect. With the bug fixed, the full-1240k qpAdm **works**: `huF98AFD` fits at WHG 0 / ANF 57 /
+> Steppe 43, ±6 %, model accepted. §7.12 is kept for the record; §7.13 is the correction.
+
 **Done — and GRCh38 fails identically. It is not the reference build.** Genotyped the target from the
 **GRCh38** BAM at the hg38 1240k sites (1.15 M autosomal, 1.15 M called) and re-ran the same qpAdm:
 **WHG −3.44, ANF +4.48, Steppe −0.04, model rejected (p=3e-13)** — essentially the CHM13 result
@@ -633,3 +640,47 @@ rejected (p=3e-4). A textbook British qpAdm usually retains ~10–20% WHG, so ou
 (the Villabruna WHG, the Yamnaya Steppe which already carries EHG/WHG-like ancestry) and outgroups are
 not yet the canonical configuration — a real but *secondary* refinement, dwarfed by the target-
 genotyping blocker above. Everything remains behind `ANCIENT_ANCESTRY_ENABLED = false`.
+
+### 7.13 CORRECTION — it was a genotype-labelling bug, and full-1240k qpAdm WORKS
+
+§7.12's "target genotyping is the wall" was **wrong**, and the way it was caught is the point of a
+positive control. Copied a **1000G British genome that is itself in the AADR** (`HG00160`,
+`PRJEB31736` CHM13 CRAM) locally and genotyped it through *our* pipeline, then compared to the AADR's
+own `HG00160.DG` genotypes — the same person, two pipelines.
+
+- First pass: **49.4 % concordant** — i.e. *random* (≈ the by-chance rate for this genotype
+  distribution). No real genotyping is that bad; it meant the genotypes were **mis-labelled**.
+- Root cause: `genotype_sites_all_contigs` returns genotypes **reordered** (per-contig rayon), so the
+  `genotype_bed` example's `zip(gts, rsids)` paired each genotype with the *wrong* rsID — only ~14 %
+  landed on the right one. The `(contig,pos,dosage)` on each row were correct; only the rsID column
+  was scrambled. **All the full-1240k target files (§7.11–7.12) were keyed by that scrambled rsID.**
+- Re-keyed by `(contig,pos)→rsID` from the BED: **99.84 % same-person concordance.** Our CHM13
+  genotyping is correct. (Fixed in `examples/genotype_bed.rs`: key each returned genotype to its rsID
+  by position, never by input order.)
+
+Re-ran the full-1240k qpAdm for `huF98AFD` with the corrected keying:
+
+| Target (full 1240k, corrected) | WHG | ANF | Steppe | SE | model |
+|---|---|---|---|---|---|
+| **huF98AFD (our WGS)** | −0.3 % | 57.3 % | 43.0 % | **±6 %** | **accepted, p=0.70** |
+| English (AADR control) | 0.0 % | 50.1 % | 49.8 % | ±2.6 % | feasible |
+
+**Feasible weights, ~6 % SE, model accepted — and it matches the English control.** So the entire
+"batch effect / can't co-analyze" wall of §7.9–7.12 was an artifact of the labelling bug on top of the
+16 k-SNP imprecision. With the bug fixed and the full 1240k, **the whole stack works end to end**:
+validated estimator, AADR-native outgroups, ~6 % precision, and an externally sequenced WGS that fits
+like a reference genome.
+
+**Status flip.** Deep ancestry is now *technically working* in the offline harness. What remains before
+`ANCIENT_ANCESTRY_ENABLED = true`:
+1. **Stability gate (§5.4-1)** — run `huF98AFD`'s *chip* through the same full-1240k qpAdm and confirm
+   WGS-vs-chip agree within a few percent (the WGS now gives WHG 0 / ANF 57 / Steppe 43).
+2. **WHG ≈ 0 refinement** — both the target and the English control return WHG ≈ 0, where a textbook
+   Briton keeps ~10–20 %. Likely the source config (Villabruna WHG; Yamnaya Steppe already carries
+   EHG/WHG). A real refinement, but now the *only* substantive modelling question left, and the model
+   is a valid accepted fit regardless.
+3. **Wire the full-1240k asset into the app path** (tasks 4-5): the app currently genotypes the ~20 k
+   AIM panel; deep ancestry needs the ~1.15 M-SNP genotyping + the validated `qpadm_fit`.
+
+The `admixtools2` harness (`scripts/ancestry-panel/qpadm_validate.R`) + the local `HG00160` control are
+the reusable oracles. `ANCIENT_ANCESTRY_ENABLED` stays `false` until gate 1 passes end-to-end.

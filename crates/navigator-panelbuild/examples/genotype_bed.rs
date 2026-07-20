@@ -39,12 +39,21 @@ fn main() -> anyhow::Result<()> {
     let params = HaploidCallerParams::default();
     let gts = genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref()).map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // genotype_sites_all_contigs returns genotypes REORDERED (per-contig), so we must key each
+    // returned genotype to its rsID by (contig,position) — NOT by input order. Zipping with `rsids`
+    // would mislabel every genotype (only ~14% would land on the right rsID).
+    let rsid_at: std::collections::HashMap<(&str, i64), &str> = sites
+        .iter()
+        .zip(&rsids)
+        .map(|(s, r)| ((s.contig.as_str(), s.position), r.as_str()))
+        .collect();
     let mut w = BufWriter::new(std::fs::File::create(&out)?);
     let mut called = 0usize;
-    for (g, rsid) in gts.iter().zip(&rsids) {
+    for g in &gts {
         if g.dosage >= 0 {
             called += 1;
         }
+        let rsid = rsid_at.get(&(g.contig.as_str(), g.position)).copied().unwrap_or(".");
         writeln!(w, "{}\t{}\t{}\t{}", rsid, g.contig, g.position, g.dosage)?;
     }
     w.flush()?;
