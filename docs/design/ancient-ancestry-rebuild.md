@@ -1,12 +1,16 @@
 # Ancient ancestry — why it's disabled, and what a correct rebuild takes
 
-**Status:** feature gated off (`navigator_app::ANCIENT_ANCESTRY_ENABLED = false`). The original PCA
-implementation was disabled 2026-07-13 for fabricating numbers (§1–§2). Three approaches have since
-**failed the real-data stability gate**: raw allele-frequency admixture and a consumer-array
-ascertainment floor (§3), and — prototyped and refuted — target pseudo-haploidization (§5.1). The
-literature explains why and names the method that should work (§4); the design and the remaining path
-(an f4/qpAdm estimator) are §5, and its concrete implementation scope is §7. The feature stays off
-until that is built and passes §5.4.
+**Status:** feature still gated off (`navigator_app::ANCIENT_ANCESTRY_ENABLED = false`), but the method
+is now **validated end to end** (§7.14) — the long investigation in §3–7 is largely superseded by that
+result, kept for the record. The original PCA implementation was disabled 2026-07-13 for fabricating
+numbers (§1–§2); several rebuild attempts then appeared to fail (§3–§7.12), but those "walls" were an
+outgroup-sourcing mistake (§7.10), 16 k-SNP imprecision (§7.11), and finally a genotype-labelling bug
+in a diagnostic example (§7.13). With the bug fixed, the full 1240k SNP set, and the **Patterson 2022
+sister-outgroup qpAdm config**, `huF98AFD`'s real WGS resolves to **WHG 15 / EEF 45 / Steppe 41,
+±1–2 %, model accepted** — a literature-grade British breakdown, reproduced identically by both
+`admixtools2` and our own `qpadm_fit` (§7.14). What remains before enabling: the WGS-vs-chip stability
+gate on this config, and wiring the full-1240k genotyping + `qpadm_fit` into the app path (tasks 4–5).
+The estimator design is §5; the implementation + the working config are §7 (start at §7.14).
 
 **Scope:** the evidence that the original is unsound (§1–2), what the rebuild attempts established and
 why they fail (§3–4), and the design for a correct rebuild (§5–6).
@@ -684,3 +688,45 @@ like a reference genome.
 
 The `admixtools2` harness (`scripts/ancestry-panel/qpadm_validate.R`) + the local `HG00160` control are
 the reusable oracles. `ANCIENT_ANCESTRY_ENABLED` stays `false` until gate 1 passes end-to-end.
+
+### 7.14 The shipping config — Patterson 2022 sister-outgroups resolve WHG
+
+§7.13's fix left one artifact: both the target *and* the English control returned **WHG ≈ 0** where a
+textbook Briton keeps ~15–20 %, because our generic continental outgroups couldn't separate WHG from
+the **EHG inside Steppe** (Yamnaya ≈ 50 % EHG, and EHG ≈ WHG + ANE). The fix is the qpAdm design from
+**Patterson et al. 2022** (*Nature*, "Large-scale migration into Britain") — each outgroup is a
+**sister of one source**:
+
+| | source (Left) | sister outgroup (Right) |
+|---|---|---|
+| Hunter-gatherer | WHG (France_Mesolithic + Loschbour) | **Iron Gates HG** (Serbia/Romania) |
+| Farmer | EEF (**Balkan** Neolithic, min-HG) | **Anatolia_N** (Turkey_N) |
+| Steppe | Yamnaya + Poltavka | **Afanasievo** |
+| base | — | **ancient** sub-Saharan (Malawi LSA + Mota) |
+
+The sister structure gives qpAdm the differential relatedness to tease the three apart. Two of our
+earlier choices invert: Anatolia_N was the *farmer source*; here it is the farmer *outgroup* (EEF =
+Balkan_N is the source), and Iron Gates HG — excluded from the WHG *source* — is the WHG *outgroup*.
+The African base is deliberately *ancient*, capture-processed (§4.4), not present-day Mbuti.
+
+**Result on `huF98AFD`'s full-1240k WGS — WHG resolves, and our estimator matches ADMIXTOOLS:**
+
+| | admixtools2 | **our `qpadm_fit`** | academic British | FTDNA |
+|---|---|---|---|---|
+| WHG | 14.6 % | **14.6 %** | ~15–20 | 43 |
+| EEF/Farmer | 44.6 % | **44.8 %** | ~30–35 | 45 |
+| Steppe | 40.8 % | **40.6 %** | ~45–50 | 12 |
+| SE | 1–2 % | 1–2 % | — | — |
+| model | accepted p=0.15 | accepted p=0.21 | — | — |
+
+Identical to 0.2 % between ADMIXTOOLS and our own pooled-frequency estimator, tight SEs, model
+accepted, WHG in the academic range. (FTDNA agrees on Farmer but is the off-consensus outlier on the
+Steppe/HG axis — its 12 % Steppe contradicts the qpAdm literature, which puts British at ~45–50 %.)
+
+**This is now the committed shipping config**: `pops/qpadm_leftpops.txt` (WHG/EEF/Steppe),
+`pops/qpadm_rightpops.txt` (AnatoliaOG/Afanasievo/IronGates/African), and the group→component map in
+`aadr_component_map.tsv`. Both the `admixtools2` oracle (`qpadm_validate.R`) and our estimator
+(`examples/verify_qpadm_fit.rs`) reproduce it. The deep-ancestry method is **validated end to end**.
+Remaining before `ANCIENT_ANCESTRY_ENABLED = true`: the WGS-vs-chip stability gate on this config, and
+wiring the full-1240k genotyping + `qpadm_fit` into the app path (tasks 4-5). New component codes
+(`EEF`, `AnatoliaOG`, etc.) will need catalog entries in `navigator-domain::ancestry` for display.

@@ -1,31 +1,22 @@
 # qpAdm RIGHT populations — the outgroups the target's allele-sharing is measured against.
 # One population code per line (blank lines and #-comments ignored). Appended to the panel axis
-# after the left/source populations. This is the one expertise-driven artifact of the method
-# (docs/design/ancient-ancestry-rebuild.md §7.4, §7.10).
+# after the left/source populations. THE one expertise-driven artifact of the method (docs §7.4/7.14).
 #
-# CRITICAL (learned the hard way — §7.10): the right set MUST come from the SAME genotype callset as
-# the sources (the AADR 1240k EIGENSTRAT), NOT from a separate modern panel. Our first attempt sourced
-# these from 1000G/SGDP shotgun while the sources were AADR capture, which ran a capture-vs-shotgun
-# batch line straight through the f4 matrix and produced wildly infeasible weights (WHG −68%). Using
-# AADR-native outgroups (below) fixed most of it (WHG −68% → −8%, model p 0.16 → 0.87).
+# Config: Patterson et al. 2022, Nature "Large-scale migration into Britain". The key idea: each
+# outgroup is a *sister* of one source — a population that shares drift with exactly one of WHG / EEF /
+# Steppe — which is what lets qpAdm tease the three components apart. Generic continental outgroups
+# (an earlier config: Han/Papuan/Yoruba/Karitiana/Mbuti + pooled deep anchors) could NOT separate WHG
+# from the EHG inside Steppe and collapsed WHG to 0% (§7.13); this sister structure resolves it to
+# ~15% (the academic British value). Also: the right set must share the sources' AADR 1240k callset
+# (§7.10) — do NOT source these from a modern panel.
 #
-# Requirements: differentially related to the three sources (so the f4 matrix has rank), NOT downstream
-# of the mixture, and — for a frequency-based fit — DENSE ENOUGH that no single genome's idiosyncratic
-# allele-sharing dominates. Single-genome anchors (Ust'-Ishim n=1) bias the fit, so the deep
-# basal-Eurasian / ANE anchors are POOLED into denser groups (UPEuro, ANE) via aadr_component_map.tsv.
+# code          sister-of        AADR group(s) (aadr_component_map.tsv)                       n
+AnatoliaOG   #  EEF              Turkey_N                                                    ~68
+Afanasievo   #  Steppe          Russia_Khakassia_Afanasievo + Russia_Altai_Afanasievo       ~47
+IronGates    #  WHG             Serbia_IronGates_Mesolithic + Romania_IronGates_Mesolithic  ~83
+African      #  (base)          Malawi_LSA + Ethiopia_MotaCave — ANCIENT, capture-processed ~11
 #
-# All labels below are AADR Group-ID pools defined in aadr_component_map.tsv (present-day continental
-# references + pooled deep anchors), so they share the sources' callset.
-#
-# code        lineage / role                                               approx n
-Han         # Han Chinese (East Asian)                                       ~46
-Papuan      # New Guinea (Oceanian) — deep non-African split                 ~32
-Yoruba      # West African                                                    ~24
-Karitiana   # Amazonian (Native American)                                     ~16
-Mbuti       # Central African (basal African)                                 ~15
-UPEuro      # Upper-Paleolithic Eurasian POOL: Ust'-Ishim + Kostenki + Sunghir ~8  — basal anchor
-ANE         # Ancient North Eurasian POOL: MA1 + AfontovaGora + Yana          ~5  — Steppe (ANE) axis
-#
-# NOTE (§7.10): with these, huF98AFD's WGS is statistically consistent with NW-European ancestry but
-# WHG SE is still ~40% (vs ~2–3% for real qpAdm). Precision — not the outgroups — is the open blocker;
-# likely the pooled-frequency approximation + sparse sources vs per-individual ADMIXTOOLS machinery.
+# NOTE: the African base is deliberately ANCIENT sub-Saharan (Malawi LSA foragers + Mota), not
+# present-day Mbuti/Yoruba — it keeps the whole right set on the same in-solution-capture footing as
+# the ancient sources, sidestepping the capture-vs-shotgun concern (§4.4). Anatolia_N and Iron Gates
+# HG are used here as OUTGROUPS (the latter is deliberately excluded from the WHG *source*).
