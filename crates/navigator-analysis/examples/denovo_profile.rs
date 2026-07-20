@@ -21,7 +21,13 @@ fn main() {
 
     let params = HaploidCallerParams::default();
     let t = Instant::now();
-    let calls = call_denovo(Path::new(&bam), Path::new(&reference), &contig, &params).expect("call_denovo");
+    let calls = call_denovo(
+        Path::new(&bam),
+        Path::new(&reference),
+        &contig,
+        &params,
+        &navigator_analysis::CancelToken::none(),
+    ).expect("call_denovo");
     eprintln!(
         "call_denovo({contig}): {} variants in {:.1}s (realign={})",
         calls.len(),

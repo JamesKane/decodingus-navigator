@@ -107,6 +107,16 @@ qual50="IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII"
   row r_inter2 129 chr2 200  50M  chr1 100  0
 } > sv.sam
 samtools sort -o sv.bam sv.sam && samtools index sv.bam
+# A 5000 bp chr1/chr2 reference so the same reads can be stored ref-compressed. The bases are
+# irrelevant to SV evidence (it reads flags/positions/CIGAR/SA only) but CRAM cannot be decoded
+# without them, which is the whole point of the CRAM counterpart below.
+{
+  echo ">chr1"; for _ in $(seq 100); do echo "$seq50"; done
+  echo ">chr2"; for _ in $(seq 100); do echo "$seq50"; done
+} > svref.fa
+samtools faidx svref.fa
+# CRAM counterpart (same reads, ref-compressed) — proves the walker is parity-clean across formats.
+samtools view -T svref.fa -C -o sv.cram sv.bam && samtools index sv.cram
 
 # ---- diploid.bam ------------------------------------------------------------
 # chr1 (10 bp), two haplotypes at depth 20 (10 reads each):

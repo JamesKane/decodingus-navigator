@@ -36,6 +36,7 @@ fn denovo_calls_snps_only_where_consensus_differs_from_ref() {
         &dir.join("ref.fa"),
         "chrM",
         &HaploidCallerParams::default(),
+        &navigator_analysis::CancelToken::none(),
     )
     .expect("de-novo should succeed");
 
@@ -105,6 +106,7 @@ fn denovo_chunking_matches_unchunked() {
         &dir.join("ref.fa"),
         "chrM",
         &HaploidCallerParams::default(),
+        &navigator_analysis::CancelToken::none(),
     )
     .unwrap();
     // Force many tiny chunks over the 50 bp fixture; result must be identical.
@@ -113,7 +115,14 @@ fn denovo_chunking_matches_unchunked() {
         denovo_overlap: 3,
         ..HaploidCallerParams::default()
     };
-    let got = call_denovo(&dir.join("coverage.bam"), &dir.join("ref.fa"), "chrM", &chunked).unwrap();
+    let got = call_denovo(
+        &dir.join("coverage.bam"),
+        &dir.join("ref.fa"),
+        "chrM",
+        &chunked,
+        &navigator_analysis::CancelToken::none(),
+    )
+    .unwrap();
     assert_eq!(got, base);
     assert_eq!(
         got.iter().map(|c| c.position).collect::<Vec<_>>(),
@@ -129,6 +138,7 @@ fn private_set_subtracts_known_tree_positions() {
         &dir.join("ref.fa"),
         "chrM",
         &HaploidCallerParams::default(),
+        &navigator_analysis::CancelToken::none(),
     )
     .unwrap();
 

@@ -11,10 +11,12 @@ use crate::error::AnalysisError;
 
 const MERGE_MAX_GAP: i64 = 50_000;
 
-/// Run the full SV pipeline on a BAM. Requires >= 10x mean coverage (Scala threshold).
+/// Run the full SV pipeline on a BAM or CRAM. Requires >= 10x mean coverage (Scala threshold).
+/// `reference` is required for CRAM (ignored for BAM) — see [`walker::collect_evidence`].
 #[allow(clippy::too_many_arguments)]
 pub fn call_structural_variants(
     bam_path: &Path,
+    reference: Option<&Path>,
     contig_lengths: &BTreeMap<String, i64>,
     reference_build: &str,
     mean_coverage: f64,
@@ -22,6 +24,7 @@ pub fn call_structural_variants(
     insert_size_sd: f64,
     mean_read_length: f64,
     config: &SvCallerConfig,
+    cancel: &crate::cancel::CancelToken,
 ) -> Result<SvAnalysisResult, AnalysisError> {
     if mean_coverage < 10.0 {
         return Err(AnalysisError::Message(format!(
@@ -29,7 +32,15 @@ pub fn call_structural_variants(
         )));
     }
 
-    let evidence = walker::collect_evidence(bam_path, contig_lengths, mean_insert_size, insert_size_sd, config)?;
+    let evidence = walker::collect_evidence(
+        bam_path,
+        reference,
+        contig_lengths,
+        mean_insert_size,
+        insert_size_sd,
+        config,
+        cancel,
+    )?;
 
     let raw_segments = segmenter::segment(
         &evidence.depth_bins,

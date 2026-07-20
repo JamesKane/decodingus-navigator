@@ -1854,6 +1854,13 @@ impl NavigatorApp {
                 }
             }
             if let Some((build, received, total)) = self.reference_progress.clone() {
+                // The bar alone reads as an unexplained multi-GB download, so name it and say why
+                // it is happening — the pull is usually kicked off automatically by an import, not
+                // by anything the user clicked.
+                ui.label(egui::RichText::new(self.tr("refdl.progressTitle")).strong());
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(self.tr("refdl.why")).weak().small());
+                ui.add_space(6.0);
                 let text = match total {
                     Some(t) => format!("{build}: {} / {} MB", received / 1_000_000, t / 1_000_000),
                     None => format!("{build}: {} MB", received / 1_000_000),
@@ -1895,9 +1902,18 @@ impl NavigatorApp {
                     let _ = self.tx.send(Command::DeepAnalyzeProject(pid));
                 }
             }
-            if self.analyzing && ui.button(self.tr("common.cancel")).clicked() {
-                let _ = self.tx.send(Command::CancelAnalysis);
-                self.status = "Cancelling deep analysis…".into();
+            if self.analyzing {
+                let requested = self.cancelling;
+                let label = if requested {
+                    self.tr("analysis.cancelling")
+                } else {
+                    self.tr("common.cancel")
+                };
+                if ui.add_enabled(!requested, egui::Button::new(label)).clicked() {
+                    self.cancelling = true;
+                    let _ = self.tx.send(Command::CancelAnalysis);
+                    self.status = self.tr("analysis.cancelling").to_string();
+                }
             }
             if ui.button(self.tr("projects.exportCsv")).clicked() {
                 let csv = navigator_app::report_csv(&self.project_report);

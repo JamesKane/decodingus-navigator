@@ -19,10 +19,12 @@ fn walker_extracts_discordant_pairs_split_reads_and_depth() {
     let lengths = BTreeMap::from([("chr1".to_string(), 5000i64), ("chr2".to_string(), 5000)]);
     let ev = walker::collect_evidence(
         &fixtures().join("sv.bam"),
+        None, // BAM needs no reference
         &lengths,
         400.0, // expected insert
         50.0,  // sd  -> outlier if insert > 600 or < 200
         &SvCallerConfig::default(),
+        &navigator_analysis::CancelToken::none(),
     )
     .expect("walker should succeed");
 
@@ -51,6 +53,56 @@ fn walker_extracts_discordant_pairs_split_reads_and_depth() {
     // Depth bins.
     assert_eq!(ev.depth_bins["chr1"], vec![2, 1, 0, 0, 1]);
     assert_eq!(ev.depth_bins["chr2"], vec![1, 0, 0, 0, 0]);
+}
+
+/// The same reads stored as CRAM must yield byte-identical evidence. The walker used to open every
+/// file with the BAM (BGZF) reader, so a CRAM failed at open with "invalid BGZF header" and SV
+/// calling was silently unavailable for every CRAM in the workspace.
+#[test]
+fn walker_reads_cram_with_the_same_result_as_bam() {
+    let lengths = BTreeMap::from([("chr1".to_string(), 5000i64), ("chr2".to_string(), 5000)]);
+    let config = SvCallerConfig::default();
+    let cfg = (400.0, 50.0);
+
+    let from_bam = walker::collect_evidence(
+        &fixtures().join("sv.bam"),
+        None,
+        &lengths,
+        cfg.0,
+        cfg.1,
+        &config,
+        &navigator_analysis::CancelToken::none(),
+    )
+        .expect("BAM walk should succeed");
+    let from_cram = walker::collect_evidence(
+        &fixtures().join("sv.cram"),
+        Some(&fixtures().join("svref.fa")),
+        &lengths,
+        cfg.0,
+        cfg.1,
+        &config,
+        &navigator_analysis::CancelToken::none(),
+    )
+    .expect("CRAM walk should succeed");
+
+    assert_eq!(from_cram.depth_bins, from_bam.depth_bins);
+    assert_eq!(from_cram.total_discordant_pairs(), from_bam.total_discordant_pairs());
+    assert_eq!(from_cram.total_split_reads(), from_bam.total_split_reads());
+
+    // Compare the evidence itself, not just the counts — the split read carries the fields that
+    // come from the accessors CRAM implements differently (name, SA tag, CIGAR clip length).
+    let (b, c) = (&from_bam.split_reads[0], &from_cram.split_reads[0]);
+    assert_eq!((&c.read_name, c.clip_length, &c.supp_chrom, c.supp_pos), (&b.read_name, b.clip_length, &b.supp_chrom, b.supp_pos));
+    let names = |e: &SvEvidenceCollection| {
+        let mut v: Vec<_> = e
+            .discordant_pairs
+            .iter()
+            .map(|p| (p.read_name.clone(), p.pos1, format!("{:?}", p.reason)))
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(names(&from_cram), names(&from_bam));
 }
 
 // ---- segmenter (pure) ------------------------------------------------------

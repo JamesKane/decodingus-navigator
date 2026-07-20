@@ -972,7 +972,14 @@ impl App {
                         .collect();
                     tokio::task::spawn_blocking(move || {
                         let params = HaploidCallerParams::default();
-                        caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref())
+                        caller::genotype_sites_all_contigs(
+                            &bam,
+                            &sites,
+                            2,
+                            &params,
+                            reference.as_deref(),
+                            &navigator_analysis::CancelToken::none(),
+                        )
                     })
                     .await??
                 } else if panel.sites.iter().any(|s| s.locus(&build).is_some()) {
@@ -1010,7 +1017,14 @@ impl App {
                         .collect();
                     let raw = tokio::task::spawn_blocking(move || {
                         let params = HaploidCallerParams::default();
-                        caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref())
+                        caller::genotype_sites_all_contigs(
+                            &bam,
+                            &sites,
+                            2,
+                            &params,
+                            reference.as_deref(),
+                            &navigator_analysis::CancelToken::none(),
+                        )
                     })
                     .await??;
                     panel.resolve_alignment(&build, &raw)

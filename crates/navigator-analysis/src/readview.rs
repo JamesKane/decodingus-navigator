@@ -11,7 +11,8 @@
 //! than the old `RecordBuf` conversion, which would have errored the whole pass on a bad record.
 
 use noodles::sam::alignment::record::cigar::op::Kind;
-use noodles::sam::alignment::record::{Cigar as _, Flags, QualityScores as _, Sequence as _};
+use noodles::sam::alignment::record::data::field::Tag;
+use noodles::sam::alignment::record::{Cigar as _, Data as _, Flags, QualityScores as _, Sequence as _};
 use noodles::sam::alignment::RecordBuf;
 
 /// The fields the coverage / read-metrics / sex walkers read from an alignment record.
@@ -27,6 +28,18 @@ pub trait AlnRead {
     fn mapping_quality(&self) -> Option<u8>;
     fn template_length(&self) -> i32;
     fn sequence_len(&self) -> usize;
+    /// Read (template) name as raw bytes, or `None` when unset. Borrowed — the caller decides
+    /// whether to pay for a `String`.
+    fn name(&self) -> Option<&[u8]>;
+    /// A string-valued auxiliary tag (e.g. `SA`), or `None` when absent, undecodable, or of another
+    /// type. Owned because the three record types spell their `Data` view differently; the tags this
+    /// serves (`SA`) appear on a small minority of reads, so the allocation is not on the hot path.
+    fn string_tag(&self, tag: Tag) -> Option<String>;
+    /// Run `f` with an iterator of CIGAR `(kind, len)` ops. The callback form keeps the lazy
+    /// `bam::Record`'s borrowed view alive for the duration; undecodable ops are skipped. Prefer
+    /// this over [`AlnRead::pileup_with`] when only the CIGAR is needed — the CRAM impl of
+    /// `pileup_with` materializes the quality scores, which this skips.
+    fn cigar_with<T>(&self, f: impl FnOnce(&mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T;
     /// Run `f` with the per-base phred qualities (raw, no +33; indexable by query offset) and an
     /// iterator of CIGAR `(kind, len)` ops. Via a callback so the lazy `bam::Record` views (which
     /// borrow the record's buffer through a temporary wrapper) stay alive for the duration — no
@@ -58,6 +71,22 @@ impl AlnRead for RecordBuf {
     }
     fn sequence_len(&self) -> usize {
         self.sequence().len()
+    }
+    fn name(&self) -> Option<&[u8]> {
+        RecordBuf::name(self).map(|n| &**n)
+    }
+    fn string_tag(&self, tag: Tag) -> Option<String> {
+        use noodles::sam::alignment::record_buf::data::field::Value;
+        match RecordBuf::data(self).get(&tag)? {
+            Value::String(s) => Some(s.to_string()),
+            _ => None,
+        }
+    }
+    fn cigar_with<T>(&self, f: impl FnOnce(&mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {
+        use noodles::sam::alignment::record::Cigar as _; // RecordBuf's Cigar iterates via the trait
+        let cigar = self.cigar();
+        let mut ops = cigar.iter().filter_map(|op| op.ok().map(|o| (o.kind(), o.len())));
+        f(&mut ops)
     }
     fn pileup_with<T>(&self, f: impl FnOnce(&[u8], &mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {
         use noodles::sam::alignment::record::Cigar as _; // RecordBuf's Cigar iterates via the trait
@@ -92,6 +121,21 @@ impl AlnRead for noodles::bam::Record {
     }
     fn sequence_len(&self) -> usize {
         self.sequence().len()
+    }
+    fn name(&self) -> Option<&[u8]> {
+        noodles::bam::Record::name(self).map(|n| &**n)
+    }
+    fn string_tag(&self, tag: Tag) -> Option<String> {
+        use noodles::sam::alignment::record::data::field::Value;
+        match self.data().get(&tag)?.ok()? {
+            Value::String(s) => Some(s.to_string()),
+            _ => None,
+        }
+    }
+    fn cigar_with<T>(&self, f: impl FnOnce(&mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {
+        let cigar = self.cigar();
+        let mut ops = cigar.iter().filter_map(|op| op.ok().map(|o| (o.kind(), o.len())));
+        f(&mut ops)
     }
     fn pileup_with<T>(&self, f: impl FnOnce(&[u8], &mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {
         let quals = self.quality_scores();
@@ -146,6 +190,24 @@ impl AlnRead for CramRead<'_, '_> {
     fn sequence_len(&self) -> usize {
         use noodles::sam::alignment::Record as _;
         self.rec.sequence().len()
+    }
+    fn name(&self) -> Option<&[u8]> {
+        use noodles::sam::alignment::Record as _;
+        self.rec.name().map(|n| &**n)
+    }
+    fn string_tag(&self, tag: Tag) -> Option<String> {
+        use noodles::sam::alignment::record::data::field::Value;
+        use noodles::sam::alignment::Record as _;
+        match self.rec.data().get(&tag)?.ok()? {
+            Value::String(s) => Some(s.to_string()),
+            _ => None,
+        }
+    }
+    fn cigar_with<T>(&self, f: impl FnOnce(&mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {
+        use noodles::sam::alignment::Record as _;
+        let cigar = self.rec.cigar();
+        let mut ops = cigar.iter().filter_map(|op| op.ok().map(|o| (o.kind(), o.len())));
+        f(&mut ops)
     }
     fn pileup_with<T>(&self, f: impl FnOnce(&[u8], &mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {
         use noodles::sam::alignment::Record as _;
@@ -218,6 +280,24 @@ impl AlnRead for SeqRecord {
         match self {
             SeqRecord::Bam(r) => AlnRead::sequence_len(r),
             SeqRecord::Cram(r) => AlnRead::sequence_len(r),
+        }
+    }
+    fn name(&self) -> Option<&[u8]> {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::name(r),
+            SeqRecord::Cram(r) => AlnRead::name(r),
+        }
+    }
+    fn string_tag(&self, tag: Tag) -> Option<String> {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::string_tag(r, tag),
+            SeqRecord::Cram(r) => AlnRead::string_tag(r, tag),
+        }
+    }
+    fn cigar_with<T>(&self, f: impl FnOnce(&mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {
+        match self {
+            SeqRecord::Bam(r) => AlnRead::cigar_with(r, f),
+            SeqRecord::Cram(r) => AlnRead::cigar_with(r, f),
         }
     }
     fn pileup_with<T>(&self, f: impl FnOnce(&[u8], &mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {

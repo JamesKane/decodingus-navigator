@@ -217,6 +217,21 @@ impl NavigatorApp {
             if self.running_sex || self.running_metrics || self.running_sv {
                 ui.spinner();
             }
+            // SV walks every read in the file, so it is one of the runs a user most wants to stop.
+            // It had no cancel control at all until the walkers became cancellable.
+            if self.running_sv {
+                let requested = self.cancelling;
+                let label = if requested {
+                    self.tr("analysis.cancelling")
+                } else {
+                    self.tr("common.cancel")
+                };
+                if ui.add_enabled(!requested, egui::Button::new(label)).clicked() {
+                    self.cancelling = true;
+                    let _ = self.tx.send(Command::CancelAnalysis);
+                    self.status = self.tr("analysis.cancelling").to_string();
+                }
+            }
             if !has_bam {
                 ui.label(self.tr("hint.noBamPath"));
             }

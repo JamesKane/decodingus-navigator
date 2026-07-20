@@ -1,6 +1,7 @@
 //! `impl App` methods extracted from `lib.rs` (the `analysis` cluster). Split out in the
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
+use navigator_analysis::CancelToken;
 
 impl App {
     // ---- analysis (compute + persist) --------------------------------------
@@ -36,7 +37,7 @@ impl App {
     /// Run coverage using the alignment's own stored BAM/reference paths, then persist.
     /// Errors if the alignment is unknown or has no paths recorded.
     pub async fn run_coverage_for_alignment(&self, alignment_id: i64) -> Result<CoverageResult, AppError> {
-        self.run_coverage_for_alignment_with_progress(alignment_id, |_, _| {})
+        self.run_coverage_for_alignment_with_progress(alignment_id, |_, _| {}, CancelToken::none())
             .await
     }
 
@@ -48,6 +49,7 @@ impl App {
         &self,
         alignment_id: i64,
         mut progress: impl FnMut(usize, usize) + Send + 'static,
+        cancel: CancelToken,
     ) -> Result<CoverageResult, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
@@ -77,6 +79,7 @@ impl App {
                     &params,
                     allowlist.as_ref(),
                     &mut progress,
+                    &cancel,
                 )
             })
         })
@@ -287,7 +290,8 @@ impl App {
     /// `COVERAGE_VERSION`, `read_metrics`/`"1"`, `sex`/`"1"`), so `cached_coverage`/
     /// `cached_read_metrics`/`cached_sex` and the SV step's reuse logic keep working unchanged.
     pub async fn run_unified_metrics(&self, alignment_id: i64) -> Result<UnifiedMetricsResult, AppError> {
-        self.run_unified_metrics_with_progress(alignment_id, |_, _| {}).await
+        self.run_unified_metrics_with_progress(alignment_id, |_, _| {}, CancelToken::none())
+            .await
     }
 
     /// Like [`run_unified_metrics`], reporting `progress(contigs_done, contigs_total)` as the
@@ -298,6 +302,7 @@ impl App {
         &self,
         alignment_id: i64,
         progress: impl Fn(usize, usize) + Send + Sync + 'static,
+        cancel: CancelToken,
     ) -> Result<UnifiedMetricsResult, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let run_id = aln.sequence_run_id;
@@ -333,6 +338,7 @@ impl App {
                     &params,
                     allowlist.as_ref(),
                     &progress,
+                    &cancel,
                 )
             })
         })
@@ -402,7 +408,11 @@ impl App {
     /// Call structural variants (depth-segmentation + paired-end/split-read evidence) and
     /// persist as an `sv` artifact. Needs coverage + insert-size inputs (computed/loaded here)
     /// and **≥10× mean coverage** (the caller errors below that).
-    pub async fn run_sv(&self, alignment_id: i64) -> Result<navigator_analysis::sv::types::SvAnalysisResult, AppError> {
+    pub async fn run_sv(
+        &self,
+        alignment_id: i64,
+        cancel: CancelToken,
+    ) -> Result<navigator_analysis::sv::types::SvAnalysisResult, AppError> {
         // Resume: a fresh cached SV result (source unchanged) is reused rather than recomputed.
         if let Some(c) = self.cached_sv(alignment_id).await? {
             return Ok(c);
@@ -410,7 +420,8 @@ impl App {
         let aln = self.alignment_or_err(alignment_id).await?;
         let reference_build = aln.reference_build.clone();
         // Resolve the reference for decode (see alignment_reference_for_decode): required for a CRAM,
-        // None for a BAM. SV reads records + header lengths; it doesn't consult reference bases.
+        // None for a BAM. SV never consults reference *bases* — but decoding a CRAM record does, so
+        // the walker needs it too, not just the header-lengths probe.
         let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
 
         let cov = match self.cached_coverage(alignment_id).await? {
@@ -433,6 +444,7 @@ impl App {
             navigator_analysis::guard_walk("structural variants", || {
                 navigator_analysis::sv::caller::call_structural_variants(
                     &bam,
+                    reference.as_deref(),
                     &lengths,
                     &reference_build,
                     mean_cov,
@@ -440,6 +452,7 @@ impl App {
                     sd_ins,
                     mean_rl,
                     &navigator_analysis::sv::types::SvCallerConfig::default(),
+                    &cancel,
                 )
             })
         })
@@ -652,6 +665,7 @@ impl App {
         reference: PathBuf,
         contig: String,
         params: HaploidCallerParams,
+        cancel: CancelToken,
     ) -> Result<Vec<VariantCall>, AppError> {
         // Resume: reuse a fresh cached de-novo result for this contig (source unchanged).
         if let Some(c) = self.cached_denovo(alignment_id, &contig).await? {
@@ -659,7 +673,7 @@ impl App {
         }
         let kind = denovo_kind(&contig);
         let calls = tokio::task::spawn_blocking(move || {
-            navigator_analysis::guard_walk("de-novo calling", || caller::call_denovo(&bam, &reference, &contig, &params))
+            navigator_analysis::guard_walk("de-novo calling", || caller::call_denovo(&bam, &reference, &contig, &params, &cancel))
         })
         .await??;
         self.save_analysis(alignment_id, &kind, caller::DENOVO_VERSION, &calls)
@@ -676,7 +690,12 @@ impl App {
     /// Whole-contig **de-novo diploid** SNV calling (het 0/1 + hom-alt 1/1) on `contig`, cached per
     /// alignment+contig. Reuses the alignment's BAM + reference (resolved from the build). Returns
     /// [`SiteGenotype`]s in position order — feed to [`Self::diploid_vcf`].
-    pub async fn run_diploid_calls(&self, alignment_id: i64, contig: String) -> Result<Vec<SiteGenotype>, AppError> {
+    pub async fn run_diploid_calls(
+        &self,
+        alignment_id: i64,
+        contig: String,
+        cancel: CancelToken,
+    ) -> Result<Vec<SiteGenotype>, AppError> {
         let kind = format!("diploid_denovo:{contig}");
         if let Some(c) = self
             .load_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION)
@@ -688,7 +707,7 @@ impl App {
         let params = adaptive_haploid_params(&bam, Some(&reference));
         let calls = tokio::task::spawn_blocking(move || {
             navigator_analysis::guard_walk("diploid calling", || {
-                caller::call_denovo_diploid(&bam, &reference, &contig, &params)
+                caller::call_denovo_diploid(&bam, &reference, &contig, &params, &cancel)
             })
         })
         .await??;
@@ -699,8 +718,13 @@ impl App {
 
     /// A diploid VCF (VCFv4.2, `GT:AD:DP:GQ:PL`) of the de-novo diploid SNV calls for `contig`
     /// (computing + caching them if needed). The sample column is `aln<id>`.
-    pub async fn diploid_vcf(&self, alignment_id: i64, contig: String) -> Result<String, AppError> {
-        let calls = self.run_diploid_calls(alignment_id, contig).await?;
+    pub async fn diploid_vcf(
+        &self,
+        alignment_id: i64,
+        contig: String,
+        cancel: CancelToken,
+    ) -> Result<String, AppError> {
+        let calls = self.run_diploid_calls(alignment_id, contig, cancel).await?;
         Ok(navigator_analysis::vcf::write_diploid_vcf(
             &format!("aln{alignment_id}"),
             &calls,
@@ -712,7 +736,7 @@ impl App {
     /// they're haploid, so the diploid (het 0/1) model is wrong for them; their variants come from
     /// the haploid caller and the Y/mt haplogroup + mtDNA-mutation features. Heavy (a real WGS
     /// calling pass); the caller runs it off the UI thread (the export path).
-    pub async fn diploid_vcf_genome(&self, alignment_id: i64) -> Result<String, AppError> {
+    pub async fn diploid_vcf_genome(&self, alignment_id: i64, cancel: CancelToken) -> Result<String, AppError> {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let contigs =
             tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference))).await??;
@@ -721,7 +745,7 @@ impl App {
             .into_iter()
             .filter(|c| is_primary_contig(c) && !is_haploid_contig(c))
         {
-            all.extend(self.run_diploid_calls(alignment_id, contig).await?);
+            all.extend(self.run_diploid_calls(alignment_id, contig, cancel.clone()).await?);
         }
         Ok(navigator_analysis::vcf::write_diploid_vcf(
             &format!("aln{alignment_id}"),
@@ -765,6 +789,7 @@ impl App {
         &self,
         biosample_guid: SampleGuid,
         contigs: Option<Vec<String>>,
+        cancel: CancelToken,
     ) -> Result<Vec<SiteGenotype>, AppError> {
         let aln_ids = self.consensus_diploid_alignments(biosample_guid).await?;
         if aln_ids.is_empty() {
@@ -795,7 +820,7 @@ impl App {
             for contig in clist {
                 // Tolerate a contig absent from this alignment's header (heterogeneous inputs) —
                 // skip it for this source rather than aborting the whole consensus.
-                let Ok(variants) = self.run_diploid_calls(*id, contig).await else {
+                let Ok(variants) = self.run_diploid_calls(*id, contig, cancel.clone()).await else {
                     continue;
                 };
                 for v in variants {
@@ -823,8 +848,9 @@ impl App {
         for (_, (bam, reference)) in &paths {
             let params = adaptive_haploid_params(bam, Some(reference));
             let (bam, reference, sites) = (bam.clone(), reference.clone(), sites.clone());
+            let cancel = cancel.clone();
             let g = tokio::task::spawn_blocking(move || {
-                caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, Some(&reference))
+                caller::genotype_sites_all_contigs(&bam, &sites, 2, &params, Some(&reference), &cancel)
             })
             .await??;
             per_aln.push(g);
@@ -839,7 +865,8 @@ impl App {
     /// alignments (see [`consensus_diploid_calls`]), sample column `consensus`. Heavy; the export
     /// path runs it off the UI thread.
     pub async fn consensus_diploid_vcf(&self, biosample_guid: SampleGuid) -> Result<String, AppError> {
-        let calls = self.consensus_diploid_calls(biosample_guid, None).await?;
+        let calls = self.consensus_diploid_calls(biosample_guid, None, CancelToken::none())
+            .await?;
         Ok(navigator_analysis::vcf::write_diploid_vcf("consensus", &calls))
     }
 
@@ -944,6 +971,31 @@ impl App {
         Ok(built)
     }
 
+    /// Diagnose why an alignment can't be read, naming the **exact file** at fault rather than the
+    /// one the failing call happened to be handed. See [`navigator_analysis::preflight`] for why
+    /// that distinction is the whole point: an unreadable `.crai` and an unreadable CRAM produce
+    /// the same `io error on …cram` message today, and on macOS a privacy (TCC) denial and a Unix
+    /// permission denial are told apart only by the raw errno.
+    ///
+    /// Deliberately **cache-only** for the reference: a diagnostic has to describe the machine as
+    /// it is, so resolving (and silently downloading) a missing FASTA here would paper over exactly
+    /// the state we were asked to report. A CRAM with no cached reference is a finding, not a task.
+    pub async fn diagnose_alignment(
+        &self,
+        alignment_id: i64,
+    ) -> Result<navigator_analysis::preflight::Report, AppError> {
+        let aln = self.alignment_or_err(alignment_id).await?;
+        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let reference = match aln.reference_path {
+            Some(p) => Some(PathBuf::from(p)),
+            None => self.gateway.cached_reference(&aln.reference_build),
+        };
+        Ok(tokio::task::spawn_blocking(move || {
+            navigator_analysis::preflight::diagnose(&bam, reference.as_deref())
+        })
+        .await?)
+    }
+
     pub async fn run_denovo_for_alignment(
         &self,
         alignment_id: i64,
@@ -953,7 +1005,7 @@ impl App {
         let probe = bam.clone();
         let probe_ref = reference.clone();
         let params = tokio::task::spawn_blocking(move || adaptive_haploid_params(&probe, Some(&probe_ref))).await?; // HiFi -> lower min_depth
-        self.run_denovo_caller(alignment_id, bam, reference, contig, params)
+        self.run_denovo_caller(alignment_id, bam, reference, contig, params, CancelToken::none())
             .await
     }
 

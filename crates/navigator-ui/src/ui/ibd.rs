@@ -602,6 +602,17 @@ impl NavigatorApp {
             }
             if self.running_denovo {
                 ui.spinner();
+                let requested = self.cancelling;
+                let label = if requested {
+                    self.tr("analysis.cancelling")
+                } else {
+                    self.tr("common.cancel")
+                };
+                if ui.add_enabled(!requested, egui::Button::new(label)).clicked() {
+                    self.cancelling = true;
+                    let _ = self.tx.send(Command::CancelAnalysis);
+                    self.status = self.tr("analysis.cancelling").to_string();
+                }
             }
             if !has_bam {
                 ui.label(egui::RichText::new("(no BAM/CRAM recorded)").weak());

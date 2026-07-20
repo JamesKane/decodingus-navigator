@@ -85,7 +85,7 @@ impl App {
                 let per_contig = self.callable_intervals_all(*id).await?;
                 Ok(export::callable_bed(&per_contig))
             }
-            ExportRequest::DiploidVcf(id) => self.diploid_vcf_genome(*id).await,
+            ExportRequest::DiploidVcf(id) => self.diploid_vcf_genome(*id, navigator_analysis::CancelToken::none()).await,
             ExportRequest::ConsensusDiploidVcf(guid) => self.consensus_diploid_vcf(*guid).await,
             ExportRequest::SubjectBriefHtml(guid) => {
                 let brief = self.subject_brief(*guid).await?;

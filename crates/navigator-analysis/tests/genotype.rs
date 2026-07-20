@@ -89,6 +89,7 @@ fn denovo_diploid_calls_het_and_hom_alt_then_writes_vcf() {
         &reference,
         "chr1",
         &HaploidCallerParams::default(),
+        &navigator_analysis::CancelToken::none(),
     )
     .unwrap();
 
@@ -130,6 +131,7 @@ fn denovo_diploid_calls_a_heterozygous_deletion() {
         &dir.join("ref.fa"),
         "chrM",
         &HaploidCallerParams::default(),
+        &navigator_analysis::CancelToken::none(),
     )
     .unwrap();
     let del = calls
@@ -212,6 +214,7 @@ fn denovo_diploid_calls_a_multiallelic_snv() {
         &reference,
         "chr1",
         &HaploidCallerParams::default(),
+        &navigator_analysis::CancelToken::none(),
     )
     .unwrap();
     let site = calls
@@ -239,6 +242,7 @@ fn denovo_diploid_calls_a_multiallelic_indel() {
         &dir.join("ref.fa"),
         "chrM",
         &HaploidCallerParams::default(),
+        &navigator_analysis::CancelToken::none(),
     )
     .unwrap();
     let site = calls

@@ -7,6 +7,9 @@ impl NavigatorApp {
     /// step, a progress bar + percent, and a Cancel button. Shown while `self.analysis` is set.
     pub(crate) fn analysis_modal(&mut self, ctx: &egui::Context) {
         let Some(p) = self.analysis.clone() else { return };
+        // Deferred so only `self.tr` (immutable) is used inside the closure, matching the other
+        // modals here.
+        let mut cancel_clicked = false;
         // Dim everything behind the dialog.
 
         modal_frame(ctx, "analysis_modal", 460.0, |ui| {
@@ -42,12 +45,30 @@ impl NavigatorApp {
             );
             ui.add_space(12.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(self.tr("common.cancel")).clicked() {
-                    let _ = self.tx.send(Command::CancelAnalysis);
-                    self.status = "Cancelling…".into();
+                // Disabled once requested: cancellation is cooperative, so the run keeps going
+                // until the walk reaches its next check. Leaving the button live invited repeat
+                // clicks and made a working cancel look ignored.
+                let requested = self.cancelling;
+                let label = if requested {
+                    self.tr("analysis.cancelling")
+                } else {
+                    self.tr("common.cancel")
+                };
+                if ui.add_enabled(!requested, egui::Button::new(label)).clicked() {
+                    cancel_clicked = true;
+                }
+                if requested {
+                    ui.spinner();
+                    ui.label(egui::RichText::new(self.tr("analysis.cancellingHint")).weak().small());
                 }
             });
         });
+
+        if cancel_clicked {
+            self.cancelling = true;
+            let _ = self.tx.send(Command::CancelAnalysis);
+            self.status = self.tr("analysis.cancelling").to_string();
+        }
     }
 
     /// The Edit-subject modal: editable fields over a dimmed backdrop. Save sends an
@@ -288,6 +309,73 @@ impl NavigatorApp {
             self.edit_mdka = None;
         } else {
             self.edit_mdka = Some(edit);
+        }
+    }
+
+    /// The diagnosis modal: why the last alignment command actually failed, file by file.
+    ///
+    /// Shown when a command fails *and* the preflight found a concrete cause, because the one-line
+    /// status-bar message is exactly the part that isn't actionable — the reader helpers report
+    /// whichever path the failing call was handed, which is routinely not the file at fault. The
+    /// report is selectable and copyable so it can go straight into a bug report; that is the
+    /// primary job of this modal, not a convenience.
+    pub(crate) fn diagnosis_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_diagnosis {
+            return;
+        }
+        let Some(report) = self.diagnosis.clone() else {
+            self.show_diagnosis = false;
+            return;
+        };
+
+        // Deferred so only `self.tr` (immutable) is used inside the closure, matching the other
+        // modals here.
+        let (mut close, mut copy) = (false, false);
+        modal_frame(ctx, "diagnosis_modal", 640.0, |ui| {
+            ui.label(
+                egui::RichText::new(self.tr("diagnosis.title"))
+                    .strong()
+                    .size(16.0),
+            );
+            ui.label(egui::RichText::new(self.tr("diagnosis.subtitle")).weak());
+            ui.separator();
+            egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                // A read-only multiline edit rather than a label: it wraps, scrolls, and lets the
+                // user select a single line without dragging across the whole modal.
+                let mut text = report.as_str();
+                ui.add(
+                    egui::TextEdit::multiline(&mut text)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(18),
+                );
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button(self.tr("diagnosis.copy")).clicked() {
+                    copy = true;
+                }
+                ui.label(egui::RichText::new(self.tr("diagnosis.copyHint")).weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(self.tr("common.close")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        });
+
+        if copy {
+            // Write through egui *and* the system clipboard. egui's own copy is what an
+            // in-app paste sees; arboard is what survives to the browser tab where the bug report
+            // is being written, which is the only destination that matters here.
+            ctx.output_mut(|o| o.copied_text = report.clone());
+            self.status = match arboard::Clipboard::new().and_then(|mut c| c.set_text(report)) {
+                Ok(()) => self.tr("diagnosis.copied").to_string(),
+                Err(e) => format!("{}: {e}", self.tr("diagnosis.copyFailed")),
+            };
+        }
+        if close {
+            self.show_diagnosis = false;
         }
     }
 

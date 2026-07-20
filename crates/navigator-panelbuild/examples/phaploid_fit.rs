@@ -65,7 +65,7 @@ fn main() -> anyhow::Result<()> {
 
     eprintln!("genotyping {} ancient sites from {} ...", sites.len(), bam.display());
     let params = HaploidCallerParams::default();
-    let gts = genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref()).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let gts = genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref(), &navigator_analysis::CancelToken::none()).map_err(|e| anyhow::anyhow!("{e}"))?;
     let called = gts.iter().filter(|g| g.dosage >= 0).count();
     eprintln!("genotyped: {} sites called (of {})", called, gts.len());
 

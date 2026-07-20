@@ -48,6 +48,13 @@ signing-identity = "Developer ID Application: James Kane (5DKX9P6769)"
 dev-identity = []
 
 [dependencies]
+# System clipboard, for copying a diagnosis report out of the app. eframe owns the window's own
+# clipboard, but a modal that exists to get text into a bug report needs a copy that works even
+# when the platform backend hands egui an empty one, so this is used directly.
+# `default-features = false` drops the `image-data` feature: it is on by default and pulls a stack
+# of image codecs (tiff/zune-jpeg/weezl/…) to support copying bitmaps. This only ever copies text.
+# The crate itself is already in the tree via eframe, so this adds no new build unit.
+arboard = { version = "3", default-features = false }
 clap = { version = "4", features = ["derive"] }
 eframe = "0.30.0"
 egui_extras = "0.30.0"

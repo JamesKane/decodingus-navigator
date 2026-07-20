@@ -83,7 +83,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        if n.iter().any(|&x| x == 0) {
+        if n.contains(&0) {
             continue; // require all pops present at the site
         }
         // Orient frequency to count bed_alt (matches James's raw dosage), reconciling COUNTED/ALT.

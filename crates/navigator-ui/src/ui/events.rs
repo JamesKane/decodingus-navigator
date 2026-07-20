@@ -296,6 +296,7 @@ impl NavigatorApp {
                     cancelled,
                 } => {
                     self.analyzing = false;
+                    self.cancelling = false;
                     self.deep_progress = None;
                     self.status = format!(
                         "{} {samples} sample(s): {coverage_done} coverage, {y_done} Y, {sex_done} sex, {metrics_done} metrics, {sv_done} SV{}",
@@ -928,6 +929,7 @@ impl NavigatorApp {
                 }
                 Event::AnalysisDone { cancelled } => {
                     self.analysis = None;
+                    self.cancelling = false;
                     self.status = if cancelled {
                         "Full analysis cancelled.".into()
                     } else {
@@ -1142,22 +1144,24 @@ impl NavigatorApp {
                 }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
-                    self.running = false;
-                    self.running_denovo = false;
-                    self.running_ibd = false;
-                    self.loading_ibd_suggestions = false;
-                    self.logging_in = false;
-                    self.publishing = false;
-                    self.finding_private_y = false;
-                    self.estimating_donor_ancestry = false;
-                    self.estimating_deep_ancestry = false;
-                    self.y_profile_loading = false;
-                    self.painting_running = false;
-                    self.running_sex = false;
-                    self.running_metrics = false;
-                    self.running_sv = false;
-                    self.loading_regions = false;
-                    let _ = self.tx.send(Command::SyncStatus); // a failed publish may have gone offline
+                    // This failure carries no file-level cause; drop any report from a previous
+                    // one so the status bar can't offer a "Details" that describes the wrong error.
+                    self.diagnosis = None;
+                    self.show_diagnosis = false;
+                    self.clear_in_flight();
+                }
+                Event::Cancelled => {
+                    self.status = self.tr("analysis.cancelled").to_string();
+                    self.clear_in_flight();
+                }
+                Event::Diagnosed { message, report } => {
+                    self.status = format!("Error: {message}");
+                    self.diagnosis = Some(report);
+                    // Open it unprompted: the whole point is that the one-line message is the part
+                    // that isn't actionable, so making the user go find the detail would reproduce
+                    // the original problem.
+                    self.show_diagnosis = true;
+                    self.clear_in_flight();
                 }
             }
         }
@@ -1373,5 +1377,28 @@ impl NavigatorApp {
         self.alignments.clear();
         self.selected_alignment = None;
         self.coverage = None;
+    }
+
+    /// Drop every in-flight spinner after a failure. A command failure is reported by whichever
+    /// worker arm was running, but the UI has no way to tell which flag that arm owned, so all of
+    /// them clear — a stuck spinner outlives the error message that explains it.
+    fn clear_in_flight(&mut self) {
+        self.cancelling = false;
+        self.running = false;
+        self.running_denovo = false;
+        self.running_ibd = false;
+        self.loading_ibd_suggestions = false;
+        self.logging_in = false;
+        self.publishing = false;
+        self.finding_private_y = false;
+        self.estimating_donor_ancestry = false;
+        self.estimating_deep_ancestry = false;
+        self.y_profile_loading = false;
+        self.painting_running = false;
+        self.running_sex = false;
+        self.running_metrics = false;
+        self.running_sv = false;
+        self.loading_regions = false;
+        let _ = self.tx.send(Command::SyncStatus); // a failed publish may have gone offline
     }
 }
