@@ -25,6 +25,7 @@ use noodles::fasta;
 use serde::{Deserialize, Serialize};
 
 use crate::contig;
+use crate::cancel::CancelToken;
 use crate::error::AnalysisError;
 use crate::reader;
 use crate::readview::AlnRead;
@@ -398,7 +399,7 @@ pub fn collect_coverage_callable(
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
 ) -> Result<CoverageResult, AnalysisError> {
-    collect_coverage_callable_with_progress(bam_path, reference_path, params, contig_allowlist, &mut |_, _| {})
+    collect_coverage_callable_with_progress(bam_path, reference_path, params, contig_allowlist, &mut |_, _| {}, &CancelToken::none())
 }
 
 /// Like [`collect_coverage_callable`], reporting `progress(contigs_done, contigs_total)` as each
@@ -410,13 +411,19 @@ pub fn collect_coverage_callable_with_progress(
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
     progress: &mut dyn FnMut(usize, usize),
+    cancel: &CancelToken,
 ) -> Result<CoverageResult, AnalysisError> {
     let (header, mut reader) = reader::open_seq(bam_path, Some(reference_path))?;
     let mut state = CoverageState::new(&header, reference_path, *params, contig_allowlist)?;
     progress(0, state.total_tracked());
+    let mut seen = 0u32;
     for result in reader.records_lazy(&header) {
         let record = result?;
         state.accept(&record, progress)?;
+        seen += 1;
+        if seen % 4096 == 0 {
+            cancel.check()?;
+        }
     }
     state.finish(progress)
 }

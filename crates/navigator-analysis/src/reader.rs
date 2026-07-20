@@ -33,6 +33,7 @@ fn bgzf_worker_count() -> NonZeroUsize {
     NonZeroUsize::new(cores.saturating_sub(1).clamp(1, 6)).unwrap()
 }
 
+use crate::cancel::CancelToken;
 use crate::error::AnalysisError;
 use crate::readview::{AlnRead, SeqRecord};
 
@@ -307,22 +308,38 @@ pub trait RecordSink {
     fn accept(&mut self, record: &impl AlnRead);
 }
 
+/// How often the record loops poll the cancel token. Tuned to be invisible in a profile while
+/// keeping the worst-case delay between a click and a stop well under a frame: at ~1M records/s
+/// this is a check every few milliseconds. The check itself is one relaxed atomic load.
+const CANCEL_CHECK_RECORDS: u32 = 4096;
+
 impl IdxReader {
     /// Drive `sink` over every record overlapping `region` (BAM: lazy record; CRAM: `RecordBuf`).
     /// A record that fails to read aborts with an error. The allocation-free counterpart to
     /// [`IdxReader::query`] (which copies each record into an owned `RecordBuf`).
+    ///
+    /// `cancel` is polled every [`CANCEL_CHECK_RECORDS`] records, so a cancelled walk stops
+    /// mid-contig instead of at the next contig boundary — on chr1 that is the difference between
+    /// stopping in milliseconds and stopping in minutes. Pass [`CancelToken::none`] when there is
+    /// nothing to cancel.
     pub fn for_each<S: RecordSink>(
         &mut self,
         header: &sam::Header,
         region: &Region,
         sink: &mut S,
+        cancel: &CancelToken,
     ) -> Result<(), AnalysisError> {
         match self {
             IdxReader::Bam { inner, path } => {
                 let path = path.clone();
                 let q = inner.query(header, region).map_err(|e| AnalysisError::io(&path, e))?;
+                let mut seen = 0u32;
                 for r in q.records() {
                     sink.accept(&r.map_err(|e| AnalysisError::io(&path, e))?);
+                    seen += 1;
+                    if seen % CANCEL_CHECK_RECORDS == 0 {
+                        cancel.check()?;
+                    }
                 }
                 Ok(())
             }
@@ -366,6 +383,9 @@ impl IdxReader {
 
                 let mut container = cram::io::reader::Container::default();
                 for offset in offsets {
+                    // Per container rather than per record: a CRAM container is decoded as a unit,
+                    // so this is the finest granularity at which stopping actually saves work.
+                    cancel.check()?;
                     inner.get_mut().seek(SeekFrom::Start(offset)).map_err(io_err)?;
                     if inner.read_container(&mut container).map_err(io_err)? == 0 {
                         continue;
@@ -394,13 +414,22 @@ impl IdxReader {
 
     /// Drive `sink` over the unplaced unmapped records (BAM only; CRAM errors, as in
     /// [`IdxReader::query_unmapped`]).
-    pub fn for_each_unmapped<S: RecordSink>(&mut self, sink: &mut S) -> Result<(), AnalysisError> {
+    pub fn for_each_unmapped<S: RecordSink>(
+        &mut self,
+        sink: &mut S,
+        cancel: &CancelToken,
+    ) -> Result<(), AnalysisError> {
         match self {
             IdxReader::Bam { inner, path } => {
                 let path = path.clone();
                 let q = inner.query_unmapped().map_err(|e| AnalysisError::io(&path, e))?;
+                let mut seen = 0u32;
                 for r in q {
                     sink.accept(&r.map_err(|e| AnalysisError::io(&path, e))?);
+                    seen += 1;
+                    if seen % CANCEL_CHECK_RECORDS == 0 {
+                        cancel.check()?;
+                    }
                 }
                 Ok(())
             }
@@ -535,7 +564,8 @@ mod tests {
         // New path: for_each over borrowed cram::Record.
         let (header, mut idx) = open_indexed(&cram, Some(&reference)).expect("open");
         let mut sink = CollectSink(Vec::new());
-        idx.for_each(&header, &region, &mut sink).expect("for_each");
+        idx.for_each(&header, &region, &mut sink, &CancelToken::none())
+            .expect("for_each");
 
         // Old path: query yields RecordBuf.
         let (header2, mut idx2) = open_indexed(&cram, Some(&reference)).expect("open2");

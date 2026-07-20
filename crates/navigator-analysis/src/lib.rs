@@ -11,6 +11,7 @@
 
 pub mod ancestry;
 pub mod caller;
+pub mod cancel;
 pub mod contig;
 pub mod coverage;
 pub mod error;
@@ -32,6 +33,7 @@ pub mod mastervar;
 /// path so existing `navigator_analysis::mtvariants::…` call sites are unchanged.
 pub use du_bio::mt as mtvariants;
 pub mod parity;
+pub mod preflight;
 pub mod probe;
 pub mod read_metrics;
 pub mod reader;
@@ -49,4 +51,5 @@ pub mod testtype;
 pub mod unified;
 pub mod vcf;
 
+pub use cancel::CancelToken;
 pub use error::{guard_walk, AnalysisError};

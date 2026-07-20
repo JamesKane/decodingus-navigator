@@ -820,6 +820,7 @@ pub fn genotype_sites_all_contigs(
     ploidy: u8,
     params: &HaploidCallerParams,
     reference: Option<&Path>,
+    cancel: &crate::cancel::CancelToken,
 ) -> Result<Vec<SiteGenotype>, AnalysisError> {
     let contigs: Vec<&str> = sites
         .iter()
@@ -834,7 +835,10 @@ pub fn genotype_sites_all_contigs(
     let per_contig: Result<Vec<Vec<SiteGenotype>>, AnalysisError> = pool.install(|| {
         contigs
             .into_par_iter()
-            .map(|contig| genotype_sites(bam_path, contig, sites, ploidy, params, reference))
+            .map(|contig| {
+                cancel.check()?;
+                genotype_sites(bam_path, contig, sites, ploidy, params, reference)
+            })
             .collect()
     });
     Ok(per_contig?.into_iter().flatten().collect())
@@ -1002,6 +1006,7 @@ pub fn call_denovo(
     reference_path: &Path,
     contig: &str,
     params: &HaploidCallerParams,
+    cancel: &crate::cancel::CancelToken,
 ) -> Result<Vec<VariantCall>, AnalysisError> {
     let length = read_contig_length(bam_path, contig, Some(reference_path))?;
 
@@ -1029,7 +1034,12 @@ pub fn call_denovo(
     let nested: Vec<Vec<VariantCall>> = pool.install(|| {
         ranges
             .par_iter()
-            .map(|&(lo, hi)| denovo_chunk(bam_path, reference_path, contig, params, &ref_seq, length, lo, hi))
+            .map(|&(lo, hi)| {
+                // Per chunk: each is bounded work (default 8 MB of reference), so this bounds the
+                // delay between a click and a stop without splitting the chunks any finer.
+                cancel.check()?;
+                denovo_chunk(bam_path, reference_path, contig, params, &ref_seq, length, lo, hi)
+            })
             .collect::<Result<Vec<_>, AnalysisError>>()
     })?;
     // Ranges are disjoint and collected in order, so flattening preserves global position order.
@@ -1336,6 +1346,7 @@ pub fn call_denovo_diploid(
     reference_path: &Path,
     contig: &str,
     params: &HaploidCallerParams,
+    cancel: &crate::cancel::CancelToken,
 ) -> Result<Vec<SiteGenotype>, AnalysisError> {
     let length = read_contig_length(bam_path, contig, Some(reference_path))?;
     let ref_seq = load_contig_sequence(reference_path, contig, length)?;
@@ -1355,7 +1366,10 @@ pub fn call_denovo_diploid(
     let nested: Vec<Vec<SiteGenotype>> = pool.install(|| {
         ranges
             .par_iter()
-            .map(|&(lo, hi)| denovo_chunk_diploid(bam_path, reference_path, contig, params, &ref_seq, length, lo, hi))
+            .map(|&(lo, hi)| {
+                cancel.check()?;
+                denovo_chunk_diploid(bam_path, reference_path, contig, params, &ref_seq, length, lo, hi)
+            })
             .collect::<Result<Vec<_>, AnalysisError>>()
     })?;
     Ok(nested.into_iter().flatten().collect())

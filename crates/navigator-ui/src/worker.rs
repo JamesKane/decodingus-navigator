@@ -8,10 +8,11 @@
 //! is the thread/runtime/channel glue.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+use navigator_app::CancelToken;
 use navigator_app::{
     AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
     ChatTurn, Consensus, Coverage, DenovoCall, DescentReport, DmConversationSummary, DmMessage, DnaType,
@@ -1209,6 +1210,101 @@ pub enum Event {
     /// Notifications were marked read; reload them.
     NotificationsMarked,
     Error(String),
+    /// A command failed **and** a file-level preflight found a concrete cause. `message` is the
+    /// original error (still shown in the status bar); `report` is the pasteable diagnosis naming
+    /// the file actually at fault.
+    ///
+    /// Separate from [`Event::Error`] so the UI can offer the report without having to guess, from
+    /// a string, whether an error has one. Only emitted when the preflight actually failed a
+    /// check — a tree-download or network error must not raise a file report.
+    Diagnosed { message: String, report: String },
+    /// A run stopped because the user cancelled it.
+    ///
+    /// Distinct from both `Error` (this is not a failure) and `Noop` (which would leave the
+    /// requesting control spinning forever — a standalone SV/de-novo run has no `AnalysisDone` to
+    /// clear its in-flight flag).
+    Cancelled,
+}
+
+/// Settle a finished alignment command into the event the UI should actually see.
+///
+/// Two things have to happen between a command failing and a user reading about it, and both are
+/// about not reporting the wrong thing:
+///
+/// 1. A **cancellation** is swallowed. It travels as an error so it can unwind the walk from deep
+///    inside a walker, but the user asked for it — surfacing "Error: cancelled" would report their
+///    own click back to them as a failure. The run's `AnalysisDone { cancelled }` already says so.
+/// 2. A **genuine** failure gets a file-level diagnosis attached, because:
+///
+/// The errors this upgrades are the ones that name a path but not the *right* path: the reader
+/// helpers report whichever path the failing call was handed, so a bad index, an unreadable
+/// reference or a privacy-denied file all surface as `io error on <the alignment>`. Running
+/// [`App::diagnose_alignment`] probes each of those files separately and says which one it is.
+///
+/// Errors with no file-level cause pass through untouched — if every preflight check passes, the
+/// failure is genuinely elsewhere (tree fetch, liftover, appview) and a clean bill of health would
+/// be worse than saying nothing.
+/// The token for whichever cancellable run is in flight, so `CancelAnalysis` can reach it.
+///
+/// Replaces a single shared `AtomicBool` that each run reset to `false` at its own entry. Because
+/// every command is `tokio::spawn`ed, that reset raced the click: a cancel landing between the
+/// spawn and the reset was silently wiped, and a second run starting concurrently wiped the first
+/// one's pending cancel too. A [`CancelToken`] is created once per run and never un-cancelled, so
+/// there is no window in which a cancel can be lost.
+///
+/// The generation counter keeps a finishing run from clearing a *newer* run's registration — the
+/// same stale-write bug in a different costume.
+/// How a cancellation reads once it has been flattened to a string by an event.
+const CANCELLED_MESSAGE: &str = "cancelled";
+
+#[derive(Clone, Default)]
+struct CancelRegistry {
+    current: Arc<Mutex<Option<(u64, CancelToken)>>>,
+    next_gen: Arc<AtomicU64>,
+}
+
+impl CancelRegistry {
+    /// Register a fresh token for a starting run. Returns its generation and the token.
+    fn begin(&self) -> (u64, CancelToken) {
+        let gen = self.next_gen.fetch_add(1, Ordering::Relaxed);
+        let token = CancelToken::new();
+        *self.current.lock().unwrap() = Some((gen, token.clone()));
+        (gen, token)
+    }
+
+    /// Retire this run's registration — but only if a newer run has not already replaced it.
+    fn end(&self, gen: u64) {
+        let mut slot = self.current.lock().unwrap();
+        if slot.as_ref().is_some_and(|(g, _)| *g == gen) {
+            *slot = None;
+        }
+    }
+
+    /// Cancel whatever is running now. A no-op when nothing is, which is what makes a stray click
+    /// harmless rather than something that poisons the next run.
+    fn cancel_current(&self) {
+        if let Some((_, token)) = self.current.lock().unwrap().as_ref() {
+            token.cancel();
+        }
+    }
+}
+
+async fn settle_alignment_command(app: &App, alignment_id: i64, event: Event) -> Event {
+    let Event::Error(message) = event else {
+        return event;
+    };
+    // A cancelled walk is not a file problem, and not a failure: diagnosing it would be a slow lie
+    // and reporting it would contradict the user's own action.
+    if message == CANCELLED_MESSAGE {
+        return Event::Cancelled;
+    }
+    match app.diagnose_alignment(alignment_id).await {
+        Ok(report) if report.failed() => Event::Diagnosed {
+            message,
+            report: report.to_string(),
+        },
+        _ => Event::Error(message),
+    }
 }
 
 /// Execute one command against the app, mapping success/failure to an [`Event`].
@@ -1222,7 +1318,7 @@ async fn reload_genealogy(app: &App, guid: SampleGuid) -> Event {
     }
 }
 
-pub async fn handle(app: &App, cmd: Command) -> Event {
+pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
     match cmd {
         Command::LoadOverview => match app.project_overview().await {
             Ok(v) => Event::Overview(v),
@@ -1922,7 +2018,7 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
             Ok(result) => Event::Sv { alignment_id, result },
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::RunSv(alignment_id) => match app.run_sv(alignment_id).await {
+        Command::RunSv(alignment_id) => match app.run_sv(alignment_id, cancel.clone()).await {
             Ok(result) => Event::Sv {
                 alignment_id,
                 result: Some(result),
@@ -2364,9 +2460,12 @@ async fn ensure_index_streaming(
             total,
         });
     };
+    // This pre-flight is the first thing on a button's path to touch the file, so it is where an
+    // unreadable alignment/index surfaces first — and where the raw message is least informative
+    // (a failed *index build* reports the alignment's path). Diagnose before reporting.
     let event = match app.ensure_alignment_index(alignment_id, progress).await {
         Ok(built) => Event::IndexReady { built },
-        Err(e) => Event::Error(e.to_string()),
+        Err(e) => settle_alignment_command(app, alignment_id, Event::Error(e.to_string())).await,
     };
     // Wake once at the start (the first progress tick may lag on a small file) and after completion.
     wake();
@@ -2397,11 +2496,10 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     app: &App,
     alignment_id: i64,
     include_ancestry: bool,
-    cancel: Arc<AtomicBool>,
+    cancel: CancelToken,
     evt_tx: &Sender<Event>,
     wake: Arc<W>,
 ) {
-    cancel.store(false, Ordering::Relaxed);
     // Simple ("My DNA") is one-click: fold the autosomal ancestry estimate into the pipeline as a
     // final step. Advanced runs it as a separate deliberate action, so it passes `false`. Ancestry is
     // subject-level, so resolve the subject once; skip it if the alignment isn't attached to one.
@@ -2437,7 +2535,7 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     // ONE pass over the alignment (was three separate steps reading the file 2–3×). The slow
     // whole-genome read; stream per-contig sub-progress so the bar advances chromosome by
     // chromosome instead of sitting at 0% for minutes.
-    if !cancel.load(Ordering::Relaxed) {
+    if !cancel.is_cancelled() {
         let _ = evt_tx.send(Event::AnalysisProgress {
             step: 1,
             total,
@@ -2477,7 +2575,7 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                         });
                     }
                     wk();
-                })
+                }, cancel.clone())
                 .await
                 .map(|r| (r.coverage, r.read_metrics, r.sex))
             }
@@ -2565,7 +2663,7 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         ));
     }
     for (i, (label, detail, cmd)) in steps.into_iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             break;
         }
         let step = i + 2; // steps 2..=total
@@ -2577,13 +2675,16 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             fraction: (step as f32 - 1.0) / total as f32,
         });
         wake();
-        let ev = handle(app, cmd).await; // runs to completion; we may cancel before the next step
+        // Runs to completion; we may cancel before the next step. Steps here bypass the outer
+        // match's per-command pre-flight, so this is also the only place their failures can pick up
+        // a file-level diagnosis.
+        let ev = settle_alignment_command(app, alignment_id, handle(app, cmd, &cancel).await).await;
         let _ = evt_tx.send(ev);
         wake();
     }
 
     let _ = evt_tx.send(Event::AnalysisDone {
-        cancelled: cancel.load(Ordering::Relaxed),
+        cancelled: cancel.is_cancelled(),
     });
     wake();
 }
@@ -2596,11 +2697,10 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
 async fn deep_analyze_project_streaming(
     app: &App,
     project_id: i64,
-    cancel: Arc<AtomicBool>,
+    cancel: CancelToken,
     evt_tx: &Sender<Event>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) {
-    cancel.store(false, Ordering::Relaxed);
     let biosamples = match app.list_biosamples(project_id).await {
         Ok(v) => v,
         Err(e) => {
@@ -2614,7 +2714,7 @@ async fn deep_analyze_project_streaming(
         (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
 
     for (i, biosample) in biosamples.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             break;
         }
         let _ = evt_tx.send(Event::DeepAnalyzeProgress {
@@ -2625,7 +2725,7 @@ async fn deep_analyze_project_streaming(
             fraction: if total > 0 { i as f32 / total as f32 } else { 0.0 },
         });
         wake();
-        match app.analyze_biosample(biosample).await {
+        match app.analyze_biosample(biosample, cancel.clone()).await {
             Ok(o) if o.had_alignment => {
                 samples += 1;
                 coverage_done += o.coverage_done as usize;
@@ -2654,7 +2754,7 @@ async fn deep_analyze_project_streaming(
         metrics_done,
         sv_done,
         errors,
-        cancelled: cancel.load(Ordering::Relaxed),
+        cancelled: cancel.is_cancelled(),
     });
     wake();
 }
@@ -2839,8 +2939,8 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                         return;
                     }
                 };
-                // Shared cancel flag for the full-analysis pipeline (one runs at a time).
-                let cancel = Arc::new(AtomicBool::new(false));
+                // Registry of the in-flight cancellable run's token (see `CancelRegistry`).
+                let cancels = CancelRegistry::default();
 
                 // Background outbox drain: retry pending PDS publishes every 30s (catches
                 // offline→online without a user action). Skips work when the queue is empty.
@@ -2864,7 +2964,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                     let app = app.clone();
                     let evt_tx: Sender<Event> = evt_tx.clone();
                     let wake = wake.clone();
-                    let cancel = cancel.clone();
+                    let cancels = cancels.clone();
                     tokio::spawn(async move {
                         match cmd {
                             // Streams ReferenceProgress events as bytes arrive, then a final event.
@@ -2875,7 +2975,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             // visible progress bar — a first CRAM/BAM that needs a multi-GB reference
                             // download otherwise looks like it didn't register (§ ensure_references_streaming).
                             Command::AddDataBatch { biosample_guid, paths } => {
-                                let event = handle(&app, Command::AddDataBatch { biosample_guid, paths }).await;
+                                let event = handle(&app, Command::AddDataBatch { biosample_guid, paths }, &CancelToken::none()).await;
                                 let imported = matches!(event, Event::DataBatchImported { .. });
                                 let _ = evt_tx.send(event);
                                 wake();
@@ -2898,6 +2998,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                         sex,
                                         paths,
                                     },
+                                    &CancelToken::none(),
                                 )
                                 .await;
                                 let guid = match &event {
@@ -2921,7 +3022,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                 }
                                 ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::BuildAutosomalProfile { biosample_guid }).await;
+                                let event = handle(&app, Command::BuildAutosomalProfile { biosample_guid }, &CancelToken::none()).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2930,7 +3031,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                 }
                                 ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::StrConcordance { biosample_guid }).await;
+                                let event = handle(&app, Command::StrConcordance { biosample_guid }, &CancelToken::none()).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2939,7 +3040,9 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::RunSv(alignment_id)).await;
+                                let (gen, token) = cancels.begin();
+                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::RunSv(alignment_id), &token).await).await;
+                                cancels.end(gen);
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2948,7 +3051,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::LoadHeteroplasmy { alignment_id }).await;
+                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::LoadHeteroplasmy { alignment_id }, &CancelToken::none()).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2957,7 +3060,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::AssignYHaplogroup { alignment_id }).await;
+                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::AssignYHaplogroup { alignment_id }, &CancelToken::none()).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2966,7 +3069,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::YHaploReport { alignment_id }).await;
+                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::YHaploReport { alignment_id }, &CancelToken::none()).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2975,7 +3078,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::AssignMtdnaHaplogroupFromAlignment { alignment_id }).await;
+                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::AssignMtdnaHaplogroupFromAlignment { alignment_id }, &CancelToken::none()).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2984,7 +3087,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::FindPrivateY { alignment_id, mask }).await;
+                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::FindPrivateY { alignment_id, mask }, &CancelToken::none()).await).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2993,7 +3096,9 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::RunDenovo { alignment_id, contig }).await;
+                                let (gen, token) = cancels.begin();
+                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::RunDenovo { alignment_id, contig }, &token).await).await;
+                                cancels.end(gen);
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -3002,7 +3107,9 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::GenotypePanel { alignment_id, panel_id, ploidy }).await;
+                                let (gen, token) = cancels.begin();
+                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::GenotypePanel { alignment_id, panel_id, ploidy }, &token).await).await;
+                                cancels.end(gen);
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -3013,7 +3120,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     }
                                     ensure_index_streaming(&app, aln, &evt_tx, &*wake).await;
                                 }
-                                let event = handle(&app, Command::CompareIbd { a, b, panel_id, ploidy }).await;
+                                let event = handle(&app, Command::CompareIbd { a, b, panel_id, ploidy }, &CancelToken::none()).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -3024,7 +3131,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     }
                                     ensure_index_streaming(&app, aln, &evt_tx, &*wake).await;
                                 }
-                                let event = handle(&app, Command::VerifyIdentity { a, b, panel_id, ploidy }).await;
+                                let event = handle(&app, Command::VerifyIdentity { a, b, panel_id, ploidy }, &CancelToken::none()).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -3037,7 +3144,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                         ensure_index_streaming(&app, aln, &evt_tx, &*wake).await;
                                     }
                                 }
-                                let event = handle(&app, Command::CompareIbdSources { a, b }).await;
+                                let event = handle(&app, Command::CompareIbdSources { a, b }, &CancelToken::none()).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -3046,7 +3153,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                 }
                                 ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::BuildYProfile { biosample_guid }).await;
+                                let event = handle(&app, Command::BuildYProfile { biosample_guid }, &CancelToken::none()).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -3055,7 +3162,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                 }
                                 ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::BuildMtProfile { biosample_guid }).await;
+                                let event = handle(&app, Command::BuildMtProfile { biosample_guid }, &CancelToken::none()).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -3064,8 +3171,10 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             Command::RunFullAnalysis { alignment_id } => {
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
                                 // Advanced: haplogroups/coverage only; ancestry is a separate action.
+                                let (gen, cancel) = cancels.begin();
                                 run_full_analysis_streaming(&app, alignment_id, false, cancel, &evt_tx, wake.clone())
                                     .await;
+                                cancels.end(gen);
                             }
                             // Resolve the subject's representative alignment, then run the same pipeline
                             // as RunFullAnalysis. Lets the Simple view analyze from a subject guid alone.
@@ -3074,8 +3183,10 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     Ok(Some((_run_id, alignment_id))) => {
                                         ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
                                         // Simple one-click: include the autosomal ancestry step.
+                                        let (gen, cancel) = cancels.begin();
                                         run_full_analysis_streaming(&app, alignment_id, true, cancel, &evt_tx, wake.clone())
                                             .await;
+                                        cancels.end(gen);
                                     }
                                     Ok(None) => {
                                         let _ = evt_tx.send(Event::Error(
@@ -3094,7 +3205,9 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             }
                             // Streams DeepAnalyzeProgress per sample, then a final ProjectAnalyzed.
                             Command::DeepAnalyzeProject(project_id) => {
+                                let (gen, cancel) = cancels.begin();
                                 deep_analyze_project_streaming(&app, project_id, cancel, &evt_tx, wake.clone()).await;
+                                cancels.end(gen);
                             }
                             // Streams ImportProgress per sample, then a final ProjectImported (or
                             // ReferenceNeeded / Error). Large NAS imports (1000s of samples) otherwise
@@ -3104,7 +3217,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             }
                             // Signals the in-flight full analysis / deep-analyze to stop between steps.
                             Command::CancelAnalysis => {
-                                cancel.store(true, Ordering::Relaxed);
+                                cancels.cancel_current();
                             }
                             // Publishes enqueue durably, then drain (send-now-if-online). The drain
                             // emits Published per row + SyncPending; we emit Queued for instant feedback.
@@ -3169,7 +3282,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 narrate_signal_streaming(&app, guid, kind, &evt_tx, &*wake).await;
                             }
                             other => {
-                                let event = handle(&app, other).await;
+                                let event = handle(&app, other, &CancelToken::none()).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -3206,6 +3319,7 @@ mod tests {
                 source: "FTDNA".into(),
                 external_id: "B5163".into(),
             },
+            &CancelToken::none(),
         )
         .await;
         let data = match ev {
@@ -3228,6 +3342,7 @@ mod tests {
                     ..Default::default()
                 },
             },
+            &CancelToken::none(),
         )
         .await;
         match ev {
@@ -3239,8 +3354,8 @@ mod tests {
         }
 
         // Delete both → empty genealogy.
-        let _ = handle(&app, Command::DeleteMdka { guid, lineage: "Y".into() }).await;
-        let ev = handle(&app, Command::DeleteExternalId { guid, id: kit_id }).await;
+        let _ = handle(&app, Command::DeleteMdka { guid, lineage: "Y".into() }, &CancelToken::none()).await;
+        let ev = handle(&app, Command::DeleteExternalId { guid, id: kit_id }, &CancelToken::none()).await;
         match ev {
             Event::Genealogy { data, .. } => assert!(data.is_empty(), "all genealogy removed"),
             other => panic!("expected Genealogy, got {other:?}"),
@@ -3256,6 +3371,7 @@ mod tests {
                 source: "FTDNA".into(),
                 external_id: "B9999".into(),
             },
+            &CancelToken::none(),
         )
         .await;
         assert!(matches!(ev, Event::Error(_)), "conflicting id → Error, got {ev:?}");
@@ -3272,8 +3388,7 @@ mod tests {
                 name: "Trio".into(),
                 description: None,
                 administrator: "jk".into(),
-            }),
-        )
+            }), &CancelToken::none())
         .await;
         let pid = match created {
             Event::ProjectCreated(p) => p.id,
@@ -3281,7 +3396,7 @@ mod tests {
         };
 
         // overview reflects it
-        match handle(&app, Command::LoadOverview).await {
+        match handle(&app, Command::LoadOverview, &CancelToken::none()).await {
             Event::Overview(v) => {
                 assert_eq!(v.len(), 1);
                 assert_eq!(v[0].sample_count, 0);
@@ -3290,7 +3405,7 @@ mod tests {
         }
 
         // samples for the project (empty)
-        match handle(&app, Command::LoadSamples(pid)).await {
+        match handle(&app, Command::LoadSamples(pid), &CancelToken::none()).await {
             Event::Samples { project_id, samples } => {
                 assert_eq!(project_id, pid);
                 assert!(samples.is_empty());
@@ -3335,19 +3450,19 @@ mod tests {
             .unwrap();
 
         // alignments query (keyed by run)
-        match handle(&app, Command::LoadAlignments(run.id)).await {
+        match handle(&app, Command::LoadAlignments(run.id), &CancelToken::none()).await {
             Event::Alignments { alignments, .. } => assert_eq!(alignments, vec![aln.clone()]),
             other => panic!("expected Alignments, got {other:?}"),
         }
 
         // cold cache
-        match handle(&app, Command::LoadCoverage(aln.id)).await {
+        match handle(&app, Command::LoadCoverage(aln.id), &CancelToken::none()).await {
             Event::Coverage { result, .. } => assert!(result.is_none()),
             other => panic!("expected Coverage(None), got {other:?}"),
         }
 
         // run + persist (uses the alignment's stored paths, via spawn_blocking)
-        match handle(&app, Command::RunCoverage(aln.id)).await {
+        match handle(&app, Command::RunCoverage(aln.id), &CancelToken::none()).await {
             Event::Coverage { alignment_id, result } => {
                 assert_eq!(alignment_id, aln.id);
                 assert_eq!(result.unwrap().genome_territory, 50);
@@ -3356,7 +3471,7 @@ mod tests {
         }
 
         // now cached
-        match handle(&app, Command::LoadCoverage(aln.id)).await {
+        match handle(&app, Command::LoadCoverage(aln.id), &CancelToken::none()).await {
             Event::Coverage { result, .. } => assert_eq!(result.unwrap().callable_bases, 10),
             other => panic!("expected cached Coverage, got {other:?}"),
         }
@@ -3368,6 +3483,7 @@ mod tests {
                 alignment_id: aln.id,
                 contig: "chrM".into(),
             },
+            &CancelToken::none(),
         )
         .await
         {
@@ -3380,6 +3496,7 @@ mod tests {
                 alignment_id: aln.id,
                 contig: "chrM".into(),
             },
+            &CancelToken::none(),
         )
         .await
         {
@@ -3399,6 +3516,7 @@ mod tests {
                 alignment_id: aln.id,
                 contig: "chrM".into(),
             },
+            &CancelToken::none(),
         )
         .await
         {
@@ -3418,8 +3536,7 @@ mod tests {
                 name: "P".into(),
                 description: None,
                 administrator: "jk".into(),
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::ProjectCreated(p) => p.id,
@@ -3434,19 +3551,18 @@ mod tests {
                 donor_identifier: "HG002".into(),
                 sample_accession: None,
                 sex: Some("male".into()),
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
         // it shows up both under the project and in the all-subjects list
-        let guid = match handle(&app, Command::LoadSamples(pid)).await {
+        let guid = match handle(&app, Command::LoadSamples(pid), &CancelToken::none()).await {
             Event::Samples { samples, .. } => samples[0].guid,
             other => panic!("got {other:?}"),
         };
-        match handle(&app, Command::LoadAllBiosamples).await {
+        match handle(&app, Command::LoadAllBiosamples, &CancelToken::none()).await {
             Event::AllBiosamples(all) => assert_eq!(all.len(), 1),
             other => panic!("got {other:?}"),
         }
@@ -3459,14 +3575,13 @@ mod tests {
                 donor_identifier: "NA12878".into(),
                 sample_accession: None,
                 sex: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::LoadAllBiosamples).await {
+        match handle(&app, Command::LoadAllBiosamples, &CancelToken::none()).await {
             Event::AllBiosamples(all) => assert_eq!(all.len(), 2),
             other => panic!("got {other:?}"),
         }
@@ -3484,14 +3599,13 @@ mod tests {
                 pf_reads_aligned: None,
                 mean_read_length: None,
                 mean_insert_size: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::RunsChanged(g) => assert_eq!(g, guid),
             other => panic!("got {other:?}"),
         }
-        let run_id = match handle(&app, Command::LoadRuns(guid)).await {
+        let run_id = match handle(&app, Command::LoadRuns(guid), &CancelToken::none()).await {
             Event::Runs { runs, .. } => runs[0].id,
             other => panic!("got {other:?}"),
         };
@@ -3507,8 +3621,7 @@ mod tests {
                 bam_path: None,
                 reference_path: None,
                 content_sha256: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::AlignmentsChanged(r) => assert_eq!(r, run_id),
@@ -3530,14 +3643,13 @@ mod tests {
                 donor_identifier: "draft".into(),
                 sample_accession: None,
                 sex: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        let guid = match handle(&app, Command::LoadAllBiosamples).await {
+        let guid = match handle(&app, Command::LoadAllBiosamples, &CancelToken::none()).await {
             Event::AllBiosamples(all) => all[0].guid,
             other => panic!("got {other:?}"),
         };
@@ -3553,13 +3665,14 @@ mod tests {
                 center_name: None,
                 sex: Some("male".into()),
             },
+            &CancelToken::none(),
         )
         .await
         {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::LoadAllBiosamples).await {
+        match handle(&app, Command::LoadAllBiosamples, &CancelToken::none()).await {
             Event::AllBiosamples(all) => {
                 let b = &all[0];
                 assert_eq!(b.donor_identifier, "HG002");
@@ -3584,26 +3697,25 @@ mod tests {
                 pf_reads_aligned: None,
                 mean_read_length: None,
                 mean_insert_size: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::RunsChanged(_) => {}
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::DeleteBiosample(guid)).await {
+        match handle(&app, Command::DeleteBiosample(guid), &CancelToken::none()).await {
             Event::Error(msg) => assert!(msg.contains("sequencing run"), "unexpected message: {msg}"),
             other => panic!("expected conflict Error, got {other:?}"),
         }
         // still present
-        match handle(&app, Command::LoadAllBiosamples).await {
+        match handle(&app, Command::LoadAllBiosamples, &CancelToken::none()).await {
             Event::AllBiosamples(all) => assert_eq!(all.len(), 1),
             other => panic!("got {other:?}"),
         }
 
         // removing the run clears the conflict, so the subject can then be deleted (the
         // end-to-end 'remove data first' path)
-        let run_id = match handle(&app, Command::LoadRuns(guid)).await {
+        let run_id = match handle(&app, Command::LoadRuns(guid), &CancelToken::none()).await {
             Event::Runs { runs, .. } => runs[0].id,
             other => panic!("got {other:?}"),
         };
@@ -3613,17 +3725,18 @@ mod tests {
                 id: run_id,
                 biosample_guid: guid,
             },
+            &CancelToken::none(),
         )
         .await
         {
             Event::RunsChanged(g) => assert_eq!(g, guid),
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::DeleteBiosample(guid)).await {
+        match handle(&app, Command::DeleteBiosample(guid), &CancelToken::none()).await {
             Event::BiosamplesChanged => {}
             other => panic!("expected clean delete, got {other:?}"),
         }
-        match handle(&app, Command::LoadAllBiosamples).await {
+        match handle(&app, Command::LoadAllBiosamples, &CancelToken::none()).await {
             Event::AllBiosamples(all) => assert!(all.iter().all(|b| b.guid != guid)),
             other => panic!("got {other:?}"),
         }
@@ -3636,22 +3749,21 @@ mod tests {
                 donor_identifier: "spare".into(),
                 sample_accession: None,
                 sex: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        let spare = match handle(&app, Command::LoadAllBiosamples).await {
+        let spare = match handle(&app, Command::LoadAllBiosamples, &CancelToken::none()).await {
             Event::AllBiosamples(all) => all.iter().find(|b| b.donor_identifier == "spare").unwrap().guid,
             other => panic!("got {other:?}"),
         };
-        match handle(&app, Command::DeleteBiosample(spare)).await {
+        match handle(&app, Command::DeleteBiosample(spare), &CancelToken::none()).await {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::LoadAllBiosamples).await {
+        match handle(&app, Command::LoadAllBiosamples, &CancelToken::none()).await {
             Event::AllBiosamples(all) => assert!(all.iter().all(|b| b.guid != spare)),
             other => panic!("got {other:?}"),
         }
@@ -3666,8 +3778,7 @@ mod tests {
                 name: "P".into(),
                 description: None,
                 administrator: "jk".into(),
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::ProjectCreated(p) => p.id,
@@ -3680,14 +3791,13 @@ mod tests {
                 donor_identifier: "loose".into(),
                 sample_accession: None,
                 sex: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        let guid = match handle(&app, Command::LoadAllBiosamples).await {
+        let guid = match handle(&app, Command::LoadAllBiosamples, &CancelToken::none()).await {
             Event::AllBiosamples(all) => all[0].guid,
             other => panic!("got {other:?}"),
         };
@@ -3699,13 +3809,14 @@ mod tests {
                 guid,
                 project_id: Some(pid),
             },
+            &CancelToken::none(),
         )
         .await
         {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::LoadSamples(pid)).await {
+        match handle(&app, Command::LoadSamples(pid), &CancelToken::none()).await {
             Event::Samples { samples, .. } => assert_eq!(samples.len(), 1),
             other => panic!("got {other:?}"),
         }
@@ -3717,6 +3828,7 @@ mod tests {
                 guid,
                 project_id: Some(9999),
             },
+            &CancelToken::none(),
         )
         .await
         {
@@ -3725,11 +3837,11 @@ mod tests {
         }
 
         // clearing the project (None) removes it from the project list
-        match handle(&app, Command::AssignBiosampleProject { guid, project_id: None }).await {
+        match handle(&app, Command::AssignBiosampleProject { guid, project_id: None }, &CancelToken::none()).await {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::LoadSamples(pid)).await {
+        match handle(&app, Command::LoadSamples(pid), &CancelToken::none()).await {
             Event::Samples { samples, .. } => assert!(samples.is_empty()),
             other => panic!("got {other:?}"),
         }
@@ -3744,8 +3856,7 @@ mod tests {
                 name: "Old".into(),
                 description: None,
                 administrator: "jk".into(),
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::ProjectCreated(p) => p.id,
@@ -3761,13 +3872,14 @@ mod tests {
                 description: Some("a study".into()),
                 administrator: "curator".into(),
             },
+            &CancelToken::none(),
         )
         .await
         {
             Event::ProjectsChanged => {}
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::LoadOverview).await {
+        match handle(&app, Command::LoadOverview, &CancelToken::none()).await {
             Event::Overview(v) => {
                 let p = &v.iter().find(|o| o.project.id == pid).unwrap().project;
                 assert_eq!(p.name, "Renamed");
@@ -3786,23 +3898,22 @@ mod tests {
                 donor_identifier: "member".into(),
                 sample_accession: None,
                 sex: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        let guid = match handle(&app, Command::LoadSamples(pid)).await {
+        let guid = match handle(&app, Command::LoadSamples(pid), &CancelToken::none()).await {
             Event::Samples { samples, .. } => samples[0].guid,
             other => panic!("got {other:?}"),
         };
-        match handle(&app, Command::DeleteProject(pid)).await {
+        match handle(&app, Command::DeleteProject(pid), &CancelToken::none()).await {
             Event::ProjectsChanged => {}
             other => panic!("expected clean delete, got {other:?}"),
         }
         // Project gone…
-        match handle(&app, Command::LoadOverview).await {
+        match handle(&app, Command::LoadOverview, &CancelToken::none()).await {
             Event::Overview(v) => assert!(v.iter().all(|o| o.project.id != pid)),
             other => panic!("got {other:?}"),
         }
@@ -3825,14 +3936,13 @@ mod tests {
                 donor_identifier: "subj".into(),
                 sample_accession: None,
                 sex: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
-        let guid = match handle(&app, Command::LoadAllBiosamples).await {
+        let guid = match handle(&app, Command::LoadAllBiosamples, &CancelToken::none()).await {
             Event::AllBiosamples(all) => all[0].guid,
             other => panic!("got {other:?}"),
         };
@@ -3848,14 +3958,13 @@ mod tests {
                 pf_reads_aligned: None,
                 mean_read_length: None,
                 mean_insert_size: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::RunsChanged(_) => {}
             other => panic!("got {other:?}"),
         }
-        let run = match handle(&app, Command::LoadRuns(guid)).await {
+        let run = match handle(&app, Command::LoadRuns(guid), &CancelToken::none()).await {
             Event::Runs { runs, .. } => runs[0].clone(),
             other => panic!("got {other:?}"),
         };
@@ -3872,13 +3981,14 @@ mod tests {
                 library_layout: Some("PAIRED".into()),
                 sequencing_facility: Some("Dante Labs".into()),
             },
+            &CancelToken::none(),
         )
         .await
         {
             Event::RunsChanged(g) => assert_eq!(g, guid),
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::LoadRuns(guid)).await {
+        match handle(&app, Command::LoadRuns(guid), &CancelToken::none()).await {
             Event::Runs { runs, .. } => {
                 let r = &runs[0];
                 assert_eq!(r.platform_name, "MGI");
@@ -3900,14 +4010,13 @@ mod tests {
                 bam_path: None,
                 reference_path: None,
                 content_sha256: None,
-            }),
-        )
+            }), &CancelToken::none())
         .await
         {
             Event::AlignmentsChanged(_) => {}
             other => panic!("got {other:?}"),
         }
-        let aln_id = match handle(&app, Command::LoadAlignments(run.id)).await {
+        let aln_id = match handle(&app, Command::LoadAlignments(run.id), &CancelToken::none()).await {
             Event::Alignments { alignments, .. } => alignments[0].id,
             other => panic!("got {other:?}"),
         };
@@ -3920,13 +4029,14 @@ mod tests {
                 aligner: "minimap2".into(),
                 variant_caller: Some("deepvariant".into()),
             },
+            &CancelToken::none(),
         )
         .await
         {
             Event::AlignmentsChanged(r) => assert_eq!(r, run.id),
             other => panic!("got {other:?}"),
         }
-        match handle(&app, Command::LoadAlignments(run.id)).await {
+        match handle(&app, Command::LoadAlignments(run.id), &CancelToken::none()).await {
             Event::Alignments { alignments, .. } => {
                 let a = &alignments[0];
                 assert_eq!(a.reference_build, "chm13v2.0");
@@ -3955,9 +4065,8 @@ mod tests {
         app.add_biosample(Some(p.id), "S2", None, None).await.unwrap();
 
         let (tx, rx) = std::sync::mpsc::channel::<Event>();
-        let cancel = Arc::new(AtomicBool::new(false));
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-        deep_analyze_project_streaming(&app, p.id, cancel, &tx, wake).await;
+        deep_analyze_project_streaming(&app, p.id, CancelToken::new(), &tx, wake).await;
 
         let events: Vec<Event> = rx.try_iter().collect();
         let progress = events
@@ -3997,12 +4106,14 @@ mod tests {
         app.add_biosample(Some(p.id), "S1", None, None).await.unwrap();
         app.add_biosample(Some(p.id), "S2", None, None).await.unwrap();
 
-        // The function clears the flag at entry, so re-arm it via a wake hook fired on the first
-        // progress emission — simulating the user hitting Cancel after the first sample starts.
+        // Cancel is raised from a wake hook fired on the first progress emission, simulating the
+        // user clicking Cancel once the first sample is under way. Note there is no re-arming here:
+        // the run no longer resets its own token at entry, which is precisely the race that used to
+        // swallow a cancel arriving between the spawn and the reset.
         let (tx, rx) = std::sync::mpsc::channel::<Event>();
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = CancelToken::new();
         let armed = cancel.clone();
-        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || armed.store(true, Ordering::Relaxed));
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || armed.cancel());
         deep_analyze_project_streaming(&app, p.id, cancel, &tx, wake).await;
 
         let events: Vec<Event> = rx.try_iter().collect();

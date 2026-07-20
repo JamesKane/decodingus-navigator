@@ -32,6 +32,7 @@ pub fn collect_evidence(
     expected_insert_size: f64,
     insert_size_sd: f64,
     config: &SvCallerConfig,
+    cancel: &crate::cancel::CancelToken,
 ) -> Result<SvEvidenceCollection, AnalysisError> {
     let (header, mut reader) = crate::reader::open_seq(bam_path, reference)?;
 
@@ -57,7 +58,12 @@ pub fn collect_evidence(
     let mut discordant_pairs = Vec::new();
     let mut split_reads = Vec::new();
 
+    let mut seen = 0u32;
     for result in reader.records_lazy(&header) {
+        seen += 1;
+        if seen % 4096 == 0 {
+            cancel.check()?;
+        }
         let record = result?;
         let flags = record.flags();
         if flags.is_unmapped() {

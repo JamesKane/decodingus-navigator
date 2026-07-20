@@ -24,6 +24,7 @@ pub fn call_structural_variants(
     insert_size_sd: f64,
     mean_read_length: f64,
     config: &SvCallerConfig,
+    cancel: &crate::cancel::CancelToken,
 ) -> Result<SvAnalysisResult, AnalysisError> {
     if mean_coverage < 10.0 {
         return Err(AnalysisError::Message(format!(
@@ -38,6 +39,7 @@ pub fn call_structural_variants(
         mean_insert_size,
         insert_size_sd,
         config,
+        cancel,
     )?;
 
     let raw_segments = segmenter::segment(

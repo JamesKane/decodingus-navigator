@@ -614,7 +614,11 @@ impl App {
     /// already cached and Y already recorded are skipped (idempotent re-run). Best-effort: one
     /// sample's failure is recorded and the rest continue. mtDNA is intentionally not assigned
     /// here (provisional on CHM13 — see the reconciliation/liftover notes).
-    pub async fn analyze_project(&self, project_id: i64) -> Result<AnalyzeSummary, AppError> {
+    pub async fn analyze_project(
+        &self,
+        project_id: i64,
+        cancel: navigator_analysis::CancelToken,
+    ) -> Result<AnalyzeSummary, AppError> {
         let mut summary = AnalyzeSummary {
             project_id,
             samples: 0,
@@ -626,7 +630,12 @@ impl App {
             errors: Vec::new(),
         };
         for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
-            let o = self.analyze_biosample(&biosample).await?;
+            // Between samples as well as inside them: a cancel that lands while a sample's walk is
+            // finishing must not start the next one.
+            if cancel.is_cancelled() {
+                break;
+            }
+            let o = self.analyze_biosample(&biosample, cancel.clone()).await?;
             if !o.had_alignment {
                 continue;
             }
@@ -647,7 +656,11 @@ impl App {
     /// the per-base walk, which overwrites it. Best-effort: a per-step failure is recorded in
     /// `errors` (prefixed with the donor id) and the remaining steps still run. This is the
     /// per-sample unit the project pass and the streaming deep-analyze job both drive.
-    pub async fn analyze_biosample(&self, biosample: &Biosample) -> Result<SampleAnalyzeOutcome, AppError> {
+    pub async fn analyze_biosample(
+        &self,
+        biosample: &Biosample,
+        cancel: navigator_analysis::CancelToken,
+    ) -> Result<SampleAnalyzeOutcome, AppError> {
         let mut o = SampleAnalyzeOutcome::default();
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
         let Some(aln) = alignments.iter().find(|a| a.bam_path.is_some()) else {
@@ -658,6 +671,40 @@ impl App {
         // Drop any prior subject's local alignment copy so the batch holds at most one file's worth
         // of cache; this subject's passes share the single copy `localize` makes below.
         Self::clear_align_cache();
+
+        // Preflight before spending any I/O on the steps below. A batch is the worst place to
+        // discover a file problem the slow way: without this, an unreadable alignment produces one
+        // near-identical `io error on <the alignment>` per step — each after a walk that had to
+        // fail first — and none of them names the file actually at fault.
+        //
+        // What it does *not* do is skip the sample on any failure. A broken index blocks only the
+        // region-query steps; the unified metrics walk falls back to a sequential pass and still
+        // produces coverage, read metrics and sex. Skipping on that would throw away results the
+        // user would otherwise get, so only a failure that blocks sequential reads short-circuits.
+        //
+        // Both sinks get the *first failure*, not the whole report: `o.errors` renders as one line
+        // per entry, and `record_analysis_error` truncates to 500 chars keeping the head — which
+        // for a full report is the path preamble and the checks that passed, so the diagnosis
+        // itself would be the part cut off. The full report stays available via `navigator doctor`.
+        match self.diagnose_alignment(aln.id).await {
+            Ok(report) if report.failed() => {
+                let cause = report
+                    .first_failure()
+                    .map(|c| match &c.path {
+                        Some(p) => format!("{} ({}): {}", c.name, p.display(), c.detail),
+                        None => format!("{}: {}", c.name, c.detail),
+                    })
+                    .unwrap_or_else(|| "failed".to_string());
+                o.errors.push(format!("{label} preflight: {cause}"));
+                if report.blocks_sequential_reads() {
+                    self.record_analysis_error(aln.id, "preflight", &cause).await;
+                    return Ok(o);
+                }
+            }
+            // A preflight that itself failed to run is not evidence about the alignment — fall
+            // through and let the real steps report whatever they hit.
+            Ok(_) | Err(_) => {}
+        }
 
         // Coverage + read-metrics + sex in ONE pass (the unified walker) instead of three separate
         // reads of the BAM/CRAM — a 3x I/O cut per subject, which dominates the batch on a slow /
@@ -679,7 +726,10 @@ impl App {
             o.metrics_done = true;
             o.sex_done = true;
         } else {
-            match self.run_unified_metrics(aln.id).await {
+            match self
+                .run_unified_metrics_with_progress(aln.id, |_, _| {}, cancel.clone())
+                .await
+            {
                 Ok(_) => {
                     o.coverage_done = true;
                     o.metrics_done = true;
@@ -687,6 +737,11 @@ impl App {
                     // A prior run may have left a failure marker (corrupt file since replaced); clear it.
                     self.clear_analysis_error(aln.id).await;
                 }
+                // A cancellation is the user's decision, not a property of the file: recording it
+                // would persist a "Failed" marker that survives the run and makes the sample look
+                // broken forever, and counting it as an error would inflate the batch summary. Stop
+                // the sample here instead — the remaining steps would only be cancelled too.
+                Err(e) if e.is_cancellation() => return Ok(o),
                 Err(e) => {
                     // Persist the failure so the report can show "Failed" instead of a silent blank
                     // (a corrupt/undecodable CRAM otherwise looks identical to an un-analyzed one).
@@ -701,6 +756,7 @@ impl App {
         } else {
             match self.assign_y_haplogroup(aln.id).await {
                 Ok(_) => o.y_done = true,
+                Err(e) if e.is_cancellation() => return Ok(o),
                 Err(e) => o.errors.push(format!("{label} Y: {e}")),
             }
         }
@@ -737,8 +793,9 @@ impl App {
                 .map(|c| c.mean_coverage >= 10.0)
                 .unwrap_or(false)
         {
-            match self.run_sv(aln.id).await {
+            match self.run_sv(aln.id, cancel.clone()).await {
                 Ok(_) => o.sv_done = true,
+                Err(e) if e.is_cancellation() => return Ok(o),
                 Err(e) => o.errors.push(format!("{label} SV: {e}")),
             }
         }

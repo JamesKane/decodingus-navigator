@@ -33,7 +33,14 @@ fn main() {
         }
     };
     let standalone =
-        match coverage::collect_coverage_callable_with_progress(bam, reference, &params, None, &mut progress) {
+        match coverage::collect_coverage_callable_with_progress(
+            bam,
+            reference,
+            &params,
+            None,
+            &mut progress,
+            &navigator_analysis::CancelToken::none(),
+        ) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("standalone coverage error: {e}");
@@ -48,7 +55,14 @@ fn main() {
     let t1 = Instant::now();
     let progress2 = |_done: usize, _total: usize| {};
     let unified =
-        match unified::collect_unified_metrics_parallel_with_progress(bam, reference, &params, None, &progress2) {
+        match unified::collect_unified_metrics_parallel_with_progress(
+            bam,
+            reference,
+            &params,
+            None,
+            &progress2,
+            &navigator_analysis::CancelToken::none(),
+        ) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("parallel walker error: {e}");

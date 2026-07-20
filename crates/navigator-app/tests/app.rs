@@ -1420,6 +1420,7 @@ async fn run_denovo_caller_persists_snp_calls() {
             dir.join("ref.fa"),
             "chrM".into(),
             HaploidCallerParams::default(),
+            navigator_app::CancelToken::none(),
         )
         .await
         .unwrap();
@@ -1589,6 +1590,7 @@ async fn publish_private_variants_to_live_pds() {
         dir.join("ref.fa"),
         "chrM".into(),
         HaploidCallerParams::default(),
+        navigator_app::CancelToken::none(),
     )
     .await
     .expect("run de-novo");
@@ -2011,7 +2013,7 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
     .await
     .unwrap();
 
-    let s = app.analyze_project(p.id).await.unwrap();
+    let s = app.analyze_project(p.id, navigator_app::CancelToken::none()).await.unwrap();
     assert_eq!(s.samples, 1);
     assert_eq!(s.coverage_done, 1, "coverage computed on the CRAM");
     // Y was attempted: recorded, or (here) errored on the chrM-only fixture lacking chrY.

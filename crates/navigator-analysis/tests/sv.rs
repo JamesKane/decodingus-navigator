@@ -24,6 +24,7 @@ fn walker_extracts_discordant_pairs_split_reads_and_depth() {
         400.0, // expected insert
         50.0,  // sd  -> outlier if insert > 600 or < 200
         &SvCallerConfig::default(),
+        &navigator_analysis::CancelToken::none(),
     )
     .expect("walker should succeed");
 
@@ -63,7 +64,15 @@ fn walker_reads_cram_with_the_same_result_as_bam() {
     let config = SvCallerConfig::default();
     let cfg = (400.0, 50.0);
 
-    let from_bam = walker::collect_evidence(&fixtures().join("sv.bam"), None, &lengths, cfg.0, cfg.1, &config)
+    let from_bam = walker::collect_evidence(
+        &fixtures().join("sv.bam"),
+        None,
+        &lengths,
+        cfg.0,
+        cfg.1,
+        &config,
+        &navigator_analysis::CancelToken::none(),
+    )
         .expect("BAM walk should succeed");
     let from_cram = walker::collect_evidence(
         &fixtures().join("sv.cram"),
@@ -72,6 +81,7 @@ fn walker_reads_cram_with_the_same_result_as_bam() {
         cfg.0,
         cfg.1,
         &config,
+        &navigator_analysis::CancelToken::none(),
     )
     .expect("CRAM walk should succeed");
 
