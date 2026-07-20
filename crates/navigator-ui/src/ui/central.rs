@@ -410,9 +410,35 @@ impl NavigatorApp {
                         ui.add_space(10.0);
                         card(ui, self.tr("card.ancestryModern"), |ui| draw_population_components(ui, r, "anc_fine", 18));
                     }
-                    if let Some(r) = &self.ancient_ancestry {
+                    // Deep (ancient) ancestry via qpAdm — its own on-demand trigger: it genotypes the
+                    // best whole-genome CHM13 alignment at the full 1240k (~1-2 min), separate from
+                    // the fast consensus estimate above.
+                    if navigator_app::ANCIENT_ANCESTRY_ENABLED {
                         ui.add_space(10.0);
-                        card(ui, self.tr("card.ancestryAncient"), |ui| draw_population_components(ui, r, "anc_ancient", 18));
+                        card(ui, self.tr("card.ancestryAncient"), |ui| {
+                            ui.horizontal(|ui| {
+                                let label = if self.ancient_ancestry.is_some() {
+                                    self.tr("common.refresh")
+                                } else {
+                                    self.tr("btn.estimateDeepAncestry")
+                                };
+                                if ui
+                                    .add_enabled(!self.estimating_deep_ancestry, egui::Button::new(label))
+                                    .clicked()
+                                {
+                                    self.estimating_deep_ancestry = true;
+                                    self.status = "Estimating deep ancestry (qpAdm, ~1–2 min)…".into();
+                                    let _ = self.tx.send(Command::EstimateDeepAncestry { biosample_guid: guid });
+                                }
+                                if self.estimating_deep_ancestry {
+                                    ui.spinner();
+                                }
+                                ui.label(egui::RichText::new(self.tr("hint.deepAncestry")).weak().small());
+                            });
+                            if let Some(r) = &self.ancient_ancestry {
+                                draw_population_components(ui, r, "anc_ancient", 18);
+                            }
+                        });
                     }
                     // Chromosome painting (diploid local ancestry) — its own section, from the consensus.
                     ui.add_space(10.0);

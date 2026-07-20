@@ -210,6 +210,11 @@ pub enum Command {
     EstimateAncestryFromConsensus {
         biosample_guid: SampleGuid,
     },
+    /// Estimate **deep (ancient) ancestry** via qpAdm — genotypes the subject's best CHM13 alignment
+    /// at the full 1240k. Heavy (~1-2 min); explicit, on-demand.
+    EstimateDeepAncestry {
+        biosample_guid: SampleGuid,
+    },
     /// Paint local ancestry from the subject's CONSENSUS (no BAM walk).
     PaintAncestryFromConsensus {
         biosample_guid: SampleGuid,
@@ -935,6 +940,13 @@ pub enum Event {
         alignment_id: i64,
         result: AncestryResult,
     },
+    /// Result of an on-demand deep (ancient) ancestry estimate. `result` is `None` when the deep model
+    /// does not apply to this subject (non-European / no CHM13 alignment / rejected fit).
+    DeepAncestryEstimated {
+        biosample_guid: SampleGuid,
+        // Boxed: AncestryResult is large; keep the Event enum small.
+        result: Option<Box<AncestryResult>>,
+    },
     /// Donor-level private-Y union across the subject's sources.
     DonorPrivateY {
         bucket: PrivateBucket,
@@ -1654,6 +1666,17 @@ pub async fn handle(app: &App, cmd: Command) -> Event {
                 Ok(result) => Event::DonorAncestry {
                     alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
                     result,
+                },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::EstimateDeepAncestry { biosample_guid } => {
+            // Heavy: genotypes the best CHM13 alignment at ~1.15M sites, then fits qpAdm f4. Persists
+            // the ANCIENT_ADMIXTURE result (or nothing, when the model doesn't apply).
+            match app.estimate_deep_ancestry(biosample_guid).await {
+                Ok(result) => Event::DeepAncestryEstimated {
+                    biosample_guid,
+                    result: result.map(Box::new),
                 },
                 Err(e) => Event::Error(e.to_string()),
             }

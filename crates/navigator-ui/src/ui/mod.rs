@@ -678,6 +678,8 @@ pub struct NavigatorApp {
     auto_profile_loading: bool,
     /// Whether the consensus-driven donor ancestry estimate is in flight.
     estimating_donor_ancestry: bool,
+    /// Whether the heavy deep (ancient) ancestry estimate is in flight.
+    estimating_deep_ancestry: bool,
     /// Local-ancestry painting: (alignment id, segments). `painting_running` while genotyping.
     painting: Option<(i64, Vec<AncestrySegment>)>,
     painting_running: bool,
@@ -1078,6 +1080,7 @@ impl NavigatorApp {
             auto_profile_filter: None,
             auto_profile_loading: false,
             estimating_donor_ancestry: false,
+            estimating_deep_ancestry: false,
             painting: None,
             painting_running: false,
             private_y: None,

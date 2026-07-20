@@ -712,6 +712,22 @@ impl NavigatorApp {
                         self.ancient_ancestry = ancient.map(|b| *b);
                     }
                 }
+                Event::DeepAncestryEstimated { biosample_guid, result } => {
+                    self.estimating_deep_ancestry = false;
+                    if self.selected_sample == Some(biosample_guid) {
+                        match result {
+                            Some(r) => {
+                                self.ancient_ancestry = Some(*r);
+                                self.status = "Deep ancestry estimated.".into();
+                            }
+                            None => {
+                                self.ancient_ancestry = None;
+                                self.status =
+                                    "Deep ancestry: not applicable (non-European, no whole-genome CHM13 alignment, or model rejected).".into();
+                            }
+                        }
+                    }
+                }
                 Event::DonorPrivateY { bucket } => {
                     self.donor_private_y = Some(bucket);
                     self.y_snp_names_requested = false; // re-resolve names incl. the new positions
