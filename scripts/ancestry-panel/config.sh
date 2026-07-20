@@ -123,22 +123,26 @@ CDN_PREFIX="${CDN_PREFIX:-ancestry/$BUILD}"
 ASSET_VERSION="${ASSET_VERSION:-1}"   # bump per published asset revision
 
 # ── outputs (asset filenames the app/CDN expect) ────────────────────────────────
+POPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pops"   # committed curation (component maps, left/right pops)
 PANEL_OUT="$ASSETS/ancestry_panel_${BUILD}.bin"            # AF panel (genotyping + admixture)
 PCA_OUT="$ASSETS/ancestry_pca_${BUILD}.bin"                # modern PCA loadings + centroids (scatter)
 FINE_OUT="$ASSETS/ancestry_freq_global_${BUILD}.bin"       # global per-pop AF (fine admixture)
 ANCIENT_OUT="$ASSETS/ancestry_freq_ancient_${BUILD}.bin"   # deep-source AF: WHG/ANF/Steppe (deep ancestry)
+QPADM_OUT="${QPADM_OUT:-$ASSETS/ancestry_qpadm_${BUILD}.bin}"  # full-1240k qpAdm panel (Patterson-2022, §7.14) — the SHIPPING deep-ancestry asset
+# Dedicated qpAdm component map (Group ID → component); NOT aadr_component_map.tsv (whose broad WHG set
+# would widen the narrow Patterson Western-Mesolithic WHG source). Consumed by 06_build_qpadm_panel.sh.
+QPADM_COMPONENT_MAP="${QPADM_COMPONENT_MAP:-$POPS_DIR/qpadm_component_map.tsv}"
 
 # Deep (ancient) source components, in panel-axis order. Keep them non-collinear — Steppe ≈ EHG+CHG,
 # so adding EHG/CHG alongside Steppe makes the mixture ill-conditioned. Default = the committed
 # qpadm_leftpops.txt (comment/blank lines stripped, joined with commas).
-POPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pops"
-ANCIENT_COMPONENTS="${ANCIENT_COMPONENTS:-$(sed 's/#.*//' "$POPS_DIR/qpadm_leftpops.txt" | awk 'NF{print}' | paste -sd, -)}"
+ANCIENT_COMPONENTS="${ANCIENT_COMPONENTS:-$(sed 's/#.*//' "$POPS_DIR/qpadm_leftpops.txt" | awk 'NF{print $1}' | paste -sd, -)}"
 # qpAdm OUTGROUPS (right populations), appended to the panel axis after the sources. Deep ancestry is
 # estimated by f4 allele-sharing against these — the ascertainment-robust method (docs §7); they carry
 # no weight but must be differentially related to the sources. Default = the committed
 # qpadm_rightpops.txt. Sourced from the modern reference panels (1000G + SGDP). Set to "" to build the
 # old sources-only frequency-EM asset (which fails the §3.4/§5.4 stability gate — do not ship it).
-ANCIENT_OUTGROUPS="${ANCIENT_OUTGROUPS-$(sed 's/#.*//' "$POPS_DIR/qpadm_rightpops.txt" | awk 'NF{print}' | paste -sd, -)}"
+ANCIENT_OUTGROUPS="${ANCIENT_OUTGROUPS-$(sed 's/#.*//' "$POPS_DIR/qpadm_rightpops.txt" | awk 'NF{print $1}' | paste -sd, -)}"
 # Minimum called ancient samples per SOURCE at a site, or the site is dropped. Ancient genomes are
 # sparse; a source with no call at a site has no frequency there, and recording that as 0.0 (which is
 # what the fine-panel builder does) would feed the mixture fake evidence. See pca::build_ancient_panel.

@@ -110,37 +110,3 @@ Russia_Sunghir_UP	UPEuro
 Russia_Malta_UP	ANE
 Russia_AfontovaGora_UP	ANE
 Russia_YanaRiver_UP	ANE
-
-# ════════════════════════════════════════════════════════════════════════════════
-# PATTERSON 2022 config (docs §7.14) — the SHIPPING deep-ancestry config. Sources (WHG/EEF/Steppe) +
-# sister outgroups (Anatolia_N/Afanasievo/IronGates/African). Resolves WHG to ~15% where the earlier
-# generic-outgroup config gave 0%. Consumed via qpadm_leftpops.txt (--components) + qpadm_rightpops.txt
-# (--outgroups). Validated on huF98AFD full-1240k: WHG 14.6/EEF 44.8/Steppe 40.6, model accepted.
-# ── sources ──
-France_Mesolithic	WHG
-Luxembourg_Loschbour_Mesolithic	WHG
-Bulgaria_MalakPreslavets_N	EEF
-Bulgaria_Dzhulyunitsa_N	EEF
-Bulgaria_Yabalkovo_N	EEF
-Bulgaria_Krepost_N	EEF
-Bulgaria_Samovodene_N	EEF
-Bulgaria_Ohoden_N	EEF
-Greece_Peloponnese_N	EEF
-Greece_NeaNikomedeia_EN	EEF
-Greece_North_N	EEF
-Russia_Samara_EBA_Yamnaya	Steppe
-Russia_Kalmykia_EBA_Yamnaya	Steppe
-Russia_Rostov_EBA_Don_Yamnaya	Steppe
-Russia_Rostov_EBA_Yamnaya	Steppe
-Moldova_EBA_Yamnaya	Steppe
-Russia_Samara_MBA_Poltavka	Steppe
-Russia_Chelyabinsk_MBA_Poltavka	Steppe
-# ── sister outgroups ──
-Turkey_N	AnatoliaOG
-Russia_Khakassia_Afanasievo	Afanasievo
-Russia_Altai_Afanasievo	Afanasievo
-Serbia_IronGates_Mesolithic	IronGates
-Romania_IronGates_Mesolithic	IronGates
-Malawi_LSA_8500BP	African
-Malawi_LSA_6000BP	African
-Ethiopia_MotaCave_4500BP	African
