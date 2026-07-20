@@ -391,14 +391,10 @@ impl NavigatorApp {
 
     /// Donor-level ancestry headline (Phase 3): the best estimate across the subject's sources,
     /// with which source + method it came from.
-    /// The donor's projected (PC1, PC2), from whichever loaded estimate carries PCA coordinates
-    /// (the PCA / nMonte methods, or ADMIXTURE with PCA attached).
+    /// The donor's projected (PC1, PC2). Only ADMIXTURE carries PCA coordinates now — the deep
+    /// (ancient) breakdown is a frequency model and has no position in PC space.
     fn sample_pca(&self) -> Option<(f64, f64)> {
-        [
-            self.donor_ancestry.as_ref().map(|(_, r)| r),
-            self.ancient_ancestry.as_ref(),
-            self.nmonte_ancestry.as_ref(),
-        ]
+        [self.donor_ancestry.as_ref().map(|(_, r)| r)]
         .into_iter()
         .flatten()
         .find_map(|r| {
@@ -1813,39 +1809,6 @@ impl NavigatorApp {
             }
             ui.label(self.tr("mt.fullSeq"));
         });
-    }
-
-    pub(crate) fn panels_section(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new(self.tr("table.panels")).strong());
-        let mut pick = None;
-        for info in &self.panels {
-            let label = format!("{}  ({} sites)", info.panel.name, info.site_count);
-            if ui
-                .selectable_label(self.selected_panel == Some(info.panel.id), label)
-                .clicked()
-            {
-                pick = Some(info.panel.id);
-            }
-        }
-        if let Some(id) = pick {
-            self.select_panel(id);
-        }
-        ui.add(egui::TextEdit::singleline(&mut self.forms.panel_import_name).hint_text("new panel name"));
-        if ui
-            .add_enabled(
-                !self.forms.panel_import_name.trim().is_empty(),
-                egui::Button::new(self.tr("mt.importSitesVcf")),
-            )
-            .clicked()
-        {
-            if let Some(path) = rfd::FileDialog::new().add_filter("VCF", &["vcf"]).pick_file() {
-                let _ = self.tx.send(Command::ImportPanel {
-                    name: self.forms.panel_import_name.trim().to_string(),
-                    path,
-                });
-                self.forms.panel_import_name.clear();
-            }
-        }
     }
 
     /// When an import is blocked on uncached reference builds, prompt to download them (with

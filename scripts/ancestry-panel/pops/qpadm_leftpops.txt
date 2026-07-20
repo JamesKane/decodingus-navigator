@@ -1,0 +1,15 @@
+# qpAdm LEFT populations — the deep sources the target is modelled as a mixture of.
+# One component code per line (blank lines and #-comments ignored). Panel-axis order.
+# Config: Patterson et al. 2022, Nature "Large-scale migration into Britain" (docs §7.14) — the
+# sources are paired with SISTER outgroups in qpadm_rightpops.txt, which is what gives qpAdm the
+# leverage to separate WHG from the EHG-inside-Steppe. Validated on huF98AFD's full-1240k WGS:
+# WHG 14.6 / EEF 44.8 / Steppe 40.6, ±1-2%, model accepted — both admixtools2 and our qpadm_fit.
+#
+# code       Patterson source                              AADR groups (aadr_component_map.tsv)
+WHG        # Western European Mesolithic HG                France_Mesolithic + Loschbour            (~20)
+EEF        # early BALKAN Neolithic farmers, minimal-HG    Bulgaria_N* + Greece_N* pool             (~30)
+Steppe     # Yamnaya + Poltavka pastoralists               Russia_*_Yamnaya + Moldova + Poltavka    (~154)
+#
+# NOTE: EEF is the *Balkan* Neolithic, NOT Anatolia_N — Anatolia_N is a RIGHT (outgroup) sister of EEF
+# (qpadm_rightpops.txt). An earlier config used Anatolia_N as the source with generic continental
+# outgroups; it collapsed WHG to 0% (§7.13). The sister-outgroup structure is the fix.

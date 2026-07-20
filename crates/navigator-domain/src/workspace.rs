@@ -133,23 +133,6 @@ pub struct NewAlignment {
     pub content_sha256: Option<String>,
 }
 
-/// A named set of genotyping sites (ancestry-informative SNPs / IBD markers).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Panel {
-    pub id: i64,
-    pub name: String,
-}
-
-/// One biallelic SNP site in a panel (1-based position).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PanelSite {
-    pub chrom: String,
-    pub position: i64,
-    pub reference_allele: String,
-    pub alternate_allele: String,
-    pub name: String,
-}
-
 /// A persisted analysis result, keyed by `(alignment, kind, algorithm_version)`. The
 /// version is part of the key so a cache entry is invalidated when the algorithm
 /// changes (plan §6 cache-versioning fix). `payload` is JSON of the result type.

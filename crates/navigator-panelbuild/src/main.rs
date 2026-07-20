@@ -27,6 +27,7 @@ mod genetic_map;
 mod ibd_panel;
 mod manifest;
 mod pca;
+mod validate_ancient;
 
 /// The five 1000G super-populations, in panel-axis order.
 const POPS: [&str; 5] = ["AFR", "AMR", "EAS", "EUR", "SAS"];
@@ -47,6 +48,11 @@ enum Cmd {
     Pca(pca::PcaArgs),
     /// Build a fine-grained (26-population) AF panel from a genotype matrix + sample/pop metadata.
     FinePanel(pca::FinePanelArgs),
+    /// Build the ancient deep-source (WHG/ANF/Steppe) AF panel from the AADR genotype matrix.
+    AncientPanel(pca::AncientPanelArgs),
+    /// Run the ancient panel's validation gates (simulate reference individuals, check the fit).
+    /// The ancient asset must not be published until this passes.
+    ValidateAncient(validate_ancient::ValidateAncientArgs),
     /// Build the IBD genetic-map asset from a CHM13-lifted recombination map.
     GeneticMap(genetic_map::GeneticMapArgs),
     /// Build the chip-compatible IBD panel (multi-build, palindrome-free) from a sites table.
@@ -111,6 +117,8 @@ fn main() -> Result<()> {
         Cmd::Panel(args) => build_panel(args),
         Cmd::Pca(args) => pca::build_pca(args),
         Cmd::FinePanel(args) => pca::build_fine_panel(args),
+        Cmd::AncientPanel(args) => pca::build_ancient_panel(args),
+        Cmd::ValidateAncient(args) => validate_ancient::validate_ancient(args),
         Cmd::GeneticMap(args) => genetic_map::build_genetic_map(args),
         Cmd::IbdPanel(args) => ibd_panel::build_ibd_panel(args),
         Cmd::Manifest(args) => manifest::build_manifest(args),

@@ -43,6 +43,15 @@ pub enum Command {
     DebugCalls(DebugCallsArgs),
     /// Diagnostic: the filtered private-Y bucket for an alignment — DISPLAY vs PUBLISH counts.
     PrivateY(DebugCallsArgs),
+    /// Diagnostic: deep (ancient) ancestry fitted over each view of a subject — the pooled
+    /// consensus, each source alone, and thinned site sets. The stability gate: a 30x WGS and a
+    /// consumer chip must agree, or the estimate is tracking the assay, not the donor.
+    DebugAncient(ShowArgs),
+    /// Deep (ancient) ancestry via qpAdm: fit WHG/EEF/Steppe (Patterson-2022 config) over the
+    /// subject's pooled autosomal consensus (all WGS — any reference — plus chips). Requires the
+    /// consensus to be built first (see the Autosomal tab / `ingest`), then persists. See
+    /// `navigator_app::App::estimate_deep_ancestry`.
+    DeepAncestry(ShowArgs),
     /// Per-marker branch report: the sample's genotype at every defining marker of a Y/mtDNA tree
     /// node's descendant subtree (observed base + derived/ancestral status + evidence). For
     /// spot-checking placement and exchanging observations. Table by default; `--tsv` / `--json`.
@@ -368,6 +377,8 @@ pub fn run(command: Command) -> i32 {
             Command::DebugDescent(a) => debug_descent(a).await,
             Command::DebugCalls(a) => debug_calls(a).await,
             Command::PrivateY(a) => private_y(a).await,
+            Command::DebugAncient(a) => debug_ancient(a).await,
+            Command::DeepAncestry(a) => deep_ancestry(a).await,
             Command::BranchReport(a) => branch_report(a).await,
             Command::Doctor(a) => doctor(a).await,
             Command::Projects(a) => projects(a).await,
@@ -1323,6 +1334,100 @@ async fn branch_report(args: BranchReportArgs) -> i32 {
         );
     }
     0
+}
+
+/// Deep-ancestry stability report — see [`navigator_app::App::ancient_ancestry_stability`].
+async fn debug_ancient(args: ShowArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let guid = match find_subject(&app, &args.subject).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            eprintln!("error: no subject with identifier \"{}\"", args.subject);
+            return 1;
+        }
+        Err(c) => return c,
+    };
+    let rows = match app.ancient_ancestry_stability(guid).await {
+        Ok(r) => r,
+        Err(e) => return report(e),
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&rows).unwrap_or_default());
+        return 0;
+    }
+    if rows.is_empty() {
+        println!("no view of this subject had enough genotyped panel sites for a deep-ancestry fit");
+        return 0;
+    }
+    // Column order is the panel's, taken from the first row, so the table reads consistently.
+    let pops: Vec<String> = rows[0].components.iter().map(|(c, _)| c.clone()).collect();
+    print!("{:<40}{:>8}", "view", "sites");
+    for p in &pops {
+        print!("{p:>10}");
+    }
+    println!("{:>8}{:>12}{:>12}", "EUR%", "dispersion", "reported");
+    for r in &rows {
+        print!("{:<40}{:>8}", r.label, r.sites);
+        for p in &pops {
+            let pct = r.components.iter().find(|(c, _)| c == p).map_or(0.0, |(_, v)| *v);
+            print!("{pct:>10.1}");
+        }
+        println!(
+            "{:>8.0}{:>12.2}{:>12}",
+            r.european,
+            r.dispersion,
+            if r.reported { "yes" } else { "SUPPRESSED" }
+        );
+    }
+    println!("\nStability gate: the per-source rows must agree with the consensus (and each other)\nto within a few percent — they are the same person genotyped by different means.");
+    0
+}
+
+/// Deep (ancient) ancestry via qpAdm — see [`navigator_app::App::estimate_deep_ancestry`].
+async fn deep_ancestry(args: ShowArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let guid = match find_subject(&app, &args.subject).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            eprintln!("error: no subject with identifier \"{}\"", args.subject);
+            return 1;
+        }
+        Err(c) => return c,
+    };
+    let result = match app.estimate_deep_ancestry(guid).await {
+        Ok(r) => r,
+        Err(e) => return report(e),
+    };
+    match result {
+        None => {
+            println!(
+                "deep ancestry not available for this subject — the feature is off, the qpAdm asset \
+                 is not installed, there is no CHM13 alignment to genotype, or the model does not \
+                 apply (non-European / rejected fit)."
+            );
+            0
+        }
+        Some(r) if args.json => {
+            println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+            0
+        }
+        Some(r) => {
+            println!("Deep ancestry (qpAdm, {} sites):", r.snps_with_genotype);
+            for c in &r.components {
+                println!("  {:<8} {:>6.1}%", c.population_code, c.percentage);
+            }
+            if let Some(p) = r.fit_distance {
+                println!("  model-fit p = {p:.3}");
+            }
+            0
+        }
+    }
 }
 
 async fn show(args: ShowArgs) -> i32 {

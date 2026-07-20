@@ -123,10 +123,49 @@ CDN_PREFIX="${CDN_PREFIX:-ancestry/$BUILD}"
 ASSET_VERSION="${ASSET_VERSION:-1}"   # bump per published asset revision
 
 # ── outputs (asset filenames the app/CDN expect) ────────────────────────────────
+POPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pops"   # committed curation (component maps, left/right pops)
 PANEL_OUT="$ASSETS/ancestry_panel_${BUILD}.bin"            # AF panel (genotyping + admixture)
 PCA_OUT="$ASSETS/ancestry_pca_${BUILD}.bin"                # modern PCA loadings + centroids (scatter)
-PCA_ANCIENT_OUT="$ASSETS/ancestry_pca_ancient_${BUILD}.bin" # PCA w/ ancient deep components (GMM/nMonte)
 FINE_OUT="$ASSETS/ancestry_freq_global_${BUILD}.bin"       # global per-pop AF (fine admixture)
+ANCIENT_OUT="$ASSETS/ancestry_freq_ancient_${BUILD}.bin"   # deep-source AF: WHG/ANF/Steppe (deep ancestry)
+QPADM_OUT="${QPADM_OUT:-$ASSETS/ancestry_qpadm_${BUILD}.bin}"  # full-1240k qpAdm panel (Patterson-2022, §7.14) — the SHIPPING deep-ancestry asset
+# Dedicated qpAdm component map (Group ID → component); NOT aadr_component_map.tsv (whose broad WHG set
+# would widen the narrow Patterson Western-Mesolithic WHG source). Consumed by 06_build_qpadm_panel.sh.
+QPADM_COMPONENT_MAP="${QPADM_COMPONENT_MAP:-$POPS_DIR/qpadm_component_map.tsv}"
+
+# Deep (ancient) source components, in panel-axis order. Keep them non-collinear — Steppe ≈ EHG+CHG,
+# so adding EHG/CHG alongside Steppe makes the mixture ill-conditioned. Default = the committed
+# qpadm_leftpops.txt (comment/blank lines stripped, joined with commas).
+ANCIENT_COMPONENTS="${ANCIENT_COMPONENTS:-$(sed 's/#.*//' "$POPS_DIR/qpadm_leftpops.txt" | awk 'NF{print $1}' | paste -sd, -)}"
+# qpAdm OUTGROUPS (right populations), appended to the panel axis after the sources. Deep ancestry is
+# estimated by f4 allele-sharing against these — the ascertainment-robust method (docs §7); they carry
+# no weight but must be differentially related to the sources. Default = the committed
+# qpadm_rightpops.txt. Sourced from the modern reference panels (1000G + SGDP). Set to "" to build the
+# old sources-only frequency-EM asset (which fails the §3.4/§5.4 stability gate — do not ship it).
+ANCIENT_OUTGROUPS="${ANCIENT_OUTGROUPS-$(sed 's/#.*//' "$POPS_DIR/qpadm_rightpops.txt" | awk 'NF{print $1}' | paste -sd, -)}"
+# Minimum called ancient samples per SOURCE at a site, or the site is dropped. Ancient genomes are
+# sparse; a source with no call at a site has no frequency there, and recording that as 0.0 (which is
+# what the fine-panel builder does) would feed the mixture fake evidence. See pca::build_ancient_panel.
+ANCIENT_MIN_CALLED="${ANCIENT_MIN_CALLED:-8}"
+# Call floor for OUTGROUPS, separate + lower: qpAdm outgroups are legitimately small (a handful of
+# present-day genomes per lineage, e.g. Onge n≈2); the f4 jackknife accounts for the frequency noise.
+ANCIENT_OUTGROUP_MIN_CALLED="${ANCIENT_OUTGROUP_MIN_CALLED:-2}"
+# ASCERTAINMENT FLOOR (Option A′). A consumer-array manifest: one assayed rsID per line (a 23andMe /
+# AncestryDNA / Illumina-GSA export or manifest; extra columns ignored, first token taken as the id;
+# plain or .gz). The deep panel is restricted to the array-assayed sites (mapped to CHM13 via the
+# 1240k liftover). Allele-frequency admixture is only valid when sample and reference share
+# ascertainment; without this the deep estimate is unstable across data sources (WGS ~90% vs the same
+# person's chip ~58% Steppe). REQUIRED for a shippable deep panel — docs/design/ancient-ancestry-rebuild.md §4.
+# Defaults to the committed consumer-array manifest (manifests/README.md); set to "" to build the
+# full (unascertained) panel, which does NOT pass the §3.4 stability gate.
+CHIP_MANIFEST="${CHIP_MANIFEST-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/manifests/consumer_array_1240k_rsids.txt.gz}"
+ASCERTAIN_SITES="$TMP/ascertain_sites.${BUILD}.tsv"        # generated: CHM13 contig<TAB>pos of array sites
+
+# NOTE: `ancestry_pca_ancient_<build>.bin` is RETIRED and no longer built or published. Projecting
+# ancient samples onto a modern PCA collapses them onto the modern cloud (WHG landed on top of
+# English, ANF on top of Sardinian), so the centroids carried no ancient signal and every model over
+# them was fabrication. Deep ancestry is now a frequency mixture over $ANCIENT_OUT.
+# See docs/design/ancient-ancestry-rebuild.md.
 GMAP_OUT="$ASSETS/genetic_map_${BUILD}.bin"               # IBD recombination map (bp->cM)
 IBD_PANEL_OUT="$ASSETS/ibd_panel_${BUILD}.bin"            # chip-compatible multi-build IBD SNP panel
 MANIFEST="$ASSETS/ancestry_manifest_${BUILD}.json"         # provenance + checksums

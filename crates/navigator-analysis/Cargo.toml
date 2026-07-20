@@ -17,6 +17,7 @@ serde_json = "1"
 bincode = "1.3"
 sha2 = "0.10"
 rayon = "1"
+nalgebra = "0.33"
 flate2 = "1"
 # Transparent bzip2 decode for CompleteGenomics masterVar (`.tsv.bz2`). 0.6 uses the pure-Rust
 # `libbz2-rs-sys` backend (no C toolchain) — Windows-clean, matching the rest of the stack.

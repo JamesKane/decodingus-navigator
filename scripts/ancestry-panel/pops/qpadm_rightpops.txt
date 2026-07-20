@@ -1,0 +1,22 @@
+# qpAdm RIGHT populations — the outgroups the target's allele-sharing is measured against.
+# One population code per line (blank lines and #-comments ignored). Appended to the panel axis
+# after the left/source populations. THE one expertise-driven artifact of the method (docs §7.4/7.14).
+#
+# Config: Patterson et al. 2022, Nature "Large-scale migration into Britain". The key idea: each
+# outgroup is a *sister* of one source — a population that shares drift with exactly one of WHG / EEF /
+# Steppe — which is what lets qpAdm tease the three components apart. Generic continental outgroups
+# (an earlier config: Han/Papuan/Yoruba/Karitiana/Mbuti + pooled deep anchors) could NOT separate WHG
+# from the EHG inside Steppe and collapsed WHG to 0% (§7.13); this sister structure resolves it to
+# ~15% (the academic British value). Also: the right set must share the sources' AADR 1240k callset
+# (§7.10) — do NOT source these from a modern panel.
+#
+# code          sister-of        AADR group(s) (aadr_component_map.tsv)                       n
+AnatoliaOG   #  EEF              Turkey_N                                                    ~68
+Afanasievo   #  Steppe          Russia_Khakassia_Afanasievo + Russia_Altai_Afanasievo       ~47
+IronGates    #  WHG             Serbia_IronGates_Mesolithic + Romania_IronGates_Mesolithic  ~83
+African      #  (base)          Malawi_LSA + Ethiopia_MotaCave — ANCIENT, capture-processed ~11
+#
+# NOTE: the African base is deliberately ANCIENT sub-Saharan (Malawi LSA foragers + Mota), not
+# present-day Mbuti/Yoruba — it keeps the whole right set on the same in-solution-capture footing as
+# the ancient sources, sidestepping the capture-vs-shotgun concern (§4.4). Anatolia_N and Iron Gates
+# HG are used here as OUTGROUPS (the latter is deliberately excluded from the WHG *source*).

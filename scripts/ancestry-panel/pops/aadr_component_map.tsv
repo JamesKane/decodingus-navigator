@@ -48,8 +48,31 @@ Russia_Rostov_EBA_Don_Yamnaya	Steppe
 Russia_Khakassia_Afanasievo	Steppe
 Moldova_EBA_Yamnaya	Steppe
 # ANF — Anatolian Neolithic (Turkey_N above already matches, n=68)
-# WHG — Western hunter-gatherer
+#
+# WHG — Western hunter-gatherer (the Villabruna cluster). France_Mesolithic alone gives n=18, which
+# works out to only ~6.8 called samples per panel site — far too sparse for a stable allele frequency
+# (SE ≈ 0.19 at f=0.5). These are the v66.p1 groups that are unambiguously Villabruna-cluster WHG;
+# together n=74 (~28 calls/site).
+# DELIBERATELY EXCLUDED — each is a real hunter-gatherer population, just not *this* one:
+#   · Serbia/Romania Iron Gates (n=73/10) — WHG–EHG cline; would drag WHG toward EHG
+#   · Sweden/Norway/Denmark Mesolithic — SHG (Scandinavian HG) ≈ WHG+EHG
+#   · Ukraine_Mesolithic (n=19), Latvia_*_HG-oEHG, Poland_Mesolithic — EHG-shifted
+#   · any `-Dup` group (literal duplicate individuals — double-counting) or `-o`/`-oWHG` outlier
 France_Mesolithic	WHG
+Spain_Mesolithic	WHG
+Netherlands_Mesolithic	WHG
+Belgium_Mesolithic	WHG
+England_Mesolithic	WHG
+Italy_Sicily_Mesolithic	WHG
+France_Occitanie_Gard_Mesolithic	WHG
+Luxembourg_Loschbour_Mesolithic	WHG
+Germany_FalkensteinHohle_Mesolithic	WHG
+France_GrandEst_Mesolithic	WHG
+Austria_Mesolithic	WHG
+Croatia_Mesolithic_HG	WHG
+Wales_Mesolithic	WHG
+Germany_Urdhohle_Mesolithic	WHG
+Germany_Bockstein_Mesolithic	WHG
 # EHG — Eastern hunter-gatherer
 Russia_Karelia_Mesolithic	EHG
 Russia_Karelia_Mesolithic_HG	EHG
@@ -60,7 +83,30 @@ Iran_HajjiFiruz_N	Iran_N
 # CHG: no clean high-N Caucasus HG in v66.p1 (Kotias/Satsurblia are single genomes). Later/admixed
 #   candidates only: Russia_Eneolithic_Caucasus (n=7), Georgia_Arukhlo2_N_Caucasus (n=6).
 # WHG cline: Serbia_IronGates_Mesolithic (n=73) / Romania_IronGates_Mesolithic (n=10) are
-#   WHG–EHG-admixed — add to WHG only if you want the Iron Gates cline included.
+#   WHG–EHG-admixed. Resolved: excluded (see the WHG block above) — they would nearly double n but
+#   at the cost of making WHG an EHG-shifted composite, and the three-way model has no EHG term to
+#   absorb that. Keep WHG a clean Villabruna reference.
 # ANE: only single genomes (n=1, e.g. Russia_MA1_HG.SG) — too sparse for a stable centroid.
 # Natufian / Levant_N: Israel_Natufian (n=17), Jordan_PPNB (n=17) are strong deep refs but need a
 #   new component code added to navigator-domain::ancestry before mapping here.
+
+# ════════════════════════════════════════════════════════════════════════════════
+# qpAdm RIGHT populations (outgroups) — docs/design/ancient-ancestry-rebuild.md §7.4, §7.10.
+# These MUST come from the AADR callset (same pipeline as the sources above); do NOT source outgroups
+# from a separate modern panel (1000G/SGDP) — that runs a capture-vs-shotgun batch line through the f4
+# matrix (§7.10). Present-day continental references + POOLED deep anchors (single genomes bias a
+# frequency-based fit, so Ust'-Ishim/Kostenki/Sunghir pool into UPEuro and MA1/AfontovaGora/Yana into
+# ANE). Consumed as --outgroups (qpadm_rightpops.txt), NOT as source --components.
+Han	Han
+Papuan	Papuan
+Yoruba	Yoruba
+Karitiana	Karitiana
+Mbuti	Mbuti
+# UPEuro — Upper-Paleolithic Eurasian basal anchor (pooled for density)
+Russia_UstIshim_IUP	UPEuro
+Russia_Kostenki_UP	UPEuro
+Russia_Sunghir_UP	UPEuro
+# ANE — Ancient North Eurasian (Steppe axis; pooled for density)
+Russia_Malta_UP	ANE
+Russia_AfontovaGora_UP	ANE
+Russia_YanaRiver_UP	ANE

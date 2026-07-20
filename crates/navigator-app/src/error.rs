@@ -18,9 +18,6 @@ pub enum AppError {
     #[error("alignment {0} has no BAM/reference path recorded")]
     MissingPaths(i64),
 
-    #[error("alignment {0} has not been genotyped against this panel")]
-    NotGenotyped(i64),
-
     /// The ancestry reference panel file is missing — build it with `navigator-panelbuild`
     /// and install it (or set `$NAVIGATOR_ANCESTRY_PANEL`).
     #[error("ancestry panel not found at {0} — build it with navigator-panelbuild")]

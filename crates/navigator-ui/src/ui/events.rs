@@ -707,12 +707,26 @@ impl NavigatorApp {
                     biosample_guid,
                     fine,
                     ancient,
-                    nmonte,
                 } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.fine_ancestry = fine.map(|b| *b);
                         self.ancient_ancestry = ancient.map(|b| *b);
-                        self.nmonte_ancestry = nmonte.map(|b| *b);
+                    }
+                }
+                Event::DeepAncestryEstimated { biosample_guid, result } => {
+                    self.estimating_deep_ancestry = false;
+                    if self.selected_sample == Some(biosample_guid) {
+                        match result {
+                            Some(r) => {
+                                self.ancient_ancestry = Some(*r);
+                                self.status = "Deep ancestry estimated.".into();
+                            }
+                            None => {
+                                self.ancient_ancestry = None;
+                                self.status =
+                                    "Deep ancestry: not applicable (non-European, no whole-genome CHM13 alignment, or model rejected).".into();
+                            }
+                        }
                     }
                 }
                 Event::DonorPrivateY { bucket } => {
@@ -927,26 +941,7 @@ impl NavigatorApp {
                     // the "not analyzed yet" prompt (no-op in Advanced / when nothing is selected).
                     self.reload_subject_brief();
                 }
-                Event::Panels(p) => self.panels = p,
-                Event::PanelImported => {
-                    self.status = "Panel imported".into();
-                    let _ = self.tx.send(Command::LoadPanels);
-                }
                 Event::AllAlignments(a) => self.all_alignments = a,
-                Event::PanelGenotypes {
-                    alignment_id,
-                    panel_id,
-                    ploidy,
-                    genotypes,
-                } => {
-                    if self.selected_alignment == Some(alignment_id)
-                        && self.selected_panel == Some(panel_id)
-                        && self.ploidy() == ploidy
-                    {
-                        self.panel_genotypes = (!genotypes.is_empty()).then_some(genotypes);
-                    }
-                    self.running_genotype = false;
-                }
                 Event::Ibd(cmp) => {
                     self.ibd_result = Some(cmp);
                     self.running_ibd = false;
@@ -1231,7 +1226,6 @@ impl NavigatorApp {
         self.donor_ancestry = None;
         self.fine_ancestry = None;
         self.ancient_ancestry = None;
-        self.nmonte_ancestry = None;
         // pca_reference is the global CHM13 centroid cloud (subject-independent) — keep it loaded
         // across subject switches rather than re-fetching the asset each time.
         self.estimating_donor_ancestry = false;
@@ -1352,7 +1346,6 @@ impl NavigatorApp {
         self.running_metrics = false;
         self.running_sv = false;
         self.denovo.clear();
-        self.panel_genotypes = None;
         self.ibd_result = None;
         self.identity = None;
         self.y_haplogroup = None;
@@ -1371,31 +1364,6 @@ impl NavigatorApp {
             contig: "chrM".into(),
         });
         let _ = self.tx.send(Command::LoadPrivateY { alignment_id: id }); // reload cached private-Y
-        if let Some(panel_id) = self.selected_panel {
-            let _ = self.tx.send(Command::LoadPanelGenotypes {
-                alignment_id: id,
-                panel_id,
-                ploidy: self.ploidy(),
-            });
-        }
-    }
-
-    pub(crate) fn select_panel(&mut self, panel_id: i64) {
-        self.selected_panel = Some(panel_id);
-        self.panel_genotypes = None;
-        self.ibd_result = None;
-        self.identity = None;
-        if let Some(aln) = self.selected_alignment {
-            let _ = self.tx.send(Command::LoadPanelGenotypes {
-                alignment_id: aln,
-                panel_id,
-                ploidy: self.ploidy(),
-            });
-        }
-    }
-
-    pub(crate) fn ploidy(&self) -> u8 {
-        self.forms.ploidy.trim().parse().unwrap_or(2)
     }
 
     fn clear_sample_selection(&mut self) {
@@ -1418,13 +1386,13 @@ impl NavigatorApp {
         self.cancelling = false;
         self.running = false;
         self.running_denovo = false;
-        self.running_genotype = false;
         self.running_ibd = false;
         self.loading_ibd_suggestions = false;
         self.logging_in = false;
         self.publishing = false;
         self.finding_private_y = false;
         self.estimating_donor_ancestry = false;
+        self.estimating_deep_ancestry = false;
         self.y_profile_loading = false;
         self.painting_running = false;
         self.running_sex = false;

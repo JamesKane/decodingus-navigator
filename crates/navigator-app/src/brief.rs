@@ -150,11 +150,13 @@ impl App {
                     .await
                     .ok()
                     .flatten();
-                // Ancient components are gated off (degenerate reference asset — see
-                // [`crate::ANCIENT_ANCESTRY_ENABLED`]). Read nothing, so a *stale* row persisted by an
-                // earlier build can't resurface in the brief, the DNA-story HTML export, or the LLM facts.
+                // Deep (ancient) components. Reading *only* `ANCIENT_ADMIXTURE` is also what keeps a
+                // stale `PCA_PROJECTION_GMM` / `G25_NMONTE` row — persisted by the build whose
+                // fabricated numbers prompted this rebuild — from resurfacing in the brief, the
+                // DNA-story HTML export, or the LLM facts. Absent when the three ancient sources
+                // can't express the sample's ancestry: no card beats a wrong card.
                 let ancient = if crate::ANCIENT_ANCESTRY_ENABLED {
-                    self.consensus_ancestry(biosample_guid, "PCA_PROJECTION_GMM")
+                    self.consensus_ancestry(biosample_guid, navigator_analysis::ancestry::ANCIENT_ADMIXTURE)
                         .await
                         .ok()
                         .flatten()

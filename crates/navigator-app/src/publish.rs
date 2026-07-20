@@ -65,22 +65,28 @@ impl App {
     /// autosomal consensus (not per alignment), so this is the subject's authoritative breakdown.
     /// Empty until the consensus ancestry has been estimated.
     ///
-    /// The ancient methods (`PCA_PROJECTION_GMM`, `G25_NMONTE`) are **excluded while ancient ancestry
-    /// is gated off** ([`crate::ANCIENT_ANCESTRY_ENABLED`]) — their reference asset is degenerate, and
-    /// federating fabricated breakdowns to the PDS is far worse than showing them locally. The filter
-    /// (not just the compute gate) is what keeps a *stale* row persisted by an earlier build from being
-    /// published.
+    /// Two filters guard what leaves the machine, because federating a wrong breakdown is far worse
+    /// than showing one locally — a PDS record outlives the bug that produced it.
+    ///
+    /// * `RETIRED_METHODS` are **never** published, flag or no flag. The PCA-centroid ancient
+    ///   estimators produced fabricated breakdowns; the estimators are gone, but rows they persisted
+    ///   still sit in databases written before the rebuild. This makes sure a build that can no
+    ///   longer *produce* those numbers can't *publish* them either.
+    /// * The current ancient method (`ANCIENT_ADMIXTURE`) is published only while ancient ancestry
+    ///   is enabled ([`crate::ANCIENT_ANCESTRY_ENABLED`]), keeping that flag a true kill switch.
     pub(crate) async fn consensus_ancestry_results(
         &self,
         biosample_guid: SampleGuid,
     ) -> Result<Vec<AncestryResult>, AppError> {
-        const ANCIENT_METHODS: [&str; 2] = ["PCA_PROJECTION_GMM", "G25_NMONTE"];
+        const RETIRED_METHODS: [&str; 2] = ["PCA_PROJECTION_GMM", "G25_NMONTE"];
+        let ancient = navigator_analysis::ancestry::ANCIENT_ADMIXTURE;
         let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
         Ok(all
             .into_iter()
             .filter(|(id, _)| *id == CONSENSUS_SOURCE_ID)
             .map(|(_, r)| r)
-            .filter(|r| crate::ANCIENT_ANCESTRY_ENABLED || !ANCIENT_METHODS.contains(&r.method.as_str()))
+            .filter(|r| !RETIRED_METHODS.contains(&r.method.as_str()))
+            .filter(|r| crate::ANCIENT_ANCESTRY_ENABLED || r.method != ancient)
             .collect())
     }
 

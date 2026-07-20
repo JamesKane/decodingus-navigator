@@ -757,7 +757,7 @@ impl App {
     /// share, compared on the canonical build so `chm13v2`/`hs1` agree). The consensus diploid
     /// genotype pools only same-build alignments — de-novo variant coordinates can't be merged
     /// across builds by position without genome-wide liftover (out of scope). `None` if no alignments.
-    async fn consensus_diploid_alignments(&self, biosample_guid: SampleGuid) -> Result<Vec<i64>, AppError> {
+    pub(crate) async fn consensus_diploid_alignments(&self, biosample_guid: SampleGuid) -> Result<Vec<i64>, AppError> {
         let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         if alns.is_empty() {
             return Ok(Vec::new());

@@ -1,0 +1,36 @@
+# qpAdm deep-ancestry component map — AADR Group ID (col15 of the .anno) → component code.
+# The SHIPPING deep-ancestry config: Patterson et al. 2022 sources + sister outgroups (§7.14).
+# DEDICATED (not aadr_component_map.tsv) so the qpAdm WHG source stays the narrow Western-Mesolithic
+# set Patterson used (France_Mesolithic + Loschbour), NOT the broad strengthened Villabruna set the
+# shared map assigns to WHG. Consumed by 06_build_qpadm_panel.sh; codes match qpadm_{left,right}pops.txt.
+# Validated on huF98AFD: WHG 14.6 / EEF 44.8 / Steppe 40.6 (= admixtools2, stability gate passed).
+#
+# Group ID	component
+# ── sources (left) ──
+France_Mesolithic	WHG
+Luxembourg_Loschbour_Mesolithic	WHG
+Bulgaria_MalakPreslavets_N	EEF
+Bulgaria_Dzhulyunitsa_N	EEF
+Bulgaria_Yabalkovo_N	EEF
+Bulgaria_Krepost_N	EEF
+Bulgaria_Samovodene_N	EEF
+Bulgaria_Ohoden_N	EEF
+Greece_Peloponnese_N	EEF
+Greece_NeaNikomedeia_EN	EEF
+Greece_North_N	EEF
+Russia_Samara_EBA_Yamnaya	Steppe
+Russia_Kalmykia_EBA_Yamnaya	Steppe
+Russia_Rostov_EBA_Don_Yamnaya	Steppe
+Russia_Rostov_EBA_Yamnaya	Steppe
+Moldova_EBA_Yamnaya	Steppe
+Russia_Samara_MBA_Poltavka	Steppe
+Russia_Chelyabinsk_MBA_Poltavka	Steppe
+# ── sister outgroups (right) ──
+Turkey_N	AnatoliaOG
+Russia_Khakassia_Afanasievo	Afanasievo
+Russia_Altai_Afanasievo	Afanasievo
+Serbia_IronGates_Mesolithic	IronGates
+Romania_IronGates_Mesolithic	IronGates
+Malawi_LSA_8500BP	African
+Malawi_LSA_6000BP	African
+Ethiopia_MotaCave_4500BP	African

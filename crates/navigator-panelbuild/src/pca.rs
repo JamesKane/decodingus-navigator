@@ -2,8 +2,10 @@
 //! `bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%GT]\n'` over the 1000G genotype VCFs, plus
 //! the sample order and sample→population map:
 //!
-//! * `pca`        — PCA loadings (per-SNP loadings+means, per-population centroids+variances).
-//! * `fine-panel` — an [`AncestryPanel`] with per-fine-population alt-allele frequencies.
+//! * `pca`           — PCA loadings (per-SNP loadings+means, per-population centroids+variances).
+//! * `fine-panel`    — an [`AncestryPanel`] with per-fine-population alt-allele frequencies.
+//! * `ancient-panel` — an [`AncestryPanel`] over the deep ancestral sources (WHG/ANF/Steppe), with
+//!   a per-population call floor so every retained site has genuine frequencies in every source.
 //!
 //! PCA uses the sample-space Gram matrix: with the centred genotype matrix `X` (samples × sites),
 //! `X·Xᵀ = U·Σ²·Uᵀ`, so eigendecomposing the small Gram gives `U`/`Σ`; the per-SNP loadings are
@@ -12,7 +14,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -48,6 +50,67 @@ pub struct PcaArgs {
     /// the decomposition while still placing them in PC space. Absent → every sample is basis.
     #[arg(long)]
     basis_pops: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+pub struct AncientPanelArgs {
+    /// Genotype matrix/matrices `CHROM POS REF ALT GT...` per line, optionally .gz.
+    /// Comma-separated to merge several panels by site.
+    #[arg(long)]
+    matrix: String,
+    /// Sample-ID files (one per line), comma-separated and parallel to `--matrix`.
+    #[arg(long)]
+    samples: String,
+    /// `sample<TAB>population` for every sample across the matrices (the pipeline's pop map;
+    /// samples whose population isn't in `--components` are ignored).
+    #[arg(long)]
+    pops: PathBuf,
+    /// The deep source (**left**) populations, comma-separated and **in panel-axis order**
+    /// (e.g. `WHG,ANF,Steppe`). Keep them non-collinear: `Steppe ≈ EHG+CHG`, so listing Steppe
+    /// alongside EHG and CHG makes the mixture ill-conditioned.
+    #[arg(long, default_value = "WHG,ANF,Steppe")]
+    components: String,
+    /// The qpAdm **outgroup (right)** populations, comma-separated, appended to the panel axis after
+    /// the sources (e.g. `YRI,CHB,GIH,Karitiana,Papuan,Onge`). f4 admixture measures the target's
+    /// allele-sharing *against* these; they carry no weight but must be differentially related to the
+    /// sources. They get their own, lower call floor (`--outgroup-min-called`) because good outgroups
+    /// are often single high-quality genomes (Onge n≈2 is standard). Empty → a sources-only panel
+    /// (the old frequency-EM asset). See docs/design/ancient-ancestry-rebuild.md §7.4.
+    #[arg(long, default_value = "")]
+    outgroups: String,
+    /// Output AncestryPanel (bincode).
+    #[arg(long)]
+    out: PathBuf,
+    /// Keep a site only if **every source** has at least this many called samples there. This is the
+    /// point of a separate ancient asset: ancient genomes are sparse, and a site with no calls in a
+    /// source has no frequency — it must be dropped, not silently recorded as 0.0.
+    #[arg(long, default_value_t = 8)]
+    min_called: usize,
+    /// The call floor for **outgroups** (see `--outgroups`), separate from the source `--min-called`.
+    /// Lower because qpAdm outgroups are legitimately small (a handful of present-day genomes per
+    /// lineage); the f4 jackknife accounts for the frequency noise. A site survives only if every
+    /// source clears `--min-called` **and** every outgroup clears this.
+    #[arg(long, default_value_t = 2)]
+    outgroup_min_called: usize,
+    /// **Ascertainment floor (Option A′).** Restrict the panel to the CHM13 `contig<TAB>pos` sites in
+    /// this file — a consumer-array manifest. Allele-frequency admixture is only valid when the
+    /// sample and the reference share ascertainment; the AADR/1240k universe includes capture sites
+    /// consumer chips don't assay, and on those the deep estimate is unstable (a WGS sample reads
+    /// ~90% Steppe where its own chip reads ~58%). Intersecting with the sites arrays actually assay
+    /// makes the estimate agree across data sources. See `docs/design/ancient-ancestry-rebuild.md` §4.
+    /// Optional: omit to build the full (unascertained) panel.
+    #[arg(long)]
+    ascertain_sites: Option<PathBuf>,
+    /// Also write an inspection TSV (contig, pos, ref, alt, per-pop AF and called count).
+    #[arg(long)]
+    sites_tsv: Option<PathBuf>,
+    /// CHM13 reference FASTA (indexed, `.fai` alongside). When given, each site is oriented so its
+    /// `reference_allele` is the **actual CHM13 base** (swapping ref↔alt and each freq→1−freq where
+    /// the input labels are reversed). Without this, a panel built off a *lifted* sites file inherits
+    /// the source build's allele labels, which are ~30% swapped relative to CHM13 — self-consistent
+    /// for its own fit, but NOT joinable with the other CHM13-canonical assets (docs §7.16).
+    #[arg(long)]
+    reference: Option<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -498,6 +561,224 @@ pub fn build_fine_panel(args: FinePanelArgs) -> Result<()> {
         args.out.display(),
         panel.len()
     );
+    Ok(())
+}
+
+/// Build the **ancient** deep-source frequency panel: per-site alt-allele frequency for each of
+/// the deep sources (default WHG/ANF/Steppe), from the AADR genotype matrix.
+///
+/// This is deliberately a *separate asset* from `fine-panel` rather than a column subset of it.
+/// `build_fine_panel` writes `0.0` for a population with no called samples at a site, which is
+/// indistinguishable from a genuine "alt allele absent". For the 1000G fine populations that is
+/// nearly harmless (they are called almost everywhere); for ancient sources it is fatal — they are
+/// sparse and pseudo-haploid, so a large fraction of sites would enter the mixture as fake
+/// "frequency 0" evidence and the fitted proportions would track *missingness* rather than
+/// ancestry. Here a site survives only if **every** source has ≥ `min_called` calls, so every
+/// frequency in the emitted panel is backed by real observations.
+///
+/// Pseudo-haploid genotypes (AADR emits one sampled allele as a homozygous diploid call) still give
+/// an unbiased frequency: `E[dosage/2] = f`. Only the *variance* is inflated, which is why the call
+/// floor — not the diploid coding — is what matters.
+pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
+    let parse_list = |s: &str| -> Vec<String> {
+        s.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect()
+    };
+    let sources: Vec<String> = parse_list(&args.components);
+    let outgroup_comps: Vec<String> = parse_list(&args.outgroups);
+    anyhow::ensure!(sources.len() >= 2, "need at least two source components");
+    // Panel axis = sources first, then outgroups. The estimator designates roles by index (the
+    // committed qpadm_leftpops / rightpops); the asset is just a plain frequency panel over both.
+    let comps: Vec<String> = sources.iter().chain(&outgroup_comps).cloned().collect();
+    let n_src = sources.len();
+    anyhow::ensure!(
+        comps.iter().collect::<std::collections::HashSet<_>>().len() == comps.len(),
+        "a population appears in both --components and --outgroups"
+    );
+    // Per-population call floor: sources use --min-called, outgroups the lower --outgroup-min-called.
+    let floor: Vec<usize> = (0..comps.len())
+        .map(|i| if i < n_src { args.min_called } else { args.outgroup_min_called })
+        .collect();
+
+    let pop_of = load_fine_map(&args.pops)?;
+    // No global call-rate filter: the AADR matrix is mostly individuals we don't reference, so a
+    // matrix-wide call rate says nothing about the sources. The per-component floor below is the
+    // filter that matters.
+    let (samples, metas, rows) = load_combined(&split_paths(&args.matrix), &split_paths(&args.samples), 0.0)?;
+    anyhow::ensure!(!samples.is_empty(), "no samples");
+    anyhow::ensure!(!metas.is_empty(), "no sites in the matrix");
+
+    let sample_comp = sample_pop_index(&samples, &pop_of, &comps);
+    let k = comps.len();
+    let mut n_ref = vec![0usize; k];
+    for c in sample_comp.iter().flatten() {
+        n_ref[*c] += 1;
+    }
+    for (i, c) in comps.iter().enumerate() {
+        let role = if i < n_src { "source" } else { "outgroup" };
+        anyhow::ensure!(n_ref[i] > 0, "{role} component {c} has no samples in --pops");
+    }
+
+    // Optional ascertainment floor (Option A′): the CHM13 (contig, pos) a consumer array assays.
+    let ascertained: Option<std::collections::HashSet<(String, i64)>> = match &args.ascertain_sites {
+        Some(p) => {
+            let text = std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+            let set: std::collections::HashSet<(String, i64)> = text
+                .lines()
+                .filter(|l| !l.starts_with('#') && !l.is_empty())
+                .filter_map(|l| {
+                    let mut it = l.split('\t');
+                    let contig = it.next()?.trim();
+                    let pos: i64 = it.next()?.trim().parse().ok()?;
+                    (!contig.eq_ignore_ascii_case("contig")).then(|| (contig.to_string(), pos))
+                })
+                .collect();
+            anyhow::ensure!(!set.is_empty(), "ascertainment file {} had no usable contig<TAB>pos rows", p.display());
+            eprintln!("ascertainment floor: {} sites from {}", set.len(), p.display());
+            Some(set)
+        }
+        None => None,
+    };
+
+    let mut sites = Vec::new();
+    let mut tsv = match &args.sites_tsv {
+        Some(p) => {
+            let mut w = File::create(p).with_context(|| format!("creating {}", p.display()))?;
+            writeln!(
+                w,
+                "contig\tpos\tref\talt\t{}",
+                comps
+                    .iter()
+                    .map(|c| format!("af_{c}\tn_{c}"))
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            )?;
+            Some(w)
+        }
+        None => None,
+    };
+    // Per-component running totals, for the build report.
+    let mut called_total = vec![0usize; k];
+
+    let mut dropped_unascertained = 0usize;
+    for (m, row) in metas.iter().zip(&rows) {
+        if let Some(set) = &ascertained {
+            if !set.contains(&(m.contig.clone(), m.pos)) {
+                dropped_unascertained += 1;
+                continue;
+            }
+        }
+        let mut alt = vec![0.0f64; k];
+        let mut called = vec![0usize; k];
+        for (i, &d) in row.iter().enumerate() {
+            if d < 0 {
+                continue;
+            }
+            if let Some(c) = sample_comp[i] {
+                alt[c] += d as f64;
+                called[c] += 1;
+            }
+        }
+        if (0..k).any(|c| called[c] < floor[c]) {
+            continue;
+        }
+        let freqs: Vec<f32> = (0..k).map(|c| (alt[c] / (2.0 * called[c] as f64)) as f32).collect();
+        if let Some(w) = tsv.as_mut() {
+            let cols: Vec<String> = (0..k).map(|c| format!("{:.4}\t{}", freqs[c], called[c])).collect();
+            writeln!(
+                w,
+                "{}\t{}\t{}\t{}\t{}",
+                m.contig,
+                m.pos,
+                m.ref_allele,
+                m.alt_allele,
+                cols.join("\t")
+            )?;
+        }
+        for c in 0..k {
+            called_total[c] += called[c];
+        }
+        sites.push(PanelSite {
+            contig: m.contig.clone(),
+            position: m.pos,
+            reference_allele: m.ref_allele,
+            alternate_allele: m.alt_allele,
+            freqs,
+        });
+    }
+    anyhow::ensure!(
+        !sites.is_empty(),
+        "no site cleared every population's call floor — lower --min-called/--outgroup-min-called or widen the groups",
+    );
+
+    // Orient every site so reference_allele == the actual CHM13 base (docs §7.16). Sites are in
+    // matrix order (sorted by contig, then pos), so we load each contig's sequence once. Where the
+    // labels are reversed (CHM13 carries the labelled ALT), swap ref↔alt and flip each freq→1−freq;
+    // where neither allele matches the base (a liftover/allele mismatch), drop the site.
+    if let Some(ref_path) = &args.reference {
+        let mut cur = String::new();
+        let mut seq: Vec<u8> = Vec::new();
+        let (mut flipped, mut dropped) = (0usize, 0usize);
+        let mut oriented = Vec::with_capacity(sites.len());
+        for mut s in sites.into_iter() {
+            if s.contig != cur {
+                seq = navigator_analysis::reader::read_contig_sequence(ref_path, &s.contig)
+                    .map_err(|e| anyhow::anyhow!("reading {} from {}: {e}", s.contig, ref_path.display()))?;
+                cur = s.contig.clone();
+            }
+            let base = seq
+                .get((s.position - 1) as usize)
+                .map(|b| b.to_ascii_uppercase() as char)
+                .unwrap_or('N');
+            if base == s.reference_allele {
+                // already canonical
+            } else if base == s.alternate_allele {
+                std::mem::swap(&mut s.reference_allele, &mut s.alternate_allele);
+                for f in s.freqs.iter_mut() {
+                    *f = 1.0 - *f;
+                }
+                flipped += 1;
+            } else {
+                dropped += 1;
+                continue;
+            }
+            oriented.push(s);
+        }
+        eprintln!(
+            "CHM13-oriented {} sites: {flipped} ref/alt-swapped, {dropped} dropped (base matched neither allele)",
+            oriented.len()
+        );
+        sites = oriented;
+        anyhow::ensure!(!sites.is_empty(), "no site survived CHM13 orientation — wrong reference?");
+    }
+
+    let panel = AncestryPanel {
+        build: "chm13v2.0".to_string(),
+        populations: comps.clone(),
+        sites,
+    };
+    write_bin(&args.out, &panel.to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?)?;
+    let n = panel.len();
+    eprintln!(
+        "wrote {} ({n} of {} sites cleared the floor in all {n_src} sources (≥{}) + {} outgroups (≥{}){})",
+        args.out.display(),
+        metas.len(),
+        args.min_called,
+        outgroup_comps.len(),
+        args.outgroup_min_called,
+        if ascertained.is_some() {
+            format!("; {dropped_unascertained} dropped off the ascertainment manifest")
+        } else {
+            String::new()
+        }
+    );
+    for (i, c) in comps.iter().enumerate() {
+        let role = if i < n_src { "src" } else { "out" };
+        eprintln!(
+            "  [{role}] {c:<12} n={:<4} mean called/site {:.1}",
+            n_ref[i],
+            called_total[i] as f64 / n as f64
+        );
+    }
     Ok(())
 }
 

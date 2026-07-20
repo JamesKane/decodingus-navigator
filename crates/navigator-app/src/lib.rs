@@ -19,12 +19,9 @@ use navigator_analysis::heteroplasmy::{self, HeteroplasmyParams};
 use navigator_analysis::ibd::{ChromosomeGenotypes, GeneticMap, MatchSummary, PairwiseIbdDetector};
 use navigator_analysis::scan::SampleSidecars;
 use navigator_analysis::sidecar;
-use navigator_domain::workspace::{Panel, PanelSite};
-use navigator_store::panel;
 
 // Re-export the analysis result types the command API returns, so the UI depends only
 // on navigator-app (ui -> app), not directly on navigator-analysis.
-pub use navigator_analysis::caller::SiteGenotype as PanelGenotype;
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
 pub use navigator_analysis::haplo::{BranchEvidence, CallState, NodeEvidence, ScoredHaplogroup, SnpEvidence};
@@ -1039,19 +1036,28 @@ fn ancestry_pca_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ANCESTRY_PCA", "ancestry_pca", build, "bin")
 }
 
-/// Where the **ancient** PCA loadings for `build` live: `$NAVIGATOR_ANCESTRY_PCA_ANCIENT`
-/// (override), else `<refgenome base>/ancestry/ancestry_pca_ancient_<build>.bin`. Optional —
-/// present means the PCA-projection GMM runs against ancient reference components
-/// (Steppe/EEF/WHG) instead of the modern super-populations. Must be built over the same panel
-/// sites the AF panel genotypes (so the single genotyping pass covers it).
-fn ancestry_pca_ancient_path(build: ReferenceBuild) -> PathBuf {
-    ancestry_asset_path("NAVIGATOR_ANCESTRY_PCA_ANCIENT", "ancestry_pca_ancient", build, "bin")
-}
-
 /// The fine-population frequency asset path (`$NAVIGATOR_ANCESTRY_FREQ` override, else
 /// `<base>/ancestry/ancestry_freq_global_<build>.bin`). Optional — fine admixture is skipped if absent.
 fn ancestry_freq_global_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ANCESTRY_FREQ", "ancestry_freq_global", build, "bin")
+}
+
+/// The **ancient** deep-source frequency asset (`$NAVIGATOR_ANCESTRY_FREQ_ANCIENT` override, else
+/// `<base>/ancestry/ancestry_freq_ancient_<build>.bin`): per-site WHG/ANF/Steppe alt-allele
+/// frequencies, built by `panelbuild ancient-panel` from the AADR. Optional — deep ancestry is
+/// skipped if absent. Built over the AIM panel's own sites, so the single genotyping pass covers it.
+///
+/// This supersedes the old `ancestry_pca_ancient_<build>.bin`, which is no longer read by anything:
+/// PCA-projected ancient centroids collapse onto the modern cloud and carry no ancient signal.
+fn ancestry_freq_ancient_path(build: ReferenceBuild) -> PathBuf {
+    ancestry_asset_path("NAVIGATOR_ANCESTRY_FREQ_ANCIENT", "ancestry_freq_ancient", build, "bin")
+}
+
+/// The qpAdm deep-ancestry panel asset path (`$NAVIGATOR_ANCESTRY_QPADM` override, else
+/// `<base>/ancestry/ancestry_qpadm_<build>.bin`). The full-1240k Patterson-2022 config (WHG/EEF/Steppe
+/// sources + sister outgroups) — see docs/design/ancient-ancestry-rebuild.md §7.14.
+fn ancestry_qpadm_path(build: ReferenceBuild) -> PathBuf {
+    ancestry_asset_path("NAVIGATOR_ANCESTRY_QPADM", "ancestry_qpadm", build, "bin")
 }
 
 /// The chip-compatible IBD panel asset path (`$NAVIGATOR_IBD_PANEL` override, else
@@ -1068,8 +1074,8 @@ pub fn ancestry_asset_status() -> Vec<AssetStatus> {
     [
         ("super-pop panel", ancestry_panel_path(build)),
         ("PCA (modern)", ancestry_pca_path(build)),
-        ("PCA (ancient)", ancestry_pca_ancient_path(build)),
         ("fine frequencies", ancestry_freq_global_path(build)),
+        ("ancient frequencies", ancestry_freq_ancient_path(build)),
         ("genetic map", genetic_map_path(build)),
         ("IBD panel", ibd_panel_path(build)),
     ]
@@ -2132,22 +2138,54 @@ pub struct DiploidProfile {
 /// **consensus** (pooled across all sources) rather than a single sequencing alignment.
 pub const CONSENSUS_SOURCE_ID: i64 = 0;
 
-/// **Ancient-ancestry is disabled** — we compute, display and publish nothing rather than fabricate.
+/// One row of the deep-ancestry stability diagnostic ([`App::ancient_ancestry_stability`]): the
+/// ancient mixture fitted over one *view* of a subject (pooled consensus, one source alone, or a
+/// thinned site set). Diagnostic only — never persisted, never published.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AncientFitRow {
+    /// Which view of the subject this fit came from.
+    pub label: String,
+    /// Panel sites with a genotype in this view.
+    pub sites: usize,
+    /// `(population_code, percentage)`, ranked.
+    pub components: Vec<(String, f64)>,
+    /// Model dispersion (≈1 at the noise floor; grows as the sample leaves the sources' span).
+    pub dispersion: f64,
+    /// European share (%) by the modern super-pop estimate — the deep model's scope check.
+    pub european: f64,
+    /// Whether the shipping estimator would report this fit, or suppress it as inapplicable.
+    pub reported: bool,
+}
+
+/// Ancient (deep) ancestry — **rebuilt, but still OFF: it fails the stability gate.**
 ///
-/// The shipped `ancestry_pca_ancient_<build>.bin` asset is unusable. It carries the 168 *modern*
-/// reference populations plus only 5 ancient ones (WHG / EHG / ANF / Iran_N / Steppe) — so a mixture
-/// model just reconstructs a Briton as "English + British" (those are in the reference set), and the
-/// GMM we shipped is a *membership classifier*, not an admixture model. Fatally, the 5 ancient
-/// centroids sit **on top of** the modern European ones (WHG ≈ English, ANF ≈ Sardinian) — the classic
-/// shrinkage artifact of projecting ancient samples onto a PCA built from modern variation. They carry
-/// no ancient signal, so every model over them is ill-conditioned and arbitrary: a British sample gets
-/// WHG 72.6% (impossible), and even an ancient-only simplex mixture returns Anatolian-Farmer ~3% where
-/// ~30% is expected. No code change rescues this; the reference must be rebuilt from real ancient
-/// genomes with a sound method (supervised admixture over allele frequencies / qpAdm-style
-/// f-statistics — not PCA-centroid distance). Flip this back on once that asset lands.
+/// The original PCA-centroid implementation fabricated numbers (§1–2) and was disabled; several
+/// rebuild attempts then appeared to fail (a frequency-mixture EM, ascertainment, pseudo-haploid).
+/// Those "walls" turned out to be an outgroup-sourcing mistake, 16k-SNP imprecision, and a
+/// genotype-labelling bug in a diagnostic tool (docs §7.9–7.13). The method that actually works —
+/// **now enabled** — is the qpAdm f4 estimator ([`navigator_analysis::ancestry::estimate_qpadm_ancestry`])
+/// over the full-1240k **Patterson-2022 sister-outgroup panel** ([`ancestry_qpadm_path`]): sources
+/// WHG / EEF / Steppe, each paired with a sister outgroup that gives the fit leverage to separate
+/// them (§7.14). Computed by [`App::estimate_deep_ancestry`], which genotypes the subject's CHM13
+/// alignment(s) at ~1.15M sites.
 ///
-/// See `docs/design/ancient-ancestry-rebuild.md`.
-pub const ANCIENT_ANCESTRY_ENABLED: bool = false;
+/// It passes §5.4's **stability** gate — the single most diagnostic test, which every earlier attempt
+/// failed. Subject `huF98AFD`: **WHG 14.6 / EEF 44.8 / Steppe 40.6 from his WGS** and
+/// **WHG 14.3 / EEF 44.9 / Steppe 40.8 from his 23andMe chip** — the same person by two independent
+/// means, agreeing to ≤0.3%, both models accepted (±1–2% SE). Cross-checked against real `admixtools2`
+/// (identical to 0.2%) and a 99.84% same-person genotyping concordance. A literature-grade British
+/// breakdown.
+///
+/// The gate covers computing, displaying **and** publishing. The estimator returns `None` (persisting
+/// nothing) for any sample outside the model's scope or with a rejected fit, so an inapplicable
+/// breakdown never reaches the UI or the PDS.
+///
+/// See `docs/design/ancient-ancestry-rebuild.md` (start at §7.14).
+pub const ANCIENT_ANCESTRY_ENABLED: bool = true;
+
+/// The persisted method name of the deep-ancestry breakdown — re-exported so the UI reads the
+/// rebuilt method by name and can never fall back to a retired one.
+pub use navigator_analysis::ancestry::ANCIENT_ADMIXTURE;
 
 /// Bridge the autosomal consensus to the genotype carrier the ancestry estimators + IBD detector
 /// consume. Each reconciled site becomes a [`SiteGenotype`] with the consensus dosage (count of the
@@ -2356,16 +2394,17 @@ fn read_head(path: &Path) -> Result<String, AppError> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Artifact kind for panel genotypes, keyed by panel + ploidy.
-fn panel_kind(panel_id: i64, ploidy: u8) -> String {
-    format!("panel:{panel_id}:p{ploidy}")
-}
-
 /// Group per-site genotypes into per-chromosome dosage arrays (sorted by position) for
 /// the IBD detector.
-/// Artifact kind for an alignment's cached IBD-panel genotypes (distinct from the store-panel
-/// genotype cache, which is keyed by `panel_kind(panel_id, ploidy)`).
-const IBD_PANEL_KIND: &str = "ibd_panel_genotypes";
+/// Artifact kind for an alignment's cached IBD-panel genotypes.
+///
+/// The `2` suffix retires every genotype cached before GRCh37/GRCh38 support landed (`3cf4956`,
+/// 2026-07-13). Those builds were previously genotyped at the *CHM13* panel coordinates on a
+/// non-CHM13 BAM — wrong positions, so the calls were near-random and never heterozygous — yet the
+/// cache key (panel-manifest salt + `GENOTYPE_VERSION`) was unchanged by the code fix, so the
+/// corrupt dosages kept feeding the autosomal consensus (IBD / ancestry / identity). Bumping the
+/// stem forces a one-time re-genotype with the build-aware path.
+const IBD_PANEL_KIND: &str = "ibd_panel_genotypes2";
 
 /// The IBD-panel genotype cache kind, salted with the CHM13 panel asset's manifest sha256 (first 16
 /// hex chars) so regenerating the panel auto-invalidates stale per-alignment genotypes. Falls back to

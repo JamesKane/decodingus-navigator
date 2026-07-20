@@ -3269,6 +3269,7 @@ dependencies = [
  "bzip2",
  "du-bio",
  "flate2",
+ "nalgebra",
  "navigator-domain",
  "noodles",
  "rayon",
@@ -3321,6 +3322,7 @@ dependencies = [
  "flate2",
  "nalgebra",
  "navigator-analysis",
+ "noodles",
 ]
 
 [[package]]

@@ -410,13 +410,37 @@ impl NavigatorApp {
                         ui.add_space(10.0);
                         card(ui, self.tr("card.ancestryModern"), |ui| draw_population_components(ui, r, "anc_fine", 18));
                     }
-                    if let Some(r) = &self.ancient_ancestry {
+                    // Deep (ancient) ancestry via qpAdm — its own on-demand trigger: it genotypes the
+                    // best whole-genome CHM13 alignment at the full 1240k (~1-2 min), separate from
+                    // the fast consensus estimate above.
+                    if navigator_app::ANCIENT_ANCESTRY_ENABLED {
                         ui.add_space(10.0);
-                        card(ui, self.tr("card.ancestryAncient"), |ui| draw_population_components(ui, r, "anc_ancient", 18));
-                    }
-                    if let Some(r) = &self.nmonte_ancestry {
-                        ui.add_space(10.0);
-                        card(ui, self.tr("card.ancestryNmonte"), |ui| draw_population_components(ui, r, "anc_nmonte", 18));
+                        card(ui, self.tr("card.ancestryAncient"), |ui| {
+                            ui.horizontal(|ui| {
+                                let label = if self.ancient_ancestry.is_some() {
+                                    self.tr("common.refresh")
+                                } else {
+                                    self.tr("btn.estimateDeepAncestry")
+                                };
+                                if ui
+                                    .add_enabled(!self.estimating_deep_ancestry, egui::Button::new(label))
+                                    .clicked()
+                                {
+                                    self.estimating_deep_ancestry = true;
+                                    // A fast fit over the (required) autosomal consensus; if it hasn't
+                                    // been built the estimate errors, same as modern ancestry.
+                                    self.status = "Estimating deep ancestry (qpAdm)…".into();
+                                    let _ = self.tx.send(Command::EstimateDeepAncestry { biosample_guid: guid });
+                                }
+                                if self.estimating_deep_ancestry {
+                                    ui.spinner();
+                                }
+                                ui.label(egui::RichText::new(self.tr("hint.deepAncestry")).weak().small());
+                            });
+                            if let Some(r) = &self.ancient_ancestry {
+                                draw_population_components(ui, r, "anc_ancient", 18);
+                            }
+                        });
                     }
                     // Chromosome painting (diploid local ancestry) — its own section, from the consensus.
                     ui.add_space(10.0);
@@ -451,10 +475,10 @@ impl NavigatorApp {
                     ui.add_space(10.0);
                     card(ui, self.tr("card.encryptedExchange"), |ui| self.exchange_section(ui, guid));
                     // Per-source compare + within-subject identity (the QC gate) — advanced.
-                    if let Some(id) = self.selected_alignment {
+                    if self.selected_alignment.is_some() {
                         ui.add_space(10.0);
                         let per_source = self.tr("card.panelGenotypingIbd");
-                        egui::CollapsingHeader::new(per_source).id_salt("ibd_per_source").show(ui, |ui| self.genotyping_section(ui, id));
+                        egui::CollapsingHeader::new(per_source).id_salt("ibd_per_source").show(ui, |ui| self.genotyping_section(ui));
                     }
                 }
             }
@@ -564,23 +588,20 @@ impl NavigatorApp {
         ui.add_space(8.0);
         ui.heading(self.tr("dash.title"));
         ui.add_space(12.0);
-        let (projects, subjects, alignments, panels) = (
+        let (projects, subjects, alignments) = (
             self.overview.len(),
             self.all_biosamples.len(),
             self.all_alignments.len(),
-            self.panels.len(),
         );
-        let (lp, ls, la, lpn) = (
+        let (lp, ls, la) = (
             self.tr("dash.projects"),
             self.tr("dash.subjects"),
             self.tr("dash.alignments"),
-            self.tr("dash.panels"),
         );
         ui.horizontal_wrapped(|ui| {
             stat_card(ui, lp, projects);
             stat_card(ui, ls, subjects);
             stat_card(ui, la, alignments);
-            stat_card(ui, lpn, panels);
         });
         ui.add_space(16.0);
         match &self.account {
