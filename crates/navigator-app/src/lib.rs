@@ -2145,34 +2145,29 @@ pub struct AncientFitRow {
 
 /// Ancient (deep) ancestry — **rebuilt, but still OFF: it fails the stability gate.**
 ///
-/// The original implementation was disabled for fabricating numbers, and that cause is fixed. It
-/// had classified the sample against *PCA centroids* of ancient populations that projection had
-/// shrunk on top of the modern European cloud (WHG ≈ English, ANF ≈ Sardinian), so they carried no
-/// ancient signal — and it asked "which ancient population **is** this sample?" where the question
-/// is "what **mixture** of ancient sources is it?". The replacement discards the PCA path entirely
-/// and runs a supervised allele-frequency admixture EM
-/// ([`navigator_analysis::ancestry::estimate_ancient_admixture`]) over a dedicated ancient
-/// frequency panel built from the AADR ([`ancestry_freq_ancient_path`]). In frequency space the
-/// sources stay genuinely distinct (WHG↔ANF Fst ≈ 0.07 where the projected PCA had them on top of
-/// each other), and on *simulated* individuals drawn from known frequencies it round-trips mixtures
-/// exactly, lands GBR at Steppe 50 / ANF 34 / WHG 16, and rejects samples the three sources cannot
-/// express.
+/// The original PCA-centroid implementation fabricated numbers (§1–2) and was disabled; several
+/// rebuild attempts then appeared to fail (a frequency-mixture EM, ascertainment, pseudo-haploid).
+/// Those "walls" turned out to be an outgroup-sourcing mistake, 16k-SNP imprecision, and a
+/// genotype-labelling bug in a diagnostic tool (docs §7.9–7.13). The method that actually works —
+/// **now enabled** — is the qpAdm f4 estimator ([`navigator_analysis::ancestry::estimate_qpadm_ancestry`])
+/// over the full-1240k **Patterson-2022 sister-outgroup panel** ([`ancestry_qpadm_path`]): sources
+/// WHG / EEF / Steppe, each paired with a sister outgroup that gives the fit leverage to separate
+/// them (§7.14). Computed by [`App::estimate_deep_ancestry`], which genotypes the subject's CHM13
+/// alignment(s) at ~1.15M sites.
 ///
-/// It nevertheless stays off, because it fails §3.4's **stability** gate on real data — the one the
-/// design doc calls the single most diagnostic test. Subject `huF98AFD`, genotyped by both means,
-/// comes out **Steppe 58% / ANF 31% / WHG 10% from his chips** and **Steppe 81% / ANF 15% / WHG 4%
-/// from his WGS alignments**. Same person, ~22 points apart. The chip figures are the plausible
-/// ones; the WGS figures are systematically Steppe-inflated, and WGS dispersion is consistently
-/// worse (2.1–2.3 vs 1.2–1.4), so the bias is in the WGS *dosages*, not in the panel or the
-/// estimator. It is not a site-count effect: pbmm2 scores a chip-like 8.7k sites and still returns
-/// 76% Steppe, and downsampling the consensus barely moves it. Suspect reference bias in panel
-/// genotyping — that is the next thing to chase.
+/// It passes §5.4's **stability** gate — the single most diagnostic test, which every earlier attempt
+/// failed. Subject `huF98AFD`: **WHG 14.6 / EEF 44.8 / Steppe 40.6 from his WGS** and
+/// **WHG 14.3 / EEF 44.9 / Steppe 40.8 from his 23andMe chip** — the same person by two independent
+/// means, agreeing to ≤0.3%, both models accepted (±1–2% SE). Cross-checked against real `admixtools2`
+/// (identical to 0.2%) and a 99.84% same-person genotyping concordance. A literature-grade British
+/// breakdown.
 ///
-/// While off, this disables computing, displaying **and** publishing — the read paths are gated
-/// too, so a stale row from an earlier build can never resurface.
+/// The gate covers computing, displaying **and** publishing. The estimator returns `None` (persisting
+/// nothing) for any sample outside the model's scope or with a rejected fit, so an inapplicable
+/// breakdown never reaches the UI or the PDS.
 ///
-/// See `docs/design/ancient-ancestry-rebuild.md`.
-pub const ANCIENT_ANCESTRY_ENABLED: bool = false;
+/// See `docs/design/ancient-ancestry-rebuild.md` (start at §7.14).
+pub const ANCIENT_ANCESTRY_ENABLED: bool = true;
 
 /// The persisted method name of the deep-ancestry breakdown — re-exported so the UI reads the
 /// rebuilt method by name and can never fall back to a retired one.
