@@ -48,6 +48,7 @@ PATTERNS=(
   "ancestry_pca_"*.bin
   "ancestry_pca_ancient_"*.bin
   "ancestry_freq_global_"*.bin
+  "ancestry_qpadm_"*.bin
   "ancestry_manifest_"*.json
   "genetic_map_"*.bin
   "ibd_panel_"*.bin
