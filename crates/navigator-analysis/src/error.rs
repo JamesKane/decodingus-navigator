@@ -13,6 +13,14 @@ pub enum AnalysisError {
 
     #[error("{0}")]
     Message(String),
+
+    /// The walk stopped because cancellation was requested (see [`crate::cancel`]).
+    ///
+    /// A distinct variant, not a `Message`, because callers must be able to tell a user-requested
+    /// stop from a real failure: a cancelled walk holds a *partial* result, so its caller has to
+    /// skip persisting it, and the UI has to report "cancelled" rather than an error.
+    #[error("cancelled")]
+    Cancelled,
 }
 
 impl AnalysisError {

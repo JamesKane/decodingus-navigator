@@ -31,6 +31,7 @@ pub use navigator_analysis::haplo::{BranchEvidence, CallState, NodeEvidence, Sco
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::mask::YRegionClass;
 pub use navigator_analysis::mtvariants::{MtRegion, MtVariant, MtVariantKind};
+pub use navigator_analysis::CancelToken;
 pub use navigator_analysis::preflight::{
     Check as PreflightCheck, Report as PreflightReport, Status as PreflightStatus,
 };

@@ -1540,8 +1540,10 @@ async fn call(args: CallArgs) -> i32 {
     let scope = args.contig.clone().unwrap_or_else(|| "whole genome".into());
     eprintln!("calling de-novo diploid variants on alignment #{alignment_id} ({scope})…");
     let vcf = match args.contig {
-        Some(contig) => app.diploid_vcf(alignment_id, contig).await,
-        None => app.diploid_vcf_genome(alignment_id).await,
+        Some(contig) => app.diploid_vcf(alignment_id, contig, navigator_app::CancelToken::none())
+            .await,
+        None => app.diploid_vcf_genome(alignment_id, navigator_app::CancelToken::none())
+            .await,
     };
     let vcf = match vcf {
         Ok(v) => v,

@@ -296,6 +296,7 @@ impl NavigatorApp {
                     cancelled,
                 } => {
                     self.analyzing = false;
+                    self.cancelling = false;
                     self.deep_progress = None;
                     self.status = format!(
                         "{} {samples} sample(s): {coverage_done} coverage, {y_done} Y, {sex_done} sex, {metrics_done} metrics, {sv_done} SV{}",
@@ -914,6 +915,7 @@ impl NavigatorApp {
                 }
                 Event::AnalysisDone { cancelled } => {
                     self.analysis = None;
+                    self.cancelling = false;
                     self.status = if cancelled {
                         "Full analysis cancelled.".into()
                     } else {
@@ -1151,6 +1153,10 @@ impl NavigatorApp {
                     // one so the status bar can't offer a "Details" that describes the wrong error.
                     self.diagnosis = None;
                     self.show_diagnosis = false;
+                    self.clear_in_flight();
+                }
+                Event::Cancelled => {
+                    self.status = self.tr("analysis.cancelled").to_string();
                     self.clear_in_flight();
                 }
                 Event::Diagnosed { message, report } => {
@@ -1409,6 +1415,7 @@ impl NavigatorApp {
     /// worker arm was running, but the UI has no way to tell which flag that arm owned, so all of
     /// them clear — a stuck spinner outlives the error message that explains it.
     fn clear_in_flight(&mut self) {
+        self.cancelling = false;
         self.running = false;
         self.running_denovo = false;
         self.running_genotype = false;

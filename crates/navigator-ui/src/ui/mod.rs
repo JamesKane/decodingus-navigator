@@ -466,6 +466,13 @@ pub struct NavigatorApp {
     rx: Receiver<Event>,
     /// In-flight full-analysis progress (Some ⇒ the modal dialog is shown).
     analysis: Option<AnalysisModal>,
+    /// Set the moment Cancel is clicked, cleared when the run actually ends.
+    ///
+    /// Cancellation is cooperative: the walkers stop at their next check, so there is always a gap
+    /// between the click and the run ending. Without this the UI gave no acknowledgement at all —
+    /// spinner, timer and progress bar carried on and the button stayed live — which is why the
+    /// button read as broken rather than as working-on-it.
+    cancelling: bool,
     /// Subject being edited (Some ⇒ the Edit modal is shown).
     edit_subject: Option<EditSubject>,
     /// Vendor-id (kit) association being added (Some ⇒ the add-kit modal is shown).
@@ -972,6 +979,7 @@ impl NavigatorApp {
             tx,
             rx,
             analysis: None,
+            cancelling: false,
             edit_subject: None,
             edit_kit: None,
             edit_mdka: None,

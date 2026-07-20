@@ -36,6 +36,7 @@ fn main() {
             &params,
             None,
             &progress,
+            &navigator_analysis::CancelToken::none(),
         ) {
             Ok(r) => eprintln!(
                 "\nFULL walker done in {:.1?}: mean_cov={:.1} callable={} reads={:?}",

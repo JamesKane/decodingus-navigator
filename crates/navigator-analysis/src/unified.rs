@@ -31,6 +31,7 @@ use crate::coverage::{
     merge_coverage_partials, CallableLociParams, ContigCoverageAccum, ContigCoveragePartial, CoverageResult,
     CoverageState,
 };
+use crate::cancel::CancelToken;
 use crate::error::AnalysisError;
 use crate::read_metrics::{ReadMetrics, ReadMetricsState};
 use crate::reader::{self, RecordSink};
@@ -140,7 +141,7 @@ pub fn collect_unified_metrics(
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
 ) -> Result<UnifiedMetricsResult, AnalysisError> {
-    collect_unified_metrics_with_progress(bam_path, reference_path, params, contig_allowlist, &mut |_, _| {})
+    collect_unified_metrics_with_progress(bam_path, reference_path, params, contig_allowlist, &mut |_, _| {}, &CancelToken::none())
 }
 
 /// Like [`collect_unified_metrics`], reporting `progress(contigs_done, contigs_total)` as the
@@ -152,6 +153,7 @@ pub fn collect_unified_metrics_with_progress(
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
     progress: &mut dyn FnMut(usize, usize),
+    cancel: &CancelToken,
 ) -> Result<UnifiedMetricsResult, AnalysisError> {
     let (header, mut reader) = reader::open_seq(bam_path, Some(reference_path))?;
     let mut cov = CoverageState::new(&header, reference_path, *params, contig_allowlist)?;
@@ -159,12 +161,21 @@ pub fn collect_unified_metrics_with_progress(
     let mut sx = SexState::new(&header);
     progress(0, cov.total_tracked());
 
+    // Polled on the same cadence as the indexed walker's record loop — often enough that a click
+    // stops the walk within milliseconds, rare enough to stay invisible next to the per-record
+    // pileup work. This is the fallback path (unindexed BAM / CRAM), which has no contig boundaries
+    // to stop at, so without a check here it could not be cancelled at all.
+    let mut seen = 0u32;
     for result in reader.records_lazy(&header) {
         let record = result?;
         // Every record to all three; each state filters internally (see module docs).
         rm.accept(&record);
         sx.accept(&record);
         cov.accept(&record, progress)?;
+        seen += 1;
+        if seen % 4096 == 0 {
+            cancel.check()?;
+        }
     }
 
     let coverage = cov.finish(progress)?;
@@ -197,7 +208,7 @@ pub fn collect_unified_metrics_parallel(
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
 ) -> Result<UnifiedMetricsResult, AnalysisError> {
-    collect_unified_metrics_parallel_with_progress(bam_path, reference_path, params, contig_allowlist, &|_, _| {})
+    collect_unified_metrics_parallel_with_progress(bam_path, reference_path, params, contig_allowlist, &|_, _| {}, &CancelToken::none())
 }
 
 /// Worker threads for the per-contig fan-out. Defaults to all available cores capped at 12 —
@@ -249,6 +260,7 @@ pub fn collect_unified_metrics_parallel_with_progress(
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
     progress: &(dyn Fn(usize, usize) + Sync),
+    cancel: &CancelToken,
 ) -> Result<UnifiedMetricsResult, AnalysisError> {
     // The parallel path needs a coordinate index for per-contig region queries — a BAM `.bai` or a
     // CRAM `.crai`. Without one (unindexed BAM/CRAM) fall back to the sequential walker. A CRAM can't
@@ -261,6 +273,7 @@ pub fn collect_unified_metrics_parallel_with_progress(
             params,
             contig_allowlist,
             &mut |d, t| progress(d, t),
+            cancel,
         );
     }
     let skip_unmapped = reader::has_crai_index(bam_path); // CRAM: no unmapped-region query
@@ -322,6 +335,9 @@ pub fn collect_unified_metrics_parallel_with_progress(
     let perm_rx = std::sync::Mutex::new(perm_rx);
 
     let process_contig = |w: &Work| -> Result<ContigPartial, AnalysisError> {
+        // Bail before paying for this contig's reader + reference load. In-flight contigs stop at
+        // their own record-loop check inside `for_each`.
+        cancel.check()?;
         let (h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
         let region = Region::new(w.name.as_bytes().to_vec(), ..); // whole contig
 
@@ -353,7 +369,7 @@ pub fn collect_unified_metrics_parallel_with_progress(
                 last_pos: 0,
                 local_bp: 0,
             };
-            idx.for_each(&h, &region, &mut sink)?;
+            idx.for_each(&h, &region, &mut sink, cancel)?;
             (sink.autosome_reads, sink.x_reads, sink.local_bp)
         };
         // Flush this contig's unflushed bp tail so the counter reflects the whole contig walked.
@@ -378,7 +394,7 @@ pub fn collect_unified_metrics_parallel_with_progress(
         let mut sink = MetricsSink {
             rm: ReadMetricsState::default(),
         };
-        idx.for_each_unmapped(&mut sink)?;
+        idx.for_each_unmapped(&mut sink, cancel)?;
         Ok(sink.rm)
     };
 

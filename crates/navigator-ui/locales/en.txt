@@ -673,3 +673,6 @@ diagnosis.copyHint=Paste this into a bug report.
 diagnosis.copied=Diagnosis copied to the clipboard.
 diagnosis.copyFailed=Could not copy the diagnosis
 status.details=Details…
+analysis.cancelling=Cancelling…
+analysis.cancellingHint=Finishing the current step.
+analysis.cancelled=Cancelled.

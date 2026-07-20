@@ -75,6 +75,18 @@ pub enum AppError {
     Update(String),
 }
 
+impl AppError {
+    /// Whether this is a user-requested cancellation rather than a genuine failure.
+    ///
+    /// Cancellation travels as an error so it unwinds the walk from wherever it was, but callers
+    /// must be able to tell the two apart: a cancelled run holds a partial result that must not be
+    /// persisted, and the UI has to say "cancelled" instead of showing an error. Lives here rather
+    /// than in the UI so the layers above never have to reach past `navigator-app` for it.
+    pub fn is_cancellation(&self) -> bool {
+        matches!(self, AppError::Analysis(navigator_analysis::AnalysisError::Cancelled))
+    }
+}
+
 impl From<tokio::task::JoinError> for AppError {
     fn from(e: tokio::task::JoinError) -> Self {
         AppError::Join(e.to_string())

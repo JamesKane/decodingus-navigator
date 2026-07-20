@@ -660,3 +660,6 @@ diagnosis.copyHint=Pega esto en un informe de error.
 diagnosis.copied=Diagnóstico copiado al portapapeles.
 diagnosis.copyFailed=No se pudo copiar el diagnóstico
 status.details=Detalles…
+analysis.cancelling=Cancelando…
+analysis.cancellingHint=Terminando el paso actual.
+analysis.cancelled=Cancelado.

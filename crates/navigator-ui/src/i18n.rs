@@ -138,6 +138,9 @@ mod tests {
             "diagnosis.copied",
             "diagnosis.copyFailed",
             "status.details",
+            "analysis.cancelling",
+            "analysis.cancellingHint",
+            "analysis.cancelled",
         ] {
             for lang in [Lang::En, Lang::Es] {
                 assert_ne!(tr(lang, key), key, "{key} is untranslated for {lang:?}");

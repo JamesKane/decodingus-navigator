@@ -11,6 +11,7 @@
 
 pub mod ancestry;
 pub mod caller;
+pub mod cancel;
 pub mod contig;
 pub mod coverage;
 pub mod error;
@@ -50,4 +51,5 @@ pub mod testtype;
 pub mod unified;
 pub mod vcf;
 
+pub use cancel::CancelToken;
 pub use error::{guard_walk, AnalysisError};
