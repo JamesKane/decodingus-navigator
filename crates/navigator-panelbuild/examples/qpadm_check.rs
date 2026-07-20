@@ -17,7 +17,7 @@ fn main() -> anyhow::Result<()> {
     let panel = AncestryPanel::from_bytes(&std::fs::read(&panel_path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Sources = WHG/ANF/Steppe (in that order); outgroups = every other population.
-    let src_codes = ["WHG", "ANF", "Steppe"];
+    let src_codes = ["WHG", "EEF", "Steppe"];
     let sources: Vec<usize> = src_codes
         .iter()
         .map(|c| panel.populations.iter().position(|p| p == c).unwrap_or_else(|| panic!("panel missing source {c}")))

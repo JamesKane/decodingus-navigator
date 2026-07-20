@@ -72,10 +72,16 @@ log "CHM13 matrix: $(zcat < "$TMP/qpadm_chm13.matrix.tsv.gz" | wc -l) sites × $
 # 4. Build the AncestryPanel (per-population AF; floor 1 — outgroups are legitimately small, and the
 #    f4 jackknife accounts for the noise). Sources first, then outgroups, per --components/--outgroups.
 log "panelbuild ancient-panel (qpAdm: src $ANCIENT_COMPONENTS ; out $ANCIENT_OUTGROUPS) -> $QPADM_OUT"
+# --reference orients every site so REF = the actual CHM13 base (the matrix inherits hg19 allele
+# labels from the liftover BED, which are ~30% swapped relative to CHM13; docs §7.16). This makes the
+# asset CHM13-canonical and joinable with the other ancestry assets (super/fine/IBD).
+CHM13_FASTA="${CHM13_FASTA:-$RAW/chm13v2.0.fa}"
+[[ -s "$CHM13_FASTA" && -s "$CHM13_FASTA.fai" ]] || die "missing indexed CHM13 FASTA ($CHM13_FASTA[.fai]) — needed to orient the panel to CHM13"
 cargo run --release -q -p navigator-panelbuild -- ancient-panel \
   --matrix "$TMP/qpadm_chm13.matrix.tsv.gz" --samples "$TMP/qpadm.samples.txt" --pops "$TMP/qpadm.popmap.tsv" \
   --components "$ANCIENT_COMPONENTS" --outgroups "$ANCIENT_OUTGROUPS" \
   --min-called 1 --outgroup-min-called 1 \
+  --reference "$CHM13_FASTA" \
   --out "$QPADM_OUT" || die "qpAdm panel build failed"
 
 # Refresh the integrity manifest so the qpAdm asset gets a checksum (only when writing to the live

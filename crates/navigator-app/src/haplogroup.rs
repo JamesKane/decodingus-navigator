@@ -2504,44 +2504,24 @@ impl App {
         Ok(result)
     }
 
-    /// The subject's best CHM13 alignment for autosomal genotyping, chosen by **callable quality**
-    /// rather than raw depth: `genome_territory × pct_10x × (1 − pct_exc_mapq)` — an estimate of the
-    /// well-mapped, diploid-callable genome bases. This correctly prefers a clean whole-genome WGS
-    /// over a deep-but-*targeted* test (small territory × high MAPQ-exclusion) or a whole-genome test
-    /// too shallow to call diploid genotypes (low `pct_10x`). Requires a recorded BAM/CRAM and a
-    /// cached coverage artifact. `None` when the subject has no such CHM13 alignment.
-    async fn best_callable_chm13_alignment(&self, biosample_guid: SampleGuid) -> Result<Option<i64>, AppError> {
-        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
-        let mut best: Option<(f64, i64)> = None;
-        for a in &alignments {
-            if a.bam_path.is_none() || a.reference_build != "chm13v2.0" {
-                continue;
-            }
-            let Some(cov) = self.cached_coverage(a.id).await? else {
-                continue; // no coverage run → can't judge callability; skip rather than guess
-            };
-            let score = cov.genome_territory as f64 * cov.pct_10x * (1.0 - cov.pct_exc_mapq);
-            if best.as_ref().map_or(true, |(s, _)| score > *s) {
-                best = Some((score, a.id));
-            }
-        }
-        Ok(best.map(|(_, id)| id))
-    }
-
-    /// **Deep (ancient) ancestry via qpAdm** (docs/design/ancient-ancestry-rebuild.md §7.14) — the
-    /// validated WHG / EEF / Steppe breakdown.
+    /// **Deep (ancient) ancestry via qpAdm** (docs/design/ancient-ancestry-rebuild.md §7.14, §7.16) —
+    /// the validated WHG / EEF / Steppe breakdown.
     ///
-    /// Genotypes the subject's single best-callable CHM13 alignment
-    /// ([`Self::best_callable_chm13_alignment`]) at the ~1.15M full-1240k sites of the qpAdm panel
-    /// (the Patterson-2022 sources + sister outgroups) and fits `target = Σ wᵢ·sourcesᵢ` by qpAdm f4
-    /// ([`ancestry_analysis::estimate_qpadm_ancestry`]). The result is persisted under the consensus
-    /// pseudo-source. **Heavy** — a whole-genome genotyping pass over ~1.1M sites — so this is an
-    /// explicit, on-demand action, not part of the fast consensus ancestry path.
+    /// Consumes the subject's **autosomal consensus** ([`Self::build_autosomal_profile`]) — the same
+    /// multi-source object modern/fine ancestry uses. The consensus is built by the IBD panel's
+    /// per-build resolver, so it already pools every source **re-keyed to canonical CHM13**: WGS on
+    /// any reference (GRCh37/38 as well as CHM13) *and* consumer chips, with no alignment required.
+    /// That is why deep ancestry works multi-reference and chip-only — it inherits the frontend the
+    /// other estimates share. It fits `target = Σ wᵢ·sourcesᵢ` by qpAdm f4 over the (now
+    /// CHM13-canonical, §7.16) qpAdm panel and persists the result under the consensus pseudo-source.
+    ///
+    /// **Heavy** the first time — building the consensus genotypes every source at the full 1240k —
+    /// but it is cached and shared, so a subject who has run ordinary ancestry pays nothing here.
     ///
     /// Returns `Ok(None)` when the feature is gated off, the asset is not installed, the subject has
-    /// no adequately-callable CHM13 alignment (chip-only deep ancestry is future work), or the deep
-    /// model does not apply (non-European / model rejected / infeasible weights). `None` persists
-    /// nothing — that is what keeps an inapplicable breakdown off the UI *and* out of the PDS.
+    /// no autosomal data at all, or the deep model does not apply (non-European / model rejected /
+    /// infeasible weights). `None` persists nothing — keeping an inapplicable breakdown off the UI
+    /// *and* out of the PDS.
     pub async fn estimate_deep_ancestry(
         &self,
         biosample_guid: SampleGuid,
@@ -2561,72 +2541,32 @@ impl App {
             .ok_or_else(|| AppError::AncestryPanelMissing(super_path.clone()))?;
         let super_panel = AncestryPanel::from_bytes(&super_bytes)?;
 
-        // Genotype the subject's single best-*callable* CHM13 alignment at the panel sites. One
-        // whole-genome alignment carries ~all 1.15M sites, which is what the qpAdm f4 model needs —
-        // the stability gate validated a single WGS at these sites (docs §7.15) — so there is no need
-        // to genotype and reconcile every alignment (4 full-genome scans for no gain). We use
-        // `genotype_sites_all_contigs` directly, NOT the consensus reconcile: the latter returns only
-        // *variant* sites, dropping every hom-ref (dosage-0) site, which would bias the fit.
-        let Some(aln_id) = self.best_callable_chm13_alignment(biosample_guid).await? else {
-            return Ok(None); // no adequately-callable CHM13 BAM/CRAM (chip-only path is future work)
+        // The pooled autosomal consensus (all sources, any build + chips, canonical CHM13, full 0/1/2
+        // dosages) — built on demand and cached. Both the scope gate and the qpAdm fit read the *same*
+        // genotypes; every panel here is CHM13-canonical (§7.16), so no per-site re-keying is needed.
+        let profile = match self.cached_autosomal_profile(biosample_guid).await? {
+            Some(p) => p,
+            None => self.build_autosomal_profile(biosample_guid).await?,
         };
-        let (bam, reference) = self.alignment_bam_reference(aln_id).await?;
-        // Reusable: genotype this alignment at an arbitrary panel's sites, using **that panel's own**
-        // ref/alt orientation. This matters — the qpAdm panel and the super-pop AIM panel overlap but
-        // ~1/3 of shared sites are ref/alt-swapped, so a genotype's dosage only means "alt copies" for
-        // the panel it was called against. Reusing one panel's dosages against the other flips those
-        // sites and corrupts the estimate (the bug this replaced).
-        let sites_of = |p: &AncestryPanel| -> Vec<navigator_analysis::caller::Site> {
-            p.sites
-                .iter()
-                .map(|s| navigator_analysis::caller::Site {
-                    name: String::new(),
-                    contig: s.contig.clone(),
-                    position: s.position,
-                    reference_allele: s.reference_allele.to_string(),
-                    alternate_allele: s.alternate_allele.to_string(),
-                })
-                .collect()
-        };
-        let genotype_at = |sites: Vec<navigator_analysis::caller::Site>| {
-            let (bam, reference) = (bam.clone(), reference.clone());
-            async move {
-                tokio::task::spawn_blocking(move || {
-                    navigator_analysis::caller::genotype_sites_all_contigs(
-                        &bam,
-                        &sites,
-                        2,
-                        &navigator_analysis::caller::HaploidCallerParams::default(),
-                        Some(&reference),
-                    )
-                })
-                .await?
-                .map_err(AppError::from)
-            }
-        };
-
-        // Scope gate FIRST, on the cheap 20k AIM panel (its own orientation): a deep three-way is a
-        // West-Eurasian model, so bail here for non-Europeans before the expensive 1.15M-site pass.
-        let super_geno = genotype_at(sites_of(&super_panel)).await?;
-        let reference_version_c = reference_version.clone();
-        let modern = tokio::task::spawn_blocking(move || {
-            ancestry_analysis::estimate_admixture(&super_geno, &super_panel, &reference_version_c)
-        })
-        .await?;
-        if ancestry_analysis::west_eurasian_share(&modern) < 50.0 {
-            return Ok(None);
+        let genotypes = consensus_genotypes(&profile);
+        if genotypes.is_empty() {
+            return Ok(None); // no autosomal data to genotype (chip or WGS)
         }
 
-        // In scope → genotype the full 1.15M qpAdm sites (its own orientation) and fit qpAdm f4.
-        let qpadm_geno = genotype_at(sites_of(&panel)).await?;
         let n_pops = panel.populations.len();
         let result = tokio::task::spawn_blocking(move || {
+            // Scope gate: a deep three-way is a West-Eurasian model, so refuse non-Europeans. Uses
+            // the same consensus genotypes, scored against the (canonical) super-pop AIM panel.
+            let modern = ancestry_analysis::estimate_admixture(&genotypes, &super_panel, &reference_version);
+            if ancestry_analysis::west_eurasian_share(&modern) < 50.0 {
+                return None;
+            }
             // Committed Patterson layout: the first three populations are the sources, the rest the
             // sister outgroups.
             let sources: Vec<usize> = (0..3).collect();
             let outgroups: Vec<usize> = (3..n_pops).collect();
             ancestry_analysis::estimate_qpadm_ancestry(
-                &qpadm_geno,
+                &genotypes,
                 &panel,
                 &sources,
                 &outgroups,

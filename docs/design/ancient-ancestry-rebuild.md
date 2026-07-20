@@ -754,3 +754,41 @@ same-person genotyping concordance, Patterson sister-outgroups resolving WHG to 
 The remaining work is purely engineering — wiring the full-1240k genotyping + `qpadm_fit` + a persisted
 1240k ancient asset into the app path, and catalog entries for the new component codes (tasks 4-5).
 `ANCIENT_ANCESTRY_ENABLED` can flip once that path is in place and re-checks this gate end-to-end.
+
+### 7.16 Panel orientation + the frontend/backend architecture (multi-ref + chip)
+
+Wiring deep ancestry to GRCh37/38 alignments and chips surfaced how the ancestry assets actually fit
+together — and a build bug in the qpAdm asset.
+
+**The architecture is a frontend/backend split.** The `IbdPanel` asset is the full-1240k
+(1,231,935 sites) **multi-build genotyping frontend**: it carries per-build loci (100% GRCh37, 100%
+GRCh38, + CHM13) and rsIDs, with `resolve_alignment(build, …)` / `resolve_chip(build, …)` that re-key
+any-build WGS *and* chips to canonical CHM13. It builds the **autosomal consensus** (`DiploidProfile`)
+pooling every source. The frequency panels (`AncestryPanel`: super-pop 20k AIM, fine, qpAdm 1240k) are
+**CHM13-only scoring backends**. Modern super-pop + fine ancestry already work across all three
+references and chips *because they score the IBD-resolved consensus*. Deep ancestry was CHM13-WGS-only
+only because `estimate_deep_ancestry` **bypassed the frontend** and genotyped one alignment directly at
+the qpAdm sites.
+
+**The orientation bug.** REF at a site is fixed by the reference base, so on one reference two panels
+cannot legitimately disagree — yet the qpAdm asset was ref/alt-swapped vs the IBD panel at ~30% of
+shared sites (339,297 of 1,149,621). Cause: `06_build_qpadm_panel.sh` read allele labels from the
+1240k **CHM13 BED**, but that BED came from lifting the sites **hg19→CHM13** — the liftover moved the
+*position* to CHM13 but kept the *hg19 allele labels*. At the ~30% of sites where CHM13 carries the
+hg19-ALT base, REF/ALT are labelled backwards. Proven three ways: at every swapped site the actual
+CHM13 FASTA base equals the **IBD** REF (not qpAdm's); the super/fine/IBD assets are mutually
+0-swapped (all built from native-CHM13 VCFs, REF = reference base); only the lifted-BED qpAdm asset is
+offset. It did **not** break the fit (14.6/44.8/40.6) because it was self-consistent — source freqs
+and target dosages both counted the same (mis-labelled) ALT, and f4 is invariant under a consistent
+flip — but the wrong labels break any cross-panel join.
+
+**Fix.** `panelbuild ancient-panel --reference <chm13.fa>` orients every site so `reference_allele` is
+the actual CHM13 base (swap ref↔alt and each freq→1−freq where reversed; drop sites matching neither).
+Stage 6 passes the CHM13 FASTA. The rebuilt asset is CHM13-canonical (0-swapped vs the other assets)
+and the fit is unchanged. There is **no** systemic "no canonical orientation" gap — it was one build
+bug in the one asset built off a lifted sites file.
+
+**Consequence.** With the qpAdm asset canonical, `estimate_deep_ancestry` consumes the autosomal
+**consensus** (like modern ancestry) instead of genotyping one alignment — an orientation-free join
+that delivers GRCh37/38 alignments *and* chip-only subjects for free, reusing the cached, proven
+frontend. (The earlier single-best-callable-alignment path was a CHM13-WGS-only stopgap.)

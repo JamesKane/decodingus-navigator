@@ -47,9 +47,10 @@ pub enum Command {
     /// consensus, each source alone, and thinned site sets. The stability gate: a 30x WGS and a
     /// consumer chip must agree, or the estimate is tracking the assay, not the donor.
     DebugAncient(ShowArgs),
-    /// Deep (ancient) ancestry via qpAdm: genotype the subject's CHM13 alignment(s) at the full
-    /// 1240k and fit WHG/EEF/Steppe (Patterson-2022 config). Heavy (genotypes ~1.15M sites); persists
-    /// the result. See `navigator_app::App::estimate_deep_ancestry`.
+    /// Deep (ancient) ancestry via qpAdm: fit WHG/EEF/Steppe (Patterson-2022 config) over the
+    /// subject's pooled autosomal consensus (all WGS — any reference — plus chips). Builds the
+    /// consensus on first use (~1.15M sites), then persists. See
+    /// `navigator_app::App::estimate_deep_ancestry`.
     DeepAncestry(ShowArgs),
     /// Per-marker branch report: the sample's genotype at every defining marker of a Y/mtDNA tree
     /// node's descendant subtree (observed base + derived/ancestral status + evidence). For

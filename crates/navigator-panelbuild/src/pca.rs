@@ -104,6 +104,13 @@ pub struct AncientPanelArgs {
     /// Also write an inspection TSV (contig, pos, ref, alt, per-pop AF and called count).
     #[arg(long)]
     sites_tsv: Option<PathBuf>,
+    /// CHM13 reference FASTA (indexed, `.fai` alongside). When given, each site is oriented so its
+    /// `reference_allele` is the **actual CHM13 base** (swapping ref↔alt and each freq→1−freq where
+    /// the input labels are reversed). Without this, a panel built off a *lifted* sites file inherits
+    /// the source build's allele labels, which are ~30% swapped relative to CHM13 — self-consistent
+    /// for its own fit, but NOT joinable with the other CHM13-canonical assets (docs §7.16).
+    #[arg(long)]
+    reference: Option<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -702,6 +709,47 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
         !sites.is_empty(),
         "no site cleared every population's call floor — lower --min-called/--outgroup-min-called or widen the groups",
     );
+
+    // Orient every site so reference_allele == the actual CHM13 base (docs §7.16). Sites are in
+    // matrix order (sorted by contig, then pos), so we load each contig's sequence once. Where the
+    // labels are reversed (CHM13 carries the labelled ALT), swap ref↔alt and flip each freq→1−freq;
+    // where neither allele matches the base (a liftover/allele mismatch), drop the site.
+    if let Some(ref_path) = &args.reference {
+        let mut cur = String::new();
+        let mut seq: Vec<u8> = Vec::new();
+        let (mut flipped, mut dropped) = (0usize, 0usize);
+        let mut oriented = Vec::with_capacity(sites.len());
+        for mut s in sites.into_iter() {
+            if s.contig != cur {
+                seq = navigator_analysis::reader::read_contig_sequence(ref_path, &s.contig)
+                    .map_err(|e| anyhow::anyhow!("reading {} from {}: {e}", s.contig, ref_path.display()))?;
+                cur = s.contig.clone();
+            }
+            let base = seq
+                .get((s.position - 1) as usize)
+                .map(|b| b.to_ascii_uppercase() as char)
+                .unwrap_or('N');
+            if base == s.reference_allele {
+                // already canonical
+            } else if base == s.alternate_allele {
+                std::mem::swap(&mut s.reference_allele, &mut s.alternate_allele);
+                for f in s.freqs.iter_mut() {
+                    *f = 1.0 - *f;
+                }
+                flipped += 1;
+            } else {
+                dropped += 1;
+                continue;
+            }
+            oriented.push(s);
+        }
+        eprintln!(
+            "CHM13-oriented {} sites: {flipped} ref/alt-swapped, {dropped} dropped (base matched neither allele)",
+            oriented.len()
+        );
+        sites = oriented;
+        anyhow::ensure!(!sites.is_empty(), "no site survived CHM13 orientation — wrong reference?");
+    }
 
     let panel = AncestryPanel {
         build: "chm13v2.0".to_string(),
