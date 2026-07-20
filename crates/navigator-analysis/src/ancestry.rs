@@ -625,6 +625,14 @@ const ANCIENT_MAX_DISPERSION: f64 = 4.0;
 /// deep ancestry only runs for samples the modern model already calls predominantly European.
 const ANCIENT_MIN_WEST_EURASIAN: f64 = 50.0;
 
+/// qpAdm model-fit acceptance: report the deep breakdown only when the model is **not rejected** at
+/// this tail probability (docs/design/ancient-ancestry-rebuild.md §7.14). The garbage fits the gate
+/// exists to suppress reject at p ≈ 1e-13; a real British WGS/chip accepts at p ≈ 0.15–0.21.
+const QPADM_MIN_P: f64 = 0.05;
+/// Tolerance for the "weights are valid proportions" check — a fit that needs a source weight outside
+/// `[0,1]` is the model failing, not a small numerical overshoot.
+const QPADM_WEIGHT_TOL: f64 = 0.02;
+
 /// Estimate **deep ancestral (ancient) source proportions** — the Western Hunter-Gatherer /
 /// Anatolian Farmer / Steppe pastoralist decomposition — by the same supervised allele-frequency
 /// admixture EM as [`estimate_admixture`], over the dedicated ancient frequency panel
@@ -710,6 +718,54 @@ pub fn ancient_admixture_fit(
     result.method = ANCIENT_ADMIXTURE.to_string();
     result.panel_type = "ancient".to_string();
     result.fit_distance = Some(ancient_dispersion(genotypes, ancient_panel, &q));
+    Some(result)
+}
+
+/// The **app-facing deep-ancestry estimator** (docs/design/ancient-ancestry-rebuild.md §7.14): fit
+/// `target = Σ wᵢ · sourcesᵢ` by qpAdm f4 and return it as an [`AncestryResult`] over the source
+/// components (WHG / EEF / Steppe), or `None` when the deep model does not apply.
+///
+/// `sources` and `outgroups` are indices into `panel.populations` — the committed Patterson-2022
+/// config: sources first (WHG/EEF/Steppe), then the sister outgroups. Gates, all of which must pass:
+/// the sample is West-Eurasian (`modern`, [`ANCIENT_MIN_WEST_EURASIAN`]); enough sites were genotyped
+/// ([`ANCIENT_MIN_SITES`]); the qpAdm model is **not rejected** (`p ≥` [`QPADM_MIN_P`]); and the
+/// weights are feasible proportions ([`QPADM_WEIGHT_TOL`]). `None` must stay `None` all the way to the
+/// UI/PDS — an inapplicable or rejected fit is reported as nothing, never as confident percentages.
+///
+/// This supersedes [`estimate_ancient_admixture`] (the frequency-mixture EM, which failed the
+/// WGS-vs-chip stability gate); the model-fit **p-value** rides out on `fit_distance`.
+pub fn estimate_qpadm_ancestry(
+    genotypes: &[SiteGenotype],
+    panel: &AncestryPanel,
+    sources: &[usize],
+    outgroups: &[usize],
+    modern: &AncestryResult,
+    reference_version: &str,
+) -> Option<AncestryResult> {
+    if west_eurasian_share(modern) < ANCIENT_MIN_WEST_EURASIAN {
+        return None;
+    }
+    let fit = qpadm_fit(genotypes, panel, sources, outgroups, F4_BLOCK_BP)?;
+    if fit.n_sites < ANCIENT_MIN_SITES || fit.p_value < QPADM_MIN_P || !fit.weights_feasible(QPADM_WEIGHT_TOL) {
+        return None;
+    }
+    // Report the source weights as an admixture result (clamp the tiny negative overshoots the
+    // feasibility gate already bounded to ≥ −tol). `from_probabilities` renormalizes.
+    let probs: Vec<(String, f64)> = sources
+        .iter()
+        .zip(&fit.weights)
+        .map(|(&i, &w)| (panel.populations[i].clone(), w.max(0.0)))
+        .collect();
+    let mut result = from_probabilities(
+        ANCIENT_ADMIXTURE,
+        "ancient",
+        panel.sites.len(),
+        fit.n_sites,
+        &probs,
+        0.9,
+        reference_version,
+    );
+    result.fit_distance = Some(fit.p_value);
     Some(result)
 }
 
@@ -1994,5 +2050,31 @@ mod tests {
             "deficient model must be rejected, p = {:.4}",
             deficient.p_value
         );
+    }
+
+    /// The app-facing `estimate_qpadm_ancestry`: reports the source weights for a well-specified
+    /// European fit, and gates on both scope (non-European → None) and model-fit (deficient → None).
+    #[test]
+    fn estimate_qpadm_ancestry_reports_european_and_gates_the_rest() {
+        let truth = [0.5, 0.3, 0.2];
+        let (panel, genos) = qpadm_graph(20_000, truth, 20_240_717);
+        let outgroups = [3usize, 4, 5, 6, 7, 8];
+
+        let r = estimate_qpadm_ancestry(&genos, &panel, &[0, 1, 2], &outgroups, &modern_eur(95.0), "t")
+            .expect("a well-specified European fit is reported");
+        assert_eq!(r.method, ANCIENT_ADMIXTURE);
+        assert_eq!(r.panel_type, "ancient");
+        // Recovered within the underlying qpAdm test's tolerance (~8 pts), and correctly ordered.
+        for (code, want) in [("S1", 50.0), ("S2", 30.0), ("S3", 20.0)] {
+            assert!((pct(&r, code) - want).abs() < 9.0, "{code}: {:.1} vs {want}", pct(&r, code));
+        }
+        assert!(pct(&r, "S1") > pct(&r, "S2") && pct(&r, "S2") > pct(&r, "S3"), "order preserved");
+        let p = r.fit_distance.expect("p-value on fit_distance");
+        assert!((0.0..=1.0).contains(&p), "p={p}");
+
+        // Scope gate: a mostly-non-European sample gets nothing, even though the arithmetic fits.
+        assert!(estimate_qpadm_ancestry(&genos, &panel, &[0, 1, 2], &outgroups, &modern_eur(20.0), "t").is_none());
+        // Model-fit gate: a source-deficient model is rejected by the p-value.
+        assert!(estimate_qpadm_ancestry(&genos, &panel, &[0, 1], &outgroups, &modern_eur(95.0), "t").is_none());
     }
 }
