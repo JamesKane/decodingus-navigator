@@ -730,3 +730,27 @@ Steppe/HG axis — its 12 % Steppe contradicts the qpAdm literature, which puts 
 Remaining before `ANCIENT_ANCESTRY_ENABLED = true`: the WGS-vs-chip stability gate on this config, and
 wiring the full-1240k genotyping + `qpadm_fit` into the app path (tasks 4-5). New component codes
 (`EEF`, `AnatoliaOG`, etc.) will need catalog entries in `navigator-domain::ancestry` for display.
+
+### 7.15 Stability gate PASSES — WGS vs chip agree to 0.3%
+
+The one gate every earlier attempt failed (§5.4-1): the same person, genotyped two independent ways,
+must agree. Ran `huF98AFD`'s 23andMe chip (606 k sites ∩ 1240k) through the *identical* Patterson
+config + our `qpadm_fit`:
+
+| component | WGS (full 1240k) | CHIP (23andMe) | Δ |
+|---|---|---|---|
+| WHG | 14.6 % | 14.3 % | 0.3 |
+| EEF | 44.8 % | 44.9 % | 0.1 |
+| Steppe | 40.6 % | 40.8 % | 0.2 |
+| model | accepted p=0.21 | accepted p=0.16 | |
+
+**WGS and chip agree to ≤0.3 % on every component.** The original frequency-EM (§3.1) had this exact
+subject at 80 % Steppe from WGS vs 58 % from chip — a ~22-point split that defined the whole problem.
+It is now ~0.3 points. The method is stable across data sources.
+
+**Deep ancestry is fully validated on real data:** validated estimator (= ADMIXTOOLS), 99.84 %
+same-person genotyping concordance, Patterson sister-outgroups resolving WHG to the academic ~15 %,
+±1–2 % precision, our `qpadm_fit` = the oracle, and now the WGS-vs-chip stability gate passing to 0.3 %.
+The remaining work is purely engineering — wiring the full-1240k genotyping + `qpadm_fit` + a persisted
+1240k ancient asset into the app path, and catalog entries for the new component codes (tasks 4-5).
+`ANCIENT_ANCESTRY_ENABLED` can flip once that path is in place and re-checks this gate end-to-end.
