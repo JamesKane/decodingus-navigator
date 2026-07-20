@@ -1150,6 +1150,7 @@ impl NavigatorApp {
                     self.publishing = false;
                     self.finding_private_y = false;
                     self.estimating_donor_ancestry = false;
+                    self.estimating_deep_ancestry = false;
                     self.y_profile_loading = false;
                     self.painting_running = false;
                     self.running_sex = false;

@@ -792,3 +792,24 @@ bug in the one asset built off a lifted sites file.
 **consensus** (like modern ancestry) instead of genotyping one alignment — an orientation-free join
 that delivers GRCh37/38 alignments *and* chip-only subjects for free, reusing the cached, proven
 frontend. (The earlier single-best-callable-alignment path was a CHM13-WGS-only stopgap.)
+
+### 7.17 Consensus contract + a note on progressive consensus (design direction)
+
+Deep ancestry now **requires** the autosomal consensus (errors "build the autosomal consensus first"
+when absent), the same contract as modern/fine ancestry and painting — rather than building it
+silently on demand. The heavy full-1240k genotyping happens once, in the shared Autosomal-tab build
+(which streams progress); every downstream estimate (modern, fine, deep, painting) is then a fast read
+over the cached `DiploidProfile`.
+
+**Design direction (not yet built): make the consensus *progressive*.** Today the autosomal consensus
+is a single on-demand build that genotypes every source at 1240k in one pass. It would be better for
+each **batch import** to incrementally contribute its genotypes as it processes — Y-DNA, mtDNA, and the
+autosomal **panel** (1240k) sites — so the consensus accumulates during ingest instead of a separate
+heavy step afterwards. The building blocks already exist: `ibd_panel_dosages` resolves any source
+(any build, or a chip) to canonical CHM13 panel dosages, and `reconcile_diploid` pools per-source
+observations by site — it is already an incremental reducer (add a source's obs, re-vote). The work is
+to (a) genotype+persist each imported source's 1240k panel dosages during batch processing (as the Y/mt
+placements already are), and (b) have the consensus be an *update* over the accumulated per-source
+dosages rather than a from-scratch genotyping pass. Then deep/modern ancestry need no build step at all
+after import — the consensus is always current. Scope: the import/batch pipeline + a per-source panel
+dosage store; deferred pending a decision to take it on.

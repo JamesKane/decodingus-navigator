@@ -2515,13 +2515,14 @@ impl App {
     /// other estimates share. It fits `target = Σ wᵢ·sourcesᵢ` by qpAdm f4 over the (now
     /// CHM13-canonical, §7.16) qpAdm panel and persists the result under the consensus pseudo-source.
     ///
-    /// **Heavy** the first time — building the consensus genotypes every source at the full 1240k —
-    /// but it is cached and shared, so a subject who has run ordinary ancestry pays nothing here.
+    /// **Requires** the autosomal consensus (errors if absent — build it via the Autosomal tab, same
+    /// contract as modern ancestry). Given it, this is a fast fit over cached genotypes; the heavy
+    /// full-1240k genotyping happens once, in the shared consensus build.
     ///
-    /// Returns `Ok(None)` when the feature is gated off, the asset is not installed, the subject has
-    /// no autosomal data at all, or the deep model does not apply (non-European / model rejected /
-    /// infeasible weights). `None` persists nothing — keeping an inapplicable breakdown off the UI
-    /// *and* out of the PDS.
+    /// Returns `Ok(None)` when the feature is gated off, the asset is not installed, the consensus has
+    /// no autosomal calls, or the deep model does not apply (non-European / model rejected / infeasible
+    /// weights). `None` persists nothing — keeping an inapplicable breakdown off the UI *and* out of
+    /// the PDS.
     pub async fn estimate_deep_ancestry(
         &self,
         biosample_guid: SampleGuid,
@@ -2542,15 +2543,16 @@ impl App {
         let super_panel = AncestryPanel::from_bytes(&super_bytes)?;
 
         // The pooled autosomal consensus (all sources, any build + chips, canonical CHM13, full 0/1/2
-        // dosages) — built on demand and cached. Both the scope gate and the qpAdm fit read the *same*
-        // genotypes; every panel here is CHM13-canonical (§7.16), so no per-site re-keying is needed.
-        let profile = match self.cached_autosomal_profile(biosample_guid).await? {
-            Some(p) => p,
-            None => self.build_autosomal_profile(biosample_guid).await?,
-        };
+        // dosages). **Required**, not built on demand — same contract as modern ancestry: the heavy
+        // build runs through the Autosomal-tab flow (with progress), and this is a fast read over it.
+        // Both the scope gate and the qpAdm fit read the *same* genotypes; every panel here is
+        // CHM13-canonical (§7.16), so no per-site re-keying is needed.
+        let profile = self.cached_autosomal_profile(biosample_guid).await?.ok_or_else(|| {
+            AppError::Import("build the autosomal consensus first (Autosomal tab) before estimating deep ancestry".into())
+        })?;
         let genotypes = consensus_genotypes(&profile);
         if genotypes.is_empty() {
-            return Ok(None); // no autosomal data to genotype (chip or WGS)
+            return Ok(None); // consensus exists but has no autosomal calls
         }
 
         let n_pops = panel.populations.len();

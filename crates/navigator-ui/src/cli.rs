@@ -48,8 +48,8 @@ pub enum Command {
     /// consumer chip must agree, or the estimate is tracking the assay, not the donor.
     DebugAncient(ShowArgs),
     /// Deep (ancient) ancestry via qpAdm: fit WHG/EEF/Steppe (Patterson-2022 config) over the
-    /// subject's pooled autosomal consensus (all WGS — any reference — plus chips). Builds the
-    /// consensus on first use (~1.15M sites), then persists. See
+    /// subject's pooled autosomal consensus (all WGS — any reference — plus chips). Requires the
+    /// consensus to be built first (see the Autosomal tab / `ingest`), then persists. See
     /// `navigator_app::App::estimate_deep_ancestry`.
     DeepAncestry(ShowArgs),
     /// Per-marker branch report: the sample's genotype at every defining marker of a Y/mtDNA tree

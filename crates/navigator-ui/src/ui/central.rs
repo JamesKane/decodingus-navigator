@@ -427,13 +427,9 @@ impl NavigatorApp {
                                     .clicked()
                                 {
                                     self.estimating_deep_ancestry = true;
-                                    // Fast when the autosomal consensus is already built (a fit over
-                                    // cached genotypes); otherwise it builds the genome profile first.
-                                    self.status = if self.auto_profile.is_some() {
-                                        "Estimating deep ancestry (qpAdm)…".into()
-                                    } else {
-                                        "Building genome profile, then estimating deep ancestry (~1–2 min)…".into()
-                                    };
+                                    // A fast fit over the (required) autosomal consensus; if it hasn't
+                                    // been built the estimate errors, same as modern ancestry.
+                                    self.status = "Estimating deep ancestry (qpAdm)…".into();
                                     let _ = self.tx.send(Command::EstimateDeepAncestry { biosample_guid: guid });
                                 }
                                 if self.estimating_deep_ancestry {
