@@ -207,6 +207,9 @@ impl App {
             || lower.ends_with(".vcf")
             || lower.ends_with(".vcf.gz")
             || lower.ends_with(".vcf.bgz")
+            || lower.ends_with(".geno")
+            || lower.ends_with(".snp")
+            || lower.ends_with(".ind")
             || [".fasta", ".fa", ".fna", ".fas", ".fasta.gz", ".fa.gz", ".fna.gz"]
                 .iter()
                 .any(|e| lower.ends_with(e));
@@ -238,6 +241,9 @@ impl App {
             }
             DetectedData::MtdnaFasta => {
                 self.import_mtdna_from_fasta(biosample_guid, path).await?;
+            }
+            DetectedData::EigenstratCallSet => {
+                self.import_callset_from_file(biosample_guid, path).await?;
             }
             DetectedData::Alignment => {
                 self.import_alignment_file(biosample_guid, path, test_type).await?;
@@ -912,6 +918,83 @@ impl App {
         let tuples: Vec<(String, i64, char, char)> =
             calls.into_iter().map(|c| (c.contig, c.position, c.a1, c.a2)).collect();
         Ok(panel.resolve_chip(&from_build, &tuples))
+    }
+
+    /// Import a trusted external caller's autosomal **1240K EIGENSTRAT call set**
+    /// (`.geno`/`.snp`/`.ind`) for a subject — the autosomal counterpart to the Y/mt GVCF sidecar
+    /// fast path. Resolves the target individual's genotypes to canonical CHM13 panel dosages (no
+    /// CRAM decode; `resolve_chip` self-orients against the CHM13 alleles), persists them as an
+    /// `external` source, and refreshes the autosomal consensus so modern/fine/deep ancestry and IBD
+    /// pick them up. `path` may point at any member of the triplet (siblings resolved by basename).
+    /// The `.snp` build is GRCh37 (AADR 1240K) unless `NAVIGATOR_CALLSET_BUILD` overrides it. Returns
+    /// the number of resolved panel sites.
+    pub async fn import_callset_from_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<usize, AppError> {
+        // Resolve the triplet from any member by shared basename.
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| AppError::Import(format!("{}: not an EIGENSTRAT file name", path.display())))?;
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let geno = dir.join(format!("{stem}.geno"));
+        let snp = dir.join(format!("{stem}.snp"));
+        let ind = dir.join(format!("{stem}.ind"));
+        for (ext, p) in [("geno", &geno), ("snp", &snp), ("ind", &ind)] {
+            if !p.is_file() {
+                return Err(AppError::Import(format!(
+                    "EIGENSTRAT .{ext} not found for {} (expected {})",
+                    path.display(),
+                    p.display()
+                )));
+            }
+        }
+
+        // AADR 1240K is GRCh37/hg19; allow a GRCh38-built call set via the env override.
+        let build = std::env::var("NAVIGATOR_CALLSET_BUILD").unwrap_or_else(|_| "GRCh37".to_string());
+        let (g, s, i, b) = (geno.clone(), snp.clone(), ind.clone(), build.clone());
+        let callset =
+            tokio::task::spawn_blocking(move || navigator_analysis::callset::read_eigenstrat(&g, &s, &i, None, &b))
+                .await??;
+
+        // Resolve to canonical CHM13 panel dosages (same path as a chip; self-orients to CHM13).
+        let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
+        let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
+            AppError::Import(format!(
+                "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
+                panel_path.display()
+            ))
+        })?;
+        let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+        let dosages = panel.resolve_chip(&callset.build, &callset.calls);
+        let site_count = dosages.len();
+        if site_count == 0 {
+            return Err(AppError::Import(format!(
+                "the call set resolved to 0 panel sites — check the build (got {} genotypes on {}; \
+                 set NAVIGATOR_CALLSET_BUILD if it is not GRCh37)",
+                callset.calls.len(),
+                callset.build
+            )));
+        }
+
+        let label = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "external call set".into());
+        let json = serde_json::to_string(&dosages).map_err(|e| AppError::Import(format!("serializing dosages: {e}")))?;
+        let row = navigator_store::external_panel_dosage::StoredPanelDosage {
+            biosample_guid: biosample_guid.0.to_string(),
+            source_label: format!("{label} (1240K call set)"),
+            provenance: navigator_domain::reconciliation::CallProvenance::External.as_str().to_string(),
+            panel_sig: Some(ibd_panel_cache_kind()),
+            site_count: site_count as i64,
+            dosages: json,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        navigator_store::external_panel_dosage::upsert(self.store.pool(), &row).await?;
+
+        // Fold into the autosomal consensus immediately — cheap, no decode (best-effort: a subject
+        // with no panel asset can still have recorded the source for a later build).
+        let _ = self.refresh_autosomal_consensus(biosample_guid).await;
+        Ok(site_count)
     }
 
     /// IBD comparison over the **chip-compatible IBD panel** for two samples that may each be a

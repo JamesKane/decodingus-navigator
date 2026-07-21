@@ -2008,6 +2008,21 @@ impl App {
             }
         }
 
+        // One source per imported **external autosomal call set** (a trusted 1240K EIGENSTRAT set —
+        // GATK4 / pileupCaller). Resolved to CHM13 panel dosages at import and stored, so it pools in
+        // with no CRAM decode (available to both the full build and the progressive refresh).
+        for row in navigator_store::external_panel_dosage::list_for_biosample(self.store.pool(), biosample_guid).await? {
+            match serde_json::from_str::<Vec<SiteGenotype>>(&row.dosages) {
+                Ok(gts) => {
+                    let obs = to_obs(gts);
+                    if !obs.is_empty() {
+                        sources.push((row.source_label, SourceType::Imported, obs));
+                    }
+                }
+                Err(e) => last_err = Some(AppError::Import(format!("decoding external panel dosages: {e}"))),
+            }
+        }
+
         if sources.is_empty() {
             if let Some(e) = last_err {
                 return Err(e); // e.g. the IBD panel asset isn't built yet

@@ -1,8 +1,8 @@
 # External-caller precedence + autosomal sidecar fast path
 
-Status: **Phases 1–3 landed** (provenance + reconcile precedence + guards + backfill migration +
-`reingest-external` CLI; observation-pooling now GVCF-sourced; Preferences toggle + "Compare
-callers" diagnostic). Phases 4–5 (autosomal ingest) not started.
+Status: **Phases 1–4 landed** (Part 1 haplogroup precedence complete; Part 2 autosomal ingest:
+EIGENSTRAT 1240K call set → CHM13 panel dosages → consensus → ancestry/IBD). Phase 5 (GATK4
+autosomal gVCF into the same sink) not started.
 Scope: `navigator-store` (provenance/migration), `navigator-analysis` (call-set reader,
 diploid gVCF), `navigator-app` (reconcile precedence, ingest, guards, observation pooling),
 `navigator-ui` (Preferences toggle, "Compare callers" action).
@@ -210,6 +210,7 @@ This is the opt-in audit that replaces the automatic secondary walk we chose *no
    external alignments. **DONE** — see §11.
 3. **Preferences toggle + "Compare callers"** UI (§3, §6). **DONE** — see §12.
 4. **Autosomal call-set reader + ingest** (Part 2, 1240K first) → consensus → ancestry/IBD.
+   **DONE** — see §13.
 5. **Autosomal gVCF** (GATK4 diploid) as a second call-set source into the same sink.
 
 Phase 1 alone resolves the reported bug; 4 delivers the autosomal fast path.
@@ -322,4 +323,44 @@ Landed on `feat/external-caller-precedence`; clippy clean; i18n parity + app sui
 
 **Not in Phases 1–3:** autosomal external ingest — the 1240K EIGENSTRAT/pileupCaller call-set reader
 → `reconcile_diploid` → consensus → ancestry/IBD (§5, Phases 4–5).
+
+## 13. Phase 4 — as built
+
+Landed on `feat/external-caller-precedence`. The autosomal counterpart to the Y/mt sidecar fast path:
+an external 1240K **EIGENSTRAT** call set drives modern/fine/deep ancestry + IBD with **no CRAM
+decode**, reusing the existing 1240K frontend/consensus (deep-ancestry §7.16–7.18).
+
+- **Reader** — `navigator_analysis::callset::read_eigenstrat(geno, snp, ind, sample, build)` streams a
+  `.geno`/`.snp`/`.ind` triplet for one target individual → `(contig, pos, a1, a2)` diploid allele
+  pairs on the call set's build (GRCh37 default = AADR 1240K). `.geno` value = count of the first
+  `.snp` allele; pseudo-haploid `0`/`2` come through as valid homozygous pairs (no het synthesis).
+  Autosomes only; 4 unit tests.
+- **Panel resolution — reuses `IbdPanel::resolve_chip`.** The allele pairs go straight through the
+  chip path, which re-keys to canonical CHM13 and **self-orients** against the CHM13 alleles (so the
+  EIGENSTRAT ref/alt labelling and the §7.16 strand issue are handled for free). No new resolver, no
+  pseudo-haploid flag needed — a homozygous observation is just dosage 0/2.
+- **Persistence** — new store table `external_panel_dosage` (migration `0037`; one row per
+  `(biosample, source_label)`, `provenance='external'`, `dosages` = resolved `Vec<SiteGenotype>` JSON).
+  This is the design §5.2 per-source dosage sink the map found was missing for non-alignment sources.
+  `store::external_panel_dosage` {upsert, list_for_biosample, delete_for_biosample}; store round-trip test.
+- **Import** — `App::import_callset_from_file(guid, path)`: resolve the triplet by basename, read →
+  `resolve_chip` → store → `refresh_autosomal_consensus`. Detected via `DetectedData::EigenstratCallSet`
+  (`.geno`/`.snp`/`.ind`) and routed from `add_data`, so the CLI `navigator ingest <foo.geno>` and the
+  GUI Add-Data flow both work. `NAVIGATOR_CALLSET_BUILD` overrides GRCh37 for a GRCh38 call set.
+- **Consensus** — a new source arm in `build_autosomal_profile_inner` reads the stored external
+  dosages (`SourceType::Imported`, weight 0.7) into `reconcile_diploid`. Because they're stored (always
+  "available"), both the full build and the progressive refresh include them with no decode. Every
+  consumer (modern/fine/deep-qpAdm ancestry, subject IBD, identity) reads the pooled consensus, so
+  they all pick the call set up automatically. `clear_biosample_data` drops the external rows too.
+
+**Deliberately deferred (follow-ups):**
+- **Autosomal provenance-gating (§5.3):** the call set pools as a normal `Imported` source; under
+  `prefer_external`, CRAM-genotyped dosages are *not* yet skipped for a subject that has an external
+  autosomal source. Not critical: the progressive refresh never decodes a CRAM on its own, so a
+  fast-path-imported aDNA subject's consensus is call-set-only in practice. `reconcile_diploid` has no
+  `CallProvenance` yet — adding it is the gate for §5.3.
+- **PLINK `.bed/.bim/.fam`** and **rsID-based join** (position-based via `resolve_chip` today).
+- **Project-scan sidecar auto-discovery** (import is via explicit `ingest`/Add-Data today, not a
+  `SampleSidecars` field).
+- **Phase 5:** GATK4 **autosomal gVCF** → diploid dosages into the same `external_panel_dosage` sink.
 ```

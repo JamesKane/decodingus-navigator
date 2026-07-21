@@ -11,6 +11,7 @@
 
 pub mod ancestry;
 pub mod caller;
+pub mod callset;
 pub mod cancel;
 pub mod contig;
 pub mod coverage;

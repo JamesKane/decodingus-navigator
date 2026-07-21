@@ -364,6 +364,9 @@ impl App {
     /// re-imported cleanly. Atomic ([`biosample::clear_data`] runs in one transaction).
     pub async fn clear_biosample_data(&self, guid: SampleGuid) -> Result<(), AppError> {
         biosample::clear_data(self.store.pool(), guid).await?;
+        // Imported external autosomal call-set dosages live in their own table (outside the
+        // biosample cascade) — drop them too so a cleared subject starts truly empty.
+        navigator_store::external_panel_dosage::delete_for_biosample(self.store.pool(), guid).await?;
         Ok(())
     }
 

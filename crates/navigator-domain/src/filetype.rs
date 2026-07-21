@@ -22,6 +22,9 @@ pub enum DetectedData {
     ChipData,
     /// mtDNA FASTA sequence.
     MtdnaFasta,
+    /// EIGENSTRAT autosomal call set (`.geno`/`.snp`/`.ind` triplet) — a trusted external caller's
+    /// 1240K genotypes (Reich-lab / `pileupCaller`), the autosomal counterpart to the Y/mt GVCFs.
+    EigenstratCallSet,
     /// Unrecognized.
     Unknown,
 }
@@ -37,6 +40,7 @@ impl DetectedData {
             DetectedData::YSnpPanel => "Y-SNP panel",
             DetectedData::ChipData => "Chip / array data",
             DetectedData::MtdnaFasta => "mtDNA FASTA",
+            DetectedData::EigenstratCallSet => "EIGENSTRAT 1240K call set",
             DetectedData::Unknown => "Unknown format",
         }
     }
@@ -51,6 +55,11 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
 
     if ends(".bam") || ends(".cram") {
         return DetectedData::Alignment;
+    }
+    // EIGENSTRAT call-set triplet — the user can point at any member; the importer resolves the
+    // siblings by shared basename. `.geno`/`.ind` are unambiguous; `.snp` too (no other `.snp` type).
+    if ends(".geno") || ends(".snp") || ends(".ind") {
+        return DetectedData::EigenstratCallSet;
     }
     if ends(".vcf") || ends(".vcf.gz") || ends(".vcf.bgz") {
         return DetectedData::Variants;
@@ -320,6 +329,13 @@ fn chip_score(lines: &[&str], data_lines: &[&str], file_name: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eigenstrat_triplet_detected_by_any_member() {
+        assert_eq!(detect("I1234.geno", ""), DetectedData::EigenstratCallSet);
+        assert_eq!(detect("I1234.snp", ""), DetectedData::EigenstratCallSet);
+        assert_eq!(detect("I1234.ind", ""), DetectedData::EigenstratCallSet);
+    }
 
     #[test]
     fn extensions_win_first() {
