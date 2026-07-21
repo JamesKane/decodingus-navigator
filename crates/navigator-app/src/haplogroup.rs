@@ -1711,6 +1711,89 @@ impl App {
     /// conflict where they don't), keyed by rsID. Persisted with `dna_type='Auto'`. Requires the IBD
     /// panel asset (built with `panelbuild ibd-panel`); errors if it's missing.
     pub async fn build_autosomal_profile(&self, biosample_guid: SampleGuid) -> Result<DiploidProfile, AppError> {
+        // Full build: genotype any alignment whose panel dosages aren't cached yet.
+        self.build_autosomal_profile_inner(biosample_guid, false).await
+    }
+
+    /// **Progressive refresh** of the autosomal consensus (progressive-consensus, docs §7.17): reduce
+    /// over the per-source dosages that are **already available** — every chip / WGS-VCF (which resolve
+    /// cheaply with no decode) plus any alignment whose panel dosages are *cached*
+    /// ([`Self::cached_alignment_panel_dosages`]) — **without** decoding an uncached alignment. Cheap
+    /// and safe to call after every import; alignments get their dosages populated separately by the
+    /// panel batch-process mode, and the next refresh folds them in. Returns the refreshed profile, or
+    /// `Ok(None)` when the subject has no available autosomal source yet.
+    pub async fn refresh_autosomal_consensus(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Option<DiploidProfile>, AppError> {
+        self.build_autosomal_profile_inner(biosample_guid, true).await.map(Some).or_else(|e| match e {
+            // "no source" isn't an error for a refresh — the subject just has nothing cached yet.
+            AppError::Import(_) => Ok(None),
+            other => Err(other),
+        })
+    }
+
+    /// **Panel batch-process mode** (progressive-consensus, docs §7.17): genotype one alignment at
+    /// the full-1240k IBD panel and **cache** the dosages ([`Self::ibd_panel_dosages`]) — the
+    /// expensive per-source step (a whole-genome decode) that populates the consensus progressively.
+    /// Returns the number of panel sites genotyped. **Does not** refresh the consensus — the caller
+    /// refreshes **once** after a batch (reconciling millions of observations per source is wasted
+    /// work if repeated per alignment); use [`Self::refresh_autosomal_consensus`] at the batch
+    /// boundary. If the dosages are already cached this is a cheap read.
+    pub async fn genotype_panel_for_alignment(&self, alignment_id: i64) -> Result<usize, AppError> {
+        Ok(self.ibd_panel_dosages(IbdSource::Alignment(alignment_id)).await?.len())
+    }
+
+    /// The subject's best alignment for panel genotyping, by **callable quality**:
+    /// `genome_territory × pct_10x × (1 − pct_exc_mapq)` — well-mapped, diploid-callable bases. Build-
+    /// agnostic (the IBD panel re-keys GRCh37/38 as well as CHM13), so it picks the cleanest
+    /// whole-genome WGS over a deep-but-targeted or too-shallow test. Requires a recorded BAM/CRAM and
+    /// a cached coverage artifact; `None` when the subject has neither.
+    async fn best_callable_alignment(&self, biosample_guid: SampleGuid) -> Result<Option<i64>, AppError> {
+        let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let mut best: Option<(f64, i64)> = None;
+        for a in &alignments {
+            if a.bam_path.is_none() {
+                continue;
+            }
+            let Some(cov) = self.cached_coverage(a.id).await? else {
+                continue;
+            };
+            let score = cov.genome_territory as f64 * cov.pct_10x * (1.0 - cov.pct_exc_mapq);
+            if best.as_ref().map_or(true, |(s, _)| score > *s) {
+                best = Some((score, a.id));
+            }
+        }
+        Ok(best.map(|(_, id)| id))
+    }
+
+    /// **Panel batch-process mode, subject-level** (progressive-consensus, docs §7.17): genotype the
+    /// subject's single **best-callable** alignment ([`Self::best_callable_alignment`]) at the 1240k
+    /// panel and refresh the autosomal consensus **once**. Chips and WGS-VCFs need no genotyping —
+    /// they resolve into the consensus during the refresh — so this pays at most one whole-genome
+    /// decode per subject (vs one per redundant same-person alignment). Returns
+    /// `(alignment_id, sites)`, or `None` when the subject has no callable alignment (its chips/VCFs
+    /// still get folded into the consensus).
+    pub async fn genotype_panel_for_subject(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Option<(i64, usize)>, AppError> {
+        let picked = if let Some(aln) = self.best_callable_alignment(biosample_guid).await? {
+            let sites = self.genotype_panel_for_alignment(aln).await?;
+            Some((aln, sites))
+        } else {
+            None
+        };
+        // Reconcile once — folds the freshly-cached alignment (if any) plus every chip / WGS-VCF.
+        let _ = self.refresh_autosomal_consensus(biosample_guid).await?;
+        Ok(picked)
+    }
+
+    async fn build_autosomal_profile_inner(
+        &self,
+        biosample_guid: SampleGuid,
+        cached_alignments_only: bool,
+    ) -> Result<DiploidProfile, AppError> {
         use navigator_domain::consensus::{reconcile_diploid, summarize_diploid, DiploidObs};
 
         let to_obs = |gts: Vec<SiteGenotype>| -> Vec<DiploidObs> {
@@ -1739,14 +1822,24 @@ impl App {
         // CHM13. A build the panel doesn't cover yields no genotypes and is skipped downstream.
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            match self.ibd_panel_dosages(IbdSource::Alignment(a.id)).await {
-                Ok(gts) => {
-                    let obs = to_obs(gts);
-                    if !obs.is_empty() {
-                        sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, obs));
+            // Progressive refresh reduces over cached dosages only — an uncached alignment is skipped
+            // (its dosages get populated by the panel batch mode), never decoded inline here.
+            let dosages = if cached_alignments_only {
+                self.cached_alignment_panel_dosages(a.id).await?
+            } else {
+                match self.ibd_panel_dosages(IbdSource::Alignment(a.id)).await {
+                    Ok(g) => Some(g),
+                    Err(e) => {
+                        last_err = Some(e);
+                        None
                     }
                 }
-                Err(e) => last_err = Some(e),
+            };
+            if let Some(gts) = dosages {
+                let obs = to_obs(gts);
+                if !obs.is_empty() {
+                    sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, obs));
+                }
             }
         }
 
@@ -1788,6 +1881,11 @@ impl App {
         if sources.is_empty() {
             if let Some(e) = last_err {
                 return Err(e); // e.g. the IBD panel asset isn't built yet
+            }
+            if cached_alignments_only {
+                // A progressive refresh with nothing available yet: don't persist an empty consensus
+                // (refresh_autosomal_consensus maps this to Ok(None)).
+                return Err(AppError::Import("no cached autosomal sources yet".into()));
             }
         }
 

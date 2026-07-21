@@ -813,3 +813,29 @@ placements already are), and (b) have the consensus be an *update* over the accu
 dosages rather than a from-scratch genotyping pass. Then deep/modern ancestry need no build step at all
 after import — the consensus is always current. Scope: the import/batch pipeline + a per-source panel
 dosage store; deferred pending a decision to take it on.
+
+### 7.18 Progressive consensus — first increment (built)
+
+Made the autosomal consensus **accumulate** instead of being a lazy from-scratch build:
+
+- **Reduce vs genotype are now separate.** `refresh_autosomal_consensus` reduces over the per-source
+  dosages that are *already available* — every chip / WGS-VCF (which resolve with no decode) plus any
+  alignment whose IBD-panel dosages are *cached* (`cached_alignment_panel_dosages`) — and **never**
+  decodes an uncached alignment. It is cheap and safe to call after every import.
+- **Wired into batch import** (`add_sample_dir`): each imported sample refreshes the consensus with
+  whatever is available. Y-only imports (D2C) contribute nothing autosomal and pay ~nothing; a chip
+  folds in immediately.
+- **Panel batch-process mode** (`genotype_panel_for_subject`, CLI `genotype-panel`): genotype the
+  subject's single **best-callable** alignment (`genome_territory × pct_10x × (1−pct_exc_mapq)`, any
+  build — the IBD panel re-keys GRCh37/38) at the 1240k panel + cache, then reconcile **once**. Chips
+  and VCFs fold in via the refresh, so this pays at most **one** whole-genome decode per subject —
+  not one per redundant same-person alignment. `genotype_panel_for_alignment` is the primitive
+  (genotype + cache only; the caller reconciles at the batch boundary — reconciling millions of
+  observations per source is wasted work if repeated per alignment).
+
+Validated: `genotype-panel huF98AFD` → best alignment #3713, 1.23M sites, consensus refreshed (2m14s,
+one decode); `deep-ancestry` then reads it → WHG 14.6 / EEF 44.7 / Steppe 40.6, p=0.30.
+
+**Still to do** (deferred): fold the panel batch mode into the project-wide analyze/deep-analyze
+streaming flow with progress; a GUI trigger; and — the broader §7.17 vision — Y/mt already accumulate
+at import via the haplogroup-GVCF sidecar, so the autosomal panel is the piece this closes.

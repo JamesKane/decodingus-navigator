@@ -52,6 +52,10 @@ pub enum Command {
     /// consensus to be built first (see the Autosomal tab / `ingest`), then persists. See
     /// `navigator_app::App::estimate_deep_ancestry`.
     DeepAncestry(ShowArgs),
+    /// Panel batch-process mode (progressive-consensus): genotype the subject's CHM13 alignment(s) at
+    /// the full-1240k panel, caching the dosages and refreshing the autosomal consensus so ancestry is
+    /// ready without a later lazy build. Heavy (a whole-genome decode per alignment).
+    GenotypePanel(ShowArgs),
     /// Per-marker branch report: the sample's genotype at every defining marker of a Y/mtDNA tree
     /// node's descendant subtree (observed base + derived/ancestral status + evidence). For
     /// spot-checking placement and exchanging observations. Table by default; `--tsv` / `--json`.
@@ -379,6 +383,7 @@ pub fn run(command: Command) -> i32 {
             Command::PrivateY(a) => private_y(a).await,
             Command::DebugAncient(a) => debug_ancient(a).await,
             Command::DeepAncestry(a) => deep_ancestry(a).await,
+            Command::GenotypePanel(a) => genotype_panel(a).await,
             Command::BranchReport(a) => branch_report(a).await,
             Command::Doctor(a) => doctor(a).await,
             Command::Projects(a) => projects(a).await,
@@ -1427,6 +1432,34 @@ async fn deep_ancestry(args: ShowArgs) -> i32 {
             }
             0
         }
+    }
+}
+
+/// Panel batch-process mode — see [`navigator_app::App::genotype_panel_for_alignment`].
+async fn genotype_panel(args: ShowArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let guid = match find_subject(&app, &args.subject).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            eprintln!("error: no subject with identifier \"{}\"", args.subject);
+            return 1;
+        }
+        Err(c) => return c,
+    };
+    // Best-callable alignment + chips/VCFs (which fold in during the refresh) — one decode per subject.
+    match app.genotype_panel_for_subject(guid).await {
+        Ok(Some((aln, sites))) => {
+            println!("panel-genotyped best alignment #{aln} ({sites} sites); autosomal consensus refreshed.");
+            0
+        }
+        Ok(None) => {
+            println!("no callable alignment to panel-genotype; consensus refreshed from chips/VCFs only.");
+            0
+        }
+        Err(e) => report(e),
     }
 }
 

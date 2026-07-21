@@ -446,6 +446,14 @@ impl App {
             }
         }
 
+        // Progressive consensus (docs §7.17): fold whatever autosomal dosages are now available into
+        // the subject's consensus. Cheap — chips/WGS-VCFs resolve without a decode, and a freshly-
+        // imported WGS alignment (dosages not yet cached) is simply skipped until the panel batch mode
+        // genotypes it. Best-effort: a consensus hiccup must not fail the import.
+        if let Err(e) = self.refresh_autosomal_consensus(biosample_guid).await {
+            summary.errors.push(format!("consensus refresh: {e}"));
+        }
+
         Ok(summary)
     }
 
@@ -1038,6 +1046,18 @@ impl App {
                 Ok(genotypes)
             }
         }
+    }
+
+    /// Cached IBD-panel dosages for an alignment, **without genotyping** — `Ok(None)` when they
+    /// haven't been computed yet (so callers can reduce over what's available progressively rather
+    /// than triggering a whole-genome decode). [`Self::ibd_panel_dosages`] is the compute-and-cache
+    /// path; this is the read-only companion used by the progressive-consensus refresh.
+    pub async fn cached_alignment_panel_dosages(
+        &self,
+        alignment_id: i64,
+    ) -> Result<Option<Vec<SiteGenotype>>, AppError> {
+        self.load_analysis(alignment_id, &ibd_panel_cache_kind(), caller::GENOTYPE_VERSION)
+            .await
     }
 
     /// Subject-level identity verification (gap §8) — "are these two subjects the same individual?"
