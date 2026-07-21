@@ -211,8 +211,14 @@ impl fmt::Display for Report {
 /// ("Operation not permitted" vs "Permission denied") and have nothing to do with each other.
 fn explain(path: &Path, e: &std::io::Error) -> (Status, String, Option<i32>) {
     let errno = e.raw_os_error();
+    // "Not found" is keyed on the portable `ErrorKind`, not a raw errno: Unix returns ENOENT (2),
+    // but Windows returns ERROR_FILE_NOT_FOUND (2) *or* ERROR_PATH_NOT_FOUND (3) depending on which
+    // component of the path is absent — both of which map to `NotFound`. The remaining branches stay
+    // errno-keyed because they draw a distinction (EPERM vs EACCES) that `ErrorKind` collapses.
+    if e.kind() == std::io::ErrorKind::NotFound {
+        return (Status::Fail, format!("not found: {}", path.display()), errno);
+    }
     let detail = match errno {
-        Some(2) => format!("not found: {}", path.display()),
         Some(13) => format!(
             "denied by Unix permissions ({e}). Check the mode bits and owner on this file and every \
              directory above it."
@@ -246,7 +252,7 @@ fn probe_file(id: CheckId, path: &Path) -> Check {
             // A file the OS won't open but that is visible in its own directory listing is being
             // withheld, not absent — worth saying, because "not found" would send the user looking
             // for a file that is sitting right there.
-            if errno == Some(2) && directory_lists(path) {
+            if e.kind() == std::io::ErrorKind::NotFound && directory_lists(path) {
                 detail = format!(
                     "{detail}\n         (the parent directory lists this name, so it exists but \
                      cannot be opened)"
@@ -603,7 +609,9 @@ mod tests {
         let report = diagnose(Path::new("/nonexistent/sample.cram"), None);
         let first = report.first_failure().expect("missing file must fail");
         assert_eq!(first.id, CheckId::AlignmentFile);
-        assert_eq!(first.errno, Some(2));
+        // Assert not-found portably: Unix reports ENOENT (2); Windows reports 2 or 3 depending on
+        // which path component is absent, so key on the message rather than a Unix errno.
+        assert!(first.detail.starts_with("not found"), "{}", first.detail);
         // The reference check must not run — the report stops at the first real blocker.
         assert!(!report.checks.iter().any(|c| c.id == CheckId::ReferenceFasta), "{report}");
     }
