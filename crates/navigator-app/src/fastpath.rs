@@ -209,9 +209,10 @@ impl App {
             self.record_call_fp(
                 bio,
                 DnaType::Y,
-                &format!("aln:{alignment_id}"),
+                &external_y_source_key(alignment_id),
                 format!("aln #{alignment_id} Y (pipeline GVCF)"),
                 &assignment,
+                CallProvenance::External,
                 fp.as_deref(),
             )
             .await?;
@@ -238,9 +239,10 @@ impl App {
             self.record_call_fp(
                 bio,
                 DnaType::Mt,
-                &format!("aln:{alignment_id}:mt"),
+                &external_mt_source_key(alignment_id),
                 format!("aln #{alignment_id} mtDNA (pipeline GVCF)"),
                 &assignment,
+                CallProvenance::External,
                 fp.as_deref(),
             )
             .await?;

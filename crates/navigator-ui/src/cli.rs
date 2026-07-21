@@ -81,6 +81,12 @@ pub enum Command {
     /// is cheap for already-analyzed subjects. By default only subjects that already have a Y or mt
     /// profile are rebuilt (`--all` rebuilds every subject).
     RebuildSignatures(RebuildArgs),
+    /// Re-run the sidecar fast path (external GATK4 Y/mt GVCFs) for subjects whose source directory
+    /// still carries them — restoring external calls that a pre-provenance build's internal walk had
+    /// overwritten. Cheap (reads the small GVCFs, never the CRAM); external calls land on their own
+    /// `:ext` keys and, with "prefer external caller" on, win the consensus. The operational fix for
+    /// a workspace (e.g. PRJEB37976) imported before external-caller precedence existed.
+    ReingestExternal(ReingestArgs),
     /// Backfill the standardized-test-label read-profile fields (`total_bases`, `read_type`) on runs
     /// imported before those fields existed. `total_bases` is recovered for free from cached
     /// read-metrics; `read_type` is inferred from platform/test-type, with `--rescan` reading a
@@ -252,6 +258,16 @@ pub struct RebuildArgs {
 }
 
 #[derive(Args)]
+pub struct ReingestArgs {
+    /// Restrict to subjects in this project (by exact name).
+    #[arg(long, short)]
+    project: Option<String>,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
 pub struct BackfillArgs {
     /// Also read a bounded prefix of the alignment file to resolve `read_type` on runs the cheap
     /// platform/test-type inference can't (generic-`WGS` PacBio: HiFi vs CLR). Touches the files.
@@ -391,6 +407,7 @@ pub fn run(command: Command) -> i32 {
             Command::LiftVcf(a) => lift_vcf(a).await,
             Command::Analyze(a) => analyze(a).await,
             Command::RebuildSignatures(a) => rebuild_signatures(a).await,
+            Command::ReingestExternal(a) => reingest_external(a).await,
             Command::BackfillProfiles(a) => backfill_profiles(a).await,
             Command::PruneOrphans(a) => prune_orphans(a).await,
             Command::Login(a) => login(a).await,
@@ -658,6 +675,62 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
         }
     }
     println!("\nrebuilt {rebuilt} subject(s), {skipped} skipped (no profile), {failed} failed");
+    if failed > 0 {
+        1
+    } else {
+        0
+    }
+}
+
+async fn reingest_external(args: ReingestArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+
+    // Resolve the optional project filter to an id.
+    let project_id = match &args.project {
+        Some(name) => {
+            let overview = app.project_overview().await.unwrap_or_default();
+            match overview.iter().find(|o| o.project.name == *name) {
+                Some(o) => Some(o.project.id),
+                None => {
+                    eprintln!("error: no project named \"{name}\"");
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+
+    let bios = match app.list_all_biosamples().await {
+        Ok(v) => v,
+        Err(e) => return report(e),
+    };
+
+    let (mut subjects, mut y_total, mut mt_total, mut failed) = (0usize, 0usize, 0usize, 0usize);
+    for b in &bios {
+        if let Some(pid) = project_id {
+            if b.project_id != Some(pid) {
+                continue;
+            }
+        }
+        let label = truncate(&b.donor_identifier, 24);
+        match app.reingest_external_for_biosample(b.guid).await {
+            Ok((0, 0)) => {} // no external sidecars for this subject — silent
+            Ok((y, m)) => {
+                subjects += 1;
+                y_total += y;
+                mt_total += m;
+                println!("OK   {label:<24} Y {y} mt {m} (external)");
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("FAIL {label:<24} {e}");
+            }
+        }
+    }
+    println!("\nre-ingested external calls for {subjects} subject(s): {y_total} Y, {mt_total} mt, {failed} failed");
     if failed > 0 {
         1
     } else {

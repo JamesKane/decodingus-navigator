@@ -476,6 +476,34 @@ impl App {
             .await
     }
 
+    /// Re-run the sidecar fast path for every alignment of a subject whose source directory still
+    /// carries the pipeline GVCFs — restoring external (GATK4) Y/mt calls that an older build's
+    /// internal walk had overwritten before provenance existed. Cheap: reads the small GVCFs, never
+    /// the CRAM. The external calls land on their own `:ext` keys (they cannot clobber, and with the
+    /// "prefer external caller" policy they win the consensus). Returns `(y_placed, mt_placed)`.
+    /// This is the operational fix for a workspace imported before external-caller precedence.
+    pub async fn reingest_external_for_biosample(&self, biosample_guid: SampleGuid) -> Result<(usize, usize), AppError> {
+        let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let (mut y_placed, mut mt_placed) = (0usize, 0usize);
+        for a in &alns {
+            let Some(dir) = a.bam_path.as_deref().map(Path::new).and_then(Path::parent) else {
+                continue;
+            };
+            let sample = navigator_analysis::scan::scan_sample(dir);
+            if !sample.sidecars.has_haplogroup_gvcf() {
+                continue;
+            }
+            let ingest = self.ingest_sidecars(a.id, &sample.sidecars).await?;
+            if ingest.y_haplogroup.is_some() {
+                y_placed += 1;
+            }
+            if ingest.mt_haplogroup.is_some() {
+                mt_placed += 1;
+            }
+        }
+        Ok((y_placed, mt_placed))
+    }
+
     /// [`Self::import_project_dir`] with a per-sample progress callback `progress(done, total,
     /// sample_id)`, invoked before each sample so a large NAS import (thousands of samples) can
     /// stream a status bar instead of appearing frozen. `done` is the 0-based index about to

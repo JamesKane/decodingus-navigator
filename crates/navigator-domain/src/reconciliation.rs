@@ -24,6 +24,50 @@ impl DnaType {
     }
 }
 
+/// Where a per-source haplogroup call came from — the precedence tier used when reconciling.
+///
+/// - `External`: a trusted external caller (a GATK4 GVCF / 1240K call set imported via the sidecar
+///   fast path). The user runs an established pipeline and wants these preferred.
+/// - `NavigatorWalk`: Navigator's own genotyping — the CRAM walk, and chip/vendor-VCF placement.
+/// - `Manual`: a user override (persisted separately today; included for a complete precedence order).
+///
+/// Higher [`rank`](CallProvenance::rank) wins when the "prefer external caller" policy is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CallProvenance {
+    NavigatorWalk,
+    External,
+    Manual,
+}
+
+impl CallProvenance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CallProvenance::NavigatorWalk => "navigator-walk",
+            CallProvenance::External => "external",
+            CallProvenance::Manual => "manual",
+        }
+    }
+
+    /// Parse a stored provenance token; anything unrecognized — including legacy `NULL`/empty rows
+    /// written before the column existed — is the internal `NavigatorWalk` tier.
+    pub fn from_token(s: &str) -> CallProvenance {
+        match s.trim() {
+            "external" => CallProvenance::External,
+            "manual" => CallProvenance::Manual,
+            _ => CallProvenance::NavigatorWalk,
+        }
+    }
+
+    /// Precedence tier — higher wins under the prefer-external policy.
+    pub fn rank(self) -> u8 {
+        match self {
+            CallProvenance::NavigatorWalk => 0,
+            CallProvenance::External => 1,
+            CallProvenance::Manual => 2,
+        }
+    }
+}
+
 /// A haplogroup call from one source (a sequencing run, chip, STR panel, or Sanger entry).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunHaplogroupCall {
@@ -250,6 +294,51 @@ pub fn reconcile(calls: &[RunHaplogroupCall]) -> Option<Consensus> {
     })
 }
 
+/// Reconcile per-source calls, honoring call provenance.
+///
+/// When `prefer_external` is set, only the highest-precedence tier present
+/// (Manual > External > NavigatorWalk) is reconciled into the consensus; lower tiers that place a
+/// different terminal are surfaced as a warning rather than allowed to drag the call. This is what
+/// stops a damaged ancient-DNA CRAM walk from out-scoring — and silently replacing — a clean
+/// external GATK4/1240K placement. When `prefer_external` is false, every call is reconciled
+/// together by confidence (the source-blind [`reconcile`]), so the two behave identically whenever
+/// no external call is present.
+pub fn reconcile_with_provenance(
+    calls: &[(CallProvenance, RunHaplogroupCall)],
+    prefer_external: bool,
+) -> Option<Consensus> {
+    if calls.is_empty() {
+        return None;
+    }
+    if !prefer_external {
+        let flat: Vec<RunHaplogroupCall> = calls.iter().map(|(_, c)| c.clone()).collect();
+        return reconcile(&flat);
+    }
+    let top = calls.iter().map(|(p, _)| p.rank()).max().unwrap();
+    let top_calls: Vec<RunHaplogroupCall> = calls
+        .iter()
+        .filter(|(p, _)| p.rank() == top)
+        .map(|(_, c)| c.clone())
+        .collect();
+    let mut consensus = reconcile(&top_calls)?;
+    // Note any lower-precedence source that places a *different* terminal — informative, not
+    // authoritative (the external caller was preferred).
+    let mut lower: Vec<&str> = calls
+        .iter()
+        .filter(|(p, _)| p.rank() < top)
+        .map(|(_, c)| c.haplogroup.as_str())
+        .filter(|h| *h != consensus.haplogroup)
+        .collect();
+    lower.sort_unstable();
+    lower.dedup();
+    if !lower.is_empty() {
+        consensus
+            .warnings
+            .push(format!("lower-precedence sources place elsewhere: {} (external caller preferred)", lower.join(", ")));
+    }
+    Some(consensus)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,5 +427,47 @@ mod tests {
         let b = call("b", 0.8, &["root", "J", "J-M267"]);
         let c = reconcile(&[a, b]).unwrap();
         assert_eq!(c.compatibility, CompatibilityLevel::Incompatible);
+    }
+
+    #[test]
+    fn prefer_external_wins_over_a_higher_scoring_walk() {
+        // The ancient-DNA case: the CRAM walk out-scores the clean external call (deamination
+        // inflates matched sites onto a *different* deep terminal), yet the external call must win.
+        let external = call("gatk4 gvcf", 0.60, &["root", "R", "R-M269", "R-L21"]);
+        let walk = call("cram walk", 0.95, &["root", "R", "R-M269", "R-L2"]);
+        let c = reconcile_with_provenance(
+            &[(CallProvenance::External, external), (CallProvenance::NavigatorWalk, walk)],
+            true,
+        )
+        .unwrap();
+        assert_eq!(c.haplogroup, "R-L21"); // external terminal, not the higher-scoring walk's R-L2
+        assert!(c.warnings.iter().any(|w| w.contains("R-L2")));
+    }
+
+    #[test]
+    fn without_prefer_external_score_still_wins() {
+        // Toggle off → source-blind, identical to plain reconcile: highest score wins.
+        let external = call("gatk4 gvcf", 0.60, &["root", "R", "R-M269"]);
+        let walk = call("cram walk", 0.95, &["root", "R", "R-M269", "R-L21", "R-DF13"]);
+        let c = reconcile_with_provenance(
+            &[(CallProvenance::External, external), (CallProvenance::NavigatorWalk, walk)],
+            false,
+        )
+        .unwrap();
+        assert_eq!(c.haplogroup, "R-DF13");
+    }
+
+    #[test]
+    fn prefer_external_with_no_external_is_plain_reconcile() {
+        // Two walk calls, prefer_external on → same tier, behaves exactly like reconcile.
+        let a = call("a", 0.5, &["root", "R", "R-M269"]);
+        let b = call("b", 0.9, &["root", "R", "R-M269", "R-L21"]);
+        let c = reconcile_with_provenance(
+            &[(CallProvenance::NavigatorWalk, a), (CallProvenance::NavigatorWalk, b)],
+            true,
+        )
+        .unwrap();
+        assert_eq!(c.haplogroup, "R-L21");
+        assert!(c.warnings.is_empty());
     }
 }

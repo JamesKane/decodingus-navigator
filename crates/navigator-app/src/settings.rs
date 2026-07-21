@@ -13,6 +13,12 @@ pub struct AppSettings {
     /// Y-tree provider: `"decodingus"` or `"ftdna"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y_tree_provider: Option<String>,
+    /// Prefer a trusted external caller (GATK4 GVCF / 1240K call set, imported via the sidecar fast
+    /// path) over Navigator's own genotyping. When on (the built-in default), an external Y/mt/
+    /// autosomal call wins reconciliation and Navigator's internal caller does not re-walk that
+    /// alignment. `None` = the default (on); set `Some(false)` to always run the internal caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_external_calls: Option<bool>,
     /// AppView base URL (tree API + sequencer-lab lookup).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appview_url: Option<String>,

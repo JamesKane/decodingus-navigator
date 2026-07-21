@@ -2554,12 +2554,27 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             },
         ));
     }
-    steps.push((
-        "Y haplogroup",
-        "placing on the Y tree",
-        Command::AssignYHaplogroup { alignment_id },
-    ));
-    if has_mtdna {
+    // Skip the internal Y/mt genotyping when a trusted external caller (GATK4 GVCF, sidecar fast
+    // path) already placed this alignment and the user prefers it — re-walking would only produce a
+    // secondary call that loses the vote (and, on ancient DNA, a wrong one). The assign_* commands
+    // guard this too; skipping the enqueue just avoids the wasted decode. See external-caller-precedence.
+    if !app
+        .has_preferred_external_call(alignment_id, navigator_app::DnaType::Y)
+        .await
+        .unwrap_or(false)
+    {
+        steps.push((
+            "Y haplogroup",
+            "placing on the Y tree",
+            Command::AssignYHaplogroup { alignment_id },
+        ));
+    }
+    if has_mtdna
+        && !app
+            .has_preferred_external_call(alignment_id, navigator_app::DnaType::Mt)
+            .await
+            .unwrap_or(false)
+    {
         steps.push((
             "mtDNA haplogroup",
             "placing on the mt tree",

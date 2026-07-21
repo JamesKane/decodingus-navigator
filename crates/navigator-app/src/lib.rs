@@ -620,7 +620,7 @@ pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 use navigator_domain::filetype;
 pub use navigator_domain::filetype::DetectedData;
 use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
-use navigator_domain::reconciliation::{self, RunHaplogroupCall};
+use navigator_domain::reconciliation::{self, CallProvenance, RunHaplogroupCall};
 pub use navigator_domain::reconciliation::{
     AuditEntry, CompatibilityLevel, Consensus, DnaType, IdentityVerification, VerificationStatus,
 };
@@ -1996,6 +1996,36 @@ fn y_tree_provider() -> YTreeProvider {
     resolve_y_provider(env.as_deref(), settings.as_deref())
 }
 
+/// Whether a trusted external caller (a GATK4 GVCF / 1240K call set imported via the sidecar fast
+/// path) is preferred over Navigator's own genotyping. When on, an external haplogroup call wins
+/// reconciliation and Navigator's internal caller does not re-walk that alignment. Resolution: env
+/// `NAVIGATOR_PREFER_EXTERNAL_CALLS` wins → settings → **default on** (never dilute a call the user
+/// deliberately produced). Pure resolver split out for testing.
+fn resolve_prefer_external(env: Option<&str>, settings: Option<bool>) -> bool {
+    match env.map(str::trim) {
+        Some(v) if v.eq_ignore_ascii_case("false") || v == "0" || v.eq_ignore_ascii_case("off") => false,
+        Some(v) if v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("on") => true,
+        _ => settings.unwrap_or(true),
+    }
+}
+
+pub(crate) fn prefer_external_calls() -> bool {
+    let env = std::env::var("NAVIGATOR_PREFER_EXTERNAL_CALLS").ok();
+    resolve_prefer_external(env.as_deref(), AppSettings::load().prefer_external_calls)
+}
+
+/// `haplogroup_call.source_key` for an alignment's **external** (sidecar fast-path) Y call. External
+/// and internal (CRAM-walk) calls use distinct keys — the walk uses `aln:{id}` / `aln:{id}:mt` — so
+/// neither upsert can ever overwrite the other.
+pub(crate) fn external_y_source_key(alignment_id: i64) -> String {
+    format!("aln:{alignment_id}:ext")
+}
+
+/// `haplogroup_call.source_key` for an alignment's **external** (sidecar fast-path) mtDNA call.
+pub(crate) fn external_mt_source_key(alignment_id: i64) -> String {
+    format!("aln:{alignment_id}:ext:mt")
+}
+
 /// Application interface mode: a casual, single-person experience with plain-language briefs
 /// (`Simple`) vs. the full power-user UI with projects and per-source analysis (`Advanced`). This is
 /// app-level UI state, persisted in [`AppSettings`].
@@ -3297,6 +3327,70 @@ mod placement_tests {
 }
 
 #[cfg(test)]
+mod external_precedence_tests {
+    use super::*;
+    use navigator_store::{haplogroup_call, Store};
+
+    fn ycall(label: &str, hg: &str, score: f64) -> RunHaplogroupCall {
+        RunHaplogroupCall {
+            source_label: label.into(),
+            haplogroup: hg.into(),
+            lineage: vec!["R".into(), hg.into()],
+            score,
+            matched: 0,
+            expected: 0,
+        }
+    }
+
+    /// PRJEB37976 idempotence gate: an external (GATK4 GVCF) Y call and Navigator's internal walk on
+    /// the *same* alignment coexist as distinct rows (no clobber), and — with the default "prefer
+    /// external caller" policy — the external terminal wins the consensus even though the damaged
+    /// ancient-DNA walk scored higher. Before the fix, the walk shared the `aln:1` key and overwrote
+    /// the external call outright.
+    #[tokio::test]
+    async fn external_call_is_not_clobbered_and_wins_consensus() {
+        // Deterministic policy regardless of the developer's settings.json (env wins in the resolver).
+        std::env::set_var("NAVIGATOR_PREFER_EXTERNAL_CALLS", "true");
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let bio = app.add_biosample(None, "ANCIENT-1", None, None).await.unwrap();
+
+        // External placement: distinct `:ext` key + External provenance, as the sidecar fast path writes it.
+        haplogroup_call::upsert(
+            app.store.pool(),
+            bio.guid,
+            DnaType::Y,
+            &external_y_source_key(1),
+            &ycall("gvcf", "R-EXT", 0.60),
+            CallProvenance::External,
+            Some("gv:abc"),
+        )
+        .await
+        .unwrap();
+
+        // Internal walk on the SAME alignment: a higher score, a DIFFERENT (wrong, aDNA-damaged) terminal.
+        app.record_haplogroup_call(bio.guid, DnaType::Y, "aln:1", &ycall("walk", "R-WRONG", 0.95))
+            .await
+            .unwrap();
+
+        // No clobber: both rows survive under their distinct keys.
+        assert!(haplogroup_call::get_one(app.store.pool(), bio.guid, DnaType::Y, &external_y_source_key(1))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(haplogroup_call::get_one(app.store.pool(), bio.guid, DnaType::Y, "aln:1")
+            .await
+            .unwrap()
+            .is_some());
+
+        // Default policy prefers external → external terminal wins despite the walk's higher score.
+        let c = app.haplogroup_consensus(bio.guid, DnaType::Y).await.unwrap().unwrap();
+        assert_eq!(c.haplogroup, "R-EXT");
+
+        std::env::remove_var("NAVIGATOR_PREFER_EXTERNAL_CALLS");
+    }
+}
+
+#[cfg(test)]
 mod publish_tests {
     use super::*;
     use navigator_domain::workspace::NewSequenceRun;
@@ -3865,6 +3959,7 @@ mod settings_tests {
     fn app_settings_serde_round_trip_and_defaults() {
         let s = AppSettings {
             y_tree_provider: Some("ftdna".into()),
+            prefer_external_calls: Some(false),
             appview_url: Some("https://av.example".into()),
             tree_ttl_days: Some(3),
             theme: Some("light".into()),
