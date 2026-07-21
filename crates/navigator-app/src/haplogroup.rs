@@ -1,6 +1,7 @@
 //! `impl App` methods extracted from `lib.rs` (the `haplogroup` cluster). Split out in the
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
+use crate::fastpath::{chr_m_gvcf_for_alignment, chr_y_gvcf_for_alignment};
 
 /// Analysis-artifact `kind` for cached per-alignment tree-genotype base calls (see
 /// [`App::base_calls`]). The `algorithm_version` carries the site-set hash, so distinct trees /
@@ -341,10 +342,11 @@ impl App {
         let mut consensus = reconciliation::reconcile_with_provenance(&calls, prefer_external);
 
         // …the genome-level PLACED call (consensus_profile.consensus_label, from build_{y,mt}_profile)
-        // is normally authoritative. But that placement pools every alignment's CRAM genotypes, so on
-        // a preferred-external subject it would re-introduce the very ancient-DNA dilution the external
-        // call avoids — skip it there and let the external reconcile stand. (Provenance-aware pooling —
-        // sourcing the placement itself from the GVCF — is the Phase 2 follow-up.)
+        // is normally authoritative. Phase 2 makes that placement GVCF-sourced on preferred-external
+        // subjects (place_{y,mt}_consensus → consensus_base_calls, no CRAM walk), so a freshly built
+        // label already agrees with the external call. We still skip it here so a *stale* label left
+        // by a pre-Phase-2 (CRAM-pooled) build cannot resurface before the profile is rebuilt — the
+        // external reconcile is the safe authority for these subjects.
         let use_placed_label = !(prefer_external && has_external);
         if use_placed_label && matches!(dna_type, DnaType::Y | DnaType::Mt) {
             if let Some(stored) =
@@ -908,10 +910,17 @@ impl App {
         let mut sources: Vec<(SourceType, HashMap<i64, char>)> = Vec::new();
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            // Lifted GRCh38-coordinate calls; sources lacking chrY / a reference are skipped.
-            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrY", &tree_json).await else {
-                continue;
+            // Lifted GRCh38-coordinate calls; sources lacking chrY / a reference are skipped. A
+            // preferred-external alignment is genotyped from its chrY GVCF (lifted native→GRCh38 by
+            // `gvcf_base_calls`) instead of walking the CRAM.
+            let calls = match (prefer_external_calls(), chr_y_gvcf_for_alignment(a)) {
+                (true, Some(gvcf)) => self
+                    .gvcf_base_calls(a.id, "chrY", &gvcf, &tree, tree_build_for_contig("chrY"))
+                    .await
+                    .ok(),
+                _ => self.assign_haplogroup_detail(a.id, "chrY", &tree_json).await.ok().map(|(_, _, c)| c),
             };
+            let Some(calls) = calls else { continue };
             if !calls.is_empty() {
                 sources.push((SourceType::WgsShortRead, calls));
             }
@@ -973,8 +982,9 @@ impl App {
         for a in &alignments {
             let Some(bk) = decodingus_build_key(&a.reference_build) else { continue };
             let Some(tree) = trees.get(bk) else { continue };
-            // Native build → no liftover; this cache-key matches the Y assignment's, so it's a hit.
-            let Ok(calls) = self.base_calls(a.id, "chrY", tree, None).await else { continue };
+            // Native build → no liftover; the cache-key matches the Y assignment's, so a CRAM walk is
+            // a hit — but a preferred-external alignment is genotyped from its GVCF instead (no decode).
+            let Ok(calls) = self.consensus_base_calls(a, "chrY", tree, None).await else { continue };
             if !calls.is_empty() {
                 by_build.entry(bk).or_default().push((SourceType::WgsShortRead, calls));
             }
@@ -1435,10 +1445,11 @@ impl App {
     ) -> Result<Vec<(String, SourceType, HashMap<i64, char>)>, AppError> {
         let mut sources: Vec<(String, SourceType, HashMap<i64, char>)> = Vec::new();
 
-        // Each alignment's chrM genotype. `None` source-build → rCRS-direct / CHM13-chrM lift.
+        // Each alignment's chrM genotype. `None` source-build → rCRS-direct / CHM13-chrM lift. A
+        // preferred-external alignment is genotyped from its chrM GVCF instead of the CRAM.
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            let Ok(calls) = self.base_calls(a.id, "chrM", tree, None).await else {
+            let Ok(calls) = self.consensus_base_calls(a, "chrM", tree, None).await else {
                 continue;
             };
             if !calls.is_empty() {
@@ -3653,6 +3664,33 @@ impl App {
     /// chokepoint for *every* genotyping path (Y/mt placement, the variant profile, genome
     /// consensus), so a profile **rebuild** reuses the cached genotypes instead of re-walking the
     /// reads — only a changed file or a changed tree site set forces a fresh walk.
+    /// Tree-locus base calls for one alignment for the **genome-consensus placement**, preferring the
+    /// alignment's external sidecar GVCF (no CRAM decode) when the "prefer external caller" policy is
+    /// on and the GVCF is present; otherwise the cached CRAM walk ([`base_calls`]). A drop-in for the
+    /// per-alignment genotype in `place_{y,mt}_consensus`, so a preferred-external (e.g. ancient-DNA)
+    /// subject's damaged CRAM is not re-walked and cannot dilute the pooled placement (Phase 2 of
+    /// `docs/design/external-caller-precedence.md` §4.5). `tree_source_build` matches what `base_calls`
+    /// receives — `None` for a native-build tree (DecodingUs Y, rCRS mt), the tree's build for a lift.
+    pub(crate) async fn consensus_base_calls(
+        &self,
+        aln: &Alignment,
+        contig: &str,
+        tree: &navigator_analysis::haplo::HaploTree,
+        tree_source_build: Option<&str>,
+    ) -> Result<HashMap<i64, char>, AppError> {
+        if prefer_external_calls() {
+            let gvcf = if contig.eq_ignore_ascii_case("chrM") {
+                chr_m_gvcf_for_alignment(aln)
+            } else {
+                chr_y_gvcf_for_alignment(aln)
+            };
+            if let Some(gvcf) = gvcf {
+                return self.gvcf_base_calls(aln.id, contig, &gvcf, tree, tree_source_build).await;
+            }
+        }
+        self.base_calls(aln.id, contig, tree, tree_source_build).await
+    }
+
     async fn base_calls(
         &self,
         alignment_id: i64,

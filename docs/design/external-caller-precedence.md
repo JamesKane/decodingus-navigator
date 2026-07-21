@@ -1,7 +1,8 @@
 # External-caller precedence + autosomal sidecar fast path
 
-Status: **Phase 1 landed** (provenance + reconcile precedence + guards + backfill migration +
-`reingest-external` CLI). Phases 2–5 not started.
+Status: **Phases 1–2 landed** (provenance + reconcile precedence + guards + backfill migration +
+`reingest-external` CLI; observation-pooling now GVCF-sourced on preferred-external subjects).
+Phases 3–5 not started.
 Scope: `navigator-store` (provenance/migration), `navigator-analysis` (call-set reader,
 diploid gVCF), `navigator-app` (reconcile precedence, ingest, guards, observation pooling),
 `navigator-ui` (Preferences toggle, "Compare callers" action).
@@ -206,7 +207,7 @@ This is the opt-in audit that replaces the automatic secondary walk we chose *no
    PRJEB37976 overwrite; independently shippable. Backfill migration + reingest command. **DONE** —
    see §10.
 2. **Observation-pooling provenance** (§4.5) — pooled placement stops re-walking preferred-
-   external alignments.
+   external alignments. **DONE** — see §11.
 3. **Preferences toggle + "Compare callers"** UI (§3, §6).
 4. **Autosomal call-set reader + ingest** (Part 2, 1240K first) → consensus → ancestry/IBD.
 5. **Autosomal gVCF** (GATK4 diploid) as a second call-set source into the same sink.
@@ -265,8 +266,39 @@ Landed on `main` (working tree); `cargo clippy --all-targets -- -D warnings` cle
 - **Tests** — domain `reconcile_with_provenance` (×3); store migration+upsert round-trip; app
   `external_call_is_not_clobbered_and_wins_consensus` (the PRJEB37976 idempotence gate).
 
-**Not in Phase 1 (by design):** the CRAM walk in `build_{y,mt}_profile`/`place_{y,mt}_consensus`
-still runs on a preferred-external subject — the consensus *terminal* is now correct (§ above), but
-the redundant decode isn't yet avoided. That perf/richness win, sourcing the pooled placement from
-the GVCF, is Phase 2 (§4.5).
+## 11. Phase 2 — as built
+
+Landed on `feat/external-caller-precedence`; `cargo clippy --all-targets -- -D warnings` clean; the
+app suite (lib + integration) still green (the fallback path is behavior-preserving).
+
+The genome-consensus placement no longer walks the CRAM for a preferred-external alignment — it
+sources that alignment's tree-locus genotype from the sidecar GVCF, so the pooled placement, the Y/mt
+variant profile, and the descent report are all GVCF-derived (no ancient-DNA dilution, no decode).
+
+- **`App::consensus_base_calls(aln, contig, tree, tree_source_build)`** — drop-in for the per-
+  alignment genotype in the consensus placements. When `prefer_external_calls()` and the alignment
+  has a sidecar GVCF (`chr_{y,m}_gvcf_for_alignment`), it calls the existing (tested) `gvcf_base_calls`
+  (native read, or lift for a non-native tree build); otherwise the cached CRAM walk `base_calls`.
+  Same signature/shape as `base_calls`, so behavior is identical whenever no GVCF is present.
+- **Wired at all three consensus call sites:** `place_y_consensus_decodingus` (native, `None` build),
+  `mt_source_calls` (rCRS, `None` build), and `place_y_consensus_ftdna` (lifts native→GRCh38 via
+  `tree_build_for_contig("chrY")`, falling back to `assign_haplogroup_detail` when no GVCF — its
+  prior path is untouched).
+- **Added** `chr_m_gvcf_for_alignment` (the chrM sibling finder / `NAVIGATOR_M_GVCF`), mirroring the
+  existing chrY one.
+
+**Interaction with the Phase 1 skip.** `haplogroup_consensus` still skips the placed
+`consensus_label` on a preferred-external subject — now not for correctness (a freshly built label is
+GVCF-sourced and agrees with the external call) but so a **stale** label from a pre-Phase-2 (CRAM-
+pooled) build cannot resurface before the profile is rebuilt. After `rebuild-signatures` the placed
+label and the external reconcile agree.
+
+**Validation.** Fallback path unchanged → existing consensus/placement tests pass. GVCF-vs-CRAM
+parity for the substituted genotype is the existing `gvcf_fast_path_matches_cram_walk` /
+`gvcf_y_placement_smoke` gates (same `gvcf_base_calls` the placement now calls). A placement-level
+parity gate (place-with-GVCF == place-with-CRAM on the running fixture) is the natural addition when a
+committed GVCF+ref+tree fixture is added.
+
+**Not in Phases 1–2:** autosomal external ingest (§5, Phases 4–5), the Preferences toggle +
+"Compare callers" UI (§6, Phase 3).
 ```
