@@ -225,6 +225,8 @@ struct RefRow {
 struct SettingsForm {
     appview_url: String,
     y_tree_provider: String, // "decodingus" | "ftdna"
+    /// Prefer a trusted external caller (GATK4 GVCF / 1240K call set) over Navigator's own genotyping.
+    prefer_external_calls: bool,
     tree_ttl_days: String,
     prompt_before_download: bool,
     /// UI scale (egui zoom factor); 1.0 = native.
@@ -249,6 +251,7 @@ impl SettingsForm {
         SettingsForm {
             appview_url: s.appview_url.unwrap_or_default(),
             y_tree_provider: s.y_tree_provider.unwrap_or_else(|| "decodingus".to_string()),
+            prefer_external_calls: s.prefer_external_calls.unwrap_or(true),
             tree_ttl_days: s
                 .tree_ttl_days
                 .map(|d| d.to_string())

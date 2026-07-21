@@ -87,6 +87,12 @@ pub enum Command {
     /// `:ext` keys and, with "prefer external caller" on, win the consensus. The operational fix for
     /// a workspace (e.g. PRJEB37976) imported before external-caller precedence existed.
     ReingestExternal(ReingestArgs),
+    /// "Compare callers": for each of a subject's alignments, show the trusted external (imported
+    /// GVCF) Y/mtDNA terminal beside Navigator's own internal-caller terminal — **forcing** the
+    /// internal walk regardless of the "prefer external caller" setting. Surfaces GATK-vs-Navigator
+    /// divergence (e.g. ancient-DNA damage). Non-destructive to the external call: the internal walk
+    /// records its own separate rows.
+    CompareCallers(ShowArgs),
     /// Backfill the standardized-test-label read-profile fields (`total_bases`, `read_type`) on runs
     /// imported before those fields existed. `total_bases` is recovered for free from cached
     /// read-metrics; `read_type` is inferred from platform/test-type, with `--rescan` reading a
@@ -408,6 +414,7 @@ pub fn run(command: Command) -> i32 {
             Command::Analyze(a) => analyze(a).await,
             Command::RebuildSignatures(a) => rebuild_signatures(a).await,
             Command::ReingestExternal(a) => reingest_external(a).await,
+            Command::CompareCallers(a) => compare_callers(a).await,
             Command::BackfillProfiles(a) => backfill_profiles(a).await,
             Command::PruneOrphans(a) => prune_orphans(a).await,
             Command::Login(a) => login(a).await,
@@ -736,6 +743,65 @@ async fn reingest_external(args: ReingestArgs) -> i32 {
     } else {
         0
     }
+}
+
+async fn compare_callers(args: ShowArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let guid = match find_subject(&app, &args.subject).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            eprintln!("error: no subject with identifier \"{}\"", args.subject);
+            return 1;
+        }
+        Err(c) => return c,
+    };
+    let runs = match app.list_sequence_runs(guid).await {
+        Ok(v) => v,
+        Err(e) => return report(e),
+    };
+    let mut alns = Vec::new();
+    for r in &runs {
+        match app.list_alignments(r.id).await {
+            Ok(v) => alns.extend(v),
+            Err(e) => return report(e),
+        }
+    }
+    if alns.is_empty() {
+        eprintln!("error: subject \"{}\" has no alignments", args.subject);
+        return 1;
+    }
+
+    let mut diverged = 0usize;
+    for a in &alns {
+        println!("aln #{} · {}", a.id, a.aligner);
+        match app.compare_callers(a.id).await {
+            Ok(cmps) => {
+                for c in &cmps {
+                    let ext = c.external.as_deref().unwrap_or("(none)");
+                    let nav = c.navigator.as_deref().unwrap_or("(none)");
+                    // Only a real disagreement (both present, different) is flagged — a missing side
+                    // is just "the other caller didn't produce a call here".
+                    let differ = c.external.is_some() && c.navigator.is_some() && !c.agree();
+                    if differ {
+                        diverged += 1;
+                    }
+                    println!(
+                        "  {:<3} external {:<18} navigator {:<18}{}",
+                        c.dna_type.as_str(),
+                        ext,
+                        nav,
+                        if differ { "  <-- DIFFER" } else { "" }
+                    );
+                }
+            }
+            Err(e) => eprintln!("  error: {e}"),
+        }
+    }
+    println!("\n{diverged} divergence(s) across {} alignment(s)", alns.len());
+    0
 }
 
 /// Time the per-alignment analysis steps (the GUI Full Analysis path) to profile where time goes.

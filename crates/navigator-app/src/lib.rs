@@ -2026,6 +2026,27 @@ pub(crate) fn external_mt_source_key(alignment_id: i64) -> String {
     format!("aln:{alignment_id}:ext:mt")
 }
 
+/// One DNA type's caller comparison for an alignment: the trusted external (imported GVCF) terminal
+/// vs Navigator's own internal-walk terminal. Produced by [`App::compare_callers`] — the "Compare
+/// callers" diagnostic that surfaces GATK-vs-Navigator divergence (e.g. ancient-DNA damage) even when
+/// the external caller is the preferred one.
+#[derive(Debug, Clone)]
+pub struct CallerComparison {
+    pub dna_type: DnaType,
+    /// Terminal from the trusted external caller (sidecar GVCF), if one is recorded.
+    pub external: Option<String>,
+    /// Terminal from Navigator's own genotyping — forced, regardless of the prefer-external policy.
+    pub navigator: Option<String>,
+}
+
+impl CallerComparison {
+    /// True when both callers produced a terminal and they match. `false` when either is missing or
+    /// they differ (the latter is the interesting case to surface).
+    pub fn agree(&self) -> bool {
+        matches!((&self.external, &self.navigator), (Some(a), Some(b)) if a == b)
+    }
+}
+
 /// Application interface mode: a casual, single-person experience with plain-language briefs
 /// (`Simple`) vs. the full power-user UI with projects and per-source analysis (`Advanced`). This is
 /// app-level UI state, persisted in [`AppSettings`].

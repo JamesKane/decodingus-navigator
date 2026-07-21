@@ -326,6 +326,59 @@ impl App {
         Ok(self.preferred_external_call(bio, dna_type, alignment_id).await?.is_some())
     }
 
+    /// "Compare callers": the trusted external caller vs Navigator's internal caller for one
+    /// alignment. **Forces** the internal walk regardless of the prefer-external policy — it records
+    /// its own `aln:{id}` / `aln:{id}:mt` (`NavigatorWalk`) rows and never touches the external `:ext`
+    /// row, so the comparison is non-destructive to the external call. Returns Y (for Y-bearing
+    /// subjects) and mtDNA, each with both terminals; a divergence is the ancient-DNA-damage signal
+    /// the "skip the internal walk" default is protecting against. See external-caller-precedence §6.
+    pub async fn compare_callers(&self, alignment_id: i64) -> Result<Vec<CallerComparison>, AppError> {
+        let bio = self.biosample_of_alignment(alignment_id).await.ok();
+        let mut out = Vec::new();
+
+        let y_bearing = match bio {
+            Some(g) => self.subject_has_y_dna(g).await.unwrap_or(true),
+            None => true,
+        };
+        if y_bearing {
+            let external = match bio {
+                Some(g) => haplogroup_call::get_one(self.store.pool(), g, DnaType::Y, &external_y_source_key(alignment_id))
+                    .await?
+                    .map(|c| c.haplogroup),
+                None => None,
+            };
+            let navigator = self
+                .assign_y_haplogroup_walk(alignment_id, bio)
+                .await
+                .ok()
+                .and_then(|a| a.ranked.first().map(|r| r.name.clone()));
+            out.push(CallerComparison {
+                dna_type: DnaType::Y,
+                external,
+                navigator,
+            });
+        }
+
+        let external_mt = match bio {
+            Some(g) => haplogroup_call::get_one(self.store.pool(), g, DnaType::Mt, &external_mt_source_key(alignment_id))
+                .await?
+                .map(|c| c.haplogroup),
+            None => None,
+        };
+        let navigator_mt = self
+            .assign_mtdna_haplogroup_walk(alignment_id, bio)
+            .await
+            .ok()
+            .and_then(|a| a.ranked.first().map(|r| r.name.clone()));
+        out.push(CallerComparison {
+            dna_type: DnaType::Mt,
+            external: external_mt,
+            navigator: navigator_mt,
+        });
+
+        Ok(out)
+    }
+
     /// The reconciled donor-level haplogroup consensus across all recorded sources. A user
     /// manual override, when set, replaces the computed terminal (flagged `overridden`).
     pub async fn haplogroup_consensus(
@@ -2547,7 +2600,6 @@ impl App {
     /// chrM (the tree is in rCRS coordinates).
     pub async fn assign_mtdna_haplogroup_from_alignment(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let bio = self.biosample_of_alignment(alignment_id).await.ok();
-        let source_key = format!("aln:{alignment_id}:mt");
 
         // Prefer an external (sidecar-GVCF) mt call over re-walking the CRAM — same rationale as the
         // Y path (see `assign_y_haplogroup`); this is the guard the unguarded single-alignment
@@ -2558,6 +2610,19 @@ impl App {
             }
         }
 
+        self.assign_mtdna_haplogroup_walk(alignment_id, bio).await
+    }
+
+    /// The internal-caller mtDNA placement: place chrM against the FTDNA mt tree and record under the
+    /// walk key (`aln:{id}:mt`, `NavigatorWalk`), skipping the re-score when the fingerprint is
+    /// unchanged. Split out of [`assign_mtdna_haplogroup_from_alignment`] so [`compare_callers`] can
+    /// force the internal walk even when an external call is preferred.
+    pub(crate) async fn assign_mtdna_haplogroup_walk(
+        &self,
+        alignment_id: i64,
+        bio: Option<SampleGuid>,
+    ) -> Result<HaploAssignment, AppError> {
+        let source_key = format!("aln:{alignment_id}:mt");
         let tree_json = self.fetch_ftdna_mt_tree().await?;
 
         // Cache: skip re-scoring when the file and the mt tree are unchanged.
@@ -3167,7 +3232,6 @@ impl App {
 
     pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let bio = self.biosample_of_alignment(alignment_id).await.ok();
-        let source_key = format!("aln:{alignment_id}");
 
         // Females have no Y chromosome — don't genotype chrY or record a Y call for them.
         if let Some(guid) = bio {
@@ -3189,9 +3253,22 @@ impl App {
             }
         }
 
-        // Input fingerprint = alignment content hash + active Y-tree content hash. If it matches
-        // the recorded call's stamp, neither the file nor the tree changed → return the recorded
-        // call without re-scoring (the expensive BAM genotyping).
+        self.assign_y_haplogroup_walk(alignment_id, bio).await
+    }
+
+    /// The internal-caller Y placement: genotype chrY against the configured tree and record the call
+    /// under the walk key (`aln:{id}`, `NavigatorWalk` provenance), skipping the re-score when the
+    /// alignment + tree fingerprint is unchanged. Split out of [`assign_y_haplogroup`] so
+    /// [`compare_callers`] can force the internal walk even when an external call is preferred.
+    pub(crate) async fn assign_y_haplogroup_walk(
+        &self,
+        alignment_id: i64,
+        bio: Option<SampleGuid>,
+    ) -> Result<HaploAssignment, AppError> {
+        let source_key = format!("aln:{alignment_id}");
+        // Input fingerprint = alignment content hash + active Y-tree content hash. If it matches the
+        // recorded call's stamp, neither the file nor the tree changed → return the recorded call
+        // without re-scoring (the expensive BAM genotyping).
         let fingerprint = self.y_score_fingerprint(alignment_id).await.ok();
         if let (Some(bio), Some(fp)) = (bio, fingerprint.as_deref()) {
             if haplogroup_call::stored_fingerprint(self.store.pool(), bio, DnaType::Y, &source_key)

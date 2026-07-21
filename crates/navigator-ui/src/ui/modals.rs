@@ -443,6 +443,12 @@ impl NavigatorApp {
                     }
                     ui.label(egui::RichText::new(self.tr("settings.refreshTreesHint")).weak().small());
                 });
+                ui.checkbox(&mut form.prefer_external_calls, self.tr("settings.preferExternalCalls"));
+                ui.label(
+                    egui::RichText::new(self.tr("settings.preferExternalCallsHint"))
+                        .weak()
+                        .small(),
+                );
                 ui.add_space(8.0);
 
                 // --- Appearance ---
@@ -718,8 +724,7 @@ impl NavigatorApp {
             let appview = form.appview_url.trim().to_string();
             let settings = AppSettings {
                 y_tree_provider: Some(form.y_tree_provider.clone()),
-                // "Prefer external caller" has no toggle in this dialog yet (Phase 3) — preserve it.
-                prefer_external_calls: AppSettings::load().prefer_external_calls,
+                prefer_external_calls: Some(form.prefer_external_calls),
                 appview_url: (!appview.is_empty()).then_some(appview),
                 tree_ttl_days: form.tree_ttl_days.trim().parse::<u64>().ok(),
                 theme: Some(if self.dark_mode {

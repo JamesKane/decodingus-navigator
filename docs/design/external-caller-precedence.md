@@ -1,8 +1,8 @@
 # External-caller precedence + autosomal sidecar fast path
 
-Status: **Phases 1–2 landed** (provenance + reconcile precedence + guards + backfill migration +
-`reingest-external` CLI; observation-pooling now GVCF-sourced on preferred-external subjects).
-Phases 3–5 not started.
+Status: **Phases 1–3 landed** (provenance + reconcile precedence + guards + backfill migration +
+`reingest-external` CLI; observation-pooling now GVCF-sourced; Preferences toggle + "Compare
+callers" diagnostic). Phases 4–5 (autosomal ingest) not started.
 Scope: `navigator-store` (provenance/migration), `navigator-analysis` (call-set reader,
 diploid gVCF), `navigator-app` (reconcile precedence, ingest, guards, observation pooling),
 `navigator-ui` (Preferences toggle, "Compare callers" action).
@@ -208,7 +208,7 @@ This is the opt-in audit that replaces the automatic secondary walk we chose *no
    see §10.
 2. **Observation-pooling provenance** (§4.5) — pooled placement stops re-walking preferred-
    external alignments. **DONE** — see §11.
-3. **Preferences toggle + "Compare callers"** UI (§3, §6).
+3. **Preferences toggle + "Compare callers"** UI (§3, §6). **DONE** — see §12.
 4. **Autosomal call-set reader + ingest** (Part 2, 1240K first) → consensus → ancestry/IBD.
 5. **Autosomal gVCF** (GATK4 diploid) as a second call-set source into the same sink.
 
@@ -301,4 +301,25 @@ committed GVCF+ref+tree fixture is added.
 
 **Not in Phases 1–2:** autosomal external ingest (§5, Phases 4–5), the Preferences toggle +
 "Compare callers" UI (§6, Phase 3).
+
+## 12. Phase 3 — as built
+
+Landed on `feat/external-caller-precedence`; clippy clean; i18n parity + app suite green.
+
+- **Preferences toggle** — a checkbox in the Settings modal ("Prefer external caller (GATK4 /
+  1240K)") backed by `SettingsForm.prefer_external_calls` → `AppSettings.prefer_external_calls`
+  (default on). New i18n keys `settings.preferExternalCalls[/Hint]` in `en`+`es` (parity test green).
+  The env override `NAVIGATOR_PREFER_EXTERNAL_CALLS` still wins over the setting.
+- **"Compare callers" diagnostic** — `App::compare_callers(alignment_id) -> Vec<CallerComparison>`
+  (`{dna_type, external, navigator}`, `.agree()`), which **forces** the internal walk regardless of
+  the policy. The walk was extracted into `assign_y_haplogroup_walk` / `assign_mtdna_haplogroup_walk`
+  (the guarded public `assign_*` now = guard → walk), so compare can run it without the guard; the
+  walk records its own `aln:{id}` / `:mt` (`NavigatorWalk`) rows and never touches the external `:ext`
+  row (non-destructive). CLI `navigator compare-callers <subject>` prints, per alignment, the external
+  vs Navigator Y/mt terminal and flags real divergences.
+- **Not done (optional):** a GUI "Compare callers" button (worker `Command`/`Event` + detail-view
+  rendering). The CLI + app method deliver the capability; the button is a thin follow-up.
+
+**Not in Phases 1–3:** autosomal external ingest — the 1240K EIGENSTRAT/pileupCaller call-set reader
+→ `reconcile_diploid` → consensus → ancestry/IBD (§5, Phases 4–5).
 ```
