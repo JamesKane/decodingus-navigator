@@ -405,42 +405,62 @@ impl NavigatorApp {
                         card(ui, self.tr("card.pcaScatter"), |ui| self.pca_scatter_section(ui));
                     }
                     // Detailed reports from the same consensus estimate (persisted alongside the
-                    // super-population ADMIXTURE): modern fine populations + ancient components.
-                    if let Some(r) = &self.fine_ancestry {
-                        ui.add_space(10.0);
-                        card(ui, self.tr("card.ancestryModern"), |ui| draw_population_components(ui, r, "anc_fine", 18));
-                    }
-                    // Deep (ancient) ancestry via qpAdm — its own on-demand trigger: it genotypes the
-                    // best whole-genome CHM13 alignment at the full 1240k (~1-2 min), separate from
-                    // the fast consensus estimate above.
-                    if navigator_app::ANCIENT_ANCESTRY_ENABLED {
-                        ui.add_space(10.0);
-                        card(ui, self.tr("card.ancestryAncient"), |ui| {
+                    // super-population ADMIXTURE): modern fine populations + ancient components. Each
+                    // is now a compact pie + legend, so the two sit **side by side** (columns) instead
+                    // of stacking — far less vertical scroll in the Advanced view.
+                    let show_modern = self.fine_ancestry.is_some();
+                    let show_ancient = navigator_app::ANCIENT_ANCESTRY_ENABLED;
+                    // The ancient card's build/refresh control + component render (borrows/mutates
+                    // self), factored so it can go in a column or full-width.
+                    let ancient_card = |app: &mut Self, ui: &mut egui::Ui| {
+                        card(ui, app.tr("card.ancestryAncient"), |ui| {
                             ui.horizontal(|ui| {
-                                let label = if self.ancient_ancestry.is_some() {
-                                    self.tr("common.refresh")
+                                let label = if app.ancient_ancestry.is_some() {
+                                    app.tr("common.refresh")
                                 } else {
-                                    self.tr("btn.estimateDeepAncestry")
+                                    app.tr("btn.estimateDeepAncestry")
                                 };
                                 if ui
-                                    .add_enabled(!self.estimating_deep_ancestry, egui::Button::new(label))
+                                    .add_enabled(!app.estimating_deep_ancestry, egui::Button::new(label))
                                     .clicked()
                                 {
-                                    self.estimating_deep_ancestry = true;
-                                    // A fast fit over the (required) autosomal consensus; if it hasn't
-                                    // been built the estimate errors, same as modern ancestry.
-                                    self.status = "Estimating deep ancestry (qpAdm)…".into();
-                                    let _ = self.tx.send(Command::EstimateDeepAncestry { biosample_guid: guid });
+                                    app.estimating_deep_ancestry = true;
+                                    app.status = "Estimating deep ancestry (qpAdm)…".into();
+                                    let _ = app.tx.send(Command::EstimateDeepAncestry { biosample_guid: guid });
                                 }
-                                if self.estimating_deep_ancestry {
+                                if app.estimating_deep_ancestry {
                                     ui.spinner();
                                 }
-                                ui.label(egui::RichText::new(self.tr("hint.deepAncestry")).weak().small());
+                                ui.label(egui::RichText::new(app.tr("hint.deepAncestry")).weak().small());
                             });
-                            if let Some(r) = &self.ancient_ancestry {
+                            if let Some(r) = &app.ancient_ancestry {
                                 draw_population_components(ui, r, "anc_ancient", 18);
                             }
                         });
+                    };
+                    if show_modern && show_ancient {
+                        ui.add_space(10.0);
+                        let modern_title = self.tr("card.ancestryModern");
+                        let modern = self.fine_ancestry.clone();
+                        // Two columns side by side; `ui.columns` hands out a slice of child Uis.
+                        ui.columns(2, |cols| {
+                            card(&mut cols[0], modern_title, |ui| {
+                                if let Some(r) = &modern {
+                                    draw_population_components(ui, r, "anc_fine", 18);
+                                }
+                            });
+                            ancient_card(self, &mut cols[1]);
+                        });
+                    } else if show_modern {
+                        ui.add_space(10.0);
+                        if let Some(r) = self.fine_ancestry.clone() {
+                            card(ui, self.tr("card.ancestryModern"), |ui| {
+                                draw_population_components(ui, &r, "anc_fine", 18)
+                            });
+                        }
+                    } else if show_ancient {
+                        ui.add_space(10.0);
+                        ancient_card(self, ui);
                     }
                     // Chromosome painting (diploid local ancestry) — its own section, from the consensus.
                     ui.add_space(10.0);

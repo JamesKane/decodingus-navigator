@@ -6,8 +6,6 @@ use eframe::egui;
 use navigator_app::{AncestryResult, AncestrySegment, AssetStatus, GenomeRegions, IbdSegment, SuperPopulationSummary};
 use navigator_domain::ancestry::{population_color, population_name, population_super};
 
-use crate::ui::ACCENT;
-
 /// Sort key for chromosome names: autosomes 1–22, then X, Y, M, then anything else.
 fn chrom_sort_key(chr: &str) -> (u8, i64) {
     let bare = chr.trim_start_matches("chr").to_ascii_uppercase();
@@ -170,52 +168,15 @@ fn arc_points(c: egui::Pos2, r: f32, a0: f32, a1: f32, steps: usize) -> Vec<egui
         .collect()
 }
 
-/// Draw a donut chart of the super-population proportions (one wedge per super-population,
-/// colored by continent), with the dominant share in the centre.
-pub(crate) fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
-    let size = 120.0;
+/// Draw a solid **pie** chart (`size`×`size`) from `(percentage, color)` slices. Each slice is a fan
+/// from the centre to the outer arc — a simple convex polygon egui tessellates cleanly. (The previous
+/// *donut* built an annular sector as one concave path, whose tessellation left a stray wedge in the
+/// middle.) Slices below 0.5 % are skipped; the first slice starts at 12 o'clock.
+pub(crate) fn draw_pie(ui: &mut egui::Ui, size: f32, slices: &[(f64, egui::Color32)]) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let c = rect.center();
-    let (r_out, r_in) = (size * 0.46, size * 0.28);
-    let total: f32 = summary.iter().map(|s| s.percentage as f32).sum::<f32>().max(1.0);
-    let mut a0 = -std::f32::consts::FRAC_PI_2; // start at 12 o'clock
-    for s in summary {
-        if s.percentage < 0.5 {
-            continue;
-        }
-        let a1 = a0 + (s.percentage as f32 / total) * std::f32::consts::TAU;
-        let code = s.populations.first().and_then(|c| population_super(c)).unwrap_or("");
-        let mut pts = arc_points(c, r_out, a0, a1, 32);
-        pts.extend(arc_points(c, r_in, a1, a0, 32)); // inner arc, reversed → closed ring sector
-        painter.add(egui::epaint::PathShape {
-            points: pts,
-            closed: true,
-            fill: parse_hex_color(&population_color(code)),
-            stroke: egui::epaint::PathStroke::NONE,
-        });
-        a0 = a1;
-    }
-    if let Some(top) = summary.first() {
-        painter.text(
-            c,
-            egui::Align2::CENTER_CENTER,
-            format!("{:.0}%", top.percentage),
-            egui::FontId::proportional(18.0),
-            egui::Color32::WHITE,
-        );
-    }
-}
-
-/// A generic donut from pre-colored `(percentage, color)` slices (used by the Simple-mode brief for
-/// the ancient-ancestry pie, whose components carry their own palette colors). Optionally labels the
-/// hole with the largest slice's share.
-pub(crate) fn draw_color_donut(ui: &mut egui::Ui, slices: &[(f64, egui::Color32)], center_pct: Option<f64>) {
-    let size = 120.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    let c = rect.center();
-    let (r_out, r_in) = (size * 0.46, size * 0.28);
+    let r = size * 0.47;
     let total: f32 = slices.iter().map(|(p, _)| *p as f32).sum::<f32>().max(1.0);
     let mut a0 = -std::f32::consts::FRAC_PI_2;
     for (pct, color) in slices {
@@ -223,8 +184,8 @@ pub(crate) fn draw_color_donut(ui: &mut egui::Ui, slices: &[(f64, egui::Color32)
             continue;
         }
         let a1 = a0 + (*pct as f32 / total) * std::f32::consts::TAU;
-        let mut pts = arc_points(c, r_out, a0, a1, 32);
-        pts.extend(arc_points(c, r_in, a1, a0, 32));
+        let mut pts = vec![c];
+        pts.extend(arc_points(c, r, a0, a1, 40));
         painter.add(egui::epaint::PathShape {
             points: pts,
             closed: true,
@@ -233,62 +194,83 @@ pub(crate) fn draw_color_donut(ui: &mut egui::Ui, slices: &[(f64, egui::Color32)
         });
         a0 = a1;
     }
-    if let Some(p) = center_pct {
-        painter.text(
-            c,
-            egui::Align2::CENTER_CENTER,
-            format!("{p:.0}%"),
-            egui::FontId::proportional(18.0),
-            egui::Color32::WHITE,
-        );
-    }
+}
+
+/// Pie chart of the super-population proportions (one slice per super-population, colored by
+/// continent).
+pub(crate) fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
+    let slices: Vec<(f64, egui::Color32)> = summary
+        .iter()
+        .map(|s| {
+            let code = s.populations.first().and_then(|c| population_super(c)).unwrap_or("");
+            (s.percentage, parse_hex_color(&population_color(code)))
+        })
+        .collect();
+    draw_pie(ui, 120.0, &slices);
+}
+
+/// A generic donut from pre-colored `(percentage, color)` slices (used by the Simple-mode brief for
+/// the ancient-ancestry pie, whose components carry their own palette colors). Optionally labels the
+/// hole with the largest slice's share.
+/// Pie chart from explicit `(percentage, color)` slices (the ancient-component report, which carries
+/// its own colors). `_center_pct` is kept for call-site compatibility but no longer rendered — a
+/// solid pie has no centre to label.
+pub(crate) fn draw_color_donut(ui: &mut egui::Ui, slices: &[(f64, egui::Color32)], _center_pct: Option<f64>) {
+    draw_pie(ui, 120.0, slices);
 }
 
 /// Draw a detailed ancestry breakdown (the fine-population or ancient-component report): the
 /// estimate's `components`, sorted by share, as a name/percentage grid with a proportion bar, plus a
 /// provenance line (method + SNP count). `id_salt` keeps each report's grid distinct.
-pub(crate) fn draw_population_components(ui: &mut egui::Ui, result: &AncestryResult, id_salt: &str, top_n: usize) {
-    let mut comps: Vec<(&str, f64)> = result
+pub(crate) fn draw_population_components(ui: &mut egui::Ui, result: &AncestryResult, _id_salt: &str, top_n: usize) {
+    // (friendly name, code, percentage) — the component carries `population_name` (e.g. EEF → "Early
+    // European Farmer"), so the legend reads in plain language rather than codes.
+    let mut comps: Vec<(&str, &str, f64)> = result
         .components
         .iter()
         .filter(|c| c.percentage >= 0.05)
-        .map(|c| (c.population_code.as_str(), c.percentage))
+        .map(|c| (c.population_name.as_str(), c.population_code.as_str(), c.percentage))
         .collect();
-    comps.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    comps.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
     if comps.is_empty() {
         ui.label(egui::RichText::new("No components above 0.05%.").weak());
         return;
     }
-    let max = comps.first().map(|c| c.1).unwrap_or(1.0).max(1e-6);
-    egui::Grid::new(format!("{id_salt}_grid"))
-        .striped(true)
-        .num_columns(3)
-        .show(ui, |ui| {
-            for (name, pct) in comps.iter().take(top_n) {
-                ui.label(*name);
-                ui.label(egui::RichText::new(format!("{pct:.1}%")).strong());
-                // A small proportion bar (relative to the top component) for at-a-glance ranking.
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(120.0, 10.0), egui::Sense::hover());
-                let p = ui.painter_at(rect);
-                p.rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
-                let mut fill = rect;
-                fill.set_width(rect.width() * (pct / max) as f32);
-                p.rect_filled(fill, 2.0, ACCENT.gamma_multiply(0.7));
-                ui.end_row();
+    let shown = &comps[..comps.len().min(top_n)];
+    let slices: Vec<(f64, egui::Color32)> = shown
+        .iter()
+        .map(|(_, code, pct)| (*pct, parse_hex_color(&population_color(code))))
+        .collect();
+
+    // Horizontal: pie on the left, a colour-swatch legend (friendly name + %) on the right — compact
+    // vertically, so the modern + ancient panels can sit side by side in the Advanced view.
+    ui.horizontal_top(|ui| {
+        draw_pie(ui, 108.0, &slices);
+        ui.add_space(12.0);
+        ui.vertical(|ui| {
+            for (name, code, pct) in shown {
+                ui.horizontal(|ui| {
+                    let (sw, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().rect_filled(sw, 2.0, parse_hex_color(&population_color(code)));
+                    ui.add_space(2.0);
+                    ui.label(egui::RichText::new(format!("{pct:.1}%")).strong());
+                    ui.label(*name);
+                });
             }
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} · {}/{} SNPs · confidence {:.0}%",
+                    result.method,
+                    result.snps_with_genotype,
+                    result.snps_analyzed,
+                    result.confidence_level * 100.0
+                ))
+                .weak()
+                .small(),
+            );
         });
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(format!(
-            "{} · {}/{} SNPs · confidence {:.0}%",
-            result.method,
-            result.snps_with_genotype,
-            result.snps_analyzed,
-            result.confidence_level * 100.0
-        ))
-        .weak()
-        .small(),
-    );
+    });
 }
 
 /// Draw the super-population composition as a single stacked horizontal bar (segment widths =

@@ -223,15 +223,22 @@ impl App {
         Ok(best.map(|(_, _, _, a)| (a.sequence_run_id, a.id)))
     }
 
-    /// Donor-level ancestry: the **consensus** estimate ([`CONSENSUS_SOURCE_ID`]) when present —
-    /// it pools all sources, so it's authoritative — else the best-quality per-alignment estimate
-    /// (most genotyped SNPs) for back-compat with results predating the consensus path.
+    /// Donor-level ancestry: the modern super-population **`ADMIXTURE`** estimate — the consensus one
+    /// ([`CONSENSUS_SOURCE_ID`], pools all sources) when present, else the best-quality per-alignment
+    /// one (most genotyped SNPs) for back-compat with results predating the consensus path.
+    ///
+    /// Must filter to `ADMIXTURE` specifically: the consensus source now also carries `FINE_ADMIXTURE`
+    /// and `ANCIENT_ADMIXTURE` rows, and picking the *first* consensus row would surface the deep
+    /// (ancient) breakdown here — a separate report — instead of the modern super-population one.
     pub async fn donor_ancestry(&self, biosample_guid: SampleGuid) -> Result<Option<(i64, AncestryResult)>, AppError> {
         let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
-        if let Some(c) = all.iter().find(|(id, _)| *id == CONSENSUS_SOURCE_ID) {
+        if let Some(c) = all.iter().find(|(id, r)| *id == CONSENSUS_SOURCE_ID && r.method == "ADMIXTURE") {
             return Ok(Some(c.clone()));
         }
-        Ok(all.into_iter().max_by_key(|(_, r)| r.snps_with_genotype))
+        Ok(all
+            .into_iter()
+            .filter(|(_, r)| r.method == "ADMIXTURE")
+            .max_by_key(|(_, r)| r.snps_with_genotype))
     }
 
     /// A specific persisted consensus ancestry estimate (keyed on the consensus pseudo-source +
