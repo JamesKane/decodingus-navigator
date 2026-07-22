@@ -20,7 +20,7 @@ use navigator_app::{
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
     HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
     NarratedBrief, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
-    ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, SexInferenceResult, SignalKind,
+    ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, RohResult, SexInferenceResult, SignalKind,
     SourceType, StoredIbdExchange, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult, YMatch,
     YstrClustering,
 };
@@ -222,6 +222,14 @@ pub enum Command {
     },
     /// Load the cached chromosome painting (if current for the consensus signature) — cheap.
     LoadPainting {
+        biosample_guid: SampleGuid,
+    },
+    /// Detect runs of homozygosity (ROH) from the subject's CONSENSUS (no BAM walk).
+    ComputeRohFromConsensus {
+        biosample_guid: SampleGuid,
+    },
+    /// Load the cached ROH result (if current for the consensus signature) — cheap.
+    LoadRoh {
         biosample_guid: SampleGuid,
     },
     /// Load the cached detailed consensus ancestry reports (modern fine + ancient components).
@@ -917,6 +925,11 @@ pub enum Event {
     AncestryPainting {
         alignment_id: i64,
         segments: Vec<AncestrySegment>,
+    },
+    /// Runs-of-homozygosity result for a subject (segments + F_ROH summary). `None` on a cache-miss load.
+    RohResultReady {
+        biosample_guid: SampleGuid,
+        result: Option<Box<RohResult>>,
     },
     /// Private Y variants (off-backbone de-novo calls) for an alignment.
     PrivateY {
@@ -1784,6 +1797,23 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             Ok(segments) => Event::AncestryPainting {
                 alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
                 segments: segments.unwrap_or_default(),
+            },
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::ComputeRohFromConsensus { biosample_guid } => {
+            // ROH from the consensus needs no genotyping pass — fast, no progress stream.
+            match app.compute_roh_from_consensus(biosample_guid).await {
+                Ok(result) => Event::RohResultReady {
+                    biosample_guid,
+                    result: Some(Box::new(result)),
+                },
+                Err(e) => Event::Error(e.to_string()),
+            }
+        }
+        Command::LoadRoh { biosample_guid } => match app.cached_roh(biosample_guid).await {
+            Ok(result) => Event::RohResultReady {
+                biosample_guid,
+                result: result.map(Box::new),
             },
             Err(e) => Event::Error(e.to_string()),
         },

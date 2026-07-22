@@ -3169,6 +3169,69 @@ impl App {
         Ok(segments)
     }
 
+    /// The cached ROH result for a subject, if one was computed from the **current** autosomal
+    /// consensus (signature = the consensus's `last_reconciled_at`). `None` if absent or stale (the
+    /// consensus was rebuilt since). Cheap — a cache read, no genotyping or HMM.
+    pub async fn cached_roh(&self, biosample_guid: SampleGuid) -> Result<Option<RohResult>, AppError> {
+        let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
+            return Ok(None);
+        };
+        let Some(r) = consensus_roh::get(self.store.pool(), biosample_guid).await? else {
+            return Ok(None);
+        };
+        if r.consensus_sig == row.last_reconciled_at {
+            Ok(Some(serde_json::from_str(&r.roh)?))
+        } else {
+            Ok(None) // computed from an older consensus — stale
+        }
+    }
+
+    /// Detect runs of homozygosity from the subject's **consensus** — no BAM walk. Returns the cached
+    /// result when it matches the current consensus signature; otherwise runs the 2-state autozygosity
+    /// HMM over the consensus genotypes and caches it keyed to the consensus's `last_reconciled_at`.
+    /// The genome-wide F_ROH and length-class breakdown are the endogamy / consanguinity signal.
+    pub async fn compute_roh_from_consensus(&self, biosample_guid: SampleGuid) -> Result<RohResult, AppError> {
+        let row = consensus_profile::get(self.store.pool(), biosample_guid, "Auto")
+            .await?
+            .ok_or_else(|| {
+                AppError::Import("build the autosomal consensus first (Autosomal tab) before computing ROH".into())
+            })?;
+        let sig = row.last_reconciled_at.clone();
+
+        // Cache hit (same consensus signature) → return without recomputing.
+        if let Some(r) = consensus_roh::get(self.store.pool(), biosample_guid).await? {
+            if r.consensus_sig == sig {
+                return Ok(serde_json::from_str(&r.roh)?);
+            }
+        }
+
+        let profile: DiploidProfile = serde_json::from_str(&row.payload)?;
+        let genotypes = consensus_genotypes(&profile);
+        let result = tokio::task::spawn_blocking(move || {
+            // Per-contig max position → genetic-map lengths (CHM13 consensus space, uniform fallback).
+            let mut lengths: std::collections::BTreeMap<String, i32> = std::collections::BTreeMap::new();
+            for g in &genotypes {
+                let e = lengths.entry(g.contig.clone()).or_insert(1);
+                *e = (*e).max(g.position as i32);
+            }
+            let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+            let gmap = crate::load_genetic_map(ReferenceBuild::Chm13v2, &pairs);
+            navigator_analysis::roh::detect_roh(&genotypes, &gmap, &navigator_analysis::roh::RohConfig::default())
+        })
+        .await?;
+
+        // Cache keyed to the consensus signature so it's reused until the consensus is rebuilt.
+        consensus_roh::upsert(
+            self.store.pool(),
+            biosample_guid,
+            &sig,
+            &serde_json::to_string(&result)?,
+            &Utc::now().to_rfc3339(),
+        )
+        .await?;
+        Ok(result)
+    }
+
     /// An alignment's content SHA-256, computed once at import. Read from the record if present,
     /// else computed now (hashing the file) and stored — so batch-imported alignments are hashed
     /// lazily on first analysis, then cached on the row.

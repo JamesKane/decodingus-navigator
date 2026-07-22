@@ -348,6 +348,7 @@ impl App {
             consensus_profile::delete(pool, biosample, dna).await?;
         }
         consensus_painting::delete(pool, biosample).await?;
+        consensus_roh::delete(pool, biosample).await?;
         // The audit log describes the consensus we just wiped; clear it so deleting the last run
         // can't leave a stale RUN_RECORDED history pointing at gone alignments. It is re-appended
         // when the consensus is next rebuilt from any remaining calls.

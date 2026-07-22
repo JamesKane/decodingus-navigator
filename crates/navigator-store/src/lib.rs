@@ -16,6 +16,7 @@ pub mod biosample_project;
 pub mod chip_profile;
 pub mod consensus_painting;
 pub mod consensus_profile;
+pub mod consensus_roh;
 pub mod dm;
 pub mod error;
 pub mod external_id;

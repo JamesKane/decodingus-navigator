@@ -44,6 +44,7 @@ pub fn diagnose_alignment_file(
 }
 pub use navigator_analysis::probe::AlignmentProbe;
 pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
+pub use navigator_analysis::roh::{RohConfig, RohPattern, RohResult, RohSegment, RohSummary};
 pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
 pub use navigator_analysis::sv::types::{SvAnalysisResult, SvCall, SvType};
 pub use navigator_analysis::unified::UnifiedMetricsResult;
@@ -639,7 +640,8 @@ pub use navigator_store::ibd_exchange::StoredIbdExchange;
 pub use navigator_store::source_file::SourceFile;
 use navigator_store::{
     alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_painting,
-    consensus_profile, haplogroup_call, mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run,
+    consensus_profile, consensus_roh, haplogroup_call, mtdna as mtdna_store, project, reconciliation as recon_store,
+    sequence_run,
     source_file, str_profile, sync_history, sync_outbox, sync_state, variant_set, Store, StoreError,
 };
 use serde::de::DeserializeOwned;

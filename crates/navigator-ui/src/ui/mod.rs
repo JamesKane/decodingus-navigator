@@ -7,8 +7,8 @@ use std::sync::mpsc::Receiver;
 
 use crate::charts::{
     asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_color_donut,
-    draw_composition_bar, draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_variant_track,
-    parse_hex_color, TrackRegion, VariantMark,
+    draw_composition_bar, draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_roh,
+    draw_variant_track, parse_hex_color, TrackRegion, VariantMark,
 };
 use crate::widgets::{
     capitalize_first, card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt, provider_abbrev,
@@ -693,6 +693,9 @@ pub struct NavigatorApp {
     /// Local-ancestry painting: (alignment id, segments). `painting_running` while genotyping.
     painting: Option<(i64, Vec<AncestrySegment>)>,
     painting_running: bool,
+    /// Runs-of-homozygosity result for the selected subject. `roh_running` while the HMM computes.
+    roh: Option<navigator_app::RohResult>,
+    roh_running: bool,
     /// Last private Y bucket: (alignment id, bucket).
     private_y: Option<(i64, PrivateBucket)>,
     finding_private_y: bool,
@@ -1102,6 +1105,8 @@ impl NavigatorApp {
             estimating_deep_ancestry: false,
             painting: None,
             painting_running: false,
+            roh: None,
+            roh_running: false,
             private_y: None,
             finding_private_y: false,
             y_mask_path: None,

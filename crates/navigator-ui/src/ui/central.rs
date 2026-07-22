@@ -485,6 +485,28 @@ impl NavigatorApp {
                             }
                         }
                     });
+                    // Runs of homozygosity (F_ROH / endogamy signal) — its own section, from the consensus.
+                    ui.add_space(10.0);
+                    card(ui, self.tr("card.roh"), |ui| {
+                        ui.horizontal(|ui| {
+                            let have = self.roh.is_some();
+                            let label = if have { self.tr("common.refresh") } else { self.tr("roh.compute") };
+                            if ui.add_enabled(!self.roh_running, egui::Button::new(label)).clicked() {
+                                self.roh_running = true;
+                                self.status = "Detecting runs of homozygosity from consensus…".into();
+                                let _ = self.tx.send(Command::ComputeRohFromConsensus { biosample_guid: guid });
+                            }
+                            if self.roh_running {
+                                ui.spinner();
+                            }
+                            ui.label(egui::RichText::new(self.tr("hint.roh")).weak().small());
+                        });
+                        if let Some(result) = &self.roh {
+                            ui.add_space(8.0);
+                            let regions = self.genome_regions.as_ref().map(|(_, r)| r.as_ref());
+                            draw_roh(ui, result, regions);
+                        }
+                    });
                 }
                 DetailTab::Sources => self.sources_tab(ui, guid),
                 DetailTab::IbdMatches => {

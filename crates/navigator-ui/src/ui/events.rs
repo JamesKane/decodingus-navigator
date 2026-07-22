@@ -526,6 +526,18 @@ impl NavigatorApp {
                     self.status = format!("Painted {} ancestry segments", segments.len());
                     self.painting = Some((alignment_id, segments));
                 }
+                Event::RohResultReady { biosample_guid, result } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        self.roh_running = false;
+                        if let Some(r) = &result {
+                            self.status = format!(
+                                "ROH: {} segments, F_ROH {:.3}",
+                                r.summary.n_segments, r.summary.f_roh
+                            );
+                        }
+                        self.roh = result.map(|b| *b);
+                    }
+                }
                 Event::Consensus { biosample_guid, y, mt } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.consensus_y = y;
@@ -1231,6 +1243,8 @@ impl NavigatorApp {
         self.estimating_donor_ancestry = false;
         self.painting = None;
         self.painting_running = false;
+        self.roh = None;
+        self.roh_running = false;
         self.donor_private_y = None;
         self.y_profile = None;
         self.y_profile_loading = false;
@@ -1309,6 +1323,8 @@ impl NavigatorApp {
             .send(Command::LoadConsensusAncestryDetail { biosample_guid: guid });
         // A cached chromosome painting (current for the consensus signature) shows without a click.
         let _ = self.tx.send(Command::LoadPainting { biosample_guid: guid });
+        // Likewise a cached ROH result loads without recomputing.
+        let _ = self.tx.send(Command::LoadRoh { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
         // The Y-variant profile is *built* on explicit request (re-genotypes each alignment), but a
         // previously-built snapshot loads cheaply — fetch it so the Y-DNA tab shows it immediately.
