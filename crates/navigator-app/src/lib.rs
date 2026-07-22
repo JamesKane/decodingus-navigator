@@ -2411,17 +2411,46 @@ impl App {
         local_path: Option<String>,
         auto_download: bool,
     ) -> Result<(), AppError> {
+        self.set_reference_overrides(&[ReferenceOverrideInput {
+            build: build.to_string(),
+            local_path,
+            auto_download,
+        }])
+    }
+
+    /// Persist **all** reference-source overrides in ONE load-modify-save. The Settings "References"
+    /// table has a row per build; the old code sent a separate `SetReferenceOverride` command per row,
+    /// and because every worker command is `tokio::spawn`ed, those N concurrent load-modify-`save`s
+    /// raced the shared `reference_sources.json` — losing rows *and* tearing the file into corrupt
+    /// head-of-one + tail-of-another JSON (issue #26). Applying every row against a single load and
+    /// writing once (atomically, via [`UserConfig::save`]) removes both failure modes.
+    pub fn set_reference_overrides(&self, rows: &[ReferenceOverrideInput]) -> Result<(), AppError> {
         let path = self.gateway.config_path();
         let mut cfg = navigator_refgenome::UserConfig::load(&path);
-        let key = canonical_build(build)
-            .map(|b| b.as_str().to_string())
-            .unwrap_or_else(|| build.to_string());
-        let entry = cfg.references.entry(key).or_default();
-        entry.local_path = local_path.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        entry.auto_download = auto_download;
+        for row in rows {
+            let key = canonical_build(&row.build)
+                .map(|b| b.as_str().to_string())
+                .unwrap_or_else(|| row.build.clone());
+            let entry = cfg.references.entry(key).or_default();
+            entry.local_path = row
+                .local_path
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            entry.auto_download = row.auto_download;
+        }
         cfg.save(&path)?;
         Ok(())
     }
+}
+
+/// One reference-source override to persist — a row of the Settings "References" table (a build's
+/// local-FASTA path + its auto-download flag). Batched through [`App::set_reference_overrides`].
+#[derive(Debug, Clone)]
+pub struct ReferenceOverrideInput {
+    pub build: String,
+    pub local_path: Option<String>,
+    pub auto_download: bool,
 }
 
 /// One instrument→lab association from the AppView `sequencer` endpoints (D8). Mirrors the

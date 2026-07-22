@@ -84,13 +84,11 @@ impl AppSettings {
         navigator_refgenome::cache::base_dir()
     }
 
-    /// Persist to disk (creating the `config/` dir), pretty-printed.
+    /// Persist to disk (creating the `config/` dir), pretty-printed. Written **atomically** (temp +
+    /// rename) — settings are saved from several UI paths that can overlap, and a non-atomic write
+    /// risks the same torn-file corruption seen on `reference_sources.json`.
     pub fn save(&self) -> std::io::Result<()> {
-        let path = Self::path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(path, json)
+        navigator_refgenome::cache::atomic_write(&Self::path(), json.as_bytes())
     }
 }

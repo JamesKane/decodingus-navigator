@@ -215,13 +215,14 @@ impl UserConfig {
             .unwrap_or_default()
     }
 
-    /// Persist to `path` (creating the parent `config/` dir), pretty-printed.
+    /// Persist to `path` (creating the parent `config/` dir), pretty-printed. Written **atomically**
+    /// (temp + rename, see [`crate::cache::atomic_write`]) — this file is rewritten from spawned worker
+    /// tasks that can race, and a plain non-atomic write corrupts it into head-of-new + tail-of-old
+    /// garbage. Callers should still avoid concurrent read-modify-write (prefer one bulk save) so an
+    /// update isn't lost; atomicity only guarantees the file is never *torn*.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(path, json)
+        crate::cache::atomic_write(path, json.as_bytes())
     }
 
     /// The override for `build`, if any.

@@ -458,8 +458,31 @@ GitHub release, exactly like reference genomes.
   segments work meanwhile (cM approximate). GUI download-progress for assets (the download logs to
   stderr today; the GUI shows its existing working-spinner during the build).
 
-**Other symptoms in #26 (not addressed here):** the reporter's `reference_sources.json` was malformed
-(garbled/concatenated JSON), and building the consensus re-downloaded GRCh37 even with `hs37d5.fa` set
-— an hs37d5-vs-GRCh37 reference-resolution mismatch. Both are separate reference-config bugs, tracked
-apart from the asset-provisioning fix.
+### 15.1 Malformed `reference_sources.json` — concurrent non-atomic config writes (#26)
+
+The reporter's `reference_sources.json` was corrupt: a short valid head + a stale tail of a longer
+previous version (`…eference/hs37d5.fa", "auto_download": false}}}`). Root cause, confirmed in code:
+
+- The Settings dialog persisted its "References" table by sending **one `SetReferenceOverride` command
+  per build row** (`for row in &form.references { tx.send(…) }`).
+- **Every worker command is `tokio::spawn`ed** (worker.rs), so those N commands ran **concurrently**,
+  each doing `UserConfig::load` → mutate one key → `save`.
+- `save` used `std::fs::write` (create-truncate-then-stream, **not atomic**). Two racing writes share
+  the file with independent offsets: the longer write lands, the shorter overwrites only its prefix →
+  **head-of-new + tail-of-old** corruption. Concurrent read-modify-write also **loses rows** (each
+  starts from the same base and clobbers the others).
+
+Fixed at both levels:
+- **Atomic writes** — `navigator_refgenome::cache::atomic_write` (write a unique sibling temp, `fsync`,
+  `rename` over the target — POSIX rename is atomic). `UserConfig::save` **and** `AppSettings::save`
+  now use it, so no config file can ever be torn by a racing or crashing writer. Two concurrency
+  tests (a shorter write fully replaces; concurrent readers never see a torn file).
+- **One write, not N** — new `App::set_reference_overrides(rows)` applies every row against a single
+  load and writes once; the Settings dialog sends one `SetReferenceOverrides(Vec<…>)` command instead
+  of the per-row fan-out. Removes both the lost-update and the race entirely. (`set_reference_override`
+  kept as a one-row shim.)
+
+**Still open in #26 (separate bug):** building the consensus re-downloads GRCh37 even with `hs37d5.fa`
+set — an hs37d5-vs-GRCh37 reference-resolution mismatch (hs37d5 is a GRCh37 variant; the panel
+genotyping should reuse the configured reference, not fetch the GRCh37 analysis set). Tracked apart.
 ```

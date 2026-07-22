@@ -756,14 +756,22 @@ impl NavigatorApp {
             }
             // Reflect the AI toggle immediately (gates the "Polish with AI" affordance).
             self.ai_enabled = form.llm_enabled;
-            for row in &form.references {
-                let local = row.local_path.trim().to_string();
-                let _ = self.tx.send(Command::SetReferenceOverride {
-                    build: row.build.clone(),
-                    local_path: (!local.is_empty()).then_some(local),
-                    auto_download: row.auto_download,
-                });
-            }
+            // One bulk command → one atomic load-modify-save of reference_sources.json. Sending a
+            // separate command per row raced the file into corruption (issue #26), because every
+            // worker command is spawned concurrently.
+            let overrides: Vec<navigator_app::ReferenceOverrideInput> = form
+                .references
+                .iter()
+                .map(|row| {
+                    let local = row.local_path.trim().to_string();
+                    navigator_app::ReferenceOverrideInput {
+                        build: row.build.clone(),
+                        local_path: (!local.is_empty()).then_some(local),
+                        auto_download: row.auto_download,
+                    }
+                })
+                .collect();
+            let _ = self.tx.send(Command::SetReferenceOverrides(overrides));
         }
 
         // Deferred dispatch (only `self.tr` was used inside the closure).

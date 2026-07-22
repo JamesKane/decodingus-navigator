@@ -609,12 +609,9 @@ pub enum Command {
     TestLlmConnection {
         base_url: String,
     },
-    /// Set a build's local-FASTA override + auto-download flag (persists reference_sources.json).
-    SetReferenceOverride {
-        build: String,
-        local_path: Option<String>,
-        auto_download: bool,
-    },
+    /// Persist **all** reference-source overrides at once (the Settings "References" table). One
+    /// command → one atomic write; per-row commands raced the config file into corruption (#26).
+    SetReferenceOverrides(Vec<navigator_app::ReferenceOverrideInput>),
     /// Re-hash a cached reference against its integrity sidecar (Settings "Verify").
     VerifyReference {
         build: String,
@@ -1479,11 +1476,7 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::TestLlmConnection { base_url } => {
             Event::LlmConnection(app.llm_models_at(&base_url).await.map_err(|e| e.to_string()))
         }
-        Command::SetReferenceOverride {
-            build,
-            local_path,
-            auto_download,
-        } => match app.set_reference_override(&build, local_path, auto_download) {
+        Command::SetReferenceOverrides(rows) => match app.set_reference_overrides(&rows) {
             Ok(()) => Event::ReferenceSettingsChanged,
             Err(e) => Event::Error(e.to_string()),
         },
