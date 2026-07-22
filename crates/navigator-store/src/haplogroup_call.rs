@@ -2,7 +2,7 @@
 //! row per (biosample, dna_type, source); upsert replaces a re-run from the same source.
 
 use du_domain::ids::SampleGuid;
-use navigator_domain::reconciliation::{DnaType, RunHaplogroupCall};
+use navigator_domain::reconciliation::{CallProvenance, DnaType, RunHaplogroupCall};
 use sqlx::SqlitePool;
 
 use crate::StoreError;
@@ -35,25 +35,30 @@ impl Row {
     }
 }
 
-/// Insert or replace the call from `source_key` for this biosample + DNA type. `fingerprint`
-/// stamps the inputs (file + tree content hashes) so a later run can skip re-scoring.
+/// Insert or replace the call from `source_key` for this biosample + DNA type. `provenance` records
+/// which caller produced it (external / navigator-walk / manual) — the precedence tier used at
+/// reconcile. `fingerprint` stamps the inputs (file + tree content hashes) so a later run can skip
+/// re-scoring. External and internal calls use *distinct* `source_key`s, so this upsert never lets
+/// one overwrite the other.
 pub async fn upsert(
     pool: &SqlitePool,
     biosample_guid: SampleGuid,
     dna_type: DnaType,
     source_key: &str,
     call: &RunHaplogroupCall,
+    provenance: CallProvenance,
     fingerprint: Option<&str>,
 ) -> Result<(), StoreError> {
     let lineage = call.lineage.join("\t");
     sqlx::query(
         "INSERT INTO haplogroup_call \
-         (biosample_guid, dna_type, source_key, source_label, haplogroup, lineage, score, matched, expected, source_fingerprint) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         (biosample_guid, dna_type, source_key, source_label, haplogroup, lineage, score, matched, expected, provenance, source_fingerprint) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(biosample_guid, dna_type, source_key) DO UPDATE SET \
          source_label = excluded.source_label, haplogroup = excluded.haplogroup, \
          lineage = excluded.lineage, score = excluded.score, matched = excluded.matched, \
-         expected = excluded.expected, source_fingerprint = excluded.source_fingerprint",
+         expected = excluded.expected, provenance = excluded.provenance, \
+         source_fingerprint = excluded.source_fingerprint",
     )
     .bind(biosample_guid.0.to_string())
     .bind(dna_type.as_str())
@@ -64,6 +69,7 @@ pub async fn upsert(
     .bind(call.score)
     .bind(call.matched)
     .bind(call.expected)
+    .bind(provenance.as_str())
     .bind(fingerprint)
     .execute(pool)
     .await?;
@@ -146,6 +152,57 @@ pub async fn list_for(
 }
 
 #[derive(sqlx::FromRow)]
+struct ProvRow {
+    source_label: String,
+    haplogroup: String,
+    lineage: String,
+    score: f64,
+    matched: i64,
+    expected: i64,
+    provenance: String,
+}
+
+impl ProvRow {
+    fn into_domain(self) -> (CallProvenance, RunHaplogroupCall) {
+        let provenance = CallProvenance::from_token(&self.provenance);
+        let lineage = if self.lineage.is_empty() {
+            Vec::new()
+        } else {
+            self.lineage.split('\t').map(str::to_string).collect()
+        };
+        (
+            provenance,
+            RunHaplogroupCall {
+                source_label: self.source_label,
+                haplogroup: self.haplogroup,
+                lineage,
+                score: self.score,
+                matched: self.matched,
+                expected: self.expected,
+            },
+        )
+    }
+}
+
+/// All recorded calls for a biosample + DNA type, each tagged with its provenance tier — the input
+/// to [`navigator_domain::reconciliation::reconcile_with_provenance`].
+pub async fn list_for_with_provenance(
+    pool: &SqlitePool,
+    biosample_guid: SampleGuid,
+    dna_type: DnaType,
+) -> Result<Vec<(CallProvenance, RunHaplogroupCall)>, StoreError> {
+    let rows: Vec<ProvRow> = sqlx::query_as(
+        "SELECT source_label, haplogroup, lineage, score, matched, expected, provenance FROM haplogroup_call \
+         WHERE biosample_guid = ? AND dna_type = ? ORDER BY id",
+    )
+    .bind(biosample_guid.0.to_string())
+    .bind(dna_type.as_str())
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(ProvRow::into_domain).collect())
+}
+
+#[derive(sqlx::FromRow)]
 struct AllRow {
     biosample_guid: String,
     dna_type: String,
@@ -155,13 +212,16 @@ struct AllRow {
     score: f64,
     matched: i64,
     expected: i64,
+    provenance: String,
 }
 
-/// Every recorded call across all subjects, as `(guid, dna_type, call)` — for building a
+/// Every recorded call across all subjects, as `(guid, dna_type, provenance, call)` — for building a
 /// donor-level haplogroup summary (the subjects list) in one query.
-pub async fn list_all(pool: &SqlitePool) -> Result<Vec<(SampleGuid, DnaType, RunHaplogroupCall)>, StoreError> {
+pub async fn list_all(
+    pool: &SqlitePool,
+) -> Result<Vec<(SampleGuid, DnaType, CallProvenance, RunHaplogroupCall)>, StoreError> {
     let rows: Vec<AllRow> = sqlx::query_as(
-        "SELECT biosample_guid, dna_type, source_label, haplogroup, lineage, score, matched, expected \
+        "SELECT biosample_guid, dna_type, source_label, haplogroup, lineage, score, matched, expected, provenance \
          FROM haplogroup_call ORDER BY id",
     )
     .fetch_all(pool)
@@ -182,6 +242,7 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<(SampleGuid, DnaType, Run
         out.push((
             guid,
             dna_type,
+            CallProvenance::from_token(&r.provenance),
             RunHaplogroupCall {
                 source_label: r.source_label,
                 haplogroup: r.haplogroup,

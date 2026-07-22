@@ -175,6 +175,129 @@ pub fn read_called_bases_from<R: BufRead>(
     Ok(out)
 }
 
+/// One target's diploid call from a GATK gVCF: the two alleles at a variant site, or a confident
+/// hom-ref ref block (the caller supplies the reference allele — from the panel — at a hom-ref site,
+/// since the gVCF's ref block only stores the base at its start position).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GvcfDiploid {
+    /// Both alleles the sample carries at a variant record (uppercase A/C/G/T), from `GT`.
+    Genotype(char, char),
+    /// Covered by a passing hom-ref block — homozygous for the reference allele.
+    HomRef,
+}
+
+/// Genotype a set of panel targets (grouped by contig, each **sorted**) from a **diploid** GATK gVCF
+/// in a single linear pass — the autosomal (ploidy-2) counterpart to [`read_called_bases`]. Variant
+/// records yield the `GT` alleles; passing ref blocks yield [`GvcfDiploid::HomRef`]; uncovered,
+/// low-quality, indel, or `<NON_REF>`-allele sites are left absent (no-call). Transparently reads a
+/// plain or gzip/BGZF gVCF.
+pub fn read_diploid_calls(
+    gvcf: &Path,
+    targets_by_contig: &HashMap<String, Vec<i64>>,
+    params: &GvcfReadParams,
+) -> Result<HashMap<(String, i64), GvcfDiploid>, AnalysisError> {
+    let reader = crate::gzio::open_maybe_gz(gvcf).map_err(|e| AnalysisError::io(gvcf, e))?;
+    read_diploid_calls_from(reader, targets_by_contig, params)
+}
+
+/// Decode core over any `BufRead` (plain-text gVCF in tests). One linear pass; a whole-genome gVCF is
+/// large but reading it is far cheaper than decoding the CRAM it was called from.
+pub fn read_diploid_calls_from<R: BufRead>(
+    mut reader: R,
+    targets_by_contig: &HashMap<String, Vec<i64>>,
+    params: &GvcfReadParams,
+) -> Result<HashMap<(String, i64), GvcfDiploid>, AnalysisError> {
+    let mut out: HashMap<(String, i64), GvcfDiploid> = HashMap::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let n = reader
+            .read_line(&mut line)
+            .map_err(|e| AnalysisError::Message(format!("reading gvcf: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        let l = line.trim_end_matches(['\n', '\r']);
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+
+        let mut col = l.split('\t');
+        let chrom = col.next().unwrap_or("");
+        let Some(sorted) = targets_by_contig.get(chrom) else { continue };
+        let pos: i64 = match col.next().and_then(|s| s.parse().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let _id = col.next();
+        let refa = col.next().unwrap_or("");
+        let alt = col.next().unwrap_or("");
+        let _qual = col.next();
+        let _filter = col.next();
+        let info = col.next().unwrap_or("");
+        let format = col.next().unwrap_or("");
+        let sample = col.next().unwrap_or("");
+
+        let gt = format_field(format, sample, "GT").unwrap_or("");
+        if gt.is_empty() || gt.starts_with('.') {
+            continue;
+        }
+        let idxs: Vec<&str> = gt.split(['/', '|']).collect();
+
+        if alt == "<NON_REF>" {
+            // Ref block: confident hom-ref over [POS, END]. Require an all-ref GT (0/0).
+            if idxs.iter().any(|a| *a != "0") {
+                continue;
+            }
+            let dp = format_field(format, sample, "MIN_DP")
+                .or_else(|| format_field(format, sample, "DP"))
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            if dp < params.min_dp || !gq_passes(format, sample, params) {
+                continue;
+            }
+            let end = info_end(info).unwrap_or(pos);
+            for &t in targets_in_range(sorted, pos, end) {
+                // Don't overwrite a variant call (variant records are authoritative; in a well-formed
+                // gVCF they never overlap a ref block anyway).
+                out.entry((chrom.to_string(), t)).or_insert(GvcfDiploid::HomRef);
+            }
+        } else {
+            if sorted.binary_search(&pos).is_err() {
+                continue;
+            }
+            let dp = format_field(format, sample, "DP")
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            if dp < params.min_dp || !gq_passes(format, sample, params) {
+                continue;
+            }
+            let alts: Vec<&str> = alt.split(',').collect();
+            // Nucleotide for a GT allele index: 0 = REF, n = the n-th ALT. Non-SNP / `<NON_REF>` → None.
+            let allele_at = |i: usize| -> Option<char> {
+                let a = if i == 0 { refa } else { *alts.get(i - 1)? };
+                if a == "<NON_REF>" || a.len() != 1 {
+                    return None;
+                }
+                let b = a.as_bytes()[0].to_ascii_uppercase();
+                matches!(b, b'A' | b'C' | b'G' | b'T').then_some(b as char)
+            };
+            let i0: usize = match idxs.first().and_then(|s| s.parse().ok()) {
+                Some(i) => i,
+                None => continue,
+            };
+            // A single index (a haploid emit on an autosome) is read as homozygous.
+            let i1: usize = idxs.get(1).and_then(|s| s.parse().ok()).unwrap_or(i0);
+            if let (Some(a), Some(b)) = (allele_at(i0), allele_at(i1)) {
+                out.insert((chrom.to_string(), pos), GvcfDiploid::Genotype(a, b));
+            }
+            // An indel / `<NON_REF>` allele at a target is left as a no-call (absent), never
+            // asserted hom-ref — conservative, same as the haploid path.
+        }
+    }
+    Ok(out)
+}
+
 /// A confident derived single-base SNV read from a ploidy-1 GVCF variant record (`GT` carries a
 /// real ALT). Depths come from `AD` (ref,alt,…); `allele_fraction = alt_depth / depth`.
 #[derive(Debug, Clone)]
@@ -418,6 +541,16 @@ fn format_field<'a>(format: &str, sample: &'a str, key: &str) -> Option<&'a str>
     sample.split(':').nth(idx)
 }
 
+/// Whether a record passes the `GQ` gate. GQ is only enforced when the record **carries** it — a
+/// `bcftools mpileup` call set has no `GQ` (`GT:PL:DP:AD`), and gating an absent GQ as 0 would drop
+/// every site. A GATK gVCF does carry GQ, so its low-confidence sites are still filtered.
+fn gq_passes(format: &str, sample: &str, params: &GvcfReadParams) -> bool {
+    match format_field(format, sample, "GQ").and_then(|s| s.parse::<u32>().ok()) {
+        Some(gq) => gq >= params.min_gq,
+        None => true,
+    }
+}
+
 /// `END=` value from a GVCF ref block's INFO column, if present.
 fn info_end(info: &str) -> Option<i64> {
     info.split(';')
@@ -488,6 +621,33 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
         let c = read_called_bases_from(SAMPLE_GVCF.as_bytes(), "chrY", &t, &GvcfReadParams::default()).unwrap();
         assert!(!c.variant_bases.contains_key(&2481534));
         assert!(!c.callable.contains(&2481534));
+    }
+
+    const DIPLOID_GVCF: &str = "\
+##fileformat=VCFv4.2
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE
+1\t1000\t.\tA\t<NON_REF>\t.\t.\tEND=1499\tGT:DP:GQ:MIN_DP\t0/0:20:99:15
+1\t1500\t.\tC\tT,<NON_REF>\t600\t.\tDP=25\tGT:DP:GQ\t0/1:25:99
+1\t1800\t.\tG\tA,<NON_REF>\t600\t.\tDP=30\tGT:DP:GQ\t1/1:30:99
+1\t1900\t.\tA\tAT,<NON_REF>\t300\t.\tDP=18\tGT:DP:GQ\t0/1:18:99
+2\t500\t.\tG\tC,<NON_REF>\t600\t.\tDP=1\tGT:DP:GQ\t0/1:1:5
+";
+
+    #[test]
+    fn diploid_calls_variants_refblocks_and_gates() {
+        let mut tb: HashMap<String, Vec<i64>> = HashMap::new();
+        tb.insert("1".into(), vec![1200, 1500, 1800, 1900]);
+        tb.insert("2".into(), vec![500]);
+        let calls = read_diploid_calls_from(DIPLOID_GVCF.as_bytes(), &tb, &GvcfReadParams::default()).unwrap();
+        // 1200 falls in the 1000..1999 hom-ref block.
+        assert_eq!(calls.get(&("1".into(), 1200)), Some(&GvcfDiploid::HomRef));
+        // 1500 het C/T → (C,T); 1800 hom-alt A/A.
+        assert_eq!(calls.get(&("1".into(), 1500)), Some(&GvcfDiploid::Genotype('C', 'T')));
+        assert_eq!(calls.get(&("1".into(), 1800)), Some(&GvcfDiploid::Genotype('A', 'A')));
+        // 1900 is an insertion (A>AT) → no-call (absent).
+        assert!(!calls.contains_key(&("1".into(), 1900)));
+        // chr2:500 fails the DP/GQ gate (DP=1, GQ=5) → absent.
+        assert!(!calls.contains_key(&("2".into(), 500)));
     }
 
     #[test]

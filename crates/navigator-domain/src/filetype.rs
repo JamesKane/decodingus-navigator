@@ -22,6 +22,14 @@ pub enum DetectedData {
     ChipData,
     /// mtDNA FASTA sequence.
     MtdnaFasta,
+    /// EIGENSTRAT autosomal call set (`.geno`/`.snp`/`.ind` triplet) — a trusted external caller's
+    /// 1240K genotypes (Reich-lab / `pileupCaller`), the autosomal counterpart to the Y/mt GVCFs.
+    EigenstratCallSet,
+    /// A trusted external caller's **autosomal** call set as a diploid VCF — a GATK4 gVCF
+    /// (`.g.vcf[.gz]`) *or* a genotyped all-sites VCF (e.g. `bcftools mpileup`/`call` over the 1240K
+    /// sites, with explicit `0/0` rows). Genotyped at the 1240K panel for the autosomal consensus.
+    /// (chrY/chrM GVCFs are the sidecar fast path, discovered in a directory, not here.)
+    GvcfCallSet,
     /// Unrecognized.
     Unknown,
 }
@@ -37,6 +45,8 @@ impl DetectedData {
             DetectedData::YSnpPanel => "Y-SNP panel",
             DetectedData::ChipData => "Chip / array data",
             DetectedData::MtdnaFasta => "mtDNA FASTA",
+            DetectedData::EigenstratCallSet => "EIGENSTRAT 1240K call set",
+            DetectedData::GvcfCallSet => "Autosomal 1240K call set (gVCF / genotyped VCF)",
             DetectedData::Unknown => "Unknown format",
         }
     }
@@ -52,7 +62,25 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
     if ends(".bam") || ends(".cram") {
         return DetectedData::Alignment;
     }
+    // A GATK gVCF (`.g.vcf[.gz]`) is genotyped at the 1240K panel — checked BEFORE the plain `.vcf`
+    // rule below (a gVCF also ends `.vcf.gz`). A gVCF named plainly `.vcf.gz` is imported as a normal
+    // variant set instead; the `.g.` convention is how GATK marks its genome VCFs.
+    if ends(".g.vcf") || ends(".g.vcf.gz") || ends(".g.vcf.bgz") {
+        return DetectedData::GvcfCallSet;
+    }
+    // EIGENSTRAT call-set triplet — the user can point at any member; the importer resolves the
+    // siblings by shared basename. `.geno`/`.ind` are unambiguous; `.snp` too (no other `.snp` type).
+    if ends(".geno") || ends(".snp") || ends(".ind") {
+        return DetectedData::EigenstratCallSet;
+    }
     if ends(".vcf") || ends(".vcf.gz") || ends(".vcf.bgz") {
+        // A genotyped **all-sites** VCF — one that emits explicit hom-ref (`0/0`) rows, e.g. a
+        // `bcftools mpileup`/`call` or joint-genotyped VCF over the 1240K sites — is a trusted
+        // external autosomal call set, not a variant-only list. Route it to the panel importer so it
+        // drives the autosomal consensus. A variant-only VCF (no `0/0`) stays a normal variant set.
+        if looks_like_genotyped_callset_vcf(head) {
+            return DetectedData::GvcfCallSet;
+        }
         return DetectedData::Variants;
     }
     if ends(".fasta")
@@ -109,6 +137,20 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
     } else {
         DetectedData::Unknown
     }
+}
+
+/// A genotyped **all-sites** VCF: any data line whose `FORMAT` begins `GT` and whose sample genotype
+/// is an explicit hom-ref (`0/0` / `0|0`). A variant-only VCF never emits hom-ref rows, so this
+/// cleanly distinguishes a 1240K/panel call set (which lists every site) from a plain variant list.
+fn looks_like_genotyped_callset_vcf(head: &str) -> bool {
+    head.lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .any(|l| {
+            let cols: Vec<&str> = l.split('\t').collect();
+            cols.len() >= 10
+                && cols[8].split(':').next() == Some("GT")
+                && matches!(cols[9].split(':').next(), Some("0/0") | Some("0|0"))
+        })
 }
 
 /// Recognize a CompleteGenomics masterVar table from its head text. The `>locus … chromosome …
@@ -320,6 +362,39 @@ fn chip_score(lines: &[&str], data_lines: &[&str], file_name: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eigenstrat_triplet_detected_by_any_member() {
+        assert_eq!(detect("I1234.geno", ""), DetectedData::EigenstratCallSet);
+        assert_eq!(detect("I1234.snp", ""), DetectedData::EigenstratCallSet);
+        assert_eq!(detect("I1234.ind", ""), DetectedData::EigenstratCallSet);
+    }
+
+    #[test]
+    fn gvcf_detected_before_plain_vcf() {
+        assert_eq!(detect("sample.g.vcf.gz", ""), DetectedData::GvcfCallSet);
+        assert_eq!(detect("sample.g.vcf", ""), DetectedData::GvcfCallSet);
+        // A variant-only VCF (no head, or no 0/0 rows) is a normal variant set.
+        assert_eq!(detect("sample.vcf.gz", ""), DetectedData::Variants);
+    }
+
+    #[test]
+    fn genotyped_all_sites_vcf_is_a_call_set() {
+        // An all-sites VCF with explicit hom-ref rows (bcftools mpileup at 1240K sites) → call set.
+        let head = "\
+##fileformat=VCFv4.2
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tWGS229
+chr1\t246193\trs3094315\tG\tA\t225\t.\tDP=29\tGT:PL:DP:AD\t1/1:255,87,0:29:0,29
+chr1\t270133\trs12124819\tA\t.\t281\t.\tDP=33\tGT:DP:AD\t0/0:32:32
+";
+        assert_eq!(detect("WGS229.chm13.1240k.vcf.gz", head), DetectedData::GvcfCallSet);
+        // A variant-only VCF (only 1/1, 0/1 — no hom-ref) stays a normal variant set.
+        let variants_only = "\
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS
+chr1\t246193\t.\tG\tA\t225\t.\tDP=29\tGT\t1/1
+";
+        assert_eq!(detect("calls.vcf.gz", variants_only), DetectedData::Variants);
+    }
 
     #[test]
     fn extensions_win_first() {

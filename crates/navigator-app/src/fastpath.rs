@@ -41,6 +41,26 @@ pub(crate) fn chr_y_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
     })
 }
 
+/// Locate a per-sample chrM GVCF for an alignment (the ytree `*.chrM.g.vcf.gz` sidecar): the
+/// `NAVIGATOR_M_GVCF` path override, else a sibling of the alignment's BAM/CRAM whose name ends
+/// `.chrm.g.vcf.gz`. `None` when absent. The mtDNA counterpart to [`chr_y_gvcf_for_alignment`].
+pub(crate) fn chr_m_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("NAVIGATOR_M_GVCF") {
+        let p = PathBuf::from(p);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let dir = Path::new(aln.bam_path.as_ref()?).parent()?;
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
+        let name = e.file_name();
+        name.to_string_lossy()
+            .to_ascii_lowercase()
+            .ends_with(".chrm.g.vcf.gz")
+            .then(|| e.path())
+    })
+}
+
 /// The bundled-mask filename token for an alignment's reference build, or `None` when no chrY masks
 /// ship for it. CHM13 masks are native (hs1); the GRCh38 masks are lifted from them (CrossMap
 /// hs1→hg38). GRCh37 has no masks yet (bare-`Y` contig naming + no lifted set).
@@ -209,9 +229,10 @@ impl App {
             self.record_call_fp(
                 bio,
                 DnaType::Y,
-                &format!("aln:{alignment_id}"),
+                &external_y_source_key(alignment_id),
                 format!("aln #{alignment_id} Y (pipeline GVCF)"),
                 &assignment,
+                CallProvenance::External,
                 fp.as_deref(),
             )
             .await?;
@@ -238,9 +259,10 @@ impl App {
             self.record_call_fp(
                 bio,
                 DnaType::Mt,
-                &format!("aln:{alignment_id}:mt"),
+                &external_mt_source_key(alignment_id),
                 format!("aln #{alignment_id} mtDNA (pipeline GVCF)"),
                 &assignment,
+                CallProvenance::External,
                 fp.as_deref(),
             )
             .await?;

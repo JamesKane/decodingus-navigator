@@ -201,12 +201,14 @@ impl App {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         let lower = name.to_ascii_lowercase();
-        // Binary/structured formats are detected by extension; only text needs a sniff.
+        // Binary/structured formats are detected by extension; only text needs a sniff. A VCF is
+        // sniffed too now — an all-sites (genotyped) VCF is a 1240K call set, a variant-only VCF is a
+        // plain variant set (see `filetype::looks_like_genotyped_callset_vcf`) — so `.vcf*` is NOT here.
         let by_ext = lower.ends_with(".bam")
             || lower.ends_with(".cram")
-            || lower.ends_with(".vcf")
-            || lower.ends_with(".vcf.gz")
-            || lower.ends_with(".vcf.bgz")
+            || lower.ends_with(".geno")
+            || lower.ends_with(".snp")
+            || lower.ends_with(".ind")
             || [".fasta", ".fa", ".fna", ".fas", ".fasta.gz", ".fa.gz", ".fna.gz"]
                 .iter()
                 .any(|e| lower.ends_with(e));
@@ -238,6 +240,12 @@ impl App {
             }
             DetectedData::MtdnaFasta => {
                 self.import_mtdna_from_fasta(biosample_guid, path).await?;
+            }
+            DetectedData::EigenstratCallSet => {
+                self.import_callset_from_file(biosample_guid, path).await?;
+            }
+            DetectedData::GvcfCallSet => {
+                self.import_gvcf_callset_from_file(biosample_guid, path).await?;
             }
             DetectedData::Alignment => {
                 self.import_alignment_file(biosample_guid, path, test_type).await?;
@@ -474,6 +482,34 @@ impl App {
     ) -> Result<ProjectImportSummary, AppError> {
         self.import_project_dir_with_progress(dir, reference, administrator, fast_path, |_, _, _| {})
             .await
+    }
+
+    /// Re-run the sidecar fast path for every alignment of a subject whose source directory still
+    /// carries the pipeline GVCFs — restoring external (GATK4) Y/mt calls that an older build's
+    /// internal walk had overwritten before provenance existed. Cheap: reads the small GVCFs, never
+    /// the CRAM. The external calls land on their own `:ext` keys (they cannot clobber, and with the
+    /// "prefer external caller" policy they win the consensus). Returns `(y_placed, mt_placed)`.
+    /// This is the operational fix for a workspace imported before external-caller precedence.
+    pub async fn reingest_external_for_biosample(&self, biosample_guid: SampleGuid) -> Result<(usize, usize), AppError> {
+        let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+        let (mut y_placed, mut mt_placed) = (0usize, 0usize);
+        for a in &alns {
+            let Some(dir) = a.bam_path.as_deref().map(Path::new).and_then(Path::parent) else {
+                continue;
+            };
+            let sample = navigator_analysis::scan::scan_sample(dir);
+            if !sample.sidecars.has_haplogroup_gvcf() {
+                continue;
+            }
+            let ingest = self.ingest_sidecars(a.id, &sample.sidecars).await?;
+            if ingest.y_haplogroup.is_some() {
+                y_placed += 1;
+            }
+            if ingest.mt_haplogroup.is_some() {
+                mt_placed += 1;
+            }
+        }
+        Ok((y_placed, mt_placed))
     }
 
     /// [`Self::import_project_dir`] with a per-sample progress callback `progress(done, total,
@@ -857,6 +893,76 @@ impl App {
         Ok(stats)
     }
 
+    /// Ensure a prebuilt ancestry/IBD asset at `path` is present, downloading it — and the asset
+    /// manifest it's verified against — from the published GitHub release when missing. End users get
+    /// the panels this way instead of running the offline `panelbuild` tool. Manifest-driven: only an
+    /// asset the manifest actually lists is fetched (an unpublished optional asset stays absent), and
+    /// an explicit `$NAVIGATOR_*` path override is never fetched over. Best-effort progress → stderr.
+    pub(crate) async fn ensure_ancestry_asset(&self, build: ReferenceBuild, path: &Path) -> Result<(), AppError> {
+        if path.exists() {
+            return Ok(());
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            return Ok(());
+        };
+        // Only auto-fetch to the default cache location — an explicit override is the user's own file.
+        let default = refgenome_cache::base_dir().join("ancestry").join(&name);
+        if path != default {
+            return Ok(());
+        }
+        let base = asset_release_base_url(build);
+
+        // The manifest (small) both integrity-checks the asset (at read) and lists what's published.
+        let manifest_name = format!("ancestry_manifest_{}.json", build.as_str());
+        if !default.with_file_name(&manifest_name).exists() {
+            let url = format!("{base}/{manifest_name}");
+            if let Err(e) = self.gateway.resolve_ancestry_asset(&manifest_name, &url, &mut |_, _| {}).await {
+                eprintln!("ancestry assets: could not fetch {manifest_name} ({e}) — leaving {name} to on-disk state");
+                return Ok(());
+            }
+        }
+        // Fetch only assets the manifest publishes for this build (e.g. ancestry_freq_ancient isn't
+        // shipped → it simply stays absent and the feature degrades, unchanged).
+        match load_asset_manifest(build) {
+            Some(m) if m.assets.contains_key(&name) => {}
+            _ => return Ok(()),
+        }
+
+        eprintln!("ancestry assets: downloading {name} (first use — no build needed) …");
+        let mut last = 0u64;
+        self.gateway
+            .resolve_ancestry_asset(&name, &format!("{base}/{name}"), &mut |done, total| {
+                if done.saturating_sub(last) >= 16 * 1024 * 1024 {
+                    last = done;
+                    match total {
+                        Some(t) if t > 0 => eprintln!("  {name}: {} / {} MB", done / 1_048_576, t / 1_048_576),
+                        _ => eprintln!("  {name}: {} MB", done / 1_048_576),
+                    }
+                }
+            })
+            .await
+            .map_err(|e| AppError::Import(format!("downloading ancestry asset {name}: {e}")))?;
+        eprintln!("ancestry assets: {name} ready");
+        Ok(())
+    }
+
+    /// Load the CHM13 IBD panel — downloading the prebuilt asset from the release on first use (no
+    /// `panelbuild` needed). The single entry point for the panel: replaces the five call sites that
+    /// each errored "build it with `panelbuild ibd-panel`" when the asset was absent.
+    pub(crate) async fn load_ibd_panel(&self) -> Result<navigator_analysis::ibd_panel::IbdPanel, AppError> {
+        let build = ReferenceBuild::Chm13v2;
+        let path = ibd_panel_path(build);
+        self.ensure_ancestry_asset(build, &path).await?;
+        let bytes = read_verified_asset(build, &path)?.ok_or_else(|| {
+            AppError::Import(format!(
+                "IBD panel asset not found at {} and could not be downloaded — check your network, or \
+                 set NAVIGATOR_IBD_PANEL to a local copy",
+                path.display()
+            ))
+        })?;
+        Ok(navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?)
+    }
+
     /// Resolve an imported chip's genotypes to canonical CHM13 **IBD-panel** dosages — the chip→IBD
     /// path (no alignment, no runtime liftover: the multi-build panel pre-computes coordinates). The
     /// output [`SiteGenotype`]s are over the same CHM13 sites a WGS caller would hit, so a chip and a
@@ -872,18 +978,159 @@ impl App {
         let from_build = chipprofile::detect_build(&text);
         let calls = chipprofile::autosomal_calls(&text);
 
-        let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
-        let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
-            AppError::Import(format!(
-                "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
-                panel_path.display()
-            ))
-        })?;
-        let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+        let panel = self.load_ibd_panel().await?;
 
         let tuples: Vec<(String, i64, char, char)> =
             calls.into_iter().map(|c| (c.contig, c.position, c.a1, c.a2)).collect();
         Ok(panel.resolve_chip(&from_build, &tuples))
+    }
+
+    /// Import a trusted external caller's autosomal **1240K EIGENSTRAT call set**
+    /// (`.geno`/`.snp`/`.ind`) for a subject — the autosomal counterpart to the Y/mt GVCF sidecar
+    /// fast path. Resolves the target individual's genotypes to canonical CHM13 panel dosages (no
+    /// CRAM decode; `resolve_chip` self-orients against the CHM13 alleles), persists them as an
+    /// `external` source, and refreshes the autosomal consensus so modern/fine/deep ancestry and IBD
+    /// pick them up. `path` may point at any member of the triplet (siblings resolved by basename).
+    /// The `.snp` build is GRCh37 (AADR 1240K) unless `NAVIGATOR_CALLSET_BUILD` overrides it. Returns
+    /// the number of resolved panel sites.
+    pub async fn import_callset_from_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<usize, AppError> {
+        // Resolve the triplet from any member by shared basename.
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| AppError::Import(format!("{}: not an EIGENSTRAT file name", path.display())))?;
+        let dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let geno = dir.join(format!("{stem}.geno"));
+        let snp = dir.join(format!("{stem}.snp"));
+        let ind = dir.join(format!("{stem}.ind"));
+        for (ext, p) in [("geno", &geno), ("snp", &snp), ("ind", &ind)] {
+            if !p.is_file() {
+                return Err(AppError::Import(format!(
+                    "EIGENSTRAT .{ext} not found for {} (expected {})",
+                    path.display(),
+                    p.display()
+                )));
+            }
+        }
+
+        // AADR 1240K is GRCh37/hg19; allow a GRCh38-built call set via the env override.
+        let build = std::env::var("NAVIGATOR_CALLSET_BUILD").unwrap_or_else(|_| "GRCh37".to_string());
+        let (g, s, i, b) = (geno.clone(), snp.clone(), ind.clone(), build.clone());
+        let callset =
+            tokio::task::spawn_blocking(move || navigator_analysis::callset::read_eigenstrat(&g, &s, &i, None, &b))
+                .await??;
+
+        // Resolve to canonical CHM13 panel dosages (same path as a chip; self-orients to CHM13).
+        let panel = self.load_ibd_panel().await?;
+        let dosages = panel.resolve_chip(&callset.build, &callset.calls);
+        let label = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "external call set".into());
+        self.store_external_dosages(biosample_guid, &format!("{label} (1240K call set)"), dosages, || {
+            format!(
+                "the call set resolved to 0 panel sites — check the build (got {} genotypes on {}; \
+                 set NAVIGATOR_CALLSET_BUILD if it is not GRCh37)",
+                callset.calls.len(),
+                callset.build
+            )
+        })
+        .await
+    }
+
+    /// Import a trusted external caller's autosomal genotypes for a subject from a **diploid VCF/gVCF**
+    /// — the VCF path of the autosomal fast path (Phases 4/5). Handles a GATK4 gVCF (variant records +
+    /// hom-ref ref blocks) **and** a genotyped all-sites VCF (e.g. `bcftools mpileup`/`call` over the
+    /// 1240K sites, where every site carries an explicit `GT`). Genotypes the panel loci directly with
+    /// **no CRAM decode**, re-keys to canonical CHM13 (`resolve_chip`), stores the dosages as an
+    /// `external` source, and refreshes the autosomal consensus. Build is auto-detected from the VCF
+    /// header (`NAVIGATOR_CALLSET_BUILD` overrides). Returns the number of resolved panel sites.
+    pub async fn import_gvcf_callset_from_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<usize, AppError> {
+        let build = callset_build_for(path);
+
+        let panel = self.load_ibd_panel().await?;
+
+        // Panel loci in the gVCF's build, grouped + sorted per contig; keep each site's reference
+        // allele so a hom-ref block resolves to (ref, ref).
+        let mut targets_by_contig: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+        let mut ref_allele: std::collections::HashMap<(String, i64), char> = std::collections::HashMap::new();
+        for site in &panel.sites {
+            if let Some(l) = site.locus(&build) {
+                targets_by_contig.entry(l.contig.clone()).or_default().push(l.position);
+                ref_allele.insert((l.contig.clone(), l.position), l.reference);
+            }
+        }
+        for v in targets_by_contig.values_mut() {
+            v.sort_unstable();
+            v.dedup();
+        }
+        if targets_by_contig.is_empty() {
+            return Err(AppError::Import(format!(
+                "the IBD panel has no {build} loci — set NAVIGATOR_CALLSET_BUILD to the gVCF's build"
+            )));
+        }
+
+        let gvcf = path.to_path_buf();
+        let params = navigator_analysis::gvcf::GvcfReadParams::default();
+        let calls = tokio::task::spawn_blocking(move || {
+            navigator_analysis::gvcf::read_diploid_calls(&gvcf, &targets_by_contig, &params)
+        })
+        .await??;
+
+        // Build reference-forward allele pairs → resolve to CHM13.
+        let tuples: Vec<(String, i64, char, char)> = calls
+            .into_iter()
+            .map(|((contig, pos), call)| {
+                let (a1, a2) = match call {
+                    navigator_analysis::gvcf::GvcfDiploid::Genotype(a, b) => (a, b),
+                    navigator_analysis::gvcf::GvcfDiploid::HomRef => {
+                        let r = ref_allele.get(&(contig.clone(), pos)).copied().unwrap_or('N');
+                        (r, r)
+                    }
+                };
+                (contig, pos, a1, a2)
+            })
+            .collect();
+        let called = tuples.len();
+        let dosages = panel.resolve_chip(&build, &tuples);
+        let label = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "external VCF".into());
+        self.store_external_dosages(biosample_guid, &format!("{label} (1240K call set, {build})"), dosages, || {
+            format!("the VCF genotyped 0 panel sites on {build} ({called} calls) — check the build/VCF")
+        })
+        .await
+    }
+
+    /// Persist a resolved external autosomal call set (CHM13 panel dosages) as an `external` source
+    /// and fold it into the autosomal consensus (no decode). Shared by the EIGENSTRAT and gVCF paths.
+    /// `on_empty` supplies the error message when nothing resolved.
+    async fn store_external_dosages(
+        &self,
+        biosample_guid: SampleGuid,
+        source_label: &str,
+        dosages: Vec<navigator_analysis::caller::SiteGenotype>,
+        on_empty: impl FnOnce() -> String,
+    ) -> Result<usize, AppError> {
+        let site_count = dosages.len();
+        if site_count == 0 {
+            return Err(AppError::Import(on_empty()));
+        }
+        let json = serde_json::to_string(&dosages).map_err(|e| AppError::Import(format!("serializing dosages: {e}")))?;
+        let row = navigator_store::external_panel_dosage::StoredPanelDosage {
+            biosample_guid: biosample_guid.0.to_string(),
+            source_label: source_label.to_string(),
+            provenance: navigator_domain::reconciliation::CallProvenance::External.as_str().to_string(),
+            panel_sig: Some(ibd_panel_cache_kind()),
+            site_count: site_count as i64,
+            dosages: json,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        navigator_store::external_panel_dosage::upsert(self.store.pool(), &row).await?;
+        // Fold into the autosomal consensus immediately — cheap, no decode (best-effort).
+        let _ = self.refresh_autosomal_consensus(biosample_guid).await;
+        Ok(site_count)
     }
 
     /// IBD comparison over the **chip-compatible IBD panel** for two samples that may each be a
@@ -951,14 +1198,7 @@ impl App {
                 // panel), so a BAM consults no reference bases — don't force a download for it.
                 let build = self.alignment_or_err(id).await?.reference_build;
                 let (bam, reference) = self.alignment_reference_for_decode(id).await?;
-                let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
-                let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
-                    AppError::Import(format!(
-                        "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
-                        panel_path.display()
-                    ))
-                })?;
-                let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+                let panel = self.load_ibd_panel().await?;
                 let is_chm13 = matches!(
                     canonical_build(&build),
                     Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)

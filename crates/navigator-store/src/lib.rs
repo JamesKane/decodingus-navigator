@@ -19,6 +19,7 @@ pub mod consensus_profile;
 pub mod dm;
 pub mod error;
 pub mod external_id;
+pub mod external_panel_dosage;
 pub mod ftdna_member;
 pub mod haplogroup_call;
 pub mod ibd_exchange;

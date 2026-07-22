@@ -1,6 +1,7 @@
 //! `impl App` methods extracted from `lib.rs` (the `haplogroup` cluster). Split out in the
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
+use crate::fastpath::{chr_m_gvcf_for_alignment, chr_y_gvcf_for_alignment};
 
 /// Analysis-artifact `kind` for cached per-alignment tree-genotype base calls (see
 /// [`App::base_calls`]). The `algorithm_version` carries the site-set hash, so distinct trees /
@@ -201,7 +202,8 @@ impl App {
         Ok(run.biosample_guid)
     }
 
-    /// Record (upsert) a source's haplogroup call for donor-level reconciliation.
+    /// Record (upsert) a source's haplogroup call for donor-level reconciliation. Defaults to the
+    /// internal `NavigatorWalk` provenance tier (the external fast path records via `record_call_fp`).
     pub async fn record_haplogroup_call(
         &self,
         biosample_guid: SampleGuid,
@@ -209,7 +211,7 @@ impl App {
         source_key: &str,
         call: &RunHaplogroupCall,
     ) -> Result<(), AppError> {
-        self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, call, None)
+        self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, call, CallProvenance::NavigatorWalk, None)
             .await
     }
 
@@ -221,6 +223,7 @@ impl App {
         dna_type: DnaType,
         source_key: &str,
         call: &RunHaplogroupCall,
+        provenance: CallProvenance,
         fingerprint: Option<&str>,
     ) -> Result<(), AppError> {
         haplogroup_call::upsert(
@@ -229,6 +232,7 @@ impl App {
             dna_type,
             source_key,
             call,
+            provenance,
             fingerprint,
         )
         .await?;
@@ -251,11 +255,22 @@ impl App {
         source_label: String,
         assignment: &HaploAssignment,
     ) -> Result<(), AppError> {
-        self.record_call_fp(biosample_guid, dna_type, source_key, source_label, assignment, None)
-            .await
+        self.record_call_fp(
+            biosample_guid,
+            dna_type,
+            source_key,
+            source_label,
+            assignment,
+            CallProvenance::NavigatorWalk,
+            None,
+        )
+        .await
     }
 
-    /// Like [`record_call`](Self::record_call) but stamps the input fingerprint.
+    /// Like [`record_call`](Self::record_call) but stamps the input fingerprint and the provenance
+    /// tier (the sidecar fast path passes [`CallProvenance::External`]; internal genotyping passes
+    /// [`CallProvenance::NavigatorWalk`]).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn record_call_fp(
         &self,
         biosample_guid: SampleGuid,
@@ -263,6 +278,7 @@ impl App {
         source_key: &str,
         source_label: String,
         assignment: &HaploAssignment,
+        provenance: CallProvenance,
         fingerprint: Option<&str>,
     ) -> Result<(), AppError> {
         if let Some(top) = assignment.ranked.first() {
@@ -274,10 +290,93 @@ impl App {
                 matched: top.matched as i64,
                 expected: top.expected as i64,
             };
-            self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, &call, fingerprint)
+            self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, &call, provenance, fingerprint)
                 .await?;
         }
         Ok(())
+    }
+
+    /// The preferred external (sidecar fast-path) call for an alignment's DNA type — present only
+    /// when the "prefer external caller" policy is on **and** such a call exists. When present,
+    /// Navigator's internal caller must not re-walk the CRAM: returning this call instead is what
+    /// protects an external GATK4/1240K placement from being diluted or overwritten (the
+    /// PRJEB37976 ancient-DNA fix). See `docs/design/external-caller-precedence.md`.
+    pub(crate) async fn preferred_external_call(
+        &self,
+        biosample_guid: SampleGuid,
+        dna_type: DnaType,
+        alignment_id: i64,
+    ) -> Result<Option<RunHaplogroupCall>, AppError> {
+        if !prefer_external_calls() {
+            return Ok(None);
+        }
+        let key = match dna_type {
+            DnaType::Y => external_y_source_key(alignment_id),
+            DnaType::Mt => external_mt_source_key(alignment_id),
+        };
+        Ok(haplogroup_call::get_one(self.store.pool(), biosample_guid, dna_type, &key).await?)
+    }
+
+    /// Whether an alignment already carries a preferred external call for a DNA type — the gate the
+    /// UI worker uses to skip enqueuing the internal Y/mt genotyping in "Full Analysis".
+    pub async fn has_preferred_external_call(&self, alignment_id: i64, dna_type: DnaType) -> Result<bool, AppError> {
+        let Ok(bio) = self.biosample_of_alignment(alignment_id).await else {
+            return Ok(false);
+        };
+        Ok(self.preferred_external_call(bio, dna_type, alignment_id).await?.is_some())
+    }
+
+    /// "Compare callers": the trusted external caller vs Navigator's internal caller for one
+    /// alignment. **Forces** the internal walk regardless of the prefer-external policy — it records
+    /// its own `aln:{id}` / `aln:{id}:mt` (`NavigatorWalk`) rows and never touches the external `:ext`
+    /// row, so the comparison is non-destructive to the external call. Returns Y (for Y-bearing
+    /// subjects) and mtDNA, each with both terminals; a divergence is the ancient-DNA-damage signal
+    /// the "skip the internal walk" default is protecting against. See external-caller-precedence §6.
+    pub async fn compare_callers(&self, alignment_id: i64) -> Result<Vec<CallerComparison>, AppError> {
+        let bio = self.biosample_of_alignment(alignment_id).await.ok();
+        let mut out = Vec::new();
+
+        let y_bearing = match bio {
+            Some(g) => self.subject_has_y_dna(g).await.unwrap_or(true),
+            None => true,
+        };
+        if y_bearing {
+            let external = match bio {
+                Some(g) => haplogroup_call::get_one(self.store.pool(), g, DnaType::Y, &external_y_source_key(alignment_id))
+                    .await?
+                    .map(|c| c.haplogroup),
+                None => None,
+            };
+            let navigator = self
+                .assign_y_haplogroup_walk(alignment_id, bio)
+                .await
+                .ok()
+                .and_then(|a| a.ranked.first().map(|r| r.name.clone()));
+            out.push(CallerComparison {
+                dna_type: DnaType::Y,
+                external,
+                navigator,
+            });
+        }
+
+        let external_mt = match bio {
+            Some(g) => haplogroup_call::get_one(self.store.pool(), g, DnaType::Mt, &external_mt_source_key(alignment_id))
+                .await?
+                .map(|c| c.haplogroup),
+            None => None,
+        };
+        let navigator_mt = self
+            .assign_mtdna_haplogroup_walk(alignment_id, bio)
+            .await
+            .ok()
+            .and_then(|a| a.ranked.first().map(|r| r.name.clone()));
+        out.push(CallerComparison {
+            dna_type: DnaType::Mt,
+            external: external_mt,
+            navigator: navigator_mt,
+        });
+
+        Ok(out)
     }
 
     /// The reconciled donor-level haplogroup consensus across all recorded sources. A user
@@ -287,14 +386,22 @@ impl App {
         biosample_guid: SampleGuid,
         dna_type: DnaType,
     ) -> Result<Option<Consensus>, AppError> {
-        let calls = haplogroup_call::list_for(self.store.pool(), biosample_guid, dna_type).await?;
-        // Per-run label reconciliation supplies the lineage / compatibility / divergence warnings…
-        let mut consensus = reconciliation::reconcile(&calls);
+        let calls = haplogroup_call::list_for_with_provenance(self.store.pool(), biosample_guid, dna_type).await?;
+        let prefer_external = prefer_external_calls();
+        let has_external = calls.iter().any(|(p, _)| *p == CallProvenance::External);
+        // Per-run label reconciliation supplies the lineage / compatibility / divergence warnings —
+        // honoring provenance: when the user prefers the external caller and one placed this subject,
+        // it wins the vote (a damaged ancient-DNA CRAM walk cannot out-score it).
+        let mut consensus = reconciliation::reconcile_with_provenance(&calls, prefer_external);
 
-        // …but the authoritative terminal is the genome-level PLACED call persisted by
-        // build_{y,mt}_profile (consensus_profile.consensus_label) — cheap to read, no genotyping.
-        // When it disagrees with the per-run vote, keep the placed call and record why.
-        if matches!(dna_type, DnaType::Y | DnaType::Mt) {
+        // …the genome-level PLACED call (consensus_profile.consensus_label, from build_{y,mt}_profile)
+        // is normally authoritative. Phase 2 makes that placement GVCF-sourced on preferred-external
+        // subjects (place_{y,mt}_consensus → consensus_base_calls, no CRAM walk), so a freshly built
+        // label already agrees with the external call. We still skip it here so a *stale* label left
+        // by a pre-Phase-2 (CRAM-pooled) build cannot resurface before the profile is rebuilt — the
+        // external reconcile is the safe authority for these subjects.
+        let use_placed_label = !(prefer_external && has_external);
+        if use_placed_label && matches!(dna_type, DnaType::Y | DnaType::Mt) {
             if let Some(stored) =
                 navigator_store::consensus_profile::get(self.store.pool(), biosample_guid, dna_type.as_str()).await?
             {
@@ -349,13 +456,18 @@ impl App {
     pub async fn haplogroup_terminals(
         &self,
     ) -> Result<HashMap<SampleGuid, (Option<String>, Option<String>)>, AppError> {
-        let mut groups: HashMap<(SampleGuid, DnaType), Vec<RunHaplogroupCall>> = HashMap::new();
-        for (guid, dna_type, call) in haplogroup_call::list_all(self.store.pool()).await? {
-            groups.entry((guid, dna_type)).or_default().push(call);
+        let mut groups: HashMap<(SampleGuid, DnaType), Vec<(CallProvenance, RunHaplogroupCall)>> = HashMap::new();
+        for (guid, dna_type, prov, call) in haplogroup_call::list_all(self.store.pool()).await? {
+            groups.entry((guid, dna_type)).or_default().push((prov, call));
         }
+        let prefer_external = prefer_external_calls();
+        let mut has_external: std::collections::HashSet<(SampleGuid, DnaType)> = std::collections::HashSet::new();
         let mut out: HashMap<SampleGuid, (Option<String>, Option<String>)> = HashMap::new();
         for ((guid, dna_type), calls) in groups {
-            if let Some(c) = reconciliation::reconcile(&calls) {
+            if calls.iter().any(|(p, _)| *p == CallProvenance::External) {
+                has_external.insert((guid, dna_type));
+            }
+            if let Some(c) = reconciliation::reconcile_with_provenance(&calls, prefer_external) {
                 let entry = out.entry(guid).or_default();
                 match dna_type {
                     DnaType::Y => entry.0 = Some(c.haplogroup),
@@ -364,16 +476,25 @@ impl App {
             }
         }
         // The genome-level placed terminal (build_{y,mt}_profile) wins over the per-run label vote,
-        // so the subjects table matches the detail tab.
+        // so the subjects table matches the detail tab — except on a preferred-external subject, where
+        // the CRAM-pooled placement is skipped in favor of the external call (as in haplogroup_consensus).
         for (guid_s, dna_type_s, label) in navigator_store::consensus_profile::list_labels(self.store.pool()).await? {
             let Ok(uuid) = guid_s.parse::<uuid::Uuid>() else {
                 continue;
             };
-            let entry = out.entry(SampleGuid(uuid)).or_default();
-            match dna_type_s.as_str() {
-                "Y" => entry.0 = Some(label),
-                "Mt" => entry.1 = Some(label),
-                _ => {}
+            let guid = SampleGuid(uuid);
+            let dna = match dna_type_s.as_str() {
+                "Y" => DnaType::Y,
+                "Mt" => DnaType::Mt,
+                _ => continue,
+            };
+            if prefer_external && has_external.contains(&(guid, dna)) {
+                continue;
+            }
+            let entry = out.entry(guid).or_default();
+            match dna {
+                DnaType::Y => entry.0 = Some(label),
+                DnaType::Mt => entry.1 = Some(label),
             }
         }
         // Manual overrides win over everything.
@@ -842,10 +963,17 @@ impl App {
         let mut sources: Vec<(SourceType, HashMap<i64, char>)> = Vec::new();
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            // Lifted GRCh38-coordinate calls; sources lacking chrY / a reference are skipped.
-            let Ok((_, _, calls)) = self.assign_haplogroup_detail(a.id, "chrY", &tree_json).await else {
-                continue;
+            // Lifted GRCh38-coordinate calls; sources lacking chrY / a reference are skipped. A
+            // preferred-external alignment is genotyped from its chrY GVCF (lifted native→GRCh38 by
+            // `gvcf_base_calls`) instead of walking the CRAM.
+            let calls = match (prefer_external_calls(), chr_y_gvcf_for_alignment(a)) {
+                (true, Some(gvcf)) => self
+                    .gvcf_base_calls(a.id, "chrY", &gvcf, &tree, tree_build_for_contig("chrY"))
+                    .await
+                    .ok(),
+                _ => self.assign_haplogroup_detail(a.id, "chrY", &tree_json).await.ok().map(|(_, _, c)| c),
             };
+            let Some(calls) = calls else { continue };
             if !calls.is_empty() {
                 sources.push((SourceType::WgsShortRead, calls));
             }
@@ -907,8 +1035,9 @@ impl App {
         for a in &alignments {
             let Some(bk) = decodingus_build_key(&a.reference_build) else { continue };
             let Some(tree) = trees.get(bk) else { continue };
-            // Native build → no liftover; this cache-key matches the Y assignment's, so it's a hit.
-            let Ok(calls) = self.base_calls(a.id, "chrY", tree, None).await else { continue };
+            // Native build → no liftover; the cache-key matches the Y assignment's, so a CRAM walk is
+            // a hit — but a preferred-external alignment is genotyped from its GVCF instead (no decode).
+            let Ok(calls) = self.consensus_base_calls(a, "chrY", tree, None).await else { continue };
             if !calls.is_empty() {
                 by_build.entry(bk).or_default().push((SourceType::WgsShortRead, calls));
             }
@@ -1369,10 +1498,11 @@ impl App {
     ) -> Result<Vec<(String, SourceType, HashMap<i64, char>)>, AppError> {
         let mut sources: Vec<(String, SourceType, HashMap<i64, char>)> = Vec::new();
 
-        // Each alignment's chrM genotype. `None` source-build → rCRS-direct / CHM13-chrM lift.
+        // Each alignment's chrM genotype. `None` source-build → rCRS-direct / CHM13-chrM lift. A
+        // preferred-external alignment is genotyped from its chrM GVCF instead of the CRAM.
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         for a in &alignments {
-            let Ok(calls) = self.base_calls(a.id, "chrM", tree, None).await else {
+            let Ok(calls) = self.consensus_base_calls(a, "chrM", tree, None).await else {
                 continue;
             };
             if !calls.is_empty() {
@@ -1875,6 +2005,21 @@ impl App {
                     }
                 }
                 Err(e) => last_err = Some(e),
+            }
+        }
+
+        // One source per imported **external autosomal call set** (a trusted 1240K EIGENSTRAT set —
+        // GATK4 / pileupCaller). Resolved to CHM13 panel dosages at import and stored, so it pools in
+        // with no CRAM decode (available to both the full build and the progressive refresh).
+        for row in navigator_store::external_panel_dosage::list_for_biosample(self.store.pool(), biosample_guid).await? {
+            match serde_json::from_str::<Vec<SiteGenotype>>(&row.dosages) {
+                Ok(gts) => {
+                    let obs = to_obs(gts);
+                    if !obs.is_empty() {
+                        sources.push((row.source_label, SourceType::Imported, obs));
+                    }
+                }
+                Err(e) => last_err = Some(AppError::Import(format!("decoding external panel dosages: {e}"))),
             }
         }
 
@@ -2470,6 +2615,28 @@ impl App {
     /// chrM (the tree is in rCRS coordinates).
     pub async fn assign_mtdna_haplogroup_from_alignment(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let bio = self.biosample_of_alignment(alignment_id).await.ok();
+
+        // Prefer an external (sidecar-GVCF) mt call over re-walking the CRAM — same rationale as the
+        // Y path (see `assign_y_haplogroup`); this is the guard the unguarded single-alignment
+        // "Full Analysis" was missing, so an internal re-run no longer overwrites the GATK4 mt call.
+        if let Some(guid) = bio {
+            if let Some(call) = self.preferred_external_call(guid, DnaType::Mt, alignment_id).await? {
+                return Ok(assignment_from_call(&call));
+            }
+        }
+
+        self.assign_mtdna_haplogroup_walk(alignment_id, bio).await
+    }
+
+    /// The internal-caller mtDNA placement: place chrM against the FTDNA mt tree and record under the
+    /// walk key (`aln:{id}:mt`, `NavigatorWalk`), skipping the re-score when the fingerprint is
+    /// unchanged. Split out of [`assign_mtdna_haplogroup_from_alignment`] so [`compare_callers`] can
+    /// force the internal walk even when an external call is preferred.
+    pub(crate) async fn assign_mtdna_haplogroup_walk(
+        &self,
+        alignment_id: i64,
+        bio: Option<SampleGuid>,
+    ) -> Result<HaploAssignment, AppError> {
         let source_key = format!("aln:{alignment_id}:mt");
         let tree_json = self.fetch_ftdna_mt_tree().await?;
 
@@ -2501,6 +2668,7 @@ impl App {
                 &source_key,
                 format!("aln #{alignment_id} mtDNA"),
                 &assignment,
+                CallProvenance::NavigatorWalk,
                 fingerprint.as_deref(),
             )
             .await?;
@@ -2555,6 +2723,11 @@ impl App {
         // The consensus is canonical CHM13; the AIM freq / PCA assets are keyed by (contig,pos) there.
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
+        // Auto-download the prebuilt panels on first use (no `panelbuild`). The super-pop panel is
+        // required; PCA + fine frequencies are optional (best-effort — the feature degrades if absent).
+        self.ensure_ancestry_asset(build, &ancestry_panel_path(build)).await?;
+        let _ = self.ensure_ancestry_asset(build, &ancestry_pca_path(build)).await;
+        let _ = self.ensure_ancestry_asset(build, &ancestry_freq_global_path(build)).await;
         let panel_path = ancestry_panel_path(build);
         let panel_bytes = read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
@@ -2630,6 +2803,10 @@ impl App {
         }
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
+        // Auto-download the prebuilt qpAdm + super-pop panels on first use (no `panelbuild`). qpAdm is
+        // best-effort (deep ancestry is simply unavailable if it can't be fetched); the super panel is required.
+        let _ = self.ensure_ancestry_asset(build, &ancestry_qpadm_path(build)).await;
+        self.ensure_ancestry_asset(build, &ancestry_panel_path(build)).await?;
         let qpadm_path = ancestry_qpadm_path(build);
         let Some(qpadm_bytes) = read_verified_asset(build, &qpadm_path)? else {
             return Ok(None); // asset not installed → deep ancestry unavailable
@@ -2959,6 +3136,7 @@ impl App {
         let genotypes = consensus_genotypes(&profile);
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
+        self.ensure_ancestry_asset(build, &ancestry_panel_path(build)).await?;
         let panel_path = ancestry_panel_path(build);
         let panel_bytes = read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
@@ -3079,7 +3257,6 @@ impl App {
 
     pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let bio = self.biosample_of_alignment(alignment_id).await.ok();
-        let source_key = format!("aln:{alignment_id}");
 
         // Females have no Y chromosome — don't genotype chrY or record a Y call for them.
         if let Some(guid) = bio {
@@ -3092,9 +3269,31 @@ impl App {
             }
         }
 
-        // Input fingerprint = alignment content hash + active Y-tree content hash. If it matches
-        // the recorded call's stamp, neither the file nor the tree changed → return the recorded
-        // call without re-scoring (the expensive BAM genotyping).
+        // A trusted external caller (GATK4 GVCF) already placed this alignment via the sidecar fast
+        // path and the user prefers it: return that call instead of re-walking the CRAM. On damaged
+        // ancient DNA the walk would place a different, wrong terminal and clobber the external one.
+        if let Some(guid) = bio {
+            if let Some(call) = self.preferred_external_call(guid, DnaType::Y, alignment_id).await? {
+                return Ok(assignment_from_call(&call));
+            }
+        }
+
+        self.assign_y_haplogroup_walk(alignment_id, bio).await
+    }
+
+    /// The internal-caller Y placement: genotype chrY against the configured tree and record the call
+    /// under the walk key (`aln:{id}`, `NavigatorWalk` provenance), skipping the re-score when the
+    /// alignment + tree fingerprint is unchanged. Split out of [`assign_y_haplogroup`] so
+    /// [`compare_callers`] can force the internal walk even when an external call is preferred.
+    pub(crate) async fn assign_y_haplogroup_walk(
+        &self,
+        alignment_id: i64,
+        bio: Option<SampleGuid>,
+    ) -> Result<HaploAssignment, AppError> {
+        let source_key = format!("aln:{alignment_id}");
+        // Input fingerprint = alignment content hash + active Y-tree content hash. If it matches the
+        // recorded call's stamp, neither the file nor the tree changed → return the recorded call
+        // without re-scoring (the expensive BAM genotyping).
         let fingerprint = self.y_score_fingerprint(alignment_id).await.ok();
         if let (Some(bio), Some(fp)) = (bio, fingerprint.as_deref()) {
             if haplogroup_call::stored_fingerprint(self.store.pool(), bio, DnaType::Y, &source_key)
@@ -3116,6 +3315,7 @@ impl App {
                 &source_key,
                 format!("aln #{alignment_id} Y"),
                 &assignment,
+                CallProvenance::NavigatorWalk,
                 fingerprint.as_deref(),
             )
             .await?;
@@ -3285,14 +3485,7 @@ impl App {
             return Ok(Vec::new());
         }
         let build = set.reference_build.clone().unwrap_or_else(|| "GRCh37".to_string());
-        let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
-        let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
-            AppError::Import(format!(
-                "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
-                panel_path.display()
-            ))
-        })?;
-        let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+        let panel = self.load_ibd_panel().await?;
         let dosages = tokio::task::spawn_blocking(move || panel.resolve_whole_genome(&build, &calls)).await?;
         Ok(dosages)
     }
@@ -3566,6 +3759,33 @@ impl App {
     /// chokepoint for *every* genotyping path (Y/mt placement, the variant profile, genome
     /// consensus), so a profile **rebuild** reuses the cached genotypes instead of re-walking the
     /// reads — only a changed file or a changed tree site set forces a fresh walk.
+    /// Tree-locus base calls for one alignment for the **genome-consensus placement**, preferring the
+    /// alignment's external sidecar GVCF (no CRAM decode) when the "prefer external caller" policy is
+    /// on and the GVCF is present; otherwise the cached CRAM walk ([`base_calls`]). A drop-in for the
+    /// per-alignment genotype in `place_{y,mt}_consensus`, so a preferred-external (e.g. ancient-DNA)
+    /// subject's damaged CRAM is not re-walked and cannot dilute the pooled placement (Phase 2 of
+    /// `docs/design/external-caller-precedence.md` §4.5). `tree_source_build` matches what `base_calls`
+    /// receives — `None` for a native-build tree (DecodingUs Y, rCRS mt), the tree's build for a lift.
+    pub(crate) async fn consensus_base_calls(
+        &self,
+        aln: &Alignment,
+        contig: &str,
+        tree: &navigator_analysis::haplo::HaploTree,
+        tree_source_build: Option<&str>,
+    ) -> Result<HashMap<i64, char>, AppError> {
+        if prefer_external_calls() {
+            let gvcf = if contig.eq_ignore_ascii_case("chrM") {
+                chr_m_gvcf_for_alignment(aln)
+            } else {
+                chr_y_gvcf_for_alignment(aln)
+            };
+            if let Some(gvcf) = gvcf {
+                return self.gvcf_base_calls(aln.id, contig, &gvcf, tree, tree_source_build).await;
+            }
+        }
+        self.base_calls(aln.id, contig, tree, tree_source_build).await
+    }
+
     async fn base_calls(
         &self,
         alignment_id: i64,

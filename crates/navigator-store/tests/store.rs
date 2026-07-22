@@ -614,7 +614,7 @@ async fn set_sequence_run_reparents_an_alignment() {
 
 #[tokio::test]
 async fn haplogroup_call_fingerprint_round_trips() {
-    use navigator_domain::reconciliation::{DnaType, RunHaplogroupCall};
+    use navigator_domain::reconciliation::{CallProvenance, DnaType, RunHaplogroupCall};
     use navigator_store::haplogroup_call;
 
     let s = store().await;
@@ -630,9 +630,17 @@ async fn haplogroup_call_fingerprint_round_trips() {
         expected: 100,
     };
     // Upsert stamps the fingerprint; stored_fingerprint reads it back.
-    haplogroup_call::upsert(s.pool(), b.guid, DnaType::Y, "aln:1", &call, Some("f:abc|yt:def"))
-        .await
-        .unwrap();
+    haplogroup_call::upsert(
+        s.pool(),
+        b.guid,
+        DnaType::Y,
+        "aln:1",
+        &call,
+        CallProvenance::NavigatorWalk,
+        Some("f:abc|yt:def"),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "aln:1")
             .await
@@ -651,9 +659,17 @@ async fn haplogroup_call_fingerprint_round_trips() {
     );
 
     // Re-upsert with a new fingerprint (e.g. the tree changed) replaces it.
-    haplogroup_call::upsert(s.pool(), b.guid, DnaType::Y, "aln:1", &call, Some("f:abc|yt:NEW"))
-        .await
-        .unwrap();
+    haplogroup_call::upsert(
+        s.pool(),
+        b.guid,
+        DnaType::Y,
+        "aln:1",
+        &call,
+        CallProvenance::NavigatorWalk,
+        Some("f:abc|yt:NEW"),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         haplogroup_call::stored_fingerprint(s.pool(), b.guid, DnaType::Y, "aln:1")
             .await

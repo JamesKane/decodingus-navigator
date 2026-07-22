@@ -620,7 +620,7 @@ pub use navigator_domain::consensus::{DiploidSourceObs, DiploidVariant};
 use navigator_domain::filetype;
 pub use navigator_domain::filetype::DetectedData;
 use navigator_domain::mtdna::{self, MtdnaSequence, NewMtdnaSequence};
-use navigator_domain::reconciliation::{self, RunHaplogroupCall};
+use navigator_domain::reconciliation::{self, CallProvenance, RunHaplogroupCall};
 pub use navigator_domain::reconciliation::{
     AuditEntry, CompatibilityLevel, Consensus, DnaType, IdentityVerification, VerificationStatus,
 };
@@ -1278,6 +1278,15 @@ fn read_verified_asset(build: ReferenceBuild, path: &Path) -> Result<Option<Vec<
     Ok(Some(bytes))
 }
 
+/// Base URL of the GitHub release that hosts the prebuilt ancestry/IBD assets for `build` — e.g.
+/// `https://github.com/JamesKane/decodingus-navigator/releases/download/assets-chm13v2.0`. Overridable
+/// with `NAVIGATOR_ASSET_REPO` / `NAVIGATOR_ASSET_RELEASE` (the same vars the offline packager uses).
+fn asset_release_base_url(build: ReferenceBuild) -> String {
+    let repo = std::env::var("NAVIGATOR_ASSET_REPO").unwrap_or_else(|_| "JamesKane/decodingus-navigator".to_string());
+    let tag = std::env::var("NAVIGATOR_ASSET_RELEASE").unwrap_or_else(|_| format!("assets-{}", build.as_str()));
+    format!("https://github.com/{repo}/releases/download/{tag}")
+}
+
 /// The genetic-map asset path for a build (`$NAVIGATOR_GENETIC_MAP` override, else
 /// `<base>/ancestry/genetic_map_<build>.bin`). Optional — IBD falls back to a uniform map if absent.
 fn genetic_map_path(build: ReferenceBuild) -> PathBuf {
@@ -1857,6 +1866,47 @@ fn parse_vcf_subject_snps(path: &Path) -> Result<Vec<variants::VariantCall>, App
     Ok(out)
 }
 
+/// The reference build of an external autosomal gVCF, as a token the IBD panel's `locus()` accepts
+/// (`GRCh38` / `GRCh37` / `chm13`). `NAVIGATOR_CALLSET_BUILD` overrides; else the VCF `##` meta
+/// (`detect_vcf_build`), else the `chr1`/`1` contig length in the header, else GRCh38 (the GATK4 WGS
+/// default). Normalized so a `chm13v2.0` / `hg38` / `b37` spelling still resolves.
+fn callset_build_for(path: &Path) -> String {
+    let raw = std::env::var("NAVIGATOR_CALLSET_BUILD")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            let (meta, _) = peek_vcf_header(path);
+            detect_vcf_build(&meta).or_else(|| {
+                // Fall back to the chr1/1 contig length.
+                meta.lines().find_map(|line| {
+                    let after = line.strip_prefix("##contig=<ID=")?;
+                    let id: String = after.chars().take_while(|&c| c != ',' && c != '>').collect();
+                    if id != "chr1" && id != "1" {
+                        return None;
+                    }
+                    let lp = line.find("length=")?;
+                    let len: String = line[lp + 7..].chars().take_while(|c| c.is_ascii_digit()).collect();
+                    Some(match len.as_str() {
+                        "249250621" => "GRCh37".to_string(),
+                        "248387328" => "chm13".to_string(),
+                        _ => "GRCh38".to_string(),
+                    })
+                })
+            })
+        })
+        .unwrap_or_else(|| "GRCh38".to_string());
+    let l = raw.to_ascii_lowercase();
+    if l.contains("chm13") || l.contains("t2t") || l.contains("hs1") {
+        "chm13".to_string()
+    } else if l.contains("38") {
+        "GRCh38".to_string()
+    } else if l.contains("37") || l.contains("19") || l.contains("b37") {
+        "GRCh37".to_string()
+    } else {
+        "GRCh38".to_string()
+    }
+}
+
 /// Detect the reference build from VCF meta lines (`##reference=…`, `##contig assembly=…`).
 fn detect_vcf_build(meta: &str) -> Option<String> {
     let l = meta.to_lowercase();
@@ -1994,6 +2044,57 @@ fn y_tree_provider() -> YTreeProvider {
     let env = std::env::var("NAVIGATOR_Y_TREE_PROVIDER").ok();
     let settings = AppSettings::load().y_tree_provider;
     resolve_y_provider(env.as_deref(), settings.as_deref())
+}
+
+/// Whether a trusted external caller (a GATK4 GVCF / 1240K call set imported via the sidecar fast
+/// path) is preferred over Navigator's own genotyping. When on, an external haplogroup call wins
+/// reconciliation and Navigator's internal caller does not re-walk that alignment. Resolution: env
+/// `NAVIGATOR_PREFER_EXTERNAL_CALLS` wins → settings → **default on** (never dilute a call the user
+/// deliberately produced). Pure resolver split out for testing.
+fn resolve_prefer_external(env: Option<&str>, settings: Option<bool>) -> bool {
+    match env.map(str::trim) {
+        Some(v) if v.eq_ignore_ascii_case("false") || v == "0" || v.eq_ignore_ascii_case("off") => false,
+        Some(v) if v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("on") => true,
+        _ => settings.unwrap_or(true),
+    }
+}
+
+pub(crate) fn prefer_external_calls() -> bool {
+    let env = std::env::var("NAVIGATOR_PREFER_EXTERNAL_CALLS").ok();
+    resolve_prefer_external(env.as_deref(), AppSettings::load().prefer_external_calls)
+}
+
+/// `haplogroup_call.source_key` for an alignment's **external** (sidecar fast-path) Y call. External
+/// and internal (CRAM-walk) calls use distinct keys — the walk uses `aln:{id}` / `aln:{id}:mt` — so
+/// neither upsert can ever overwrite the other.
+pub(crate) fn external_y_source_key(alignment_id: i64) -> String {
+    format!("aln:{alignment_id}:ext")
+}
+
+/// `haplogroup_call.source_key` for an alignment's **external** (sidecar fast-path) mtDNA call.
+pub(crate) fn external_mt_source_key(alignment_id: i64) -> String {
+    format!("aln:{alignment_id}:ext:mt")
+}
+
+/// One DNA type's caller comparison for an alignment: the trusted external (imported GVCF) terminal
+/// vs Navigator's own internal-walk terminal. Produced by [`App::compare_callers`] — the "Compare
+/// callers" diagnostic that surfaces GATK-vs-Navigator divergence (e.g. ancient-DNA damage) even when
+/// the external caller is the preferred one.
+#[derive(Debug, Clone)]
+pub struct CallerComparison {
+    pub dna_type: DnaType,
+    /// Terminal from the trusted external caller (sidecar GVCF), if one is recorded.
+    pub external: Option<String>,
+    /// Terminal from Navigator's own genotyping — forced, regardless of the prefer-external policy.
+    pub navigator: Option<String>,
+}
+
+impl CallerComparison {
+    /// True when both callers produced a terminal and they match. `false` when either is missing or
+    /// they differ (the latter is the interesting case to surface).
+    pub fn agree(&self) -> bool {
+        matches!((&self.external, &self.navigator), (Some(a), Some(b)) if a == b)
+    }
 }
 
 /// Application interface mode: a casual, single-person experience with plain-language briefs
@@ -2310,17 +2411,46 @@ impl App {
         local_path: Option<String>,
         auto_download: bool,
     ) -> Result<(), AppError> {
+        self.set_reference_overrides(&[ReferenceOverrideInput {
+            build: build.to_string(),
+            local_path,
+            auto_download,
+        }])
+    }
+
+    /// Persist **all** reference-source overrides in ONE load-modify-save. The Settings "References"
+    /// table has a row per build; the old code sent a separate `SetReferenceOverride` command per row,
+    /// and because every worker command is `tokio::spawn`ed, those N concurrent load-modify-`save`s
+    /// raced the shared `reference_sources.json` — losing rows *and* tearing the file into corrupt
+    /// head-of-one + tail-of-another JSON (issue #26). Applying every row against a single load and
+    /// writing once (atomically, via [`UserConfig::save`]) removes both failure modes.
+    pub fn set_reference_overrides(&self, rows: &[ReferenceOverrideInput]) -> Result<(), AppError> {
         let path = self.gateway.config_path();
         let mut cfg = navigator_refgenome::UserConfig::load(&path);
-        let key = canonical_build(build)
-            .map(|b| b.as_str().to_string())
-            .unwrap_or_else(|| build.to_string());
-        let entry = cfg.references.entry(key).or_default();
-        entry.local_path = local_path.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-        entry.auto_download = auto_download;
+        for row in rows {
+            let key = canonical_build(&row.build)
+                .map(|b| b.as_str().to_string())
+                .unwrap_or_else(|| row.build.clone());
+            let entry = cfg.references.entry(key).or_default();
+            entry.local_path = row
+                .local_path
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            entry.auto_download = row.auto_download;
+        }
         cfg.save(&path)?;
         Ok(())
     }
+}
+
+/// One reference-source override to persist — a row of the Settings "References" table (a build's
+/// local-FASTA path + its auto-download flag). Batched through [`App::set_reference_overrides`].
+#[derive(Debug, Clone)]
+pub struct ReferenceOverrideInput {
+    pub build: String,
+    pub local_path: Option<String>,
+    pub auto_download: bool,
 }
 
 /// One instrument→lab association from the AppView `sequencer` endpoints (D8). Mirrors the
@@ -3297,6 +3427,70 @@ mod placement_tests {
 }
 
 #[cfg(test)]
+mod external_precedence_tests {
+    use super::*;
+    use navigator_store::{haplogroup_call, Store};
+
+    fn ycall(label: &str, hg: &str, score: f64) -> RunHaplogroupCall {
+        RunHaplogroupCall {
+            source_label: label.into(),
+            haplogroup: hg.into(),
+            lineage: vec!["R".into(), hg.into()],
+            score,
+            matched: 0,
+            expected: 0,
+        }
+    }
+
+    /// PRJEB37976 idempotence gate: an external (GATK4 GVCF) Y call and Navigator's internal walk on
+    /// the *same* alignment coexist as distinct rows (no clobber), and — with the default "prefer
+    /// external caller" policy — the external terminal wins the consensus even though the damaged
+    /// ancient-DNA walk scored higher. Before the fix, the walk shared the `aln:1` key and overwrote
+    /// the external call outright.
+    #[tokio::test]
+    async fn external_call_is_not_clobbered_and_wins_consensus() {
+        // Deterministic policy regardless of the developer's settings.json (env wins in the resolver).
+        std::env::set_var("NAVIGATOR_PREFER_EXTERNAL_CALLS", "true");
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let bio = app.add_biosample(None, "ANCIENT-1", None, None).await.unwrap();
+
+        // External placement: distinct `:ext` key + External provenance, as the sidecar fast path writes it.
+        haplogroup_call::upsert(
+            app.store.pool(),
+            bio.guid,
+            DnaType::Y,
+            &external_y_source_key(1),
+            &ycall("gvcf", "R-EXT", 0.60),
+            CallProvenance::External,
+            Some("gv:abc"),
+        )
+        .await
+        .unwrap();
+
+        // Internal walk on the SAME alignment: a higher score, a DIFFERENT (wrong, aDNA-damaged) terminal.
+        app.record_haplogroup_call(bio.guid, DnaType::Y, "aln:1", &ycall("walk", "R-WRONG", 0.95))
+            .await
+            .unwrap();
+
+        // No clobber: both rows survive under their distinct keys.
+        assert!(haplogroup_call::get_one(app.store.pool(), bio.guid, DnaType::Y, &external_y_source_key(1))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(haplogroup_call::get_one(app.store.pool(), bio.guid, DnaType::Y, "aln:1")
+            .await
+            .unwrap()
+            .is_some());
+
+        // Default policy prefers external → external terminal wins despite the walk's higher score.
+        let c = app.haplogroup_consensus(bio.guid, DnaType::Y).await.unwrap().unwrap();
+        assert_eq!(c.haplogroup, "R-EXT");
+
+        std::env::remove_var("NAVIGATOR_PREFER_EXTERNAL_CALLS");
+    }
+}
+
+#[cfg(test)]
 mod publish_tests {
     use super::*;
     use navigator_domain::workspace::NewSequenceRun;
@@ -3865,6 +4059,7 @@ mod settings_tests {
     fn app_settings_serde_round_trip_and_defaults() {
         let s = AppSettings {
             y_tree_provider: Some("ftdna".into()),
+            prefer_external_calls: Some(false),
             appview_url: Some("https://av.example".into()),
             tree_ttl_days: Some(3),
             theme: Some("light".into()),

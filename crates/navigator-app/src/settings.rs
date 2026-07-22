@@ -13,6 +13,12 @@ pub struct AppSettings {
     /// Y-tree provider: `"decodingus"` or `"ftdna"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y_tree_provider: Option<String>,
+    /// Prefer a trusted external caller (GATK4 GVCF / 1240K call set, imported via the sidecar fast
+    /// path) over Navigator's own genotyping. When on (the built-in default), an external Y/mt/
+    /// autosomal call wins reconciliation and Navigator's internal caller does not re-walk that
+    /// alignment. `None` = the default (on); set `Some(false)` to always run the internal caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefer_external_calls: Option<bool>,
     /// AppView base URL (tree API + sequencer-lab lookup).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appview_url: Option<String>,
@@ -78,13 +84,11 @@ impl AppSettings {
         navigator_refgenome::cache::base_dir()
     }
 
-    /// Persist to disk (creating the `config/` dir), pretty-printed.
+    /// Persist to disk (creating the `config/` dir), pretty-printed. Written **atomically** (temp +
+    /// rename) — settings are saved from several UI paths that can overlap, and a non-atomic write
+    /// risks the same torn-file corruption seen on `reference_sources.json`.
     pub fn save(&self) -> std::io::Result<()> {
-        let path = Self::path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(path, json)
+        navigator_refgenome::cache::atomic_write(&Self::path(), json.as_bytes())
     }
 }

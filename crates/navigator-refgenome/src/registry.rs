@@ -206,22 +206,39 @@ pub struct UserConfig {
 }
 
 impl UserConfig {
-    /// Load the config if present; a missing or unreadable file yields the empty default
-    /// (overrides are advisory, never fatal).
+    /// Load the config if present; a missing or unreadable file yields the empty default (overrides
+    /// are advisory, never fatal — a novice with no config just gets the self-managed auto-download).
+    ///
+    /// A file that **exists but doesn't parse** also falls back to defaults, but is **warned about**:
+    /// silently dropping it is how a power user's `local_path` override vanishes and the app surprises
+    /// them with a full reference download (issue #26 — the config had been corrupted by a racing
+    /// non-atomic write; see [`crate::cache::atomic_write`]). Say so instead of reverting in silence.
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Self::default(); // absent / unreadable → empty (the normal no-config case)
+        };
+        match serde_json::from_str(&text) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!(
+                    "reference_sources.json at {} is invalid ({e}) — ignoring it and using the default \
+                     (auto-download) sources. Your reference overrides are NOT being applied; fix or \
+                     delete the file to restore them.",
+                    path.display()
+                );
+                Self::default()
+            }
+        }
     }
 
-    /// Persist to `path` (creating the parent `config/` dir), pretty-printed.
+    /// Persist to `path` (creating the parent `config/` dir), pretty-printed. Written **atomically**
+    /// (temp + rename, see [`crate::cache::atomic_write`]) — this file is rewritten from spawned worker
+    /// tasks that can race, and a plain non-atomic write corrupts it into head-of-new + tail-of-old
+    /// garbage. Callers should still avoid concurrent read-modify-write (prefer one bulk save) so an
+    /// update isn't lost; atomicity only guarantees the file is never *torn*.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(path, json)
+        crate::cache::atomic_write(path, json.as_bytes())
     }
 
     /// The override for `build`, if any.
@@ -478,6 +495,23 @@ mod tests {
         let ov = loaded.for_build(Build::Grch38).unwrap();
         assert_eq!(ov.local_path.as_deref(), Some("/refs/grch38.fa"));
         assert!(!ov.auto_download);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn invalid_config_falls_back_to_default_not_a_panic() {
+        // A corrupt/half-written config must not crash the app or apply garbage — it warns (stderr)
+        // and yields the empty default, so resolution reverts to auto-download. (The #26 failure mode,
+        // now impossible to *produce* thanks to atomic writes, but load must still tolerate one.)
+        let dir = std::env::temp_dir().join(format!("dun-refcfg-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("reference_sources.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        // The exact torn shape from the bug report: short head + stale tail.
+        std::fs::write(&path, "{\"references\":{\"chm13v2.0_maskedY_rCRS\":{\"auto_download\":true}}}eference/hs37d5.fa\",\"auto_download\":false}}}").unwrap();
+        assert_eq!(UserConfig::load(&path), UserConfig::default());
+        // An absent file is the same empty default (the normal no-config case).
+        assert_eq!(UserConfig::load(&dir.join("nope.json")), UserConfig::default());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
