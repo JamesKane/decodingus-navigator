@@ -253,10 +253,7 @@ pub fn read_diploid_calls_from<R: BufRead>(
                 .or_else(|| format_field(format, sample, "DP"))
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0);
-            let gq = format_field(format, sample, "GQ")
-                .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(0);
-            if dp < params.min_dp || gq < params.min_gq {
+            if dp < params.min_dp || !gq_passes(format, sample, params) {
                 continue;
             }
             let end = info_end(info).unwrap_or(pos);
@@ -272,10 +269,7 @@ pub fn read_diploid_calls_from<R: BufRead>(
             let dp = format_field(format, sample, "DP")
                 .and_then(|s| s.parse::<u32>().ok())
                 .unwrap_or(0);
-            let gq = format_field(format, sample, "GQ")
-                .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(0);
-            if dp < params.min_dp || gq < params.min_gq {
+            if dp < params.min_dp || !gq_passes(format, sample, params) {
                 continue;
             }
             let alts: Vec<&str> = alt.split(',').collect();
@@ -545,6 +539,16 @@ pub fn assemble_calls(called: &CalledBases, ref_base: &HashMap<i64, char>) -> Ha
 fn format_field<'a>(format: &str, sample: &'a str, key: &str) -> Option<&'a str> {
     let idx = format.split(':').position(|k| k == key)?;
     sample.split(':').nth(idx)
+}
+
+/// Whether a record passes the `GQ` gate. GQ is only enforced when the record **carries** it — a
+/// `bcftools mpileup` call set has no `GQ` (`GT:PL:DP:AD`), and gating an absent GQ as 0 would drop
+/// every site. A GATK gVCF does carry GQ, so its low-confidence sites are still filtered.
+fn gq_passes(format: &str, sample: &str, params: &GvcfReadParams) -> bool {
+    match format_field(format, sample, "GQ").and_then(|s| s.parse::<u32>().ok()) {
+        Some(gq) => gq >= params.min_gq,
+        None => true,
+    }
 }
 
 /// `END=` value from a GVCF ref block's INFO column, if present.

@@ -397,4 +397,37 @@ auto-discovery for both call-set types, and the optional GUI "Compare callers" b
 The redesign the user asked for is complete: the internal caller can no longer overwrite an external
 GATK4 call (Y/mt), external calls are preferable and non-destructively comparable, and the autosomal
 fast path accepts both a 1240K EIGENSTRAT call set and a GATK4 gVCF — all with no CRAM decode.
+
+### 14.1 Live validation + two fixes it forced (real data)
+
+Tested end-to-end on `WGS229.chm13.1240k.vcf.gz` (James = the qpAdm ground truth): a `bcftools mpileup`
+all-sites VCF at the 1240K sites on CHM13, 1,149,902 records. Ingested via `navigator ingest` into a
+temp workspace → **1,134,841 CHM13 panel dosages (98.7%)** in ~50 s, no CRAM decode → autosomal
+consensus built → `deep-ancestry`:
+
+| component | call set (this test) | ground truth (CRAM-genotyped, §7.14–7.15) |
+|---|---|---|
+| EEF | 44.9 % | 44.7–44.8 % |
+| Steppe | 40.5 % | 40.6 % |
+| WHG | 14.6 % | 14.6 % |
+| model-fit p | 0.332 | accepted |
+
+**≤0.2 % on every component** — the §9 autosomal-parity gate, met on real data: an external call set's
+consensus is statistically indistinguishable from genotyping the CRAM.
+
+The test forced two fixes (both landed):
+- **Optional GQ gate** (`gvcf::gq_passes`) — `bcftools mpileup` emits no `GQ` (`GT:PL:DP:AD`), so the
+  `min_gq=20` gate would have dropped *every* site (GQ absent → 0). GQ is now enforced only when the
+  record carries it; a GATK gVCF (which has GQ) is still filtered. Without this the call set → 0 sites.
+- **All-sites VCF is a call set** (`filetype::looks_like_genotyped_callset_vcf`) — a plain `.vcf[.gz]`
+  that emits explicit hom-ref (`0/0`/`0|0`) rows is a genotyped call set (the most common 1240K/panel
+  format, more so than EIGENSTRAT), routed to `import_gvcf_callset_from_file`; a variant-only VCF (no
+  `0/0`) stays a normal variant set. `add_data` now sniffs the (decompressed) VCF head to decide.
+  `import_gvcf_callset_from_file` already handled a plain VCF-with-GT via `read_diploid_calls` (variant
+  rows → GT alleles, `0/0` → hom-ref); only detection + the GQ gate were missing.
+
+**Minor palindrome note:** the call-set path resolves via `resolve_chip`, which drops strand-ambiguous
+palindromes (A/T, C/G) — ~1 % of sites here. Harmless for the fit (the CRAM path keeps them via direct
+base calls); a call-set-specific resolver that keeps palindromes on a same-reference call set is a
+possible refinement.
 ```

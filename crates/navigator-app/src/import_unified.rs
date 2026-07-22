@@ -201,13 +201,11 @@ impl App {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         let lower = name.to_ascii_lowercase();
-        // Binary/structured formats are detected by extension; only text needs a sniff.
+        // Binary/structured formats are detected by extension; only text needs a sniff. A VCF is
+        // sniffed too now — an all-sites (genotyped) VCF is a 1240K call set, a variant-only VCF is a
+        // plain variant set (see `filetype::looks_like_genotyped_callset_vcf`) — so `.vcf*` is NOT here.
         let by_ext = lower.ends_with(".bam")
             || lower.ends_with(".cram")
-            || lower.ends_with(".vcf")
-            || lower.ends_with(".vcf.gz")
-            || lower.ends_with(".vcf.bgz")
-            || lower.ends_with(".g.vcf")
             || lower.ends_with(".geno")
             || lower.ends_with(".snp")
             || lower.ends_with(".ind")
@@ -984,12 +982,13 @@ impl App {
         .await
     }
 
-    /// Import a trusted external caller's autosomal **GATK4 gVCF** for a subject — the gVCF path of
-    /// the autosomal fast path (Phase 5). Genotypes the 1240K panel loci directly from the (diploid)
-    /// gVCF — variant records give the `GT` alleles, passing ref blocks give hom-ref — with **no CRAM
-    /// decode**, re-keys to canonical CHM13 (`resolve_chip`), stores the dosages as an `external`
-    /// source, and refreshes the autosomal consensus. Build is auto-detected from the gVCF header
-    /// (`NAVIGATOR_CALLSET_BUILD` overrides). Returns the number of resolved panel sites.
+    /// Import a trusted external caller's autosomal genotypes for a subject from a **diploid VCF/gVCF**
+    /// — the VCF path of the autosomal fast path (Phases 4/5). Handles a GATK4 gVCF (variant records +
+    /// hom-ref ref blocks) **and** a genotyped all-sites VCF (e.g. `bcftools mpileup`/`call` over the
+    /// 1240K sites, where every site carries an explicit `GT`). Genotypes the panel loci directly with
+    /// **no CRAM decode**, re-keys to canonical CHM13 (`resolve_chip`), stores the dosages as an
+    /// `external` source, and refreshes the autosomal consensus. Build is auto-detected from the VCF
+    /// header (`NAVIGATOR_CALLSET_BUILD` overrides). Returns the number of resolved panel sites.
     pub async fn import_gvcf_callset_from_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<usize, AppError> {
         let build = callset_build_for(path);
 
@@ -1048,9 +1047,9 @@ impl App {
         let label = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "external gVCF".into());
-        self.store_external_dosages(biosample_guid, &format!("{label} (gVCF, {build})"), dosages, || {
-            format!("the gVCF genotyped 0 panel sites on {build} ({called} calls) — check the build/gVCF")
+            .unwrap_or_else(|| "external VCF".into());
+        self.store_external_dosages(biosample_guid, &format!("{label} (1240K call set, {build})"), dosages, || {
+            format!("the VCF genotyped 0 panel sites on {build} ({called} calls) — check the build/VCF")
         })
         .await
     }
