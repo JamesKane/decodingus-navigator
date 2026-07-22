@@ -482,7 +482,20 @@ Fixed at both levels:
   of the per-row fan-out. Removes both the lost-update and the race entirely. (`set_reference_override`
   kept as a one-row shim.)
 
-**Still open in #26 (separate bug):** building the consensus re-downloads GRCh37 even with `hs37d5.fa`
-set — an hs37d5-vs-GRCh37 reference-resolution mismatch (hs37d5 is a GRCh37 variant; the panel
-genotyping should reuse the configured reference, not fetch the GRCh37 analysis set). Tracked apart.
+### 15.2 The GRCh37 re-download was a *side effect* of 15.1 — not a separate bug
+
+Initially filed as a distinct "hs37d5-vs-GRCh37 reference-resolution mismatch." Traced through the
+code, it is **the same corruption**: with `hs37d5.fa` set, `reference_status` → `cached_reference`
+returns `RefStatus::LocalOverride(hs37d5.fa)` and `resolve_reference` **never downloads**. But once
+`reference_sources.json` is corrupt, `UserConfig::load`'s `serde_json::from_str(...).ok()` yields
+`None` → `unwrap_or_default()` → an **empty** config → no `local_override` → `NeedsDownload` → the app
+falls back to auto-downloading the default GRCh37 analysis set. (The header probe correctly resolves an
+hs37d5 BAM to the `GRCh37` key — same contig lengths — so the override lives under the right key; the
+key was never the problem.) Fixing the corruption (§15.1) restores the override and the download stops.
+
+The fallback-to-auto-download is itself **correct** — a novice with no valid config *should* get the
+self-managed reference. The only defect was that `load` discarded an invalid config **silently**, so a
+power user's override vanished without a trace. `UserConfig::load` now **warns** (to stderr)
+when the file exists but doesn't parse — distinguishing "no config" (silent, normal) from "your
+overrides are being ignored" — instead of reverting in silence.
 ```
