@@ -295,6 +295,7 @@ mod tests {
                 interpretation: None,
                 method_note: "estimated from 400,000 markers".into(),
             }),
+            roh: None,
             test: TestBrief {
                 test_name: "Whole Genome Sequencing".into(),
                 what_it_tells: "Reads your whole genome.".into(),

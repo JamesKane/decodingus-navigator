@@ -496,6 +496,13 @@ pub fn subject_brief_html(b: &SubjectBrief, narration: Option<&crate::NarratedBr
         body.push_str(&format!("<p class=\"meta\">{}</p>\n", esc(&a.method_note)));
     }
 
+    if let Some(r) = &b.roh {
+        body.push_str("<h2>Shared ancestry</h2>\n");
+        body.push_str(&format!("<p class=\"hg\">{}</p>\n", esc(&r.pattern)));
+        body.push_str(&format!("<p>{}</p>\n", esc(&r.summary_phrase)));
+        body.push_str(&format!("<p class=\"meta\">F_ROH {:.4}</p>\n", r.f_roh));
+    }
+
     body.push_str("<h2>Your test</h2>\n");
     body.push_str(&format!("<p class=\"hg\">{}</p>\n", esc(&b.test.test_name)));
     body.push_str(&format!("<p>{}</p>\n", esc(&b.test.what_it_tells)));
@@ -582,6 +589,7 @@ mod tests {
                 interpretation: Some("European ancestry spans the continent.".into()),
                 method_note: "estimated from 400,000 genome-wide markers".into(),
             }),
+            roh: None,
             test: TestBrief {
                 test_name: "Whole Genome Sequencing".into(),
                 what_it_tells: "Reads your whole genome.".into(),

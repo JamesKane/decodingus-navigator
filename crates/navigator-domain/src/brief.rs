@@ -224,6 +224,24 @@ pub struct AncestryBrief {
     pub method_note: String,
 }
 
+/// The runs-of-homozygosity (relatedness / endogamy) section — present only once ROH has been
+/// computed for the subject. F_ROH is the share of the genome in long homozygous runs, which reflects
+/// how much recent shared ancestry there is between a person's two parental lines.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RohBrief {
+    /// Inbreeding coefficient F_ROH (0.0–1.0), the physical share of autosomes in runs of homozygosity.
+    pub f_roh: f64,
+    /// Plain-language pattern label, e.g. "Outbred", "Endogamous background", "Recent shared ancestry".
+    pub pattern: String,
+    /// One-sentence casual explanation.
+    pub summary_phrase: String,
+    /// Number of homozygous runs reported.
+    pub n_segments: usize,
+    /// Total length of runs (Mb) and the longest single run (Mb).
+    pub total_mb: f64,
+    pub longest_mb: f64,
+}
+
 /// The "your test & quality" section — always present.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestBrief {
@@ -243,6 +261,9 @@ pub struct SubjectBrief {
     pub paternal: Option<LineageBrief>,
     pub maternal: Option<LineageBrief>,
     pub ancestry: Option<AncestryBrief>,
+    /// Relatedness / endogamy read from runs of homozygosity. Absent until ROH is computed.
+    #[serde(default)]
+    pub roh: Option<RohBrief>,
     pub test: TestBrief,
     /// True when the subject has a sequencing alignment that hasn't been analyzed yet (data present,
     /// no coverage computed) — the signal for the Simple-mode one-click "Analyze" prompt. False for
@@ -392,6 +413,49 @@ pub fn ancestry_summary(super_pops: &[SuperPopulationSummary]) -> String {
     }
 }
 
+/// Build the runs-of-homozygosity brief section from the summary numbers. Deterministic and
+/// self-contained — it derives the plain-language pattern label and sentence from F_ROH and the run
+/// lengths (thresholds mirror `navigator_analysis::roh`: F_ROH below ~0.02 reads as outbred; above,
+/// a long run (≥15 Mb) points to recent shared ancestry, otherwise many short runs read as an
+/// endogamous background). Framed strictly as *shared ancestry between the parents' lines* — a
+/// genealogical read, never a clinical one.
+pub fn roh_brief(f_roh: f64, n_segments: usize, total_mb: f64, longest_mb: f64) -> RohBrief {
+    let (pattern, summary_phrase) = if n_segments == 0 || f_roh < 0.02 {
+        (
+            "Outbred",
+            "Your two DNA copies rarely match over long stretches, so your parents' lines don't share a \
+             recent common ancestor — the usual pattern for a large, outbred population."
+                .to_string(),
+        )
+    } else if longest_mb >= 15.0 {
+        (
+            "Recent shared ancestry",
+            format!(
+                "Some long identical stretches (about {:.0} Mb of runs in total, the longest {:.0} Mb) point \
+                 to a common ancestor on both of your parents' sides within the last few generations.",
+                total_mb, longest_mb
+            ),
+        )
+    } else {
+        (
+            "Endogamous background",
+            format!(
+                "Many short identical stretches (about {:.0} Mb across {} runs) reflect a background level of \
+                 shared ancestry — common where a community historically married within a close group.",
+                total_mb, n_segments
+            ),
+        )
+    };
+    RohBrief {
+        f_roh,
+        pattern: pattern.to_string(),
+        summary_phrase,
+        n_segments,
+        total_mb,
+        longest_mb,
+    }
+}
+
 /// "estimated from 412,000 genome-wide markers" / "estimated from 220 ancestry-informative markers".
 pub fn ancestry_method_note(snps_with_genotype: usize, panel_type: &str) -> String {
     let kind = if panel_type.eq_ignore_ascii_case("aims") {
@@ -447,6 +511,22 @@ mod tests {
         assert_eq!(origin_phrase(Some("the steppe")).unwrap(), "associated with the steppe");
         assert_eq!(origin_phrase(None), None);
         assert_eq!(origin_phrase(Some("  ")), None);
+    }
+
+    #[test]
+    fn roh_brief_reads_the_pattern() {
+        // Trace-endogamy / outbred (James: F_ROH ~0.008): outbred phrasing, no scary numbers cited.
+        let outbred = roh_brief(0.008, 6, 22.7, 7.1);
+        assert_eq!(outbred.pattern, "Outbred");
+        assert!(outbred.summary_phrase.contains("outbred"));
+        // Elevated F_ROH from many short runs → endogamous background.
+        let endog = roh_brief(0.035, 40, 90.0, 8.0);
+        assert_eq!(endog.pattern, "Endogamous background");
+        assert!(endog.summary_phrase.contains("shared ancestry"));
+        // A long run → recent shared ancestry (consanguinity).
+        let recent = roh_brief(0.08, 12, 220.0, 40.0);
+        assert_eq!(recent.pattern, "Recent shared ancestry");
+        assert!(recent.summary_phrase.contains("few generations"));
     }
 
     #[test]
