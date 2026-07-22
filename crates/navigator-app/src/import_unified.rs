@@ -893,6 +893,76 @@ impl App {
         Ok(stats)
     }
 
+    /// Ensure a prebuilt ancestry/IBD asset at `path` is present, downloading it — and the asset
+    /// manifest it's verified against — from the published GitHub release when missing. End users get
+    /// the panels this way instead of running the offline `panelbuild` tool. Manifest-driven: only an
+    /// asset the manifest actually lists is fetched (an unpublished optional asset stays absent), and
+    /// an explicit `$NAVIGATOR_*` path override is never fetched over. Best-effort progress → stderr.
+    pub(crate) async fn ensure_ancestry_asset(&self, build: ReferenceBuild, path: &Path) -> Result<(), AppError> {
+        if path.exists() {
+            return Ok(());
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            return Ok(());
+        };
+        // Only auto-fetch to the default cache location — an explicit override is the user's own file.
+        let default = refgenome_cache::base_dir().join("ancestry").join(&name);
+        if path != default {
+            return Ok(());
+        }
+        let base = asset_release_base_url(build);
+
+        // The manifest (small) both integrity-checks the asset (at read) and lists what's published.
+        let manifest_name = format!("ancestry_manifest_{}.json", build.as_str());
+        if !default.with_file_name(&manifest_name).exists() {
+            let url = format!("{base}/{manifest_name}");
+            if let Err(e) = self.gateway.resolve_ancestry_asset(&manifest_name, &url, &mut |_, _| {}).await {
+                eprintln!("ancestry assets: could not fetch {manifest_name} ({e}) — leaving {name} to on-disk state");
+                return Ok(());
+            }
+        }
+        // Fetch only assets the manifest publishes for this build (e.g. ancestry_freq_ancient isn't
+        // shipped → it simply stays absent and the feature degrades, unchanged).
+        match load_asset_manifest(build) {
+            Some(m) if m.assets.contains_key(&name) => {}
+            _ => return Ok(()),
+        }
+
+        eprintln!("ancestry assets: downloading {name} (first use — no build needed) …");
+        let mut last = 0u64;
+        self.gateway
+            .resolve_ancestry_asset(&name, &format!("{base}/{name}"), &mut |done, total| {
+                if done.saturating_sub(last) >= 16 * 1024 * 1024 {
+                    last = done;
+                    match total {
+                        Some(t) if t > 0 => eprintln!("  {name}: {} / {} MB", done / 1_048_576, t / 1_048_576),
+                        _ => eprintln!("  {name}: {} MB", done / 1_048_576),
+                    }
+                }
+            })
+            .await
+            .map_err(|e| AppError::Import(format!("downloading ancestry asset {name}: {e}")))?;
+        eprintln!("ancestry assets: {name} ready");
+        Ok(())
+    }
+
+    /// Load the CHM13 IBD panel — downloading the prebuilt asset from the release on first use (no
+    /// `panelbuild` needed). The single entry point for the panel: replaces the five call sites that
+    /// each errored "build it with `panelbuild ibd-panel`" when the asset was absent.
+    pub(crate) async fn load_ibd_panel(&self) -> Result<navigator_analysis::ibd_panel::IbdPanel, AppError> {
+        let build = ReferenceBuild::Chm13v2;
+        let path = ibd_panel_path(build);
+        self.ensure_ancestry_asset(build, &path).await?;
+        let bytes = read_verified_asset(build, &path)?.ok_or_else(|| {
+            AppError::Import(format!(
+                "IBD panel asset not found at {} and could not be downloaded — check your network, or \
+                 set NAVIGATOR_IBD_PANEL to a local copy",
+                path.display()
+            ))
+        })?;
+        Ok(navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?)
+    }
+
     /// Resolve an imported chip's genotypes to canonical CHM13 **IBD-panel** dosages — the chip→IBD
     /// path (no alignment, no runtime liftover: the multi-build panel pre-computes coordinates). The
     /// output [`SiteGenotype`]s are over the same CHM13 sites a WGS caller would hit, so a chip and a
@@ -908,14 +978,7 @@ impl App {
         let from_build = chipprofile::detect_build(&text);
         let calls = chipprofile::autosomal_calls(&text);
 
-        let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
-        let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
-            AppError::Import(format!(
-                "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
-                panel_path.display()
-            ))
-        })?;
-        let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+        let panel = self.load_ibd_panel().await?;
 
         let tuples: Vec<(String, i64, char, char)> =
             calls.into_iter().map(|c| (c.contig, c.position, c.a1, c.a2)).collect();
@@ -958,14 +1021,7 @@ impl App {
                 .await??;
 
         // Resolve to canonical CHM13 panel dosages (same path as a chip; self-orients to CHM13).
-        let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
-        let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
-            AppError::Import(format!(
-                "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
-                panel_path.display()
-            ))
-        })?;
-        let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+        let panel = self.load_ibd_panel().await?;
         let dosages = panel.resolve_chip(&callset.build, &callset.calls);
         let label = path
             .file_name()
@@ -992,14 +1048,7 @@ impl App {
     pub async fn import_gvcf_callset_from_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<usize, AppError> {
         let build = callset_build_for(path);
 
-        let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
-        let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
-            AppError::Import(format!(
-                "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
-                panel_path.display()
-            ))
-        })?;
-        let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+        let panel = self.load_ibd_panel().await?;
 
         // Panel loci in the gVCF's build, grouped + sorted per contig; keep each site's reference
         // allele so a hom-ref block resolves to (ref, ref).
@@ -1149,14 +1198,7 @@ impl App {
                 // panel), so a BAM consults no reference bases — don't force a download for it.
                 let build = self.alignment_or_err(id).await?.reference_build;
                 let (bam, reference) = self.alignment_reference_for_decode(id).await?;
-                let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
-                let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
-                    AppError::Import(format!(
-                        "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
-                        panel_path.display()
-                    ))
-                })?;
-                let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+                let panel = self.load_ibd_panel().await?;
                 let is_chm13 = matches!(
                     canonical_build(&build),
                     Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)

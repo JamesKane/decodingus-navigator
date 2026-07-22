@@ -2723,6 +2723,11 @@ impl App {
         // The consensus is canonical CHM13; the AIM freq / PCA assets are keyed by (contig,pos) there.
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
+        // Auto-download the prebuilt panels on first use (no `panelbuild`). The super-pop panel is
+        // required; PCA + fine frequencies are optional (best-effort — the feature degrades if absent).
+        self.ensure_ancestry_asset(build, &ancestry_panel_path(build)).await?;
+        let _ = self.ensure_ancestry_asset(build, &ancestry_pca_path(build)).await;
+        let _ = self.ensure_ancestry_asset(build, &ancestry_freq_global_path(build)).await;
         let panel_path = ancestry_panel_path(build);
         let panel_bytes = read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
@@ -2798,6 +2803,10 @@ impl App {
         }
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
+        // Auto-download the prebuilt qpAdm + super-pop panels on first use (no `panelbuild`). qpAdm is
+        // best-effort (deep ancestry is simply unavailable if it can't be fetched); the super panel is required.
+        let _ = self.ensure_ancestry_asset(build, &ancestry_qpadm_path(build)).await;
+        self.ensure_ancestry_asset(build, &ancestry_panel_path(build)).await?;
         let qpadm_path = ancestry_qpadm_path(build);
         let Some(qpadm_bytes) = read_verified_asset(build, &qpadm_path)? else {
             return Ok(None); // asset not installed → deep ancestry unavailable
@@ -3127,6 +3136,7 @@ impl App {
         let genotypes = consensus_genotypes(&profile);
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
+        self.ensure_ancestry_asset(build, &ancestry_panel_path(build)).await?;
         let panel_path = ancestry_panel_path(build);
         let panel_bytes = read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
@@ -3475,14 +3485,7 @@ impl App {
             return Ok(Vec::new());
         }
         let build = set.reference_build.clone().unwrap_or_else(|| "GRCh37".to_string());
-        let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
-        let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
-            AppError::Import(format!(
-                "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
-                panel_path.display()
-            ))
-        })?;
-        let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+        let panel = self.load_ibd_panel().await?;
         let dosages = tokio::task::spawn_blocking(move || panel.resolve_whole_genome(&build, &calls)).await?;
         Ok(dosages)
     }

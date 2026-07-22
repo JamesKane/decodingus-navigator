@@ -230,6 +230,30 @@ impl ReferenceGateway {
         Ok(path)
     }
 
+    /// Resolve a published **ancestry/IBD asset** (a prebuilt panel / PCA / manifest / genetic map) to
+    /// a cached file under `<base>/ancestry/<name>`, downloading from `url` on a miss (locked per
+    /// name). Unlike a reference or mask there is **no pinned sha** here — the app verifies the asset
+    /// against the downloaded asset manifest. This is how end users get the prebuilt panels instead of
+    /// running the offline `panelbuild` tool.
+    pub async fn resolve_ancestry_asset(
+        &self,
+        name: &str,
+        url: &str,
+        progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
+    ) -> Result<PathBuf, RefgenomeError> {
+        let path = self.base.join("ancestry").join(name);
+        if cache::is_present(&path) {
+            return Ok(path);
+        }
+        let lock = self.lock_for(&format!("asset:{name}"));
+        let _guard = lock.lock().await;
+        if cache::is_present(&path) {
+            return Ok(path); // another caller finished while we waited
+        }
+        download::download(&self.http, url, &path, progress).await?; // creates parent, retries, streams
+        Ok(path)
+    }
+
     /// Whether a named annotation mask is already cached (no I/O beyond a stat).
     pub fn cached_mask(&self, name: &str) -> Option<PathBuf> {
         let path = cache::mask_path(&self.base, name);

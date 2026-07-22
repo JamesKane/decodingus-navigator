@@ -1278,6 +1278,15 @@ fn read_verified_asset(build: ReferenceBuild, path: &Path) -> Result<Option<Vec<
     Ok(Some(bytes))
 }
 
+/// Base URL of the GitHub release that hosts the prebuilt ancestry/IBD assets for `build` — e.g.
+/// `https://github.com/JamesKane/decodingus-navigator/releases/download/assets-chm13v2.0`. Overridable
+/// with `NAVIGATOR_ASSET_REPO` / `NAVIGATOR_ASSET_RELEASE` (the same vars the offline packager uses).
+fn asset_release_base_url(build: ReferenceBuild) -> String {
+    let repo = std::env::var("NAVIGATOR_ASSET_REPO").unwrap_or_else(|_| "JamesKane/decodingus-navigator".to_string());
+    let tag = std::env::var("NAVIGATOR_ASSET_RELEASE").unwrap_or_else(|_| format!("assets-{}", build.as_str()));
+    format!("https://github.com/{repo}/releases/download/{tag}")
+}
+
 /// The genetic-map asset path for a build (`$NAVIGATOR_GENETIC_MAP` override, else
 /// `<base>/ancestry/genetic_map_<build>.bin`). Optional — IBD falls back to a uniform map if absent.
 fn genetic_map_path(build: ReferenceBuild) -> PathBuf {

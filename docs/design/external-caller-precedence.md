@@ -430,4 +430,36 @@ The test forced two fixes (both landed):
 palindromes (A/T, C/G) — ~1 % of sites here. Harmless for the fit (the CRAM path keeps them via direct
 base calls); a call-set-specific resolver that keeps palindromes on a same-reference call set is a
 possible refinement.
+
+## 15. Runtime asset auto-download (issue #26)
+
+The whole autosomal path (this design's Part 2 *and* the pre-existing chip/alignment paths) needs the
+`ibd_panel_<build>.bin` asset. It was only ever produced by the offline `panelbuild ibd-panel` tool
+and bundled by the **installer** (`packaging/stage-assets.sh`); there was **no runtime fallback**, so
+a user whose AppImage lacked it hit `IBD panel asset not found … build it with panelbuild` — which an
+end user can't do (#26). Fixed: the ancestry/IBD assets now **download on demand** from the published
+GitHub release, exactly like reference genomes.
+
+- **Gateway** — `ReferenceGateway::resolve_ancestry_asset(name, url, progress)` downloads to
+  `<base>/ancestry/<name>` on a miss (locked per name, streamed + retried by `download::download`); no
+  pinned sha — the app verifies against the manifest at read.
+- **App** — `ensure_ancestry_asset(build, path)`: fetches the small `ancestry_manifest_<build>.json`
+  first (it both lists what's published and integrity-checks the asset), then the asset — but **only
+  if the manifest lists it** (an unpublished optional like `ancestry_freq_ancient` stays absent) and
+  **only to the default cache path** (a `$NAVIGATOR_*` override is the user's own file, never fetched
+  over). Release URL: `github.com/JamesKane/decodingus-navigator/releases/download/assets-<build>/…`
+  (`NAVIGATOR_ASSET_REPO`/`NAVIGATOR_ASSET_RELEASE` override, same vars as the packager).
+- **Load sites** — `App::load_ibd_panel()` replaces the five duplicated "read panel or error" blocks
+  (chip/alignment/variant-set/call-set dosages + identity). Modern (`estimate_ancestry_from_consensus`),
+  deep (`estimate_deep_ancestry`), and painting also `ensure` their panels (super required; PCA/fine/
+  qpAdm best-effort). So a fresh install downloads each panel the first time a feature needs it.
+- **Deferred:** the genetic map (`load_genetic_map`) is a sync free-fn on the IBD path and still falls
+  back to a uniform 1 cM/Mb map if absent — auto-downloading it needs an async signature change; IBD
+  segments work meanwhile (cM approximate). GUI download-progress for assets (the download logs to
+  stderr today; the GUI shows its existing working-spinner during the build).
+
+**Other symptoms in #26 (not addressed here):** the reporter's `reference_sources.json` was malformed
+(garbled/concatenated JSON), and building the consensus re-downloaded GRCh37 even with `hs37d5.fa` set
+— an hs37d5-vs-GRCh37 reference-resolution mismatch. Both are separate reference-config bugs, tracked
+apart from the asset-provisioning fix.
 ```
