@@ -955,6 +955,19 @@ impl NavigatorApp {
             ui.add_space(10.0);
         }
 
+        // Shared ancestry (runs of homozygosity) — present only once ROH has been computed.
+        if let Some(r) = &brief.roh {
+            let roh_gloss = self.tr("glossary.roh");
+            card(ui, self.tr("brief.roh"), |ui| {
+                ui.heading(&r.pattern).on_hover_text(roh_gloss);
+                ui.add_space(4.0);
+                ui.label(&r.summary_phrase);
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(format!("F_ROH {:.4}", r.f_roh)).weak().small());
+            });
+            ui.add_space(10.0);
+        }
+
         // Your test & quality.
         let test = &brief.test;
         card(ui, self.tr("brief.yourTest"), |ui| {

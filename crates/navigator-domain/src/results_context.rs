@@ -110,6 +110,7 @@ pub enum SignalKind {
     PrivateY,
     MtMutations,
     Ibd,
+    Roh,
 }
 
 impl SignalKind {
@@ -121,6 +122,7 @@ impl SignalKind {
             SignalKind::PrivateY => "private Y variants",
             SignalKind::MtMutations => "mtDNA mutations",
             SignalKind::Ibd => "DNA relatives (IBD matches)",
+            SignalKind::Roh => "shared ancestry (runs of homozygosity)",
         }
     }
 }
@@ -207,6 +209,27 @@ fn ibd_section(ibd: &Option<IbdFact>) -> Option<String> {
     Some(s)
 }
 
+/// Runs-of-homozygosity section, read from the brief's [`RohBrief`](crate::brief::RohBrief) (ROH is a
+/// brief signal, unlike the others, so its source is `ctx.brief.roh`). Used for the M5 per-tab
+/// "Explain this" on the ROH card; the M4 chat already carries ROH via the brief's own fact sheet
+/// (see [`results_fact_sheet`]), so it is deliberately *not* re-appended there.
+fn roh_section(brief: &SubjectBrief) -> Option<String> {
+    let r = brief.roh.as_ref()?;
+    let mut s = String::from("\nShared ancestry (runs of homozygosity):\n");
+    s.push_str(&format!("- pattern: {}\n", r.pattern));
+    s.push_str(&format!("- F_ROH: {:.4} (share of the genome in long identical runs)\n", r.f_roh));
+    s.push_str(&format!(
+        "- {} run(s), about {:.0} Mb in total, longest {:.0} Mb\n",
+        r.n_segments, r.total_mb, r.longest_mb
+    ));
+    s.push_str(&format!("- {}\n", r.summary_phrase));
+    s.push_str(
+        "- note: this describes shared ancestry between the parents' lines (endogamy / consanguinity), \
+         not a health or trait result.\n",
+    );
+    Some(s)
+}
+
 /// The labelled section for a single signal, or `None` when the subject has nothing for it — the
 /// grounding for an M5 per-tab "Explain this" narration of just that signal.
 pub fn signal_section(ctx: &ResultsContext, kind: SignalKind) -> Option<String> {
@@ -216,6 +239,7 @@ pub fn signal_section(ctx: &ResultsContext, kind: SignalKind) -> Option<String> 
         SignalKind::PrivateY => private_y_section(&ctx.private_y),
         SignalKind::MtMutations => mt_section(&ctx.mt_mutations),
         SignalKind::Ibd => ibd_section(&ctx.ibd),
+        SignalKind::Roh => roh_section(&ctx.brief),
     }
 }
 
@@ -243,7 +267,9 @@ pub fn results_fact_sheet(ctx: &ResultsContext) -> String {
 mod tests {
     use super::*;
     use crate::ancestry::SuperPopulationSummary;
-    use crate::brief::{AncestryBrief, Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief};
+    use crate::brief::{
+        AncestryBrief, Headline, LineageBrief, LineageKind, PackStatus, RohBrief, SubjectBrief, TestBrief,
+    };
     use crate::llm_prompt::mentions_health;
 
     #[test]
@@ -295,6 +321,7 @@ mod tests {
                 interpretation: None,
                 method_note: "estimated from 400,000 markers".into(),
             }),
+            roh: None,
             test: TestBrief {
                 test_name: "Whole Genome Sequencing".into(),
                 what_it_tells: "Reads your whole genome.".into(),
@@ -338,6 +365,36 @@ mod tests {
                 }),
             }),
         }
+    }
+
+    #[test]
+    fn roh_is_answerable_in_chat_and_per_tab() {
+        let mut ctx = full_context();
+        ctx.brief.roh = Some(RohBrief {
+            f_roh: 0.0080,
+            pattern: "Outbred".into(),
+            summary_phrase: "Your parents' lines don't share a recent common ancestor.".into(),
+            n_segments: 6,
+            total_mb: 22.7,
+            longest_mb: 7.1,
+        });
+
+        // M4 chat: the fact sheet carries the ROH facts (via the brief) with the run counts.
+        let sheet = results_fact_sheet(&ctx);
+        assert!(sheet.contains("Shared ancestry (runs of homozygosity)"));
+        assert!(sheet.contains("pattern: Outbred"));
+        assert!(sheet.contains("F_ROH: 0.0080"));
+        assert!(sheet.contains("6 run(s)"));
+
+        // M5 per-tab: the focused section renders and stays in the ancestry lane (no health language).
+        let section = signal_section(&ctx, SignalKind::Roh).expect("roh section");
+        assert!(section.contains("F_ROH: 0.0080"));
+        assert!(section.contains("longest 7 Mb"));
+        assert!(!mentions_health(&section), "ROH must not read as a health result");
+
+        // Absent when ROH hasn't been computed.
+        ctx.brief.roh = None;
+        assert!(signal_section(&ctx, SignalKind::Roh).is_none());
     }
 
     #[test]

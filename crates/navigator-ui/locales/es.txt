@@ -20,6 +20,7 @@ brief.analyzeAction=Analizar mi ADN
 brief.paternalLine=Tu línea paterna (ADN-Y)
 brief.maternalLine=Tu línea materna (ADNmt)
 brief.ancestry=Tu ascendencia
+brief.roh=Ascendencia compartida
 brief.ancestryDetail=Poblaciones detalladas
 brief.ancient=Ascendencia antigua
 brief.ancientIntro=Tus fuentes de ascendencia profunda más cercanas: poblaciones antiguas y los grupos de referencia modernos que mejor modelan el resto de tu ascendencia.
@@ -63,6 +64,7 @@ brief.seeDataHint=Cambia al modo Avanzado para explorar el análisis completo de
 glossary.haplogroup=Un haplogrupo es una etiqueta para tu rama del árbol genealógico humano, compartida por todos los que descienden de un ancestro en esta línea.
 glossary.ancient=Una estimación de qué parte de tu ADN procede de poblaciones de origen lejano, modelada a partir de grupos de referencia antiguos y modernos.
 glossary.ancestry=La composición de ascendencia estima a qué poblaciones del mundo se parece más tu ADN. Refleja la historia profunda de las poblaciones, no la nacionalidad.
+glossary.roh=Los tramos de homocigosidad son largos segmentos donde tus dos copias de ADN son idénticas. Cuantos más haya, más ascendencia reciente comparten las líneas de tus padres (endogamia o consanguinidad). Es una medida genealógica, no un resultado de salud.
 
 # Pestaña Comunidad (social)
 community.tab.support=Soporte
@@ -580,6 +582,9 @@ hint.deepAncestry=WHG / Agricultor-Anatolio / Estepa mediante qpAdm — sobre tu
 card.ancestryPerSource=Estimadores por fuente (avanzado)
 card.chromosomePainting=Pintado cromosómico (ascendencia local)
 hint.chromosomePainting=diploide: dos copias ordenadas por cromosoma (sin fase); en caché hasta que cambie el consenso
+card.roh=Tramos de homocigosidad (F_ROH)
+hint.roh=tramos autocigóticos del consenso; F_ROH y longitudes señalan endogamia frente a consanguinidad reciente
+roh.compute=Detectar ROH
 hint.consensusVcf=Genotipo conjunto entre las alineaciones WGS del mismo ensamblaje del sujeto. Pesado — llama y fuerza-llama cada alineación en todo el genoma.
 card.ancestryModern=Poblaciones detalladas (modernas)
 card.ancestryAncient=Componentes de ascendencia antigua

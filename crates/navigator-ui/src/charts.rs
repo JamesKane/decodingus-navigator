@@ -3,7 +3,10 @@
 //! the view code that calls them.
 
 use eframe::egui;
-use navigator_app::{AncestryResult, AncestrySegment, AssetStatus, GenomeRegions, IbdSegment, SuperPopulationSummary};
+use navigator_app::{
+    AncestryResult, AncestrySegment, AssetStatus, GenomeRegions, IbdSegment, RohPattern, RohResult, RohSegment,
+    SuperPopulationSummary,
+};
 use navigator_domain::ancestry::{population_color, population_name, population_super};
 
 /// Sort key for chromosome names: autosomes 1–22, then X, Y, M, then anything else.
@@ -74,6 +77,104 @@ pub(crate) fn draw_ibd_segments(ui: &mut egui::Ui, segments: &[IbdSegment], regi
                             s.end_position,
                             s.length_cm,
                             s.snp_count.map(|n| format!(" · {n} SNPs")).unwrap_or_default()
+                        ));
+                    }
+                }
+            }
+            if let Some(t) = hover {
+                resp.on_hover_text(t);
+            }
+        });
+        ui.add_space(gap);
+    }
+}
+
+/// Colour a ROH block by its length class (physical Mb): short (background/endogamy) → amber, medium
+/// → orange, long (recent consanguinity) → red.
+fn roh_color(length_mb: f64) -> egui::Color32 {
+    if length_mb < 5.0 {
+        egui::Color32::from_rgb(200, 170, 70) // amber
+    } else if length_mb < 15.0 {
+        egui::Color32::from_rgb(220, 130, 50) // orange
+    } else {
+        egui::Color32::from_rgb(210, 70, 60) // red
+    }
+}
+
+/// Human-readable label for the heuristic ROH pattern.
+fn roh_pattern_label(p: RohPattern) -> &'static str {
+    match p {
+        RohPattern::Outbred => "Outbred (little ROH)",
+        RohPattern::Endogamy => "Endogamy (many short runs)",
+        RohPattern::RecentConsanguinity => "Recent consanguinity (long runs)",
+        RohPattern::Mixed => "Mixed (short + long runs)",
+    }
+}
+
+/// Draw the runs-of-homozygosity view: a genome-wide summary line (F_ROH, pattern, length-class
+/// counts) followed by a per-chromosome ideogram of ROH blocks coloured by length class. Mirrors
+/// [`draw_ibd_segments`]. `regions` scales each bar to the chromosome's true length when available.
+pub(crate) fn draw_roh(ui: &mut egui::Ui, result: &RohResult, regions: Option<&GenomeRegions>) {
+    use std::collections::BTreeMap;
+    let s = &result.summary;
+
+    // Summary line: F_ROH is the headline inbreeding coefficient.
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(format!("F_ROH {:.3}", s.f_roh)).strong());
+        ui.separator();
+        ui.label(roh_pattern_label(s.pattern));
+    });
+    ui.label(
+        egui::RichText::new(format!(
+            "{} runs · {:.0} Mb total · longest {:.1} Mb · short {} / medium {} / long {}",
+            s.n_segments, s.total_roh_mb, s.longest_mb, s.short.0, s.medium.0, s.long.0
+        ))
+        .small()
+        .weak(),
+    );
+
+    if result.segments.is_empty() {
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("No runs of homozygosity above the reporting threshold.").weak());
+        return;
+    }
+    ui.add_space(8.0);
+
+    let mut by_chr: BTreeMap<String, Vec<&RohSegment>> = BTreeMap::new();
+    for seg in &result.segments {
+        by_chr.entry(seg.chromosome.clone()).or_default().push(seg);
+    }
+    let mut chroms: Vec<String> = by_chr.keys().cloned().collect();
+    chroms.sort_by_key(|c| chrom_sort_key(c));
+
+    let (label_w, bar_w, bar_h, gap) = (48.0f32, 320.0f32, 12.0f32, 4.0f32);
+    for chr in &chroms {
+        let segs = &by_chr[chr];
+        let chr_len = regions
+            .and_then(|r| r.chromosomes.get(chr))
+            .map(|c| c.length)
+            .filter(|&l| l > 0)
+            .unwrap_or_else(|| segs.iter().map(|s| s.end_bp).max().unwrap_or(1))
+            .max(1) as f32;
+        ui.horizontal(|ui| {
+            ui.allocate_ui(egui::vec2(label_w, bar_h), |ui| ui.label(egui::RichText::new(chr).small()));
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
+            let mut hover: Option<String> = None;
+            let hover_x = resp.hover_pos().map(|p| p.x);
+            for &seg in segs.iter() {
+                let x0 = rect.left() + (seg.start_bp.max(0) as f32 / chr_len) * rect.width();
+                let x1 = rect.left() + (seg.end_bp.max(0) as f32 / chr_len) * rect.width();
+                let block =
+                    egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1.max(x0 + 1.5), rect.bottom()));
+                painter.rect_filled(block, 0.0, roh_color(seg.length_mb));
+                if let Some(hx) = hover_x {
+                    if hx >= block.left() && hx <= block.right() {
+                        hover = Some(format!(
+                            "{}:{}–{} · {:.1} Mb ({:.2} cM) · {} sites ({} het) · conf {:.2}",
+                            seg.chromosome, seg.start_bp, seg.end_bp, seg.length_mb, seg.length_cm, seg.n_sites,
+                            seg.n_het, seg.mean_posterior
                         ));
                     }
                 }

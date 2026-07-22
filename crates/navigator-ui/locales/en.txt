@@ -22,6 +22,7 @@ brief.analyzeAction=Analyze my DNA
 brief.paternalLine=Your paternal line (Y-DNA)
 brief.maternalLine=Your maternal line (mtDNA)
 brief.ancestry=Your ancestry
+brief.roh=Shared ancestry
 brief.ancestryDetail=Detailed populations
 brief.ancient=Ancient ancestry
 brief.ancientIntro=Your closest deep-ancestry sources — ancient populations and the modern reference groups that best model the rest of your ancestry.
@@ -65,6 +66,7 @@ brief.seeDataHint=Switch to Advanced mode to explore the full analysis for this 
 glossary.haplogroup=A haplogroup is a label for your branch of the human family tree — shared by everyone who descends from one ancestor on this line.
 glossary.ancient=An estimate of how much of your DNA traces to long-ago source populations, modelled from ancient and modern reference groups.
 glossary.ancestry=Ancestry composition estimates which world populations your DNA most resembles. It reflects deep population history, not nationality.
+glossary.roh=Runs of homozygosity are long stretches where your two DNA copies are identical. More of them means your parents' lines share more recent ancestry (endogamy or consanguinity). It is a genealogical measure, not a health result.
 
 # Community (social) tab
 community.tab.support=Support
@@ -593,6 +595,9 @@ hint.deepAncestry=WHG / Anatolian-Farmer / Steppe via qpAdm — over your pooled
 card.ancestryPerSource=Per-source estimators (advanced)
 card.chromosomePainting=Chromosome painting (local ancestry)
 hint.chromosomePainting=diploid: two sorted copies per chromosome (unphased); cached until the consensus changes
+card.roh=Runs of homozygosity (F_ROH)
+hint.roh=autozygous runs from the consensus; F_ROH & run lengths flag endogamy vs recent consanguinity
+roh.compute=Detect ROH
 hint.consensusVcf=Joint genotype across the subject's same-build WGS alignments. Heavy — calls + force-calls each alignment genome-wide.
 card.ancestryModern=Detailed populations (modern)
 card.ancestryAncient=Ancient ancestry components

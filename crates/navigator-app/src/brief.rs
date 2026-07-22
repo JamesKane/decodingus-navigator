@@ -168,6 +168,13 @@ impl App {
             _ => None,
         };
 
+        // Runs-of-homozygosity (relatedness / endogamy). Read-only: only surfaced when it's already
+        // been computed and cached (the brief must stay cheap — ROH computation is on-demand).
+        let roh = self
+            .cached_roh(biosample_guid)
+            .await?
+            .map(|r| brief::roh_brief(r.summary.f_roh, r.summary.n_segments, r.summary.total_roh_mb, r.summary.longest_mb));
+
         // Global caveats.
         let mut caveats = Vec::new();
         if matches!(pack_status, PackStatus::Bundled | PackStatus::Unavailable) {
@@ -191,6 +198,7 @@ impl App {
             paternal,
             maternal,
             ancestry,
+            roh,
             test,
             // Has a sequencing alignment but no coverage computed → offer the one-click Analyze.
             needs_analysis: default_aln.is_some() && coverage.is_none(),
