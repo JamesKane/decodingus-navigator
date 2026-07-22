@@ -1,8 +1,8 @@
 # External-caller precedence + autosomal sidecar fast path
 
-Status: **Phases 1–4 landed** (Part 1 haplogroup precedence complete; Part 2 autosomal ingest:
-EIGENSTRAT 1240K call set → CHM13 panel dosages → consensus → ancestry/IBD). Phase 5 (GATK4
-autosomal gVCF into the same sink) not started.
+Status: **All five phases landed.** Part 1 (haplogroup precedence) + Part 2 (autosomal ingest:
+EIGENSTRAT 1240K **and** GATK4 gVCF → CHM13 panel dosages → consensus → ancestry/IBD). Remaining
+work is the deferred follow-ups noted in §13/§14 (autosomal provenance-gating, PLINK, GUI button).
 Scope: `navigator-store` (provenance/migration), `navigator-analysis` (call-set reader,
 diploid gVCF), `navigator-app` (reconcile precedence, ingest, guards, observation pooling),
 `navigator-ui` (Preferences toggle, "Compare callers" action).
@@ -212,6 +212,7 @@ This is the opt-in audit that replaces the automatic secondary walk we chose *no
 4. **Autosomal call-set reader + ingest** (Part 2, 1240K first) → consensus → ancestry/IBD.
    **DONE** — see §13.
 5. **Autosomal gVCF** (GATK4 diploid) as a second call-set source into the same sink.
+   **DONE** — see §14.
 
 Phase 1 alone resolves the reported bug; 4 delivers the autosomal fast path.
 
@@ -363,4 +364,37 @@ decode**, reusing the existing 1240K frontend/consensus (deep-ancestry §7.16–
 - **Project-scan sidecar auto-discovery** (import is via explicit `ingest`/Add-Data today, not a
   `SampleSidecars` field).
 - **Phase 5:** GATK4 **autosomal gVCF** → diploid dosages into the same `external_panel_dosage` sink.
+
+## 14. Phase 5 — as built
+
+Landed on `feat/external-caller-precedence`. The second autosomal external source: a GATK4 **gVCF**
+genotypes the 1240K panel directly (no CRAM decode) into the same `external_panel_dosage` sink as the
+EIGENSTRAT path, so modern-WGS users with an established GATK4 workflow get the same benefit.
+
+- **Diploid gVCF reader** — `navigator_analysis::gvcf::read_diploid_calls(gvcf, targets_by_contig,
+  params)` genotypes panel loci across all autosomes in **one linear pass** (the ploidy-2 counterpart
+  to the haploid `read_called_bases`): a variant record → `GvcfDiploid::Genotype(a,b)` from the `GT`
+  alleles (SNPs only; indel/`<NON_REF>` → no-call); a passing ref block → `GvcfDiploid::HomRef` over
+  `[POS,END]`; DP/GQ-gated. Reuses the existing `format_field`/`info_end`/`targets_in_range`
+  infrastructure; plain or gzip/BGZF. Unit-tested.
+- **Hom-ref needs no FASTA.** At a hom-ref panel site the sample is homozygous for the reference
+  allele — supplied from the **panel's** build-locus reference (`IbdPanelSite.locus(build).reference`),
+  so the reader needs no reference genome. `resolve_chip` then re-orients `(ref,ref)`/`(a,b)` to CHM13.
+- **Build auto-detection** — `callset_build_for(path)`: `NAVIGATOR_CALLSET_BUILD` override → VCF `##`
+  meta (`detect_vcf_build`) → `chr1`/`1` contig length → GRCh38 default; normalized to a token
+  `locus()` accepts (`GRCh38`/`GRCh37`/`chm13`).
+- **Import** — `App::import_gvcf_callset_from_file`: build panel targets per contig (+ each site's ref
+  allele) → `read_diploid_calls` → allele pairs → `resolve_chip` → `store_external_dosages` (shared
+  with the EIGENSTRAT path). Detected as `DetectedData::GvcfCallSet` (`.g.vcf[.gz]`, checked **before**
+  the plain-`.vcf` rule) and routed from `add_data`, so `navigator ingest sample.g.vcf.gz` works.
+- **Scope note.** An add-data gVCF is treated as an **autosomal** panel source; the chrY/chrM GVCFs
+  remain the *directory-sidecar* fast path (Phase 1), not this file route. A plainly-named `.vcf.gz`
+  stays a normal variant set.
+
+**Deferred, unchanged from §13:** autosomal provenance-gating (§5.3), PLINK, rsID join, project-scan
+auto-discovery for both call-set types, and the optional GUI "Compare callers" button.
+
+The redesign the user asked for is complete: the internal caller can no longer overwrite an external
+GATK4 call (Y/mt), external calls are preferable and non-destructively comparable, and the autosomal
+fast path accepts both a 1240K EIGENSTRAT call set and a GATK4 gVCF — all with no CRAM decode.
 ```

@@ -25,6 +25,9 @@ pub enum DetectedData {
     /// EIGENSTRAT autosomal call set (`.geno`/`.snp`/`.ind` triplet) — a trusted external caller's
     /// 1240K genotypes (Reich-lab / `pileupCaller`), the autosomal counterpart to the Y/mt GVCFs.
     EigenstratCallSet,
+    /// A GATK4 **autosomal** gVCF (`.g.vcf[.gz]`) — genotyped at the 1240K panel for the autosomal
+    /// consensus. (chrY/chrM GVCFs are the sidecar fast path, discovered in a directory, not here.)
+    GvcfCallSet,
     /// Unrecognized.
     Unknown,
 }
@@ -41,6 +44,7 @@ impl DetectedData {
             DetectedData::ChipData => "Chip / array data",
             DetectedData::MtdnaFasta => "mtDNA FASTA",
             DetectedData::EigenstratCallSet => "EIGENSTRAT 1240K call set",
+            DetectedData::GvcfCallSet => "GATK gVCF (autosomal)",
             DetectedData::Unknown => "Unknown format",
         }
     }
@@ -55,6 +59,12 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
 
     if ends(".bam") || ends(".cram") {
         return DetectedData::Alignment;
+    }
+    // A GATK gVCF (`.g.vcf[.gz]`) is genotyped at the 1240K panel — checked BEFORE the plain `.vcf`
+    // rule below (a gVCF also ends `.vcf.gz`). A gVCF named plainly `.vcf.gz` is imported as a normal
+    // variant set instead; the `.g.` convention is how GATK marks its genome VCFs.
+    if ends(".g.vcf") || ends(".g.vcf.gz") || ends(".g.vcf.bgz") {
+        return DetectedData::GvcfCallSet;
     }
     // EIGENSTRAT call-set triplet — the user can point at any member; the importer resolves the
     // siblings by shared basename. `.geno`/`.ind` are unambiguous; `.snp` too (no other `.snp` type).
@@ -335,6 +345,14 @@ mod tests {
         assert_eq!(detect("I1234.geno", ""), DetectedData::EigenstratCallSet);
         assert_eq!(detect("I1234.snp", ""), DetectedData::EigenstratCallSet);
         assert_eq!(detect("I1234.ind", ""), DetectedData::EigenstratCallSet);
+    }
+
+    #[test]
+    fn gvcf_detected_before_plain_vcf() {
+        assert_eq!(detect("sample.g.vcf.gz", ""), DetectedData::GvcfCallSet);
+        assert_eq!(detect("sample.g.vcf", ""), DetectedData::GvcfCallSet);
+        // A plainly-named VCF is still a normal variant set, not a gVCF call set.
+        assert_eq!(detect("sample.vcf.gz", ""), DetectedData::Variants);
     }
 
     #[test]

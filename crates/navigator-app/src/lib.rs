@@ -1857,6 +1857,47 @@ fn parse_vcf_subject_snps(path: &Path) -> Result<Vec<variants::VariantCall>, App
     Ok(out)
 }
 
+/// The reference build of an external autosomal gVCF, as a token the IBD panel's `locus()` accepts
+/// (`GRCh38` / `GRCh37` / `chm13`). `NAVIGATOR_CALLSET_BUILD` overrides; else the VCF `##` meta
+/// (`detect_vcf_build`), else the `chr1`/`1` contig length in the header, else GRCh38 (the GATK4 WGS
+/// default). Normalized so a `chm13v2.0` / `hg38` / `b37` spelling still resolves.
+fn callset_build_for(path: &Path) -> String {
+    let raw = std::env::var("NAVIGATOR_CALLSET_BUILD")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            let (meta, _) = peek_vcf_header(path);
+            detect_vcf_build(&meta).or_else(|| {
+                // Fall back to the chr1/1 contig length.
+                meta.lines().find_map(|line| {
+                    let after = line.strip_prefix("##contig=<ID=")?;
+                    let id: String = after.chars().take_while(|&c| c != ',' && c != '>').collect();
+                    if id != "chr1" && id != "1" {
+                        return None;
+                    }
+                    let lp = line.find("length=")?;
+                    let len: String = line[lp + 7..].chars().take_while(|c| c.is_ascii_digit()).collect();
+                    Some(match len.as_str() {
+                        "249250621" => "GRCh37".to_string(),
+                        "248387328" => "chm13".to_string(),
+                        _ => "GRCh38".to_string(),
+                    })
+                })
+            })
+        })
+        .unwrap_or_else(|| "GRCh38".to_string());
+    let l = raw.to_ascii_lowercase();
+    if l.contains("chm13") || l.contains("t2t") || l.contains("hs1") {
+        "chm13".to_string()
+    } else if l.contains("38") {
+        "GRCh38".to_string()
+    } else if l.contains("37") || l.contains("19") || l.contains("b37") {
+        "GRCh37".to_string()
+    } else {
+        "GRCh38".to_string()
+    }
+}
+
 /// Detect the reference build from VCF meta lines (`##reference=…`, `##contig assembly=…`).
 fn detect_vcf_build(meta: &str) -> Option<String> {
     let l = meta.to_lowercase();

@@ -207,6 +207,7 @@ impl App {
             || lower.ends_with(".vcf")
             || lower.ends_with(".vcf.gz")
             || lower.ends_with(".vcf.bgz")
+            || lower.ends_with(".g.vcf")
             || lower.ends_with(".geno")
             || lower.ends_with(".snp")
             || lower.ends_with(".ind")
@@ -244,6 +245,9 @@ impl App {
             }
             DetectedData::EigenstratCallSet => {
                 self.import_callset_from_file(biosample_guid, path).await?;
+            }
+            DetectedData::GvcfCallSet => {
+                self.import_gvcf_callset_from_file(biosample_guid, path).await?;
             }
             DetectedData::Alignment => {
                 self.import_alignment_file(biosample_guid, path, test_type).await?;
@@ -965,24 +969,110 @@ impl App {
         })?;
         let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
         let dosages = panel.resolve_chip(&callset.build, &callset.calls);
-        let site_count = dosages.len();
-        if site_count == 0 {
-            return Err(AppError::Import(format!(
-                "the call set resolved to 0 panel sites — check the build (got {} genotypes on {}; \
-                 set NAVIGATOR_CALLSET_BUILD if it is not GRCh37)",
-                callset.calls.len(),
-                callset.build
-            )));
-        }
-
         let label = path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "external call set".into());
+        self.store_external_dosages(biosample_guid, &format!("{label} (1240K call set)"), dosages, || {
+            format!(
+                "the call set resolved to 0 panel sites — check the build (got {} genotypes on {}; \
+                 set NAVIGATOR_CALLSET_BUILD if it is not GRCh37)",
+                callset.calls.len(),
+                callset.build
+            )
+        })
+        .await
+    }
+
+    /// Import a trusted external caller's autosomal **GATK4 gVCF** for a subject — the gVCF path of
+    /// the autosomal fast path (Phase 5). Genotypes the 1240K panel loci directly from the (diploid)
+    /// gVCF — variant records give the `GT` alleles, passing ref blocks give hom-ref — with **no CRAM
+    /// decode**, re-keys to canonical CHM13 (`resolve_chip`), stores the dosages as an `external`
+    /// source, and refreshes the autosomal consensus. Build is auto-detected from the gVCF header
+    /// (`NAVIGATOR_CALLSET_BUILD` overrides). Returns the number of resolved panel sites.
+    pub async fn import_gvcf_callset_from_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<usize, AppError> {
+        let build = callset_build_for(path);
+
+        let panel_path = ibd_panel_path(ReferenceBuild::Chm13v2);
+        let bytes = read_verified_asset(ReferenceBuild::Chm13v2, &panel_path)?.ok_or_else(|| {
+            AppError::Import(format!(
+                "IBD panel asset not found at {} — build it with `panelbuild ibd-panel`",
+                panel_path.display()
+            ))
+        })?;
+        let panel = navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?;
+
+        // Panel loci in the gVCF's build, grouped + sorted per contig; keep each site's reference
+        // allele so a hom-ref block resolves to (ref, ref).
+        let mut targets_by_contig: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+        let mut ref_allele: std::collections::HashMap<(String, i64), char> = std::collections::HashMap::new();
+        for site in &panel.sites {
+            if let Some(l) = site.locus(&build) {
+                targets_by_contig.entry(l.contig.clone()).or_default().push(l.position);
+                ref_allele.insert((l.contig.clone(), l.position), l.reference);
+            }
+        }
+        for v in targets_by_contig.values_mut() {
+            v.sort_unstable();
+            v.dedup();
+        }
+        if targets_by_contig.is_empty() {
+            return Err(AppError::Import(format!(
+                "the IBD panel has no {build} loci — set NAVIGATOR_CALLSET_BUILD to the gVCF's build"
+            )));
+        }
+
+        let gvcf = path.to_path_buf();
+        let params = navigator_analysis::gvcf::GvcfReadParams::default();
+        let calls = tokio::task::spawn_blocking(move || {
+            navigator_analysis::gvcf::read_diploid_calls(&gvcf, &targets_by_contig, &params)
+        })
+        .await??;
+
+        // Build reference-forward allele pairs → resolve to CHM13.
+        let tuples: Vec<(String, i64, char, char)> = calls
+            .into_iter()
+            .map(|((contig, pos), call)| {
+                let (a1, a2) = match call {
+                    navigator_analysis::gvcf::GvcfDiploid::Genotype(a, b) => (a, b),
+                    navigator_analysis::gvcf::GvcfDiploid::HomRef => {
+                        let r = ref_allele.get(&(contig.clone(), pos)).copied().unwrap_or('N');
+                        (r, r)
+                    }
+                };
+                (contig, pos, a1, a2)
+            })
+            .collect();
+        let called = tuples.len();
+        let dosages = panel.resolve_chip(&build, &tuples);
+        let label = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "external gVCF".into());
+        self.store_external_dosages(biosample_guid, &format!("{label} (gVCF, {build})"), dosages, || {
+            format!("the gVCF genotyped 0 panel sites on {build} ({called} calls) — check the build/gVCF")
+        })
+        .await
+    }
+
+    /// Persist a resolved external autosomal call set (CHM13 panel dosages) as an `external` source
+    /// and fold it into the autosomal consensus (no decode). Shared by the EIGENSTRAT and gVCF paths.
+    /// `on_empty` supplies the error message when nothing resolved.
+    async fn store_external_dosages(
+        &self,
+        biosample_guid: SampleGuid,
+        source_label: &str,
+        dosages: Vec<navigator_analysis::caller::SiteGenotype>,
+        on_empty: impl FnOnce() -> String,
+    ) -> Result<usize, AppError> {
+        let site_count = dosages.len();
+        if site_count == 0 {
+            return Err(AppError::Import(on_empty()));
+        }
         let json = serde_json::to_string(&dosages).map_err(|e| AppError::Import(format!("serializing dosages: {e}")))?;
         let row = navigator_store::external_panel_dosage::StoredPanelDosage {
             biosample_guid: biosample_guid.0.to_string(),
-            source_label: format!("{label} (1240K call set)"),
+            source_label: source_label.to_string(),
             provenance: navigator_domain::reconciliation::CallProvenance::External.as_str().to_string(),
             panel_sig: Some(ibd_panel_cache_kind()),
             site_count: site_count as i64,
@@ -990,9 +1080,7 @@ impl App {
             created_at: chrono::Utc::now().to_rfc3339(),
         };
         navigator_store::external_panel_dosage::upsert(self.store.pool(), &row).await?;
-
-        // Fold into the autosomal consensus immediately — cheap, no decode (best-effort: a subject
-        // with no panel asset can still have recorded the source for a later build).
+        // Fold into the autosomal consensus immediately — cheap, no decode (best-effort).
         let _ = self.refresh_autosomal_consensus(biosample_guid).await;
         Ok(site_count)
     }
