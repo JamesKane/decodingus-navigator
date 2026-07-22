@@ -139,6 +139,10 @@ pub fn narrate_fact_sheet(b: &SubjectBrief) -> String {
         s.push_str("\nShared ancestry (runs of homozygosity):\n");
         s.push_str(&format!("- pattern: {}\n", r.pattern));
         s.push_str(&format!("- F_ROH: {:.4} (share of DNA in long identical runs)\n", r.f_roh));
+        s.push_str(&format!(
+            "- {} run(s), about {:.0} Mb in total, longest {:.0} Mb\n",
+            r.n_segments, r.total_mb, r.longest_mb
+        ));
         s.push_str(&format!("- note: {}\n", r.summary_phrase));
     }
 

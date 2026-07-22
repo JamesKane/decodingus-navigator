@@ -507,6 +507,11 @@ impl NavigatorApp {
                             draw_roh(ui, result, regions);
                         }
                     });
+                    // Per-tab AI explanation of the ROH result (M5) — only once it's been computed.
+                    if self.roh.is_some() {
+                        ui.add_space(8.0);
+                        self.ai_explain(ui, guid, SignalKind::Roh);
+                    }
                 }
                 DetailTab::Sources => self.sources_tab(ui, guid),
                 DetailTab::IbdMatches => {
