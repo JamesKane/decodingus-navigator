@@ -3251,9 +3251,9 @@ impl App {
         };
 
         // Look for a workspace parent to anchor the two sides (only meaningful when we can phase).
-        // Stops at the first ParentChild relative; skips subjects without an autosomal consensus.
+        // Scoped to the child's home project + hard-capped, so it never scans the whole workspace.
         let parent = if hap_ref.is_some() {
-            self.find_parent_for_anchor(biosample_guid).await
+            self.find_parent_for_anchor(biosample_guid, &genotypes).await
         } else {
             None
         };
@@ -3328,38 +3328,69 @@ impl App {
         Ok(result)
     }
 
-    /// Find a workspace subject that is this subject's parent/child (a `ParentChild` IBD
-    /// relationship) and load its consensus genotypes, for side anchoring. Returns
-    /// `(genotypes, recorded-sex, display-name)`. Iterates other subjects and stops at the first
-    /// match; subjects without an autosomal consensus (IBD comparison errors) are skipped. `None`
-    /// when no parent is present. Cost: one IBD comparison per other subject — bounded by workspace
-    /// size and only run on the explicit paint action.
+    /// Find a workspace subject that is this subject's parent, to anchor the painted sides, and load
+    /// its consensus genotypes. Returns `(genotypes, recorded-sex, display-name)`, or `None`.
+    ///
+    /// Scalable by construction — it must **not** scan the whole workspace (which can hold tens of
+    /// thousands of subjects). Candidates are restricted to the child's **home project** (families /
+    /// trios are imported together) and hard-capped; a workspace with no small family context simply
+    /// gets no auto-anchoring (the sides stay Side A/B). Each candidate is screened by a cheap
+    /// **Mendelian test** — a true parent shares ≥1 allele at every site, so opposite-homozygous
+    /// sites are ~0 — which is O(sites) and needs no IBD segment detection or genetic map. The best
+    /// (lowest opposite-homozygosity) candidate below the threshold is returned; the phased-side
+    /// assignment itself is done later by transmission consistency.
     async fn find_parent_for_anchor(
         &self,
         child: SampleGuid,
+        child_genotypes: &[SiteGenotype],
     ) -> Option<(Vec<SiteGenotype>, Option<String>, String)> {
-        let biosamples = self.list_all_biosamples().await.ok()?;
-        for b in biosamples {
-            if b.guid == child {
+        // Auto-anchoring is for small family/trio projects; larger sets are skipped (a research
+        // corpus shouldn't trigger a many-way scan, and parent detection there isn't meaningful).
+        const MAX_CANDIDATES: usize = 32;
+        // Opposite-homozygous fraction below which a pair is treated as parent-child (Mendel forbids
+        // opposite homozygotes for a true parent-child pair; the slack absorbs genotyping error).
+        const MAX_OPP_HOM_FRAC: f64 = 0.01;
+        const MIN_SHARED_SITES: u32 = 500;
+
+        let me = biosample::get(self.store.pool(), child).await.ok()??;
+        let project_id = me.project_id?; // no home project → no family context to search
+        let mut candidates = self.list_biosamples(project_id).await.ok()?;
+        candidates.retain(|b| b.guid != child);
+        if candidates.is_empty() || candidates.len() > MAX_CANDIDATES {
+            return None;
+        }
+
+        let child_dosage: std::collections::HashMap<(&str, i64), i32> = child_genotypes
+            .iter()
+            .filter(|g| g.dosage >= 0)
+            .map(|g| ((g.contig.as_str(), g.position), g.dosage))
+            .collect();
+
+        let mut best: Option<(Option<String>, String, Vec<SiteGenotype>)> = None;
+        let mut best_frac = f64::INFINITY;
+        for b in candidates {
+            let Some(genos) = self.load_consensus_genotypes(b.guid).await else {
                 continue;
-            }
-            let cmp = match self
-                .compare_ibd_consensus(child, b.guid, navigator_analysis::ibd::IbdDetectorConfig::default())
-                .await
-            {
-                Ok(c) => c,
-                Err(_) => continue, // e.g. the relative has no autosomal consensus yet
             };
-            if matches!(
-                cmp.summary.relationship,
-                navigator_analysis::ibd::RelationshipEstimate::ParentChild
-            ) {
-                if let Some(g) = self.load_consensus_genotypes(b.guid).await {
-                    return Some((g, b.sex.clone(), b.donor_identifier.clone()));
+            let (mut shared, mut opp) = (0u32, 0u32);
+            for g in genos.iter().filter(|g| g.dosage >= 0) {
+                if let Some(&cd) = child_dosage.get(&(g.contig.as_str(), g.position)) {
+                    shared += 1;
+                    if (cd == 0 && g.dosage == 2) || (cd == 2 && g.dosage == 0) {
+                        opp += 1;
+                    }
                 }
             }
+            if shared < MIN_SHARED_SITES {
+                continue;
+            }
+            let frac = opp as f64 / shared as f64;
+            if frac < MAX_OPP_HOM_FRAC && frac < best_frac {
+                best_frac = frac;
+                best = Some((b.sex.clone(), b.donor_identifier.clone(), genos));
+            }
         }
-        None
+        best.map(|(sex, name, genos)| (genos, sex, name))
     }
 
     /// Load a subject's autosomal consensus genotypes (`"Auto"` profile), or `None` if absent.
