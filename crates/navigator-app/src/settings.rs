@@ -60,6 +60,22 @@ pub struct AppSettings {
     /// *newer* release than this still notifies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skip_update_version: Option<String>,
+    /// Last window inner size `[width, height]` in egui points, remembered across launches. `None`
+    /// until the first run persists it. On restore it is fitted to the current monitor (an over-large
+    /// remembered size — e.g. from a bigger display — is shrunk to fit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_size: Option<[f32; 2]>,
+    /// Last selected navigation view (`"dashboard"` / `"subjects"` / `"projects"` / `"community"`), so
+    /// the app reopens where it was left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_nav: Option<String>,
+    /// Last focused subject (biosample GUID), restored once the subject list has loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_subject: Option<String>,
+    /// Last selected subject detail tab (`"overview"` / `"ydna"` / `"mtdna"` / `"autosomal"` /
+    /// `"ancestry"` / `"sources"` / `"ibd"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_detail_tab: Option<String>,
 }
 
 impl AppSettings {

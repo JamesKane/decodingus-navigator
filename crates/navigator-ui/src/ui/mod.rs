@@ -67,12 +67,33 @@ struct Forms {
 }
 
 /// Primary navigation tabs in the app bar.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Nav {
     Dashboard,
     Subjects,
     Projects,
     Community,
+}
+
+impl Nav {
+    /// Stable persistence key (independent of display strings / i18n).
+    fn as_key(self) -> &'static str {
+        match self {
+            Nav::Dashboard => "dashboard",
+            Nav::Subjects => "subjects",
+            Nav::Projects => "projects",
+            Nav::Community => "community",
+        }
+    }
+    fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "dashboard" => Some(Nav::Dashboard),
+            "subjects" => Some(Nav::Subjects),
+            "projects" => Some(Nav::Projects),
+            "community" => Some(Nav::Community),
+            _ => None,
+        }
+    }
 }
 
 /// Sub-tabs of the Community panel (the signed-in account's social surface).
@@ -110,7 +131,7 @@ impl ProjectTab {
 }
 
 /// Sub-tabs of the subject detail panel.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DetailTab {
     Overview,
     YDna,
@@ -122,6 +143,31 @@ enum DetailTab {
 }
 
 impl DetailTab {
+    /// Stable persistence key (independent of the i18n display keys).
+    fn as_key(self) -> &'static str {
+        match self {
+            DetailTab::Overview => "overview",
+            DetailTab::YDna => "ydna",
+            DetailTab::MtDna => "mtdna",
+            DetailTab::Autosomal => "autosomal",
+            DetailTab::Ancestry => "ancestry",
+            DetailTab::Sources => "sources",
+            DetailTab::IbdMatches => "ibd",
+        }
+    }
+    fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "overview" => Some(DetailTab::Overview),
+            "ydna" => Some(DetailTab::YDna),
+            "mtdna" => Some(DetailTab::MtDna),
+            "autosomal" => Some(DetailTab::Autosomal),
+            "ancestry" => Some(DetailTab::Ancestry),
+            "sources" => Some(DetailTab::Sources),
+            "ibd" => Some(DetailTab::IbdMatches),
+            _ => None,
+        }
+    }
+
     /// `(tab, i18n key)` in display order. The DNA-type tabs (Y / mt / Autosomal / Ancestry) show the
     /// subject's *consensus* across all sources; `Sources` is the per-sequencing-result hub.
     const ALL: [(DetailTab, &'static str); 7] = [
@@ -462,6 +508,21 @@ struct YReport {
     lineage: Vec<SnpEvidence>,
 }
 
+/// Initial window inner size (egui points) on a first run / when nothing is remembered. The reworked
+/// layout (subjects table + detail panel + action bar) needs room; the eframe default is far too small.
+pub(crate) const DEFAULT_WINDOW: [f32; 2] = [1360.0, 900.0];
+/// Minimum window inner size — a sane floor so the layout never collapses.
+pub(crate) const MIN_WINDOW: [f32; 2] = [1024.0, 680.0];
+
+/// Fit a desired window size (egui points) to the monitor, leaving a margin for the menu bar / dock /
+/// taskbar, and never below `min`. An over-large remembered size (e.g. from a bigger display) shrinks
+/// to fit; a size that already fits is returned unchanged. Pure, so the fit logic is unit-tested.
+pub(crate) fn fit_window_to_monitor(desired: [f32; 2], monitor: [f32; 2], min: [f32; 2]) -> [f32; 2] {
+    let max_w = (monitor[0] * 0.98).max(min[0]);
+    let max_h = (monitor[1] * 0.94).max(min[1]);
+    [desired[0].clamp(min[0], max_w), desired[1].clamp(min[1], max_h)]
+}
+
 pub struct NavigatorApp {
     tx: UnboundedSender<Command>,
     rx: Receiver<Event>,
@@ -517,6 +578,21 @@ pub struct NavigatorApp {
     edit_alignment: Option<EditAlignment>,
     /// Current frame's egui time (seconds), captured at the top of `update`.
     frame_time: f64,
+    /// Window-size persistence (all in egui points): the current inner size, the last size written to
+    /// [`AppSettings`], and when it last changed (`frame_time` seconds) for debounced saving.
+    /// `window_restored` guards the one-time restore-and-fit-to-screen; `startup_frames` lets it wait
+    /// until the UI scale (zoom) has settled so the sizes are in a stable unit.
+    window_size: Option<[f32; 2]>,
+    saved_window_size: Option<[f32; 2]>,
+    window_size_changed_at: f64,
+    window_restored: bool,
+    startup_frames: u32,
+    /// Focused subject remembered from the last session (GUID string), applied once the subject list
+    /// loads (`.take()`n so it restores only once).
+    pending_restore_subject: Option<String>,
+    /// Signature of the last navigation state persisted to [`AppSettings`] (view | subject | tab), so
+    /// a save fires only when it actually changes.
+    saved_ui_sig: Option<String>,
     /// Selected primary navigation tab.
     nav: Nav,
     /// Interface mode: Simple (casual single-person briefs) vs. Advanced (full power-user UI).
@@ -974,6 +1050,24 @@ impl NavigatorApp {
         // Persisted UI scale (egui zoom) — fixes tiny text on a native-4K display the OS reports at
         // scale factor 1.0. egui's keyboard zoom (Cmd +/-/0) also works but isn't persisted.
         cc.egui_ctx.set_zoom_factor(resolved_ui_scale());
+        // Restore the last navigation position (view / focused subject / detail tab). The subject is
+        // applied once the list loads (see the `AllBiosamples` handler); nav/tab apply immediately
+        // (nav is then reconciled to the interface mode by `normalize_for_mode`). Seed `saved_ui_sig`
+        // with the restored intent so a matching restore doesn't trigger a redundant re-save.
+        let restore = AppSettings::load();
+        let restored_nav = restore.last_nav.as_deref().and_then(Nav::from_key).unwrap_or(Nav::Subjects);
+        let restored_tab = restore
+            .last_detail_tab
+            .as_deref()
+            .and_then(DetailTab::from_key)
+            .unwrap_or(DetailTab::Overview);
+        let restored_subject = restore.last_subject.clone();
+        let ui_sig = format!(
+            "{}|{}|{}",
+            restored_nav.as_key(),
+            restored_subject.clone().unwrap_or_default(),
+            restored_tab.as_key()
+        );
         NavigatorApp {
             tx,
             rx,
@@ -1001,7 +1095,15 @@ impl NavigatorApp {
             audit_y_profile: false,
             edit_alignment: None,
             frame_time: 0.0,
-            nav: Nav::Subjects,
+            window_size: None,
+            // The remembered size (if any) — seeded so an unchanged window never re-writes settings.
+            saved_window_size: AppSettings::load().window_size,
+            window_size_changed_at: 0.0,
+            window_restored: false,
+            startup_frames: 0,
+            pending_restore_subject: restored_subject,
+            saved_ui_sig: Some(ui_sig),
+            nav: restored_nav,
             // Pinned mode (env / settings) wins; else default Simple provisionally and let the
             // first-run workspace heuristic adjust once subjects/projects load (see
             // `apply_ui_mode_heuristic`).
@@ -1020,7 +1122,7 @@ impl NavigatorApp {
             signal_narration: Vec::new(),
             signal_stream: None,
             signal_narrating: None,
-            detail_tab: DetailTab::Overview,
+            detail_tab: restored_tab,
             // Persisted choice wins; else honor $LANG (e.g. "es_ES.UTF-8") when it names a
             // supported locale; else English.
             lang: crate::i18n::load_lang()
@@ -1201,12 +1303,122 @@ impl NavigatorApp {
             show_diagnosis: false,
         }
     }
+
+    /// Remember the window size across launches and fit it to the screen. `screen_rect`,
+    /// `monitor_size`, and [`egui::ViewportCommand::InnerSize`] are all in egui points at the current
+    /// zoom, so persisting `screen_rect` and restoring at the same (persisted) zoom round-trips exactly.
+    ///
+    /// The one-time restore/fit runs via `InnerSize` at runtime — not the startup `ViewportBuilder`,
+    /// which sizes before the UI scale is applied — once the zoom has settled (`startup_frames >= 2`,
+    /// `scale_probed`) and the monitor size is known: the remembered size is clamped to fit the screen
+    /// (an over-large size from a bigger display shrinks). Afterwards, size changes are saved to
+    /// [`AppSettings`], debounced until they settle and once more on window close.
+    fn manage_window_geometry(&mut self, ctx: &egui::Context) {
+        self.startup_frames = self.startup_frames.saturating_add(1);
+        let size = ctx.screen_rect().size();
+        let cur = [size.x, size.y];
+        // Skip degenerate sizes (e.g. while minimized) so we never persist a collapsed window.
+        if cur[0] < 200.0 || cur[1] < 200.0 {
+            return;
+        }
+
+        // One-time restore + fit-to-screen, after the zoom has settled so `cur`/target share a unit.
+        if !self.window_restored {
+            let monitor = ctx.input(|i| i.viewport().monitor_size);
+            // Wait until the UI scale (zoom) is settled and the monitor size is known.
+            let Some(mon) = monitor.filter(|_| self.scale_probed && self.startup_frames >= 2) else {
+                ctx.request_repaint(); // keep frames coming until we can restore
+                return; // don't track/save until the restore has run
+            };
+            let desired = self.saved_window_size.unwrap_or(cur);
+            let [tw, th] = fit_window_to_monitor(desired, [mon.x, mon.y], MIN_WINDOW);
+            if (cur[0] - tw).abs() > 1.0 || (cur[1] - th).abs() > 1.0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(tw, th)));
+            }
+            self.window_restored = true;
+        }
+
+        // Keep `self.window_size` current (the on-exit save reads it) and persist shortly after a
+        // resize settles, coalescing a drag into one write. The *definitive* final save is
+        // [`Self::on_exit`], reached on window close and on macOS Cmd+Q — which terminates via
+        // `applicationWillTerminate:` and never runs a `close_requested` update frame, so relying on
+        // that flag alone lost the size. This in-loop save just means a hard kill still has a recent
+        // size on disk.
+        if self.window_size != Some(cur) {
+            self.window_size = Some(cur);
+            self.window_size_changed_at = self.frame_time;
+            // Ensure a frame fires after the resize stops so the settled save runs even if idle.
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+        if self.frame_time - self.window_size_changed_at >= 0.5 {
+            self.persist_window_size(cur);
+        }
+    }
+
+    /// Write the window size to [`AppSettings`] (load-modify-save, so other settings are preserved),
+    /// skipping the write when it already matches disk. Shared by the debounced in-loop save and the
+    /// on-exit save.
+    fn persist_window_size(&mut self, size: [f32; 2]) {
+        if self.saved_window_size == Some(size) {
+            return;
+        }
+        let mut settings = AppSettings::load();
+        settings.window_size = Some(size);
+        if settings.save().is_ok() {
+            self.saved_window_size = Some(size);
+        }
+    }
+
+    /// Signature of the current navigation state: `view | subject | detail-tab`.
+    fn ui_state_sig(&self) -> String {
+        format!(
+            "{}|{}|{}",
+            self.nav.as_key(),
+            self.selected_sample.map(|g| g.0.to_string()).unwrap_or_default(),
+            self.detail_tab.as_key()
+        )
+    }
+
+    /// Persist the navigation position (view / focused subject / detail tab) to [`AppSettings`] when it
+    /// changes, so the next launch reopens where the user left off. Called once per frame; the
+    /// signature guard means a write happens only on an actual navigation change (load-modify-save, so
+    /// the window size and every other setting are preserved).
+    fn persist_ui_state(&mut self) {
+        // Hold off until the one-time subject restore has been applied (consumed once the subject list
+        // first loads). Otherwise the early frames — before any subject is selected — would overwrite
+        // the remembered subject with `None`.
+        if self.pending_restore_subject.is_some() {
+            return;
+        }
+        let sig = self.ui_state_sig();
+        if self.saved_ui_sig.as_deref() == Some(sig.as_str()) {
+            return;
+        }
+        let mut settings = AppSettings::load();
+        settings.last_nav = Some(self.nav.as_key().to_string());
+        settings.last_subject = self.selected_sample.map(|g| g.0.to_string());
+        settings.last_detail_tab = Some(self.detail_tab.as_key().to_string());
+        if settings.save().is_ok() {
+            self.saved_ui_sig = Some(sig);
+        }
+    }
 }
 
 impl eframe::App for NavigatorApp {
+    /// Final, reliable window-size save. eframe calls this on shutdown (from `save_and_destroy` on
+    /// `LoopExiting`), which macOS Cmd+Q reaches via `applicationWillTerminate:` — a path that runs no
+    /// `close_requested` update frame. `self.window_size` is kept current by `manage_window_geometry`.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(size) = self.window_size {
+            self.persist_window_size(size);
+        }
+        self.persist_ui_state();
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_time = ctx.input(|i| i.time);
         run_auto_scale(&mut self.scale_probed, &mut self.settings_form, ctx);
+        self.manage_window_geometry(ctx);
         // While an analysis runs, keep repainting so the spinner/elapsed timer animate even
         // during a long step that emits no events (e.g. whole-genome coverage).
         if self.analysis.is_some() {
@@ -1294,6 +1506,10 @@ impl eframe::App for NavigatorApp {
         self.batch_import_modal(ctx);
         self.ftdna_review_modal(ctx);
         self.paint_drop_hint(ctx);
+
+        // Persist the navigation position after the UI has processed this frame's clicks (view /
+        // focused subject / detail tab). Guarded so it writes only on an actual change.
+        self.persist_ui_state();
     }
 }
 
@@ -1801,4 +2017,67 @@ fn mtdna_mutations_view(ui: &mut egui::Ui, mtdna_id: i64, variants: &[MtVariant]
                     });
             }
         });
+}
+
+#[cfg(test)]
+mod window_geometry_tests {
+    use super::{fit_window_to_monitor, DEFAULT_WINDOW, MIN_WINDOW};
+
+    #[test]
+    fn size_that_fits_is_unchanged() {
+        // A comfortable window on a 2560×1440 monitor is left as-is.
+        let got = fit_window_to_monitor([1600.0, 1000.0], [2560.0, 1440.0], MIN_WINDOW);
+        assert_eq!(got, [1600.0, 1000.0]);
+    }
+
+    #[test]
+    fn oversize_is_shrunk_to_fit_the_screen() {
+        // A size remembered from a big display, opened on a 1440×900 laptop, must fit within it.
+        let mon = [1440.0, 900.0];
+        let got = fit_window_to_monitor([3000.0, 2000.0], mon, MIN_WINDOW);
+        assert!(got[0] <= mon[0] && got[1] <= mon[1], "must fit: {got:?} in {mon:?}");
+        assert!(got[0] <= mon[0] * 0.98 + 0.5 && got[1] <= mon[1] * 0.94 + 0.5, "margin respected");
+    }
+
+    #[test]
+    fn never_below_minimum() {
+        let got = fit_window_to_monitor([300.0, 200.0], [2560.0, 1440.0], MIN_WINDOW);
+        assert_eq!(got, MIN_WINDOW);
+    }
+
+    #[test]
+    fn tiny_monitor_clamps_to_minimum_not_below() {
+        // A monitor smaller than the minimum: the floor wins (the window can't usefully go smaller).
+        let got = fit_window_to_monitor(DEFAULT_WINDOW, [800.0, 600.0], MIN_WINDOW);
+        assert_eq!(got, MIN_WINDOW);
+    }
+}
+
+#[cfg(test)]
+mod nav_persistence_tests {
+    use super::{DetailTab, Nav};
+
+    #[test]
+    fn nav_keys_round_trip() {
+        for nav in [Nav::Dashboard, Nav::Subjects, Nav::Projects, Nav::Community] {
+            assert_eq!(Nav::from_key(nav.as_key()), Some(nav));
+        }
+        assert_eq!(Nav::from_key("bogus"), None);
+    }
+
+    #[test]
+    fn detail_tab_keys_round_trip() {
+        for tab in [
+            DetailTab::Overview,
+            DetailTab::YDna,
+            DetailTab::MtDna,
+            DetailTab::Autosomal,
+            DetailTab::Ancestry,
+            DetailTab::Sources,
+            DetailTab::IbdMatches,
+        ] {
+            assert_eq!(DetailTab::from_key(tab.as_key()), Some(tab));
+        }
+        assert_eq!(DetailTab::from_key("bogus"), None);
+    }
 }

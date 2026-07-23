@@ -4074,6 +4074,10 @@ mod settings_tests {
             llm_max_tokens: Some(8192),
             check_for_updates: Some(false),
             skip_update_version: Some("0.2.0-alpha".into()),
+            window_size: Some([1280.0, 800.0]),
+            last_nav: Some("subjects".into()),
+            last_subject: Some("11111111-1111-1111-1111-111111111111".into()),
+            last_detail_tab: Some("ancestry".into()),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<AppSettings>(&json).unwrap(), s);

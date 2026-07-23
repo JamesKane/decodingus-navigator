@@ -749,6 +749,13 @@ impl NavigatorApp {
                 // Update-check preferences are managed from the update dialog, not this one — preserve.
                 check_for_updates: AppSettings::load().check_for_updates,
                 skip_update_version: AppSettings::load().skip_update_version,
+                // The window size is remembered automatically as the window is resized — preserve it.
+                window_size: AppSettings::load().window_size,
+                // Navigation state (view / focused subject / detail tab) is remembered as the user
+                // navigates — preserve it across a settings save.
+                last_nav: AppSettings::load().last_nav,
+                last_subject: AppSettings::load().last_subject,
+                last_detail_tab: AppSettings::load().last_detail_tab,
             };
             match settings.save() {
                 Ok(()) => self.status = self.tr("settings.saved").to_string(),
