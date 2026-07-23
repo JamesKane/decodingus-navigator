@@ -1266,26 +1266,48 @@ impl NavigatorApp {
             self.window_restored = true;
         }
 
-        // Track changes; persist once the size settles (debounced) or on close, so it's remembered.
+        // Keep `self.window_size` current (the on-exit save reads it) and persist shortly after a
+        // resize settles, coalescing a drag into one write. The *definitive* final save is
+        // [`Self::on_exit`], reached on window close and on macOS Cmd+Q — which terminates via
+        // `applicationWillTerminate:` and never runs a `close_requested` update frame, so relying on
+        // that flag alone lost the size. This in-loop save just means a hard kill still has a recent
+        // size on disk.
         if self.window_size != Some(cur) {
             self.window_size = Some(cur);
             self.window_size_changed_at = self.frame_time;
             // Ensure a frame fires after the resize stops so the settled save runs even if idle.
-            ctx.request_repaint_after(std::time::Duration::from_millis(900));
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
-        let closing = ctx.input(|i| i.viewport().close_requested());
-        let settled = self.frame_time - self.window_size_changed_at > 0.8;
-        if self.saved_window_size != Some(cur) && (settled || closing) {
-            let mut settings = AppSettings::load();
-            settings.window_size = Some(cur);
-            if settings.save().is_ok() {
-                self.saved_window_size = Some(cur);
-            }
+        if self.frame_time - self.window_size_changed_at >= 0.5 {
+            self.persist_window_size(cur);
+        }
+    }
+
+    /// Write the window size to [`AppSettings`] (load-modify-save, so other settings are preserved),
+    /// skipping the write when it already matches disk. Shared by the debounced in-loop save and the
+    /// on-exit save.
+    fn persist_window_size(&mut self, size: [f32; 2]) {
+        if self.saved_window_size == Some(size) {
+            return;
+        }
+        let mut settings = AppSettings::load();
+        settings.window_size = Some(size);
+        if settings.save().is_ok() {
+            self.saved_window_size = Some(size);
         }
     }
 }
 
 impl eframe::App for NavigatorApp {
+    /// Final, reliable window-size save. eframe calls this on shutdown (from `save_and_destroy` on
+    /// `LoopExiting`), which macOS Cmd+Q reaches via `applicationWillTerminate:` — a path that runs no
+    /// `close_requested` update frame. `self.window_size` is kept current by `manage_window_geometry`.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(size) = self.window_size {
+            self.persist_window_size(size);
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_time = ctx.input(|i| i.time);
         run_auto_scale(&mut self.scale_probed, &mut self.settings_form, ctx);
