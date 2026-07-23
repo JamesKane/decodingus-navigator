@@ -187,11 +187,46 @@ pub(crate) fn draw_roh(ui: &mut egui::Ui, result: &RohResult, regions: Option<&G
     }
 }
 
-/// Draw the per-chromosome local-ancestry painting: one horizontal bar per autosome (each
-/// normalized to full width), segments colored by ancestry, plus a legend of the ancestries shown.
-pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySegment]) {
+/// Fill color for a painted segment: the super-population color, tinted (deterministically by the
+/// fine-population code) so distinct fine populations within one continent are distinguishable while
+/// still reading as that continent. Un-resolved segments keep the flat super-population color.
+fn segment_color(s: &AncestrySegment) -> egui::Color32 {
+    let base = parse_hex_color(&population_color(&s.population_code));
+    match &s.fine_population_code {
+        Some(fine) => tint_color(base, fine),
+        None => base,
+    }
+}
+
+/// Shift a color's lightness by a small deterministic amount keyed on `key` (±~0.18), keeping it in
+/// a visible range — used to separate fine populations that share a super-population base color.
+fn tint_color(c: egui::Color32, key: &str) -> egui::Color32 {
+    let h = key.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+    let f = ((h % 100) as f32 / 100.0 - 0.5) * 0.36; // -0.18..0.18
+    let adj = |v: u8| -> u8 { (((v as f32 / 255.0) + f).clamp(0.06, 0.94) * 255.0) as u8 };
+    egui::Color32::from_rgb(adj(c.r()), adj(c.g()), adj(c.b()))
+}
+
+/// The names of the `k` populations covering the most base pairs on `side` (fine where resolved,
+/// else super-population), most-covered first — the per-side summary for the Simple view.
+pub(crate) fn top_populations_for_side(segments: &[AncestrySegment], side: u8, k: usize) -> Vec<String> {
+    use std::collections::HashMap;
+    let mut bp: HashMap<String, i64> = HashMap::new();
+    for s in segments.iter().filter(|s| s.copy == side) {
+        let code = s.fine_population_code.clone().unwrap_or_else(|| s.population_code.clone());
+        *bp.entry(code).or_insert(0) += (s.end - s.start + 1).max(0);
+    }
+    let mut v: Vec<(String, i64)> = bp.into_iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    v.into_iter().take(k).map(|(c, _)| population_name(&c)).collect()
+}
+
+/// Draw the per-chromosome local-ancestry painting: one horizontal bar per autosome (each normalized
+/// to full width) with two stacked side tracks (top = `side_labels[0]`, bottom = `side_labels[1]`),
+/// segments colored by ancestry (fine populations sub-shaded), per-segment hover, and a legend.
+pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySegment], side_labels: &[String; 2]) {
     use std::collections::BTreeMap;
-    // Group by autosome number → the two copies' segments. Non-autosomes (X/Y/M / the chr99 fallback)
+    // Group by autosome number → the two sides' segments. Non-autosomes (X/Y/M / the chr99 fallback)
     // are skipped — this is autosomal local ancestry.
     let mut by_chr: BTreeMap<i64, [Vec<&AncestrySegment>; 2]> = BTreeMap::new();
     for s in segments {
@@ -205,10 +240,21 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
     }
     let label_w = 42.0;
     let bar_w = 300.0;
-    let copy_h = 7.0; // each of the two copy tracks
+    let copy_h = 7.0; // each of the two side tracks
     let gap = 2.0;
+
+    // Header: which stacked track is which side (▲ top, ▼ bottom).
+    ui.horizontal(|ui| {
+        ui.add_space(label_w);
+        for (i, lbl) in side_labels.iter().enumerate() {
+            let arrow = if i == 0 { '▲' } else { '▼' };
+            ui.label(egui::RichText::new(format!("{arrow} {lbl}")).small().weak());
+            ui.add_space(10.0);
+        }
+    });
+
     for (n, copies) in by_chr {
-        // Shared bp span across both copies so the two tracks align.
+        // Shared bp span across both sides so the two tracks align.
         let lo = copies.iter().flatten().map(|s| s.start).min().unwrap_or(1);
         let hi = copies
             .iter()
@@ -222,7 +268,8 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
             ui.allocate_ui(egui::vec2(label_w, copy_h * 2.0 + gap), |ui| {
                 ui.label(format!("chr{n}"))
             });
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, copy_h * 2.0 + gap), egui::Sense::hover());
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(bar_w, copy_h * 2.0 + gap), egui::Sense::hover());
             let painter = ui.painter_at(rect);
             for (c, segs) in copies.iter().enumerate() {
                 let top = rect.top() + c as f32 * (copy_h + gap);
@@ -235,24 +282,44 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
                         egui::pos2(x0, track.top()),
                         egui::pos2(x1.max(x0 + 1.0), track.bottom()),
                     );
-                    painter.rect_filled(seg_rect, 0.0, parse_hex_color(&population_color(&s.population_code)));
+                    painter.rect_filled(seg_rect, 0.0, segment_color(s));
                 }
+            }
+            // Per-segment hover: identify the side + population + Mb range under the pointer.
+            let hover_text = response.hover_pos().and_then(|pos| {
+                let c = if pos.y < rect.top() + copy_h + gap * 0.5 { 0usize } else { 1usize };
+                let bp = lo + (((pos.x - rect.left()) / rect.width().max(1.0)) * span) as i64;
+                copies[c].iter().find(|s| bp >= s.start && bp <= s.end).map(|s| {
+                    let pop = match &s.fine_population_code {
+                        Some(f) => format!("{} — {}", population_name(f), population_name(&s.population_code)),
+                        None => population_name(&s.population_code),
+                    };
+                    format!(
+                        "chr{n} · {}\n{pop}\n{:.1}–{:.1} Mb",
+                        side_labels[c],
+                        s.start as f64 / 1e6,
+                        s.end as f64 / 1e6
+                    )
+                })
+            });
+            if let Some(t) = hover_text {
+                response.on_hover_text(t);
             }
         });
     }
-    // Legend: distinct ancestries present.
-    let mut seen: Vec<&str> = Vec::new();
+    // Legend: distinct populations present (fine where resolved), each with its tinted swatch.
+    let mut seen: Vec<(String, egui::Color32)> = Vec::new();
     for s in segments {
-        if !seen.contains(&s.population_code.as_str()) {
-            seen.push(&s.population_code);
+        let code = s.fine_population_code.clone().unwrap_or_else(|| s.population_code.clone());
+        if !seen.iter().any(|(c, _)| *c == code) {
+            seen.push((code, segment_color(s)));
         }
     }
     ui.add_space(2.0);
     ui.horizontal_wrapped(|ui| {
-        for code in seen {
+        for (code, color) in &seen {
             let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            ui.painter()
-                .circle_filled(r.center(), 4.0, parse_hex_color(&population_color(code)));
+            ui.painter().circle_filled(r.center(), 4.0, *color);
             ui.label(egui::RichText::new(population_name(code)).small());
             ui.add_space(6.0);
         }
