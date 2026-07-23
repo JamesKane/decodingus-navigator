@@ -3238,18 +3238,6 @@ impl App {
             .and_then(|b| ancestry_analysis::HaplotypeReference::from_bytes(&b).ok())
             .filter(|h| !h.is_empty());
 
-        // Fine-frequency panel (optional) — enables two-tier super→fine resolution when phasing.
-        let fine_panel = if hap_ref.is_some() {
-            let fp = ancestry_freq_global_path(build);
-            let _ = self.ensure_ancestry_asset(build, &fp).await;
-            read_verified_asset(build, &fp)
-                .ok()
-                .flatten()
-                .and_then(|b| AncestryPanel::from_bytes(&b).ok())
-        } else {
-            None
-        };
-
         // Look for a workspace parent to anchor the two sides (only meaningful when we can phase).
         // Scoped to the child's home project + hard-capped, so it never scans the whole workspace.
         let parent = if hap_ref.is_some() {
@@ -3263,12 +3251,6 @@ impl App {
         };
 
         let (segments, phased, anchor_side) = tokio::task::spawn_blocking(move || {
-            let composition = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
-            let prior: Vec<(String, f64)> = composition
-                .components
-                .iter()
-                .map(|c| (c.population_code.clone(), c.percentage / 100.0))
-                .collect();
             match hap_ref {
                 Some(hap) => {
                     // Genetic map for distance-scaled switch costs (observed contig extents → uniform
@@ -3281,26 +3263,28 @@ impl App {
                     let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
                     let gmap = load_genetic_map(build, &pairs);
 
+                    // Statistically phase, then paint each side by haplotype copying against the
+                    // reference (RFMix-style) — resolves fine sub-populations from haplotype structure,
+                    // superseding the frequency-emission painter + AF fine step.
                     let phaser = ReferencePhaser::new(&hap, &gmap, PhaseParams::default());
                     let phased_g = phaser.phase(&genotypes);
-                    let mut segs = ancestry_analysis::paint_local_ancestry_phased(
+                    let segs = navigator_analysis::lai::paint_copying_lai(
                         &phased_g,
-                        &panel,
-                        &prior,
-                        &ancestry_analysis::PaintParams::default(),
+                        &hap,
+                        &gmap,
+                        &navigator_analysis::lai::CopyingLaiParams::default(),
                     );
-                    if let Some(fp) = &fine_panel {
-                        ancestry_analysis::resolve_fine_populations(
-                            &mut segs,
-                            &phased_g,
-                            fp,
-                            &ancestry_analysis::FineResolveParams::default(),
-                        );
-                    }
                     let anchor = parent_genos.as_ref().and_then(|pg| anchor_side_to_parent(&phased_g, pg));
                     (segs, true, anchor)
                 }
                 None => {
+                    // No haplotype reference → the unphased frequency painter (super-population only).
+                    let composition = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
+                    let prior: Vec<(String, f64)> = composition
+                        .components
+                        .iter()
+                        .map(|c| (c.population_code.clone(), c.percentage / 100.0))
+                        .collect();
                     let segs = ancestry_analysis::paint_local_ancestry(
                         &genotypes,
                         &panel,

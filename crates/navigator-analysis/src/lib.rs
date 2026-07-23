@@ -25,6 +25,7 @@ pub mod ibd;
 pub mod ibd_attest;
 pub mod ibd_panel;
 pub mod index;
+pub mod lai;
 pub mod library_stats;
 pub mod manifest;
 pub mod mask;
