@@ -347,6 +347,17 @@ impl NavigatorApp {
                         }
                     }
                     self.all_biosamples = v;
+                    // One-time: restore the previously-focused subject now that the list is available.
+                    // `.take()` so it applies once; a stale GUID (deleted subject) simply no-ops.
+                    if self.selected_sample.is_none() {
+                        if let Some(guid_str) = self.pending_restore_subject.take() {
+                            if let Some(guid) =
+                                self.all_biosamples.iter().find(|b| b.guid.0.to_string() == guid_str).map(|b| b.guid)
+                            {
+                                self.select_sample(guid);
+                            }
+                        }
+                    }
                     let _ = self.tx.send(Command::LoadHaploSummary); // fill the Y/mt columns
                     let _ = self.tx.send(Command::LoadSubjectStatus); // fill the Status column
                 }

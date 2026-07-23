@@ -67,12 +67,33 @@ struct Forms {
 }
 
 /// Primary navigation tabs in the app bar.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Nav {
     Dashboard,
     Subjects,
     Projects,
     Community,
+}
+
+impl Nav {
+    /// Stable persistence key (independent of display strings / i18n).
+    fn as_key(self) -> &'static str {
+        match self {
+            Nav::Dashboard => "dashboard",
+            Nav::Subjects => "subjects",
+            Nav::Projects => "projects",
+            Nav::Community => "community",
+        }
+    }
+    fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "dashboard" => Some(Nav::Dashboard),
+            "subjects" => Some(Nav::Subjects),
+            "projects" => Some(Nav::Projects),
+            "community" => Some(Nav::Community),
+            _ => None,
+        }
+    }
 }
 
 /// Sub-tabs of the Community panel (the signed-in account's social surface).
@@ -110,7 +131,7 @@ impl ProjectTab {
 }
 
 /// Sub-tabs of the subject detail panel.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DetailTab {
     Overview,
     YDna,
@@ -122,6 +143,31 @@ enum DetailTab {
 }
 
 impl DetailTab {
+    /// Stable persistence key (independent of the i18n display keys).
+    fn as_key(self) -> &'static str {
+        match self {
+            DetailTab::Overview => "overview",
+            DetailTab::YDna => "ydna",
+            DetailTab::MtDna => "mtdna",
+            DetailTab::Autosomal => "autosomal",
+            DetailTab::Ancestry => "ancestry",
+            DetailTab::Sources => "sources",
+            DetailTab::IbdMatches => "ibd",
+        }
+    }
+    fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "overview" => Some(DetailTab::Overview),
+            "ydna" => Some(DetailTab::YDna),
+            "mtdna" => Some(DetailTab::MtDna),
+            "autosomal" => Some(DetailTab::Autosomal),
+            "ancestry" => Some(DetailTab::Ancestry),
+            "sources" => Some(DetailTab::Sources),
+            "ibd" => Some(DetailTab::IbdMatches),
+            _ => None,
+        }
+    }
+
     /// `(tab, i18n key)` in display order. The DNA-type tabs (Y / mt / Autosomal / Ancestry) show the
     /// subject's *consensus* across all sources; `Sources` is the per-sequencing-result hub.
     const ALL: [(DetailTab, &'static str); 7] = [
@@ -541,6 +587,12 @@ pub struct NavigatorApp {
     window_size_changed_at: f64,
     window_restored: bool,
     startup_frames: u32,
+    /// Focused subject remembered from the last session (GUID string), applied once the subject list
+    /// loads (`.take()`n so it restores only once).
+    pending_restore_subject: Option<String>,
+    /// Signature of the last navigation state persisted to [`AppSettings`] (view | subject | tab), so
+    /// a save fires only when it actually changes.
+    saved_ui_sig: Option<String>,
     /// Selected primary navigation tab.
     nav: Nav,
     /// Interface mode: Simple (casual single-person briefs) vs. Advanced (full power-user UI).
@@ -998,6 +1050,24 @@ impl NavigatorApp {
         // Persisted UI scale (egui zoom) — fixes tiny text on a native-4K display the OS reports at
         // scale factor 1.0. egui's keyboard zoom (Cmd +/-/0) also works but isn't persisted.
         cc.egui_ctx.set_zoom_factor(resolved_ui_scale());
+        // Restore the last navigation position (view / focused subject / detail tab). The subject is
+        // applied once the list loads (see the `AllBiosamples` handler); nav/tab apply immediately
+        // (nav is then reconciled to the interface mode by `normalize_for_mode`). Seed `saved_ui_sig`
+        // with the restored intent so a matching restore doesn't trigger a redundant re-save.
+        let restore = AppSettings::load();
+        let restored_nav = restore.last_nav.as_deref().and_then(Nav::from_key).unwrap_or(Nav::Subjects);
+        let restored_tab = restore
+            .last_detail_tab
+            .as_deref()
+            .and_then(DetailTab::from_key)
+            .unwrap_or(DetailTab::Overview);
+        let restored_subject = restore.last_subject.clone();
+        let ui_sig = format!(
+            "{}|{}|{}",
+            restored_nav.as_key(),
+            restored_subject.clone().unwrap_or_default(),
+            restored_tab.as_key()
+        );
         NavigatorApp {
             tx,
             rx,
@@ -1031,7 +1101,9 @@ impl NavigatorApp {
             window_size_changed_at: 0.0,
             window_restored: false,
             startup_frames: 0,
-            nav: Nav::Subjects,
+            pending_restore_subject: restored_subject,
+            saved_ui_sig: Some(ui_sig),
+            nav: restored_nav,
             // Pinned mode (env / settings) wins; else default Simple provisionally and let the
             // first-run workspace heuristic adjust once subjects/projects load (see
             // `apply_ui_mode_heuristic`).
@@ -1050,7 +1122,7 @@ impl NavigatorApp {
             signal_narration: Vec::new(),
             signal_stream: None,
             signal_narrating: None,
-            detail_tab: DetailTab::Overview,
+            detail_tab: restored_tab,
             // Persisted choice wins; else honor $LANG (e.g. "es_ES.UTF-8") when it names a
             // supported locale; else English.
             lang: crate::i18n::load_lang()
@@ -1296,6 +1368,40 @@ impl NavigatorApp {
             self.saved_window_size = Some(size);
         }
     }
+
+    /// Signature of the current navigation state: `view | subject | detail-tab`.
+    fn ui_state_sig(&self) -> String {
+        format!(
+            "{}|{}|{}",
+            self.nav.as_key(),
+            self.selected_sample.map(|g| g.0.to_string()).unwrap_or_default(),
+            self.detail_tab.as_key()
+        )
+    }
+
+    /// Persist the navigation position (view / focused subject / detail tab) to [`AppSettings`] when it
+    /// changes, so the next launch reopens where the user left off. Called once per frame; the
+    /// signature guard means a write happens only on an actual navigation change (load-modify-save, so
+    /// the window size and every other setting are preserved).
+    fn persist_ui_state(&mut self) {
+        // Hold off until the one-time subject restore has been applied (consumed once the subject list
+        // first loads). Otherwise the early frames — before any subject is selected — would overwrite
+        // the remembered subject with `None`.
+        if self.pending_restore_subject.is_some() {
+            return;
+        }
+        let sig = self.ui_state_sig();
+        if self.saved_ui_sig.as_deref() == Some(sig.as_str()) {
+            return;
+        }
+        let mut settings = AppSettings::load();
+        settings.last_nav = Some(self.nav.as_key().to_string());
+        settings.last_subject = self.selected_sample.map(|g| g.0.to_string());
+        settings.last_detail_tab = Some(self.detail_tab.as_key().to_string());
+        if settings.save().is_ok() {
+            self.saved_ui_sig = Some(sig);
+        }
+    }
 }
 
 impl eframe::App for NavigatorApp {
@@ -1306,6 +1412,7 @@ impl eframe::App for NavigatorApp {
         if let Some(size) = self.window_size {
             self.persist_window_size(size);
         }
+        self.persist_ui_state();
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -1399,6 +1506,10 @@ impl eframe::App for NavigatorApp {
         self.batch_import_modal(ctx);
         self.ftdna_review_modal(ctx);
         self.paint_drop_hint(ctx);
+
+        // Persist the navigation position after the UI has processed this frame's clicks (view /
+        // focused subject / detail tab). Guarded so it writes only on an actual change.
+        self.persist_ui_state();
     }
 }
 
@@ -1939,5 +2050,34 @@ mod window_geometry_tests {
         // A monitor smaller than the minimum: the floor wins (the window can't usefully go smaller).
         let got = fit_window_to_monitor(DEFAULT_WINDOW, [800.0, 600.0], MIN_WINDOW);
         assert_eq!(got, MIN_WINDOW);
+    }
+}
+
+#[cfg(test)]
+mod nav_persistence_tests {
+    use super::{DetailTab, Nav};
+
+    #[test]
+    fn nav_keys_round_trip() {
+        for nav in [Nav::Dashboard, Nav::Subjects, Nav::Projects, Nav::Community] {
+            assert_eq!(Nav::from_key(nav.as_key()), Some(nav));
+        }
+        assert_eq!(Nav::from_key("bogus"), None);
+    }
+
+    #[test]
+    fn detail_tab_keys_round_trip() {
+        for tab in [
+            DetailTab::Overview,
+            DetailTab::YDna,
+            DetailTab::MtDna,
+            DetailTab::Autosomal,
+            DetailTab::Ancestry,
+            DetailTab::Sources,
+            DetailTab::IbdMatches,
+        ] {
+            assert_eq!(DetailTab::from_key(tab.as_key()), Some(tab));
+        }
+        assert_eq!(DetailTab::from_key("bogus"), None);
     }
 }
