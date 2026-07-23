@@ -3112,9 +3112,11 @@ impl App {
     }
 
     /// Paint each chromosome with diploid local ancestry from the subject's **consensus** — no BAM
-    /// walk. Returns the cached painting when it matches the current consensus signature; otherwise
-    /// runs the diploid pair-state HMM over the consensus genotypes (anchored on the admixture prior)
-    /// and caches it keyed to the consensus's `last_reconciled_at`.
+    /// walk. This is the explicit compute/refresh path: it **always** re-runs the diploid pair-state
+    /// HMM over the consensus genotypes (anchored on the admixture prior) and refreshes the cache,
+    /// keyed to the consensus's `last_reconciled_at`. The cheap cache-read path is
+    /// [`Self::cached_painting`] (used on subject load); recomputing here is what lets a code change
+    /// to the painter (e.g. the global-composition gate) take effect without wiping the consensus.
     pub async fn paint_local_ancestry_from_consensus(
         &self,
         biosample_guid: SampleGuid,
@@ -3125,13 +3127,6 @@ impl App {
                 AppError::Import("build the autosomal consensus first (Autosomal tab) before painting".into())
             })?;
         let sig = row.last_reconciled_at.clone();
-
-        // Cache hit (same consensus signature) → return without recomputing.
-        if let Some(p) = consensus_painting::get(self.store.pool(), biosample_guid).await? {
-            if p.consensus_sig == sig {
-                return Ok(serde_json::from_str(&p.segments)?);
-            }
-        }
 
         let profile: DiploidProfile = serde_json::from_str(&row.payload)?;
         let genotypes = consensus_genotypes(&profile);
