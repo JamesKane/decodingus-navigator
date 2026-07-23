@@ -42,7 +42,7 @@ pub fn super_populations() -> Vec<Population> {
 
 /// The 26 fine-grained 1000 Genomes populations: `(code, name, super-population)`. Used for
 /// fine-grained ancestry; each rolls up to one of [`super_populations`] for the summary.
-const FINE_POPULATIONS: [(&str, &str, &str); 29] = [
+const FINE_POPULATIONS: [(&str, &str, &str); 35] = [
     // African
     ("YRI", "Yoruba (Nigeria)", "AFR"),
     ("LWK", "Luhya (Kenya)", "AFR"),
@@ -62,12 +62,22 @@ const FINE_POPULATIONS: [(&str, &str, &str); 29] = [
     ("CHS", "Southern Han Chinese", "EAS"),
     ("CDX", "Dai Chinese", "EAS"),
     ("KHV", "Kinh (Vietnam)", "EAS"),
-    // European
+    // European — 1000G reference set (CEU is the sole NW/continental proxy)…
     ("CEU", "NW European (Utah)", "EUR"),
     ("TSI", "Tuscan (Italy)", "EUR"),
     ("FIN", "Finnish", "EUR"),
     ("GBR", "British", "EUR"),
     ("IBS", "Iberian (Spain)", "EUR"),
+    // …plus present-day AADR reference groups that fill continental West/Central/South/East
+    // Europe, which 1000G lacks. Without these a continental European's ancestry has no home and
+    // smears into CEU + spurious Iberian/Tuscan. (German/Dutch/Swiss remain unavailable in any
+    // public academic panel — French/Orcadian are the nearest continental-NW anchors.)
+    ("FRN", "French", "EUR"),
+    ("ORC", "Orcadian", "EUR"),
+    ("SRD", "Sardinian", "EUR"),
+    ("BSQ", "Basque", "EUR"),
+    ("ITN", "Northern Italian", "EUR"),
+    ("RUS", "Russian", "EUR"),
     // South Asian
     ("GIH", "Gujarati", "SAS"),
     ("PJL", "Punjabi", "SAS"),
@@ -178,6 +188,12 @@ pub fn population_lonlat(code: &str) -> Option<(f32, f32)> {
         "FIN" => (26.0, 64.0),
         "IBS" => (-4.0, 40.0),
         "TSI" => (11.0, 43.5),
+        "FRN" => (2.0, 47.0),
+        "ORC" => (-3.0, 59.0),
+        "SRD" => (9.0, 40.0),
+        "BSQ" => (-2.5, 43.0),
+        "ITN" => (9.5, 45.5),
+        "RUS" => (40.0, 56.0),
         "EUR" => (10.0, 50.0),
         // South Asian
         "GIH" => (72.0, 23.0),

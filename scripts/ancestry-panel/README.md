@@ -93,6 +93,32 @@ External tools (not bundled): `curl`, `bcftools` + `tabix`, `samtools`, `CrossMa
 These are exactly the six data sources the Navigator Ancestry tab reports (super-pop panel · PCA
 modern · PCA ancient · fine frequencies · genetic map · IBD panel).
 
+## Modern fine/PCA panel v2 — depth + continental pops (2026-07)
+
+The fine-admixture (`ancestry_freq_global`) and modern PCA (`ancestry_pca`) assets are now built at
+**200k Fst-ranked sites** (up from ~20k) and include **continental-European reference populations**
+that 1000G lacks. Rationale: deep/qpAdm already genotypes the target across the full 1240k at runtime
+(the shared autosomal consensus is the full IBD-panel union), so the modern estimators were limited
+only by their small reference *assets* — enlarging them is a pure offline rebuild. And the 1000G fine
+set has no French/German/Dutch/Swiss bin, so continental Europeans smeared into CEU + spurious
+Iberian/Tuscan. Super-pop `ancestry_panel` stays at 20k (saturated); qpAdm + IBD are unchanged.
+
+Reproduce (all off the local June-build inputs under `$WORK` — no re-download):
+
+```bash
+WIDE_MAX_SITES=200000 WIDE_MIN_FST=0.03 ./sweep_modern_depth.sh   # wide panel + 1000G matrix (slices local 12G BCF once)
+./add_continental_pops.sh                                          # AADR present-day FRN/ORC/SRD/BSQ/ITN/RUS (plink2 on local aadr.bed + GATK lift)
+CAP=200000 ./build_final_fine_pca.sh                               # combined 1000G+continental fine + PCA at 200k
+```
+
+Then promote `$WORK/sweep/ancestry_{freq_global,pca}.cont.200000.bin` to `$ASSETS/ancestry_{freq_global,pca}_${BUILD}.bin`
+and refresh the manifest (`panelbuild manifest`). The new fine codes (FRN/ORC/SRD/BSQ/ITN/RUS) are
+registered in `navigator-domain::ancestry::FINE_POPULATIONS`. **Caveat:** allele-frequency admixture
+cannot separate German/French from generic South-Central European (that needs haplotype methods + a
+real German/Dutch reference, absent from academic panels), so the ~30% "southern" over-assignment for
+a continental NW European is a method floor — the French/Orcadian bins surfacing is the extractable
+gain. Validation harness: `navigator-panelbuild/examples/{score_modern_from_tsv,resolve_chip_dosage,genotype_bed}`.
+
 ## Known refinements (tracked in `documents/design/AncestryAnalysis.md`)
 
 - **Allele harmonization** to the CHM13 reference (`bcftools norm -c s`) is the highest-risk

@@ -3322,6 +3322,7 @@ dependencies = [
  "flate2",
  "nalgebra",
  "navigator-analysis",
+ "navigator-domain",
  "noodles",
 ]
 

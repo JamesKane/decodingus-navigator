@@ -2750,11 +2750,12 @@ impl App {
             if let Some(pca) = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok()) {
                 result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, &pca));
             }
-            // Deep (ancient) ancestry is NOT computed here anymore: the ~20k-site consensus cannot
-            // carry the ~1.15M full-1240k sites the qpAdm f4 model needs for a stable, ±1-2% fit
-            // (docs/design/ancient-ancestry-rebuild.md §7.14; the old frequency-EM over this panel
-            // failed the WGS-vs-chip stability gate). It is a separate, heavier on-demand path —
-            // `estimate_deep_ancestry` — which genotypes the alignment at the full 1240k.
+            // Deep (ancient) ancestry is NOT computed here — it is the separate `estimate_deep_ancestry`
+            // path. NB it is *not* a heavier genotyping pass: it reads the SAME cached autosomal
+            // consensus these modern/fine estimators use (the consensus is the full ~1.15M-site 1240k
+            // IBD-panel union, not a 20k subset), and just intersects the larger qpAdm f4 panel against
+            // it (docs/design/ancient-ancestry-rebuild.md §7.14). Kept out of this hot path because the
+            // qpAdm fit is a distinct, on-demand model.
             let ancient: Option<AncestryResult> = None;
             let _ = &ancient_bytes;
             (result, ancient, fine)
