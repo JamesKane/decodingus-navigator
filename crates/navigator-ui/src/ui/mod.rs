@@ -462,6 +462,21 @@ struct YReport {
     lineage: Vec<SnpEvidence>,
 }
 
+/// Initial window inner size (egui points) on a first run / when nothing is remembered. The reworked
+/// layout (subjects table + detail panel + action bar) needs room; the eframe default is far too small.
+pub(crate) const DEFAULT_WINDOW: [f32; 2] = [1360.0, 900.0];
+/// Minimum window inner size — a sane floor so the layout never collapses.
+pub(crate) const MIN_WINDOW: [f32; 2] = [1024.0, 680.0];
+
+/// Fit a desired window size (egui points) to the monitor, leaving a margin for the menu bar / dock /
+/// taskbar, and never below `min`. An over-large remembered size (e.g. from a bigger display) shrinks
+/// to fit; a size that already fits is returned unchanged. Pure, so the fit logic is unit-tested.
+pub(crate) fn fit_window_to_monitor(desired: [f32; 2], monitor: [f32; 2], min: [f32; 2]) -> [f32; 2] {
+    let max_w = (monitor[0] * 0.98).max(min[0]);
+    let max_h = (monitor[1] * 0.94).max(min[1]);
+    [desired[0].clamp(min[0], max_w), desired[1].clamp(min[1], max_h)]
+}
+
 pub struct NavigatorApp {
     tx: UnboundedSender<Command>,
     rx: Receiver<Event>,
@@ -517,6 +532,15 @@ pub struct NavigatorApp {
     edit_alignment: Option<EditAlignment>,
     /// Current frame's egui time (seconds), captured at the top of `update`.
     frame_time: f64,
+    /// Window-size persistence (all in egui points): the current inner size, the last size written to
+    /// [`AppSettings`], and when it last changed (`frame_time` seconds) for debounced saving.
+    /// `window_restored` guards the one-time restore-and-fit-to-screen; `startup_frames` lets it wait
+    /// until the UI scale (zoom) has settled so the sizes are in a stable unit.
+    window_size: Option<[f32; 2]>,
+    saved_window_size: Option<[f32; 2]>,
+    window_size_changed_at: f64,
+    window_restored: bool,
+    startup_frames: u32,
     /// Selected primary navigation tab.
     nav: Nav,
     /// Interface mode: Simple (casual single-person briefs) vs. Advanced (full power-user UI).
@@ -1001,6 +1025,12 @@ impl NavigatorApp {
             audit_y_profile: false,
             edit_alignment: None,
             frame_time: 0.0,
+            window_size: None,
+            // The remembered size (if any) — seeded so an unchanged window never re-writes settings.
+            saved_window_size: AppSettings::load().window_size,
+            window_size_changed_at: 0.0,
+            window_restored: false,
+            startup_frames: 0,
             nav: Nav::Subjects,
             // Pinned mode (env / settings) wins; else default Simple provisionally and let the
             // first-run workspace heuristic adjust once subjects/projects load (see
@@ -1201,12 +1231,65 @@ impl NavigatorApp {
             show_diagnosis: false,
         }
     }
+
+    /// Remember the window size across launches and fit it to the screen. `screen_rect`,
+    /// `monitor_size`, and [`egui::ViewportCommand::InnerSize`] are all in egui points at the current
+    /// zoom, so persisting `screen_rect` and restoring at the same (persisted) zoom round-trips exactly.
+    ///
+    /// The one-time restore/fit runs via `InnerSize` at runtime — not the startup `ViewportBuilder`,
+    /// which sizes before the UI scale is applied — once the zoom has settled (`startup_frames >= 2`,
+    /// `scale_probed`) and the monitor size is known: the remembered size is clamped to fit the screen
+    /// (an over-large size from a bigger display shrinks). Afterwards, size changes are saved to
+    /// [`AppSettings`], debounced until they settle and once more on window close.
+    fn manage_window_geometry(&mut self, ctx: &egui::Context) {
+        self.startup_frames = self.startup_frames.saturating_add(1);
+        let size = ctx.screen_rect().size();
+        let cur = [size.x, size.y];
+        // Skip degenerate sizes (e.g. while minimized) so we never persist a collapsed window.
+        if cur[0] < 200.0 || cur[1] < 200.0 {
+            return;
+        }
+
+        // One-time restore + fit-to-screen, after the zoom has settled so `cur`/target share a unit.
+        if !self.window_restored {
+            let monitor = ctx.input(|i| i.viewport().monitor_size);
+            // Wait until the UI scale (zoom) is settled and the monitor size is known.
+            let Some(mon) = monitor.filter(|_| self.scale_probed && self.startup_frames >= 2) else {
+                ctx.request_repaint(); // keep frames coming until we can restore
+                return; // don't track/save until the restore has run
+            };
+            let desired = self.saved_window_size.unwrap_or(cur);
+            let [tw, th] = fit_window_to_monitor(desired, [mon.x, mon.y], MIN_WINDOW);
+            if (cur[0] - tw).abs() > 1.0 || (cur[1] - th).abs() > 1.0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(tw, th)));
+            }
+            self.window_restored = true;
+        }
+
+        // Track changes; persist once the size settles (debounced) or on close, so it's remembered.
+        if self.window_size != Some(cur) {
+            self.window_size = Some(cur);
+            self.window_size_changed_at = self.frame_time;
+            // Ensure a frame fires after the resize stops so the settled save runs even if idle.
+            ctx.request_repaint_after(std::time::Duration::from_millis(900));
+        }
+        let closing = ctx.input(|i| i.viewport().close_requested());
+        let settled = self.frame_time - self.window_size_changed_at > 0.8;
+        if self.saved_window_size != Some(cur) && (settled || closing) {
+            let mut settings = AppSettings::load();
+            settings.window_size = Some(cur);
+            if settings.save().is_ok() {
+                self.saved_window_size = Some(cur);
+            }
+        }
+    }
 }
 
 impl eframe::App for NavigatorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_time = ctx.input(|i| i.time);
         run_auto_scale(&mut self.scale_probed, &mut self.settings_form, ctx);
+        self.manage_window_geometry(ctx);
         // While an analysis runs, keep repainting so the spinner/elapsed timer animate even
         // during a long step that emits no events (e.g. whole-genome coverage).
         if self.analysis.is_some() {
@@ -1801,4 +1884,38 @@ fn mtdna_mutations_view(ui: &mut egui::Ui, mtdna_id: i64, variants: &[MtVariant]
                     });
             }
         });
+}
+
+#[cfg(test)]
+mod window_geometry_tests {
+    use super::{fit_window_to_monitor, DEFAULT_WINDOW, MIN_WINDOW};
+
+    #[test]
+    fn size_that_fits_is_unchanged() {
+        // A comfortable window on a 2560×1440 monitor is left as-is.
+        let got = fit_window_to_monitor([1600.0, 1000.0], [2560.0, 1440.0], MIN_WINDOW);
+        assert_eq!(got, [1600.0, 1000.0]);
+    }
+
+    #[test]
+    fn oversize_is_shrunk_to_fit_the_screen() {
+        // A size remembered from a big display, opened on a 1440×900 laptop, must fit within it.
+        let mon = [1440.0, 900.0];
+        let got = fit_window_to_monitor([3000.0, 2000.0], mon, MIN_WINDOW);
+        assert!(got[0] <= mon[0] && got[1] <= mon[1], "must fit: {got:?} in {mon:?}");
+        assert!(got[0] <= mon[0] * 0.98 + 0.5 && got[1] <= mon[1] * 0.94 + 0.5, "margin respected");
+    }
+
+    #[test]
+    fn never_below_minimum() {
+        let got = fit_window_to_monitor([300.0, 200.0], [2560.0, 1440.0], MIN_WINDOW);
+        assert_eq!(got, MIN_WINDOW);
+    }
+
+    #[test]
+    fn tiny_monitor_clamps_to_minimum_not_below() {
+        // A monitor smaller than the minimum: the floor wins (the window can't usefully go smaller).
+        let got = fit_window_to_monitor(DEFAULT_WINDOW, [800.0, 600.0], MIN_WINDOW);
+        assert_eq!(got, MIN_WINDOW);
+    }
 }

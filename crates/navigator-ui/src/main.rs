@@ -57,12 +57,16 @@ fn main() -> eframe::Result<()> {
     }
 
     let db_path = default_db_path();
-    // The reworked layout (subjects table + detail panel + action bar) needs room; the eframe
-    // default window is far too small for it. Open at a comfortable size with a sane floor.
+    // Open at the remembered size (falling back to a comfortable default), with a sane floor. This is
+    // only the initial hint — the builder sizes before the UI scale is applied, so `NavigatorApp`
+    // re-asserts the remembered size and fits it to the current screen on its first frames.
+    let initial_size = navigator_app::AppSettings::load()
+        .window_size
+        .unwrap_or(ui::DEFAULT_WINDOW);
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1360.0, 900.0])
-            .with_min_inner_size([1024.0, 680.0]),
+            .with_inner_size(initial_size)
+            .with_min_inner_size(ui::MIN_WINDOW),
         ..Default::default()
     };
     eframe::run_native(

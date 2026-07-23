@@ -749,6 +749,8 @@ impl NavigatorApp {
                 // Update-check preferences are managed from the update dialog, not this one — preserve.
                 check_for_updates: AppSettings::load().check_for_updates,
                 skip_update_version: AppSettings::load().skip_update_version,
+                // The window size is remembered automatically as the window is resized — preserve it.
+                window_size: AppSettings::load().window_size,
             };
             match settings.save() {
                 Ok(()) => self.status = self.tr("settings.saved").to_string(),

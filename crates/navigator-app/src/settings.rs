@@ -60,6 +60,11 @@ pub struct AppSettings {
     /// *newer* release than this still notifies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skip_update_version: Option<String>,
+    /// Last window inner size `[width, height]` in egui points, remembered across launches. `None`
+    /// until the first run persists it. On restore it is fitted to the current monitor (an over-large
+    /// remembered size — e.g. from a bigger display — is shrunk to fit).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_size: Option<[f32; 2]>,
 }
 
 impl AppSettings {
