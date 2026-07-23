@@ -284,7 +284,15 @@ pub(crate) fn draw_pie(ui: &mut egui::Ui, size: f32, slices: &[(f64, egui::Color
         if *pct < 0.5 {
             continue;
         }
-        let a1 = a0 + (*pct as f32 / total) * std::f32::consts::TAU;
+        let frac = *pct as f32 / total;
+        // A slice covering (essentially) the whole pie sweeps a full 360°, where the fan's first and
+        // last arc points coincide — that zero-width slit tessellates as a broken half-disc. Draw a
+        // plain filled circle for the degenerate full-circle case instead.
+        if frac >= 0.999 {
+            painter.circle_filled(c, r, *color);
+            break;
+        }
+        let a1 = a0 + frac * std::f32::consts::TAU;
         let mut pts = vec![c];
         pts.extend(arc_points(c, r, a0, a1, 40));
         painter.add(egui::epaint::PathShape {

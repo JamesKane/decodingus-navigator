@@ -2750,11 +2750,12 @@ impl App {
             if let Some(pca) = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok()) {
                 result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, &pca));
             }
-            // Deep (ancient) ancestry is NOT computed here anymore: the ~20k-site consensus cannot
-            // carry the ~1.15M full-1240k sites the qpAdm f4 model needs for a stable, ±1-2% fit
-            // (docs/design/ancient-ancestry-rebuild.md §7.14; the old frequency-EM over this panel
-            // failed the WGS-vs-chip stability gate). It is a separate, heavier on-demand path —
-            // `estimate_deep_ancestry` — which genotypes the alignment at the full 1240k.
+            // Deep (ancient) ancestry is NOT computed here — it is the separate `estimate_deep_ancestry`
+            // path. NB it is *not* a heavier genotyping pass: it reads the SAME cached autosomal
+            // consensus these modern/fine estimators use (the consensus is the full ~1.15M-site 1240k
+            // IBD-panel union, not a 20k subset), and just intersects the larger qpAdm f4 panel against
+            // it (docs/design/ancient-ancestry-rebuild.md §7.14). Kept out of this hot path because the
+            // qpAdm fit is a distinct, on-demand model.
             let ancient: Option<AncestryResult> = None;
             let _ = &ancient_bytes;
             (result, ancient, fine)
@@ -3111,9 +3112,11 @@ impl App {
     }
 
     /// Paint each chromosome with diploid local ancestry from the subject's **consensus** — no BAM
-    /// walk. Returns the cached painting when it matches the current consensus signature; otherwise
-    /// runs the diploid pair-state HMM over the consensus genotypes (anchored on the admixture prior)
-    /// and caches it keyed to the consensus's `last_reconciled_at`.
+    /// walk. This is the explicit compute/refresh path: it **always** re-runs the diploid pair-state
+    /// HMM over the consensus genotypes (anchored on the admixture prior) and refreshes the cache,
+    /// keyed to the consensus's `last_reconciled_at`. The cheap cache-read path is
+    /// [`Self::cached_painting`] (used on subject load); recomputing here is what lets a code change
+    /// to the painter (e.g. the global-composition gate) take effect without wiping the consensus.
     pub async fn paint_local_ancestry_from_consensus(
         &self,
         biosample_guid: SampleGuid,
@@ -3124,13 +3127,6 @@ impl App {
                 AppError::Import("build the autosomal consensus first (Autosomal tab) before painting".into())
             })?;
         let sig = row.last_reconciled_at.clone();
-
-        // Cache hit (same consensus signature) → return without recomputing.
-        if let Some(p) = consensus_painting::get(self.store.pool(), biosample_guid).await? {
-            if p.consensus_sig == sig {
-                return Ok(serde_json::from_str(&p.segments)?);
-            }
-        }
 
         let profile: DiploidProfile = serde_json::from_str(&row.payload)?;
         let genotypes = consensus_genotypes(&profile);

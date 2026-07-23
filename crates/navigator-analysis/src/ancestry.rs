@@ -173,6 +173,12 @@ pub struct PaintParams {
     pub rate: f64,
     /// Runs shorter than this many markers are merged into the neighbouring segment.
     pub min_segment_sites: usize,
+    /// Global-composition gate: a super-population whose genome-wide `prior` weight is below this
+    /// fraction is dropped from the HMM's state set entirely (the dominant ancestry is always kept),
+    /// so a 99%-European donor can't be *locally* painted East-Asian/South-Asian by a handful of
+    /// noise loci. AF-based local ancestry over coarse super-pops is prone to inventing a globally
+    /// absent continent; anchoring the states to the global estimate suppresses that. `0.0` disables.
+    pub min_ancestry: f64,
 }
 
 impl Default for PaintParams {
@@ -180,6 +186,7 @@ impl Default for PaintParams {
         Self {
             rate: 1.0 / 20_000_000.0,
             min_segment_sites: 5,
+            min_ancestry: 0.02,
         }
     }
 }
@@ -221,29 +228,53 @@ pub fn paint_local_ancestry(
         .iter()
         .map(|c| population_super(c).unwrap_or(c).to_string())
         .collect();
-    let mut states: Vec<String> = Vec::new();
+    let mut all_states: Vec<String> = Vec::new();
     for s in &pop_state {
-        if !states.contains(s) {
-            states.push(s.clone());
+        if !all_states.contains(s) {
+            all_states.push(s.clone());
         }
     }
-    let k = states.len();
-    if k == 0 {
+    if all_states.is_empty() {
         return Vec::new();
     }
-    let state_idx = |s: &str| states.iter().position(|x| x == s);
 
-    // Prior π over states (roll the global composition up to super-pops; normalize; uniform fallback).
-    let mut pi = vec![0.0f64; k];
+    // Prior π over the full state set (roll the global composition up to super-pops; normalize;
+    // uniform fallback when no prior is supplied).
+    let mut full_pi = vec![0.0f64; all_states.len()];
     for (code, w) in prior {
         let sp = population_super(code).unwrap_or(code);
-        if let Some(j) = state_idx(sp) {
-            pi[j] += w.max(0.0);
+        if let Some(j) = all_states.iter().position(|x| x == sp) {
+            full_pi[j] += w.max(0.0);
         }
     }
-    let tot: f64 = pi.iter().sum();
+    let tot: f64 = full_pi.iter().sum();
     if tot > 0.0 {
-        pi.iter_mut().for_each(|p| *p /= tot);
+        full_pi.iter_mut().for_each(|p| *p /= tot);
+    } else {
+        full_pi.iter_mut().for_each(|p| *p = 1.0 / all_states.len() as f64);
+    }
+
+    // Global-composition gate: keep only ancestries present genome-wide (>= min_ancestry), always
+    // retaining the dominant one, so local painting can't invent a globally absent continent. With a
+    // uniform (no-prior) π every state clears the default threshold, so gating is a no-op there.
+    let argmax = full_pi
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let keep: Vec<usize> = (0..all_states.len())
+        .filter(|&i| full_pi[i] >= params.min_ancestry || i == argmax)
+        .collect();
+    let states: Vec<String> = keep.iter().map(|&i| all_states[i].clone()).collect();
+    let k = states.len();
+    let state_idx = |s: &str| states.iter().position(|x| x == s);
+
+    // π restricted to the kept states, renormalized.
+    let mut pi: Vec<f64> = keep.iter().map(|&i| full_pi[i]).collect();
+    let ktot: f64 = pi.iter().sum();
+    if ktot > 0.0 {
+        pi.iter_mut().for_each(|p| *p /= ktot);
     } else {
         pi.iter_mut().for_each(|p| *p = 1.0 / k as f64);
     }
@@ -1640,6 +1671,41 @@ mod tests {
         // Sorted copies: copy 0 = lower-index ancestry (A), copy 1 = higher (B).
         assert_eq!(copy0[0].population_code, "A");
         assert_eq!(copy1[0].population_code, "B");
+    }
+
+    /// Global-composition gate: a sample that is overwhelmingly A with a short hom-ref run that,
+    /// ungated, paints as B — but B is only a 1% trace globally, below the 2% gate. The gate must
+    /// drop B from the state set so local painting can't invent a globally absent ancestry (the
+    /// "99%-European donor shown East-Asian on one chromosome arm" bug). Also exercises the k=1 path.
+    #[test]
+    fn painting_gate_suppresses_globally_absent_ancestry() {
+        let n = 80;
+        let panel = two_pop_panel(n);
+        // Hom-alt (→ A) everywhere except a 15-site hom-ref run (→ B) in the middle.
+        let genos: Vec<SiteGenotype> = (0..n)
+            .map(|i| sg("chr1", 1 + i as i64 * 1_000_000, if (40..55).contains(&i) { 0 } else { 2 }))
+            .collect();
+        let prior = vec![("A".to_string(), 0.99), ("B".to_string(), 0.01)];
+
+        // Ungated (min_ancestry 0): the hom-ref run surfaces as B.
+        let ungated = paint_local_ancestry(
+            &genos,
+            &panel,
+            &prior,
+            &PaintParams { min_ancestry: 0.0, ..PaintParams::default() },
+        );
+        assert!(
+            ungated.iter().any(|s| s.population_code == "B"),
+            "ungated painting should surface the B run: {ungated:?}"
+        );
+
+        // Gated (default 2%): B is globally absent → dropped → the whole chromosome is A.
+        let gated = paint_local_ancestry(&genos, &panel, &prior, &PaintParams::default());
+        assert!(!gated.is_empty());
+        assert!(
+            gated.iter().all(|s| s.population_code == "A"),
+            "gated painting must not invent globally-absent B: {gated:?}"
+        );
     }
 
     #[test]
