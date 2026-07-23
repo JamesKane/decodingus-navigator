@@ -14,12 +14,12 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::CancelToken;
 use navigator_app::{
-    AlignmentProbe, AncestryResult, AncestrySegment, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
+    AlignmentProbe, AncestryResult, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
     ChatTurn, Consensus, Coverage, DenovoCall, DescentReport, DmConversationSummary, DmMessage, DnaType,
     ExchangeSessionInfo,
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
     HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
-    NarratedBrief, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
+    NarratedBrief, PaintingResult, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
     ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, RohResult, SexInferenceResult, SignalKind,
     SourceType, StoredIbdExchange, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult, YMatch,
     YstrClustering,
@@ -921,10 +921,10 @@ pub enum Event {
         alignment_id: i64,
         assignment: HaploAssignment,
     },
-    /// Local-ancestry segments per chromosome (the "DNA painting").
+    /// Local-ancestry painting per chromosome (the "DNA painting"): per-side segments + side labels.
     AncestryPainting {
         alignment_id: i64,
-        segments: Vec<AncestrySegment>,
+        result: PaintingResult,
     },
     /// Runs-of-homozygosity result for a subject (segments + F_ROH summary). `None` on a cache-miss load.
     RohResultReady {
@@ -1786,17 +1786,17 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::PaintAncestryFromConsensus { biosample_guid } => {
             // Painting from the consensus needs no genotyping pass — fast, no progress stream.
             match app.paint_local_ancestry_from_consensus(biosample_guid).await {
-                Ok(segments) => Event::AncestryPainting {
+                Ok(result) => Event::AncestryPainting {
                     alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
-                    segments,
+                    result,
                 },
                 Err(e) => Event::Error(e.to_string()),
             }
         }
         Command::LoadPainting { biosample_guid } => match app.cached_painting(biosample_guid).await {
-            Ok(segments) => Event::AncestryPainting {
+            Ok(result) => Event::AncestryPainting {
                 alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
-                segments: segments.unwrap_or_default(),
+                result: result.unwrap_or_default(),
             },
             Err(e) => Event::Error(e.to_string()),
         },

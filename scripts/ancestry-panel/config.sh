@@ -127,6 +127,7 @@ POPS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pops"   # committed cura
 PANEL_OUT="$ASSETS/ancestry_panel_${BUILD}.bin"            # AF panel (genotyping + admixture)
 PCA_OUT="$ASSETS/ancestry_pca_${BUILD}.bin"                # modern PCA loadings + centroids (scatter)
 FINE_OUT="$ASSETS/ancestry_freq_global_${BUILD}.bin"       # global per-pop AF (fine admixture)
+HAPS_OUT="$ASSETS/ancestry_haps_${BUILD}.bin"             # phased 1000G haplotype reference (phasing / parent-split painter)
 ANCIENT_OUT="$ASSETS/ancestry_freq_ancient_${BUILD}.bin"   # deep-source AF: WHG/ANF/Steppe (deep ancestry)
 QPADM_OUT="${QPADM_OUT:-$ASSETS/ancestry_qpadm_${BUILD}.bin}"  # full-1240k qpAdm panel (Patterson-2022, §7.14) — the SHIPPING deep-ancestry asset
 # Dedicated qpAdm component map (Group ID → component); NOT aadr_component_map.tsv (whose broad WHG set

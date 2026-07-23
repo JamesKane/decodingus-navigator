@@ -49,7 +49,8 @@ pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexI
 pub use navigator_analysis::sv::types::{SvAnalysisResult, SvCall, SvType};
 pub use navigator_analysis::unified::UnifiedMetricsResult;
 pub use navigator_domain::ancestry::{
-    AncestryResult, AncestrySegment, ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
+    side_label_default, AncestryResult, AncestrySegment, ConfidenceInterval, PaintingResult, PopulationComponent,
+    SuperPopulationSummary,
 };
 // The ancestry panel format, re-exported so panel tooling/tests depend only on navigator-app.
 pub use navigator_analysis::ancestry::{AncestryPanel, PanelSite as AncestryPanelSite};
@@ -1042,6 +1043,14 @@ fn ancestry_pca_path(build: ReferenceBuild) -> PathBuf {
 /// `<base>/ancestry/ancestry_freq_global_<build>.bin`). Optional — fine admixture is skipped if absent.
 fn ancestry_freq_global_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ANCESTRY_FREQ", "ancestry_freq_global", build, "bin")
+}
+
+/// The phased-haplotype reference asset (`$NAVIGATOR_ANCESTRY_HAPS` override, else
+/// `<base>/ancestry/ancestry_haps_<build>.bin`): the phased 1000G haplotypes the statistical phaser
+/// copies from, for the parent-split chromosome painter. Optional — when absent, the painter falls
+/// back to the unphased diploid path (two arbitrary sorted copies rather than parental sides).
+fn ancestry_haps_path(build: ReferenceBuild) -> PathBuf {
+    ancestry_asset_path("NAVIGATOR_ANCESTRY_HAPS", "ancestry_haps", build, "bin")
 }
 
 /// The **ancient** deep-source frequency asset (`$NAVIGATOR_ANCESTRY_FREQ_ANCIENT` override, else

@@ -24,6 +24,7 @@ use flate2::read::MultiGzDecoder;
 use navigator_analysis::ancestry::{AncestryPanel, PanelSite};
 
 mod genetic_map;
+mod hap_panel;
 mod ibd_panel;
 mod manifest;
 mod pca;
@@ -48,6 +49,9 @@ enum Cmd {
     Pca(pca::PcaArgs),
     /// Build a fine-grained (26-population) AF panel from a genotype matrix + sample/pop metadata.
     FinePanel(pca::FinePanelArgs),
+    /// Build the phased-haplotype reference (bit-packed haplotypes + fine-pop labels) for statistical
+    /// phasing / the parent-split chromosome painter, from the phased 1000G genotype matrix.
+    HapPanel(hap_panel::HapPanelArgs),
     /// Build the ancient deep-source (WHG/ANF/Steppe) AF panel from the AADR genotype matrix.
     AncientPanel(pca::AncientPanelArgs),
     /// Run the ancient panel's validation gates (simulate reference individuals, check the fit).
@@ -117,6 +121,7 @@ fn main() -> Result<()> {
         Cmd::Panel(args) => build_panel(args),
         Cmd::Pca(args) => pca::build_pca(args),
         Cmd::FinePanel(args) => pca::build_fine_panel(args),
+        Cmd::HapPanel(args) => hap_panel::build_hap_panel(args),
         Cmd::AncientPanel(args) => pca::build_ancient_panel(args),
         Cmd::ValidateAncient(args) => validate_ancient::validate_ancient(args),
         Cmd::GeneticMap(args) => genetic_map::build_genetic_map(args),

@@ -466,7 +466,7 @@ impl NavigatorApp {
                     ui.add_space(10.0);
                     card(ui, self.tr("card.chromosomePainting"), |ui| {
                         ui.horizontal(|ui| {
-                            let painted = matches!(&self.painting, Some((id, s)) if *id == navigator_app::CONSENSUS_SOURCE_ID && !s.is_empty());
+                            let painted = matches!(&self.painting, Some((id, s)) if *id == navigator_app::CONSENSUS_SOURCE_ID && !s.segments.is_empty());
                             let label = if painted { self.tr("common.refresh") } else { self.tr("ancestry.paint") };
                             if ui.add_enabled(!self.painting_running, egui::Button::new(label)).clicked() {
                                 self.painting_running = true;
@@ -478,10 +478,21 @@ impl NavigatorApp {
                             }
                             ui.label(egui::RichText::new(self.tr("hint.chromosomePainting")).weak().small());
                         });
-                        if let Some((id, segs)) = &self.painting {
-                            if *id == navigator_app::CONSENSUS_SOURCE_ID && !segs.is_empty() {
+                        if let Some((id, result)) = &self.painting {
+                            if *id == navigator_app::CONSENSUS_SOURCE_ID && !result.segments.is_empty() {
                                 ui.add_space(8.0);
-                                draw_chromosome_painting(ui, segs);
+                                // The two side labels (Mother/Father when anchored to a parent, else
+                                // Side A/B). Track order in the figure matches this order.
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{}  ·  {}",
+                                        result.side_labels[0], result.side_labels[1]
+                                    ))
+                                    .weak()
+                                    .small(),
+                                );
+                                ui.add_space(4.0);
+                                draw_chromosome_painting(ui, &result.segments);
                             }
                         }
                     });

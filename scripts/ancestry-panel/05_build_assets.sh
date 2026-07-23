@@ -3,6 +3,7 @@
 # integrity manifest. Produces (in $ASSETS):
 #   ancestry_pca_<build>.bin          modern PCA (PC1×PC2 scatter reference)
 #   ancestry_freq_global_<build>.bin  fine per-population AF (fine admixture)
+#   ancestry_haps_<build>.bin         phased 1000G haplotype reference (phasing / parent-split painter)
 #   ancestry_freq_ancient_<build>.bin deep-source AF: WHG/ANF/Steppe (deep ancestry) + its gates
 #   genetic_map_<build>.bin           IBD recombination map (bp->cM)
 #   ibd_panel_<build>.bin             chip-compatible multi-build IBD SNP panel
@@ -62,6 +63,20 @@ cargo run --release -q -p navigator-panelbuild -- fine-panel \
   --matrix "$MATRICES" --samples "$SAMPLES" --pops "$POPMAP" \
   --out "$FINE_OUT" --min-call-rate "$MIN_CALL_RATE"
 
+# (3b) Phased 1000G haplotype reference (statistical phasing / parent-split chromosome painter).
+#      Phased 1000G ONLY — AADR is pseudo-haploid and SGDP unphased, so the combined matrix must not
+#      enter the copying reference; the per-source 1000G matrix ($TMP/1kgp.matrix.tsv.gz) keeps its
+#      `0|1` phase. Best-effort: the painter falls back to the unphased path when this asset is absent.
+KGP_MATRIX="$TMP/1kgp.matrix.tsv.gz"; KGP_SAMPLES="$TMP/1kgp.samples.txt"
+if [[ -s "$KGP_MATRIX" && -s "$KGP_SAMPLES" ]]; then
+  log "panelbuild hap-panel (phased 1000G) -> $HAPS_OUT"
+  cargo run --release -q -p navigator-panelbuild -- hap-panel \
+    --matrix "$KGP_MATRIX" --samples "$KGP_SAMPLES" --pops "$POPMAP" \
+    --out "$HAPS_OUT" || log "WARN: hap panel not built (parent-split painter falls back to unphased)"
+else
+  log "NOTE: $KGP_MATRIX missing — skip hap panel (re-run 04_build_matrices.sh with a 1000G slice)"
+fi
+
 # (4) IBD genetic map (recombination map, GRCh38 -> CHM13). Best-effort — IBD falls back to uniform.
 build_genetic_map "$GMAP_OUT" || log "WARN: genetic map not built (IBD will use uniform 1 cM/Mb)"
 
@@ -84,4 +99,4 @@ cargo run --release -q -p navigator-panelbuild -- manifest --dir "$ASSETS" --bui
   || die "panelbuild manifest failed"
 
 log "stage 5 complete. Assets in $ASSETS:"
-ls -lh "$PANEL_OUT" "$PCA_OUT" "$FINE_OUT" "$ANCIENT_OUT" "$GMAP_OUT" "$IBD_PANEL_OUT" "$MANIFEST" 2>/dev/null >&2 || true
+ls -lh "$PANEL_OUT" "$PCA_OUT" "$FINE_OUT" "$HAPS_OUT" "$ANCIENT_OUT" "$GMAP_OUT" "$IBD_PANEL_OUT" "$MANIFEST" 2>/dev/null >&2 || true

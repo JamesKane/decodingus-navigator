@@ -222,10 +222,46 @@ pub struct AncestrySegment {
     pub population_code: String,
     /// Mean posterior support for the assignment over the segment (0–1).
     pub posterior: f64,
-    /// Which of the two (sorted, unphased) genome copies this segment belongs to: 0 or 1.
-    /// Diploid painting emits both copies; older single-track paintings decode to copy 0.
+    /// Which genome copy / phased side this segment belongs to: 0 or 1. Unphased diploid painting
+    /// emits two sorted (arbitrary) copies; phased painting emits two consistent parental sides.
+    /// Older single-track paintings decode to copy 0.
     #[serde(default)]
     pub copy: u8,
+    /// Fine (sub-continental) population resolved within this super-population segment by the
+    /// two-tier fine-resolution step (e.g. "GBR" within "EUR"). `None` when the fine call is too
+    /// uncertain, or for older paintings (decodes to `None`) — fall back to `population_code`.
+    #[serde(default)]
+    pub fine_population_code: Option<String>,
+}
+
+/// A chromosome painting: the per-side ancestry segments plus a human label for each of the two
+/// sides. When the painting is phased and a parent was found in the workspace, the sides are
+/// anchored to that parent (labels like "Mother"/"Father"); otherwise they are the neutral
+/// "Side A"/"Side B". `side_labels[i]` labels the side whose segments carry `copy == i`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaintingResult {
+    pub segments: Vec<AncestrySegment>,
+    /// Labels for side 0 and side 1 (indexed by `AncestrySegment::copy`).
+    pub side_labels: [String; 2],
+    /// Whether statistical phasing produced two genuine parental sides (`true`), or the sides are
+    /// the unphased diploid painter's two arbitrary sorted copies (`false`).
+    #[serde(default)]
+    pub phased: bool,
+}
+
+impl Default for PaintingResult {
+    fn default() -> Self {
+        Self {
+            segments: Vec::new(),
+            side_labels: [side_label_default(0), side_label_default(1)],
+            phased: false,
+        }
+    }
+}
+
+/// The neutral, un-anchored label for side `i` ("Side A" / "Side B").
+pub fn side_label_default(i: u8) -> String {
+    format!("Side {}", if i == 0 { 'A' } else { 'B' })
 }
 
 /// Confidence-interval bounds (percent) on a component estimate.

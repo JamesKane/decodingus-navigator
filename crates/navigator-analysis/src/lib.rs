@@ -34,6 +34,7 @@ pub mod mastervar;
 /// path so existing `navigator_analysis::mtvariants::…` call sites are unchanged.
 pub use du_bio::mt as mtvariants;
 pub mod parity;
+pub mod phasing;
 pub mod preflight;
 pub mod probe;
 pub mod read_metrics;

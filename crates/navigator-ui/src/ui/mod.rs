@@ -16,11 +16,11 @@ use crate::widgets::{
 };
 use eframe::egui;
 use navigator_app::{
-    AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState, ChatTurn,
+    AncestryResult, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState, ChatTurn,
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DescentReport, DnaType, FtdnaGenealogy, FtdnaImportPlan,
     FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
-    MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PrivateBucket, PrivateClass,
+    MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PaintingResult, PrivateBucket, PrivateClass,
     ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
     SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult,
     UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
@@ -766,8 +766,9 @@ pub struct NavigatorApp {
     estimating_donor_ancestry: bool,
     /// Whether the heavy deep (ancient) ancestry estimate is in flight.
     estimating_deep_ancestry: bool,
-    /// Local-ancestry painting: (alignment id, segments). `painting_running` while genotyping.
-    painting: Option<(i64, Vec<AncestrySegment>)>,
+    /// Local-ancestry painting: (alignment id, result with per-side segments + side labels).
+    /// `painting_running` while genotyping.
+    painting: Option<(i64, PaintingResult)>,
     painting_running: bool,
     /// Runs-of-homozygosity result for the selected subject. `roh_running` while the HMM computes.
     roh: Option<navigator_app::RohResult>,
