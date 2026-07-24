@@ -243,6 +243,16 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
     let copy_h = 7.0; // each of the two side tracks
     let gap = 2.0;
 
+    // Cross-highlight: the population hovered last frame (legend entry or segment). Segments of that
+    // population stay full-color while the rest dim — so a single fine population reads clearly out of
+    // the shades of blue. Carried across frames in egui temp memory; recomputed into `next_hovered`.
+    let hover_id = egui::Id::new("chrom_paint_pop_hover");
+    let hovered: Option<String> = ui.data(|d| d.get_temp(hover_id));
+    let mut next_hovered: Option<String> = None;
+    let seg_code = |s: &AncestrySegment| -> String {
+        s.fine_population_code.clone().unwrap_or_else(|| s.population_code.clone())
+    };
+
     // Header: which stacked track is which side (▲ top, ▼ bottom).
     ui.horizontal(|ui| {
         ui.add_space(label_w);
@@ -282,35 +292,40 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
                         egui::pos2(x0, track.top()),
                         egui::pos2(x1.max(x0 + 1.0), track.bottom()),
                     );
-                    painter.rect_filled(seg_rect, 0.0, segment_color(s));
+                    // Dim segments not matching the hovered population so the match stands out.
+                    let col = match hovered.as_deref() {
+                        Some(h) if h != seg_code(s) => segment_color(s).gamma_multiply(0.16),
+                        _ => segment_color(s),
+                    };
+                    painter.rect_filled(seg_rect, 0.0, col);
                 }
             }
-            // Per-segment hover: identify the side + population + Mb range under the pointer.
-            let hover_text = response.hover_pos().and_then(|pos| {
+            // Per-segment hover: highlight that population + show side / population / Mb-range tooltip.
+            if let Some(pos) = response.hover_pos() {
                 let c = if pos.y < rect.top() + copy_h + gap * 0.5 { 0usize } else { 1usize };
                 let bp = lo + (((pos.x - rect.left()) / rect.width().max(1.0)) * span) as i64;
-                copies[c].iter().find(|s| bp >= s.start && bp <= s.end).map(|s| {
+                if let Some(s) = copies[c].iter().find(|s| bp >= s.start && bp <= s.end) {
+                    next_hovered = Some(seg_code(s));
                     let pop = match &s.fine_population_code {
                         Some(f) => format!("{} — {}", population_name(f), population_name(&s.population_code)),
                         None => population_name(&s.population_code),
                     };
-                    format!(
+                    let text = format!(
                         "chr{n} · {}\n{pop}\n{:.1}–{:.1} Mb",
                         side_labels[c],
                         s.start as f64 / 1e6,
                         s.end as f64 / 1e6
-                    )
-                })
-            });
-            if let Some(t) = hover_text {
-                response.on_hover_text(t);
+                    );
+                    response.on_hover_text(text);
+                }
             }
         });
     }
-    // Legend: distinct populations present (fine where resolved), each with its tinted swatch.
+    // Legend: distinct populations present (fine where resolved), each with its tinted swatch. Hovering
+    // an entry highlights its segments above (and vice-versa).
     let mut seen: Vec<(String, egui::Color32)> = Vec::new();
     for s in segments {
-        let code = s.fine_population_code.clone().unwrap_or_else(|| s.population_code.clone());
+        let code = seg_code(s);
         if !seen.iter().any(|(c, _)| *c == code) {
             seen.push((code, segment_color(s)));
         }
@@ -318,10 +333,35 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
     ui.add_space(2.0);
     ui.horizontal_wrapped(|ui| {
         for (code, color) in &seen {
-            let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            ui.painter().circle_filled(r.center(), 4.0, *color);
-            ui.label(egui::RichText::new(population_name(code)).small());
+            let active = hovered.as_deref() == Some(code.as_str());
+            let inner = ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                let swatch = if active || hovered.is_none() { *color } else { color.gamma_multiply(0.5) };
+                ui.painter().circle_filled(r.center(), 4.0, swatch);
+                let mut txt = egui::RichText::new(population_name(code)).small();
+                if active {
+                    txt = txt.strong().color(egui::Color32::WHITE);
+                } else if hovered.is_some() {
+                    txt = txt.weak();
+                }
+                ui.label(txt);
+            });
+            let over = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| inner.response.rect.contains(p));
+            if over {
+                next_hovered = Some(code.clone());
+            }
             ui.add_space(6.0);
+        }
+    });
+
+    // Persist the hovered population for next frame; repaint promptly when it changes.
+    if next_hovered != hovered {
+        ui.ctx().request_repaint();
+    }
+    ui.ctx().data_mut(|d| match &next_hovered {
+        Some(h) => d.insert_temp(hover_id, h.clone()),
+        None => {
+            d.remove::<String>(hover_id);
         }
     });
 }
