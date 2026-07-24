@@ -3251,6 +3251,14 @@ impl App {
         };
 
         let (segments, phased, anchor_side) = tokio::task::spawn_blocking(move || {
+            // Genome-wide super-pop composition — the prior anchoring both painters (and the copying
+            // LAI's global-composition gate that suppresses spurious continents).
+            let composition = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
+            let prior: Vec<(String, f64)> = composition
+                .components
+                .iter()
+                .map(|c| (c.population_code.clone(), c.percentage / 100.0))
+                .collect();
             match hap_ref {
                 Some(hap) => {
                     // Genetic map for distance-scaled switch costs (observed contig extents → uniform
@@ -3265,13 +3273,15 @@ impl App {
 
                     // Statistically phase, then paint each side by haplotype copying against the
                     // reference (RFMix-style) — resolves fine sub-populations from haplotype structure,
-                    // superseding the frequency-emission painter + AF fine step.
+                    // superseding the frequency-emission painter + AF fine step. The `prior` gates the
+                    // reference to the continents the sample actually has.
                     let phaser = ReferencePhaser::new(&hap, &gmap, PhaseParams::default());
                     let phased_g = phaser.phase(&genotypes);
                     let segs = navigator_analysis::lai::paint_copying_lai(
                         &phased_g,
                         &hap,
                         &gmap,
+                        &prior,
                         &navigator_analysis::lai::CopyingLaiParams::default(),
                     );
                     let anchor = parent_genos.as_ref().and_then(|pg| anchor_side_to_parent(&phased_g, pg));
@@ -3279,12 +3289,6 @@ impl App {
                 }
                 None => {
                     // No haplotype reference → the unphased frequency painter (super-population only).
-                    let composition = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
-                    let prior: Vec<(String, f64)> = composition
-                        .components
-                        .iter()
-                        .map(|c| (c.population_code.clone(), c.percentage / 100.0))
-                        .collect();
                     let segs = ancestry_analysis::paint_local_ancestry(
                         &genotypes,
                         &panel,

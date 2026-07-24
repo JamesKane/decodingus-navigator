@@ -41,6 +41,12 @@ pub struct CopyingLaiParams {
     pub min_ref_haps: usize,
     /// Runs shorter than this many sites merge into the neighbouring segment.
     pub min_segment_sites: usize,
+    /// Global-composition gate: reference haplotypes whose super-population is below this fraction of
+    /// the genome-wide `prior` are dropped from the copying set entirely (the dominant super-pop is
+    /// always kept). Without it the fine-grained reference invites spurious short copies from every
+    /// continent — a 99%-European is painted with scattered East-Asian/African/American specks. `0.0`
+    /// disables the gate.
+    pub min_ancestry: f64,
 }
 
 impl Default for CopyingLaiParams {
@@ -51,18 +57,46 @@ impl Default for CopyingLaiParams {
             switch_per_cm: 0.05,
             min_ref_haps: 20,
             min_segment_sites: 20,
+            min_ancestry: 0.05,
         }
     }
+}
+
+/// Super-populations to keep, given the genome-wide composition `prior` and gate `min_ancestry`:
+/// those at or above the threshold, plus the dominant one. `None` (keep all) when the prior is
+/// empty/degenerate.
+fn kept_super_pops(prior: &[(String, f64)], min_ancestry: f64) -> Option<std::collections::HashSet<String>> {
+    let mut comp: BTreeMap<String, f64> = BTreeMap::new();
+    for (code, w) in prior {
+        let sp = population_super(code).unwrap_or(code);
+        *comp.entry(sp.to_string()).or_default() += w.max(0.0);
+    }
+    let total: f64 = comp.values().sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let mut set: std::collections::HashSet<String> = comp
+        .iter()
+        .filter(|(_, &w)| w / total >= min_ancestry)
+        .map(|(k, _)| k.clone())
+        .collect();
+    if let Some((a, _)) = comp.iter().max_by(|x, y| x.1.total_cmp(y.1)) {
+        set.insert(a.clone());
+    }
+    Some(set)
 }
 
 /// Paint local ancestry from **phased** genotypes by haplotype copying against `reference`. Each of
 /// the two phased sides is painted independently (segment `copy` = side 0/1); segments carry the
 /// resolved fine population in [`AncestrySegment::fine_population_code`] and its super-population in
-/// [`AncestrySegment::population_code`]. Returns empty if the reference is empty.
+/// [`AncestrySegment::population_code`]. `prior` is the genome-wide composition `(pop, weight)` — the
+/// global-composition gate drops reference haplotypes from super-populations the sample doesn't have.
+/// Returns empty if the reference is empty.
 pub fn paint_copying_lai(
     phased: &PhasedGenotypes,
     reference: &HaplotypeReference,
     map: &GeneticMap,
+    prior: &[(String, f64)],
     params: &CopyingLaiParams,
 ) -> Vec<AncestrySegment> {
     let k = reference.n_haplotypes;
@@ -70,24 +104,40 @@ pub fn paint_copying_lai(
         return Vec::new();
     }
 
-    // Callable label per reference haplotype: its fine population when that population has enough
-    // haplotypes, else the super-population it rolls up to (folding tiny stray-labelled groups).
+    // Global-composition gate: keep only reference haplotypes whose super-population is present
+    // genome-wide (≥ min_ancestry of the prior; the dominant super-pop is always kept). This is what
+    // stops a 99%-European being painted with scattered spurious continents.
+    let kept_super = kept_super_pops(prior, params.min_ancestry);
+    let kept_haps: Vec<usize> = (0..k)
+        .filter(|&h| {
+            let code = reference.population_of(h);
+            let sp = population_super(code).unwrap_or(code);
+            kept_super.as_ref().map_or(true, |set| set.contains(sp))
+        })
+        .collect();
+    if kept_haps.is_empty() {
+        return Vec::new();
+    }
+
+    // Callable label per KEPT haplotype (aligned to `kept_haps`): its fine population when that
+    // population has enough kept haplotypes, else the super-population it rolls up to (folding tiny
+    // stray-labelled groups).
     let mut pop_counts = vec![0usize; reference.populations.len()];
-    for &p in &reference.hap_pop {
-        pop_counts[p as usize] += 1;
+    for &h in &kept_haps {
+        pop_counts[reference.hap_pop[h] as usize] += 1;
     }
     let mut label_index: BTreeMap<String, usize> = BTreeMap::new();
     let mut labels: Vec<String> = Vec::new();
-    let mut hap_label = vec![0usize; k];
-    for (hap, item) in hap_label.iter_mut().enumerate() {
-        let fine = reference.population_of(hap);
-        let code = if pop_counts[reference.hap_pop[hap] as usize] >= params.min_ref_haps {
+    let mut hap_label = vec![0usize; kept_haps.len()];
+    for (j, &h) in kept_haps.iter().enumerate() {
+        let fine = reference.population_of(h);
+        let code = if pop_counts[reference.hap_pop[h] as usize] >= params.min_ref_haps {
             fine.to_string()
         } else {
             population_super(fine).unwrap_or(fine).to_string()
         };
         let next = labels.len();
-        *item = *label_index.entry(code.clone()).or_insert_with(|| {
+        hap_label[j] = *label_index.entry(code.clone()).or_insert_with(|| {
             labels.push(code);
             next
         });
@@ -126,7 +176,8 @@ pub fn paint_copying_lai(
             if cols.is_empty() {
                 continue;
             }
-            let post = copying_posteriors(&cols, &alleles, &positions, contig, reference, map, &hap_label, n_labels, params);
+            let post =
+                copying_posteriors(&cols, &alleles, &positions, contig, reference, &kept_haps, map, &hap_label, n_labels, params);
             let path = smooth_viterbi(&post, &positions, contig, map, n_labels, params.switch_per_cm);
             segments.extend(collapse_labels(contig, &positions, &path, &post, &labels, params.min_segment_sites, side));
         }
@@ -144,17 +195,18 @@ fn copying_posteriors(
     positions: &[i64],
     contig: &str,
     reference: &HaplotypeReference,
+    haps: &[usize],
     map: &GeneticMap,
     hap_label: &[usize],
     n_labels: usize,
     params: &CopyingLaiParams,
 ) -> Vec<Vec<f64>> {
     let n = cols.len();
-    let k = reference.n_haplotypes;
+    let k = haps.len(); // the gated reference-haplotype set
     let (m_match, m_mis) = (1.0 - params.mismatch, params.mismatch);
-    // Emission for `hap` at site `i`: match vs mismatch to the observed allele.
-    let emit = |i: usize, hap: usize| -> f64 {
-        if reference.allele(hap, cols[i]) == alleles[i] {
+    // Emission for kept-haplotype `j` at site `i`: match vs mismatch to the observed allele.
+    let emit = |i: usize, j: usize| -> f64 {
+        if reference.allele(haps[j], cols[i]) == alleles[i] {
             m_match
         } else {
             m_mis
@@ -413,13 +465,23 @@ mod tests {
             min_segment_sites: 5,
             ..CopyingLaiParams::default()
         };
-        let segs = paint_copying_lai(&phased, &reference, &map, &params);
+        // Prior keeps both continents.
+        let prior = vec![("EUR".to_string(), 0.5), ("AFR".to_string(), 0.5)];
+        let segs = paint_copying_lai(&phased, &reference, &map, &prior, &params);
         let side0: Vec<&AncestrySegment> = segs.iter().filter(|s| s.copy == 0).collect();
         assert_eq!(side0.len(), 2, "expected GBR→YRI switch: {side0:?}");
         assert_eq!(side0[0].fine_population_code.as_deref(), Some("GBR"));
         assert_eq!(side0[0].population_code, "EUR");
         assert_eq!(side0[1].fine_population_code.as_deref(), Some("YRI"));
         assert_eq!(side0[1].population_code, "AFR");
+
+        // Global-composition gate: an EUR-only prior drops the AFR (YRI) reference haplotypes, so even
+        // the YRI-matching second half can no longer be painted AFR — the whole side stays European.
+        let segs_gated = paint_copying_lai(&phased, &reference, &map, &[("EUR".to_string(), 1.0)], &params);
+        assert!(
+            segs_gated.iter().all(|s| s.population_code == "EUR"),
+            "EUR-only prior must gate out AFR: {segs_gated:?}"
+        );
     }
 
     /// A tiny stray-labelled reference population (below `min_ref_haps`) folds into its super-pop:
@@ -444,7 +506,8 @@ mod tests {
         let map = GeneticMap::uniform(1.0, &[("chr1", 250_000_000)]);
         let phased = phased_side(&pat);
         let params = CopyingLaiParams { min_segment_sites: 5, ..CopyingLaiParams::default() };
-        let segs = paint_copying_lai(&phased, &reference, &map, &params);
+        // Empty prior → gate disabled (keep all haplotypes), so the folding path is exercised.
+        let segs = paint_copying_lai(&phased, &reference, &map, &[], &params);
         // Every segment's fine code must be a real callable pop (GBR), never the folded "English".
         for s in segs.iter().filter(|s| s.copy == 0) {
             assert_ne!(s.fine_population_code.as_deref(), Some("English"));

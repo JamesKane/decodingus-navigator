@@ -100,6 +100,84 @@ const ANCIENT_POPULATIONS: [(&str, &str, &str); 3] = [
     ("WHG", "Western Hunter-Gatherer", "#e15759"),
 ];
 
+/// HGDP reference populations (Bergström 2020), `(code, display-name, super-population)`. These
+/// enrich the copying-LAI **haplotype** reference (`ancestry_haps`) with sub-continental depth 1000G
+/// lacks (French/Sardinian/Basque/…); they are NOT part of the modern admixture EM's fine set
+/// ([`fine_population_codes`]), so they live in their own table consulted by [`population_super`] /
+/// [`population_name`] / [`population_color`]. Super-population = the standard HGDP 7-region grouping.
+const HGDP_POPULATIONS: [(&str, &str, &str); 62] = [
+    // Europe
+    ("Adygei", "Adygei", "EUR"),
+    ("Basque", "Basque", "EUR"),
+    ("Bergamo", "Bergamo (N. Italian)", "EUR"),
+    ("French", "French", "EUR"),
+    ("Italian", "Italian", "EUR"),
+    ("Orcadian", "Orcadian", "EUR"),
+    ("Russian", "Russian", "EUR"),
+    ("Sardinian", "Sardinian", "EUR"),
+    ("Tuscan", "Tuscan", "EUR"),
+    // Middle East / North Africa
+    ("Bedouin", "Bedouin", "MEA"),
+    ("BedouinB", "Bedouin", "MEA"),
+    ("Druze", "Druze", "MEA"),
+    ("Mozabite", "Mozabite", "MEA"),
+    ("Palestinian", "Palestinian", "MEA"),
+    // South Asia
+    ("Balochi", "Balochi", "SAS"),
+    ("Brahui", "Brahui", "SAS"),
+    ("Burusho", "Burusho", "SAS"),
+    ("Kalash", "Kalash", "SAS"),
+    ("Makrani", "Makrani", "SAS"),
+    ("Pathan", "Pathan", "SAS"),
+    ("Sindhi", "Sindhi", "SAS"),
+    // Central Asia & Siberia
+    ("Hazara", "Hazara", "CAS"),
+    ("Uygur", "Uygur", "CAS"),
+    ("Yakut", "Yakut", "CAS"),
+    // East Asia
+    ("Cambodian", "Cambodian", "EAS"),
+    ("Dai", "Dai", "EAS"),
+    ("Daur", "Daur", "EAS"),
+    ("Han", "Han", "EAS"),
+    ("Hezhen", "Hezhen", "EAS"),
+    ("Japanese", "Japanese", "EAS"),
+    ("Lahu", "Lahu", "EAS"),
+    ("Miao", "Miao", "EAS"),
+    ("Mongola", "Mongolian", "EAS"),
+    ("Naxi", "Naxi", "EAS"),
+    ("Oroqen", "Oroqen", "EAS"),
+    ("She", "She", "EAS"),
+    ("Tu", "Tu", "EAS"),
+    ("Tujia", "Tujia", "EAS"),
+    ("Xibo", "Xibo", "EAS"),
+    ("Yi", "Yi", "EAS"),
+    // Oceania
+    ("Bougainville", "Bougainville", "OCE"),
+    ("Melanesian", "Melanesian", "OCE"),
+    ("Papuan", "Papuan", "OCE"),
+    // Americas
+    ("Colombian", "Colombian (HGDP)", "AMR"),
+    ("Karitiana", "Karitiana", "AMR"),
+    ("Maya", "Maya", "AMR"),
+    ("Mayan", "Maya", "AMR"),
+    ("Piapoco", "Piapoco", "AMR"),
+    ("Pima", "Pima", "AMR"),
+    ("Surui", "Surui", "AMR"),
+    // Africa
+    ("BantuHerero", "Herero", "AFR"),
+    ("BantuKenya", "Bantu (Kenya)", "AFR"),
+    ("BantuSouthAfrica", "Bantu (S. Africa)", "AFR"),
+    ("BantuTswana", "Tswana", "AFR"),
+    ("Biaka", "Biaka", "AFR"),
+    ("BiakaPygmy", "Biaka", "AFR"),
+    ("Ju_hoan_North", "San (Ju/'hoansi)", "AFR"),
+    ("Mandenka", "Mandenka", "AFR"),
+    ("Mbuti", "Mbuti", "AFR"),
+    ("MbutiPygmy", "Mbuti", "AFR"),
+    ("San", "San", "AFR"),
+    ("Yoruba", "Yoruba (HGDP)", "AFR"),
+];
+
 /// The curated **modern** fine-population codes (1000G fine pops + SGDP-backed continents) — the
 /// reference subset a fine admixture EM runs over. Excludes ancient components (which are handled by
 /// the distance/PCA estimators, not the modern EM). The fine-frequency asset may carry more
@@ -118,6 +196,9 @@ pub fn population_super(code: &str) -> Option<&'static str> {
         // Ancient components are their own super-group (rolled up 1:1).
         return Some(c);
     }
+    if let Some((_, _, sp)) = HGDP_POPULATIONS.iter().find(|(c, _, _)| *c == code) {
+        return Some(sp);
+    }
     FINE_POPULATIONS
         .iter()
         .find(|(c, _, _)| *c == code)
@@ -132,6 +213,9 @@ pub fn population_name(code: &str) -> String {
         return name.to_string();
     }
     if let Some((_, name, _)) = FINE_POPULATIONS.iter().find(|(c, _, _)| *c == code) {
+        return name.to_string();
+    }
+    if let Some((_, name, _)) = HGDP_POPULATIONS.iter().find(|(c, _, _)| *c == code) {
         return name.to_string();
     }
     super_populations()
