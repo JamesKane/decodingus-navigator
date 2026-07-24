@@ -42,6 +42,11 @@ pub struct CopyingLaiParams {
     /// A reference population with fewer than this many haplotypes is not a callable label; its
     /// haplotypes fold into their super-population (suppresses tiny stray-labelled reference groups).
     pub min_ref_haps: usize,
+    /// Balance the reference by capping each population at this many haplotypes. Without it the
+    /// largest 1000G samples (Iberian/Tuscan, ~214 haps) out-vote by count and paint a NW-European
+    /// as southern; a per-size *division* would over-swing to the tiny HGDP isolates. Capping puts the
+    /// populations on a common footing so they compete on match quality, not sample count.
+    pub max_ref_haps: usize,
     /// Runs shorter than this many sites merge into the neighbouring segment.
     pub min_segment_sites: usize,
     /// Global-composition gate: reference haplotypes whose super-population is below this fraction of
@@ -59,6 +64,7 @@ impl Default for CopyingLaiParams {
             recomb_per_cm: 0.25,
             switch_per_cm: 0.05,
             min_ref_haps: 20,
+            max_ref_haps: 50,
             min_segment_sites: 20,
             min_ancestry: 0.05,
         }
@@ -107,17 +113,26 @@ pub fn paint_copying_lai(
         return Vec::new();
     }
 
-    // Global-composition gate: keep only reference haplotypes whose super-population is present
-    // genome-wide (≥ min_ancestry of the prior; the dominant super-pop is always kept). This is what
-    // stops a 99%-European being painted with scattered spurious continents.
+    // Global-composition gate (keep only super-populations present genome-wide ≥ min_ancestry; the
+    // dominant one is always kept) + per-population capping (≤ max_ref_haps each, balancing the panel
+    // so the largest 1000G samples don't out-vote by count). Gating stops spurious continents; capping
+    // stops the southern-European / large-sample skew.
     let kept_super = kept_super_pops(prior, params.min_ancestry);
-    let kept_haps: Vec<usize> = (0..k)
-        .filter(|&h| {
-            let code = reference.population_of(h);
-            let sp = population_super(code).unwrap_or(code);
-            kept_super.as_ref().map_or(true, |set| set.contains(sp))
-        })
-        .collect();
+    let mut pop_used = vec![0usize; reference.populations.len()];
+    let mut kept_haps: Vec<usize> = Vec::new();
+    for h in 0..k {
+        let code = reference.population_of(h);
+        let sp = population_super(code).unwrap_or(code);
+        if !kept_super.as_ref().map_or(true, |set| set.contains(sp)) {
+            continue;
+        }
+        let p = reference.hap_pop[h] as usize;
+        if pop_used[p] >= params.max_ref_haps {
+            continue;
+        }
+        pop_used[p] += 1;
+        kept_haps.push(h);
+    }
     if kept_haps.is_empty() {
         return Vec::new();
     }
@@ -155,16 +170,6 @@ pub fn paint_copying_lai(
         .map(|(i, s)| ((s.contig.as_str(), s.position), i))
         .collect();
 
-    // Reference-size normalization: a population's posterior is `Σ γ` over its kept haplotypes, so a
-    // population with more reference samples would win by sheer count — over-calling the largest 1KG
-    // pops (Iberian/Tuscan) and burying smaller ones (British). Divide each label's posterior by its
-    // kept-haplotype count so the population whose haplotypes match *best per-capita* wins.
-    let mut label_count = vec![0.0f64; n_labels];
-    for &l in &hap_label {
-        label_count[l] += 1.0;
-    }
-    let label_weight: Vec<f64> = label_count.iter().map(|&c| if c > 0.0 { 1.0 / c } else { 0.0 }).collect();
-
     // Group phased sites by contig.
     let mut by_contig: BTreeMap<&str, Vec<&PhasedSite>> = BTreeMap::new();
     for s in &phased.sites {
@@ -189,14 +194,8 @@ pub fn paint_copying_lai(
             if cols.is_empty() {
                 continue;
             }
-            let mut post =
+            let post =
                 copying_posteriors(&cols, &alleles, &positions, contig, reference, &kept_haps, map, &hap_label, n_labels, params);
-            // Size-normalize per label (best per-capita match, not biggest sample).
-            for row in &mut post {
-                for (l, v) in row.iter_mut().enumerate() {
-                    *v *= label_weight[l];
-                }
-            }
             let path = smooth_viterbi(&post, &positions, contig, map, n_labels, params.switch_per_cm);
             segments.extend(collapse_labels(contig, &positions, &path, &post, &labels, params.min_segment_sites, side));
         }
