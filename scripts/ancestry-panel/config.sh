@@ -85,6 +85,12 @@ AADR_FILE_PREFIX="${AADR_FILE_PREFIX:-${AADR_VERSION}.${AADR_DATASET}.aadr.PUB}"
 # 1000G + AADR + SGDP already give modern + ancient global coverage. If you truly need HGDP, source
 # it from a smaller distribution (e.g. AADR present-day HGDP samples, already local) rather than the
 # gnomAD gs:// callset. The pop map (hgdp1kg.pops.tsv) is the gnomAD meta `hgdp_tgp_meta.Population`.
+# HGDP statphase (Bergström 2020) — the PHASED HGDP WGS release, for the copying-LAI haplotype
+# reference (ancestry_haps). ~6 GB single autosomes VCF, HTTPS + tabix, GRCh38, chr-prefixed, phased
+# (`|`). Its per-population depth (French/Sardinian/Basque/Russian/Orcadian…) gives the copying LAI the
+# sub-continental European resolution 1000G alone can't. Fetched + panel-sliced + lifted by
+# fetch_hgdp_statphase.sh (run after 04, before 05). Distinct from the gnomAD HGDP+1KG path below.
+HGDP_STATPHASE_URL="${HGDP_STATPHASE_URL:-https://ngs.sanger.ac.uk/production/hgdp/hgdp_wgs.20190516/statphase/hgdp_wgs.20190516.statphase.autosomes.vcf.gz}"
 HGDP_1KG_ENABLE="${HGDP_1KG_ENABLE:-0}"   # 1 to include (impractical via gnomAD gs://; see above)
 HGDP_1KG_GCP_PROJECT="${HGDP_1KG_GCP_PROJECT:-}"
 HGDP_1KG_BASE_URL="${HGDP_1KG_BASE_URL:-gs://gcp-public-data--gnomad/release/3.1.2/vcf/genomes}"

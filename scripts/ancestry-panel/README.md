@@ -86,7 +86,7 @@ External tools (not bundled): `curl`, `bcftools` + `tabix`, `samtools`, `CrossMa
 - `ancestry_pca_<build>.bin` — **modern** PCA loadings + per-population centroids (PC1×PC2 scatter)
 - `ancestry_pca_ancient_<build>.bin` — PCA with the **ancient deep components** projected (GMM + nMonte)
 - `ancestry_freq_global_<build>.bin` — global per-population AF (fine admixture)
-- `ancestry_haps_<build>.bin` — **phased 1000G haplotype reference** (bit-packed haplotypes + fine-pop labels) for statistical phasing / the parent-split chromosome painter. Phased **1000G only** — AADR is pseudo-haploid and SGDP unphased, so those never enter the copying reference (they still feed the freq/PCA assets).
+- `ancestry_haps_<build>.bin` — **phased haplotype reference** (bit-packed haplotypes + fine-pop labels) for statistical phasing + the copying-model (RFMix-style) local-ancestry painter. Union of the **phased** sources: 1000G (always) + **HGDP statphase** when `fetch_hgdp_statphase.sh` has run (its French/Sardinian/Basque/Russian/Orcadian depth gives sub-continental European resolution 1000G lacks). AADR (pseudo-haploid) / SGDP (unphased PLINK) are **excluded** — pseudo-haplotypes would be noisier copy templates and bias the LAI against them (they still feed the freq/PCA assets). Run `fetch_hgdp_statphase.sh` after stage 04, before stage 05.
 - `genetic_map_<build>.bin` — IBD recombination map (bp→cM per chromosome)
 - `ibd_panel_<build>.bin` — chip-compatible **multi-build** IBD SNP panel (CHM13 + GRCh37 [+ GRCh38 if `IBD_GRCH38=1`], palindrome-free)
 - `ancestry_manifest_<build>.json` — provenance + sha256 (published; clients verify against it)

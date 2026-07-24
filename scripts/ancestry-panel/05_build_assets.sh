@@ -63,15 +63,23 @@ cargo run --release -q -p navigator-panelbuild -- fine-panel \
   --matrix "$MATRICES" --samples "$SAMPLES" --pops "$POPMAP" \
   --out "$FINE_OUT" --min-call-rate "$MIN_CALL_RATE"
 
-# (3b) Phased 1000G haplotype reference (statistical phasing / parent-split chromosome painter).
-#      Phased 1000G ONLY — AADR is pseudo-haploid and SGDP unphased, so the combined matrix must not
-#      enter the copying reference; the per-source 1000G matrix ($TMP/1kgp.matrix.tsv.gz) keeps its
-#      `0|1` phase. Best-effort: the painter falls back to the unphased path when this asset is absent.
+# (3b) Phased haplotype reference (copying-model LAI / parent-split chromosome painter). Union of the
+#      PHASED sources only — 1000G (`$TMP/1kgp.matrix.tsv.gz`) plus, when present, HGDP statphase
+#      (`$TMP/hgdp.matrix.tsv.gz`, built by fetch_hgdp_statphase.sh); both keep their `|` phase. HGDP's
+#      per-population depth (French/Sardinian/Basque/Russian/Orcadian) gives sub-continental European
+#      resolution 1000G alone (GBR/CEU/FIN/IBS/TSI) can't. AADR (pseudo-haploid) / SGDP (unphased PLINK)
+#      are excluded — pseudo-haplotypes would be noisier copy templates and bias the LAI against them.
+#      Best-effort: the painter falls back to the unphased frequency path when this asset is absent.
 KGP_MATRIX="$TMP/1kgp.matrix.tsv.gz"; KGP_SAMPLES="$TMP/1kgp.samples.txt"
 if [[ -s "$KGP_MATRIX" && -s "$KGP_SAMPLES" ]]; then
-  log "panelbuild hap-panel (phased 1000G) -> $HAPS_OUT"
+  HAP_MATRICES="$KGP_MATRIX"; HAP_SAMPLES="$KGP_SAMPLES"
+  if [[ -s "$TMP/hgdp.matrix.tsv.gz" && -s "$TMP/hgdp.samples.txt" ]]; then
+    HAP_MATRICES="$HAP_MATRICES,$TMP/hgdp.matrix.tsv.gz"; HAP_SAMPLES="$HAP_SAMPLES,$TMP/hgdp.samples.txt"
+    log "hap panel: including HGDP statphase source"
+  fi
+  log "panelbuild hap-panel (phased: $HAP_MATRICES) -> $HAPS_OUT"
   cargo run --release -q -p navigator-panelbuild -- hap-panel \
-    --matrix "$KGP_MATRIX" --samples "$KGP_SAMPLES" --pops "$POPMAP" \
+    --matrix "$HAP_MATRICES" --samples "$HAP_SAMPLES" --pops "$POPMAP" \
     --out "$HAPS_OUT" || log "WARN: hap panel not built (parent-split painter falls back to unphased)"
 else
   log "NOTE: $KGP_MATRIX missing — skip hap panel (re-run 04_build_matrices.sh with a 1000G slice)"
