@@ -76,6 +76,28 @@ pub struct AppSettings {
     /// `"ancestry"` / `"sources"` / `"ibd"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_detail_tab: Option<String>,
+
+    // ── Chromosome-painter (copying-LAI) calibration knobs (all `None` → the built-in default) ──
+    /// Reference-haplotype switch intensity per cM (copying recombination). Lower → longer copied
+    /// tracts → cleaner population calls / less drifted-isolate over-attraction. Default 0.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_recomb_per_cm: Option<f64>,
+    /// Per-population reference cap (haplotypes). Balances the panel so large 1000G samples don't
+    /// out-vote by count. Default 50.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_max_ref_haps: Option<u32>,
+    /// Global-composition gate: drop super-populations below this genome-wide fraction. Default 0.05.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_min_ancestry: Option<f64>,
+    /// Ancestry-segment switch intensity per cM (Viterbi smoothing). Lower → longer segments. Default 0.05.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_switch_per_cm: Option<f64>,
+    /// Minimum segment length in sites (shorter runs merge into the neighbour). Default 20.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_min_segment_sites: Option<u32>,
+    /// Copy mismatch/mutation rate μ. Default 0.02.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_mismatch: Option<f64>,
 }
 
 impl AppSettings {

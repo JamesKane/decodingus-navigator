@@ -535,6 +535,15 @@ settings.refreshingTrees=Actualizando haploárboles…
 settings.modeSimple=Simple
 settings.modeAdvanced=Avanzado
 settings.treeTtl=Caché del árbol (días)
+settings.painter=Pintado cromosómico (avanzado)
+settings.painterHint=Ajuste del modelo de copia de ascendencia. Menor recombinación = segmentos más largos y limpios; el límite equilibra las poblaciones de referencia; el umbral descarta continentes por debajo de su fracción.
+settings.painter.recomb=Recombinación /cM
+settings.painter.cap=Límite de referencia /pob
+settings.painter.gate=Umbral continental
+settings.painter.switch=Cambio de segmento /cM
+settings.painter.minSeg=Segmento mín. (sitios)
+settings.painter.mismatch=Discordancia de copia
+settings.painterApply=Los cambios se aplican al siguiente Actualizar/pintar.
 settings.ai=Asistente de IA (local)
 settings.ai.enable=Usar un modelo de IA local
 settings.ai.baseUrl=URL del servidor

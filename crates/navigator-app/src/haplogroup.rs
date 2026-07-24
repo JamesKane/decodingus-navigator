@@ -3249,6 +3249,9 @@ impl App {
             Some((g, sex, name)) => (Some(g), Some((sex, name))),
             None => (None, None),
         };
+        // Copying-LAI knobs from settings (read here, on the async side, and moved into the blocking
+        // closure) so live Settings edits recalibrate the painter on the next paint.
+        let lai_params = copying_lai_params();
 
         let (segments, phased, anchor_side) = tokio::task::spawn_blocking(move || {
             // Genome-wide super-pop composition — the prior anchoring both painters (and the copying
@@ -3277,13 +3280,7 @@ impl App {
                     // reference to the continents the sample actually has.
                     let phaser = ReferencePhaser::new(&hap, &gmap, PhaseParams::default());
                     let phased_g = phaser.phase(&genotypes);
-                    let segs = navigator_analysis::lai::paint_copying_lai(
-                        &phased_g,
-                        &hap,
-                        &gmap,
-                        &prior,
-                        &navigator_analysis::lai::CopyingLaiParams::default(),
-                    );
+                    let segs = navigator_analysis::lai::paint_copying_lai(&phased_g, &hap, &gmap, &prior, &lai_params);
                     let anchor = parent_genos.as_ref().and_then(|pg| anchor_side_to_parent(&phased_g, pg));
                     (segs, true, anchor)
                 }

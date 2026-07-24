@@ -2075,6 +2075,22 @@ pub(crate) fn prefer_external_calls() -> bool {
     resolve_prefer_external(env.as_deref(), AppSettings::load().prefer_external_calls)
 }
 
+/// The copying-LAI chromosome-painter parameters, resolved from [`AppSettings`] with the built-in
+/// [`CopyingLaiParams::default`] for any unset knob. Read at paint time so edits apply immediately.
+pub(crate) fn copying_lai_params() -> navigator_analysis::lai::CopyingLaiParams {
+    let s = AppSettings::load();
+    let d = navigator_analysis::lai::CopyingLaiParams::default();
+    navigator_analysis::lai::CopyingLaiParams {
+        recomb_per_cm: s.lai_recomb_per_cm.unwrap_or(d.recomb_per_cm),
+        max_ref_haps: s.lai_max_ref_haps.map(|v| v as usize).unwrap_or(d.max_ref_haps),
+        min_ancestry: s.lai_min_ancestry.unwrap_or(d.min_ancestry),
+        switch_per_cm: s.lai_switch_per_cm.unwrap_or(d.switch_per_cm),
+        min_segment_sites: s.lai_min_segment_sites.map(|v| v as usize).unwrap_or(d.min_segment_sites),
+        mismatch: s.lai_mismatch.unwrap_or(d.mismatch),
+        min_ref_haps: d.min_ref_haps,
+    }
+}
+
 /// `haplogroup_call.source_key` for an alignment's **external** (sidecar fast-path) Y call. External
 /// and internal (CRAM-walk) calls use distinct keys — the walk uses `aln:{id}` / `aln:{id}:mt` — so
 /// neither upsert can ever overwrite the other.
@@ -4087,6 +4103,12 @@ mod settings_tests {
             last_nav: Some("subjects".into()),
             last_subject: Some("11111111-1111-1111-1111-111111111111".into()),
             last_detail_tab: Some("ancestry".into()),
+            lai_recomb_per_cm: Some(0.15),
+            lai_max_ref_haps: Some(40),
+            lai_min_ancestry: Some(0.03),
+            lai_switch_per_cm: Some(0.04),
+            lai_min_segment_sites: Some(15),
+            lai_mismatch: Some(0.01),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<AppSettings>(&json).unwrap(), s);

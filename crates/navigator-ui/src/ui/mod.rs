@@ -283,6 +283,13 @@ struct SettingsForm {
     llm_model: String,
     llm_max_tokens: String,
     references: Vec<RefRow>,
+    /// Chromosome-painter (copying-LAI) calibration knobs. Defaults mirror `CopyingLaiParams::default`.
+    lai_recomb_per_cm: f64,
+    lai_max_ref_haps: u32,
+    lai_min_ancestry: f64,
+    lai_switch_per_cm: f64,
+    lai_min_segment_sites: u32,
+    lai_mismatch: f64,
     /// VCF-liftover tool state (input/output paths, target build, PAR filter).
     lift_in: String,
     lift_out: String,
@@ -314,6 +321,12 @@ impl SettingsForm {
                 .unwrap_or(navigator_app::llm::DEFAULT_LLM_MAX_TOKENS)
                 .to_string(),
             references: Vec::new(),
+            lai_recomb_per_cm: s.lai_recomb_per_cm.unwrap_or(0.1),
+            lai_max_ref_haps: s.lai_max_ref_haps.unwrap_or(50),
+            lai_min_ancestry: s.lai_min_ancestry.unwrap_or(0.05),
+            lai_switch_per_cm: s.lai_switch_per_cm.unwrap_or(0.05),
+            lai_min_segment_sites: s.lai_min_segment_sites.unwrap_or(20),
+            lai_mismatch: s.lai_mismatch.unwrap_or(0.02),
             lift_in: String::new(),
             lift_out: String::new(),
             lift_target: "chm13v2.0".to_string(),

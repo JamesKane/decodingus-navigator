@@ -548,6 +548,15 @@ settings.refreshingTrees=Refreshing haplotrees…
 settings.modeSimple=Simple
 settings.modeAdvanced=Advanced
 settings.treeTtl=Tree cache TTL (days)
+settings.painter=Chromosome painting (advanced)
+settings.painterHint=Tuning the ancestry copying model. Lower recombination = longer, cleaner segments; the cap balances reference populations; the gate drops continents below its fraction.
+settings.painter.recomb=Recombination /cM
+settings.painter.cap=Reference cap /pop
+settings.painter.gate=Continent gate
+settings.painter.switch=Segment switch /cM
+settings.painter.minSeg=Min segment (sites)
+settings.painter.mismatch=Copy mismatch
+settings.painterApply=Changes apply on the next Refresh/paint.
 settings.ai=AI assistant (local)
 settings.ai.enable=Use a local AI model
 settings.ai.baseUrl=Server URL
