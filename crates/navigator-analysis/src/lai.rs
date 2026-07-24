@@ -31,10 +31,11 @@ pub struct CopyingLaiParams {
     /// divergence since the shared ancestor). Higher tolerates more mismatch before switching copy.
     pub mismatch: f64,
     /// Reference-haplotype switch intensity per centiMorgan (the copying model's recombination): how
-    /// readily the mosaic jumps to a different reference haplotype. Li & Stephens motivates ≈ 4·Ne/K
-    /// per Morgan (~0.25/cM for our gated European panel). Too high and the mosaic re-picks the local
-    /// allele match almost per-site, discarding the long-haplotype signal that separates NW from SW
-    /// European (the "southern smear"); too low and it over-commits to one haplotype's population.
+    /// readily the mosaic jumps to a different reference haplotype. Too high and the mosaic re-picks
+    /// the local allele match almost per-site, discarding the long-haplotype signal that separates
+    /// populations (the "southern smear"). Kept low (~0.1 → ~10 cM tracts) so the model commits to a
+    /// population only on a *sustained* match — which suppresses drifted/isolate reference populations
+    /// (Finnish/Sardinian/Basque) that otherwise over-attract the copy on short chance matches.
     pub recomb_per_cm: f64,
     /// Ancestry (population-label) switch intensity per cM for the smoothing Viterbi. Lower → longer,
     /// more confident ancestry segments (needs sustained evidence to switch population).
@@ -61,7 +62,7 @@ impl Default for CopyingLaiParams {
     fn default() -> Self {
         Self {
             mismatch: 0.02,
-            recomb_per_cm: 0.25,
+            recomb_per_cm: 0.1,
             switch_per_cm: 0.05,
             min_ref_haps: 20,
             max_ref_haps: 50,
