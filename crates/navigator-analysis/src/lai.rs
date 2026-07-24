@@ -31,7 +31,10 @@ pub struct CopyingLaiParams {
     /// divergence since the shared ancestor). Higher tolerates more mismatch before switching copy.
     pub mismatch: f64,
     /// Reference-haplotype switch intensity per centiMorgan (the copying model's recombination): how
-    /// readily the mosaic jumps to a different reference haplotype. Higher → shorter copied tracts.
+    /// readily the mosaic jumps to a different reference haplotype. Li & Stephens motivates ≈ 4·Ne/K
+    /// per Morgan (~0.25/cM for our gated European panel). Too high and the mosaic re-picks the local
+    /// allele match almost per-site, discarding the long-haplotype signal that separates NW from SW
+    /// European (the "southern smear"); too low and it over-commits to one haplotype's population.
     pub recomb_per_cm: f64,
     /// Ancestry (population-label) switch intensity per cM for the smoothing Viterbi. Lower → longer,
     /// more confident ancestry segments (needs sustained evidence to switch population).
@@ -53,7 +56,7 @@ impl Default for CopyingLaiParams {
     fn default() -> Self {
         Self {
             mismatch: 0.02,
-            recomb_per_cm: 1.0,
+            recomb_per_cm: 0.25,
             switch_per_cm: 0.05,
             min_ref_haps: 20,
             min_segment_sites: 20,
@@ -152,6 +155,16 @@ pub fn paint_copying_lai(
         .map(|(i, s)| ((s.contig.as_str(), s.position), i))
         .collect();
 
+    // Reference-size normalization: a population's posterior is `Σ γ` over its kept haplotypes, so a
+    // population with more reference samples would win by sheer count — over-calling the largest 1KG
+    // pops (Iberian/Tuscan) and burying smaller ones (British). Divide each label's posterior by its
+    // kept-haplotype count so the population whose haplotypes match *best per-capita* wins.
+    let mut label_count = vec![0.0f64; n_labels];
+    for &l in &hap_label {
+        label_count[l] += 1.0;
+    }
+    let label_weight: Vec<f64> = label_count.iter().map(|&c| if c > 0.0 { 1.0 / c } else { 0.0 }).collect();
+
     // Group phased sites by contig.
     let mut by_contig: BTreeMap<&str, Vec<&PhasedSite>> = BTreeMap::new();
     for s in &phased.sites {
@@ -176,8 +189,14 @@ pub fn paint_copying_lai(
             if cols.is_empty() {
                 continue;
             }
-            let post =
+            let mut post =
                 copying_posteriors(&cols, &alleles, &positions, contig, reference, &kept_haps, map, &hap_label, n_labels, params);
+            // Size-normalize per label (best per-capita match, not biggest sample).
+            for row in &mut post {
+                for (l, v) in row.iter_mut().enumerate() {
+                    *v *= label_weight[l];
+                }
+            }
             let path = smooth_viterbi(&post, &positions, contig, map, n_labels, params.switch_per_cm);
             segments.extend(collapse_labels(contig, &positions, &path, &post, &labels, params.min_segment_sites, side));
         }
@@ -484,14 +503,13 @@ mod tests {
         );
     }
 
-    /// A tiny stray-labelled reference population (below `min_ref_haps`) folds into its super-pop:
-    /// a haplotype from a 1-hap "English" group is called EUR, not "English".
+    /// A tiny reference population (below `min_ref_haps`) folds into its super-pop, so it's never a
+    /// callable fine label: a 1-hap TSI group is never painted "TSI" (it folds to EUR).
     #[test]
     fn tiny_populations_fold_into_super_pop() {
         let n = 30usize;
         let pat: Vec<u8> = (0..n).map(|i| (i % 2 == 0) as u8).collect();
-        // 20 GBR haps + 1 "English" hap, all the same pattern (so copying is ambiguous by pattern,
-        // resolved by population mass — English is sub-threshold so it can't be a callable label).
+        // 20 GBR haps + 1 TSI hap, same pattern; TSI is sub-threshold so it folds to its super-pop.
         let mut rows = vec![pat.clone(); 20];
         let mut hap_pop = vec![0u16; 20];
         rows.push(pat.clone());
@@ -499,7 +517,7 @@ mod tests {
         let reference = HaplotypeReference::from_rows(
             "t".to_string(),
             sites(n),
-            vec!["GBR".to_string(), "English".to_string()],
+            vec!["GBR".to_string(), "TSI".to_string()],
             hap_pop,
             &rows,
         );
@@ -508,9 +526,9 @@ mod tests {
         let params = CopyingLaiParams { min_segment_sites: 5, ..CopyingLaiParams::default() };
         // Empty prior → gate disabled (keep all haplotypes), so the folding path is exercised.
         let segs = paint_copying_lai(&phased, &reference, &map, &[], &params);
-        // Every segment's fine code must be a real callable pop (GBR), never the folded "English".
+        // The folded tiny pop must never surface as a fine call.
         for s in segs.iter().filter(|s| s.copy == 0) {
-            assert_ne!(s.fine_population_code.as_deref(), Some("English"));
+            assert_ne!(s.fine_population_code.as_deref(), Some("TSI"));
         }
     }
 }
