@@ -36,6 +36,7 @@ use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::worker::{self, Command, Event, NewBiosample, YMask};
+use rowcache::{ReportRowCache, SubjectRowCache, VariantRows};
 
 #[derive(Default)]
 struct Forms {
@@ -662,6 +663,20 @@ pub struct NavigatorApp {
     llm_test_msg: Option<String>,
     /// Sort + inline per-column filter state for the subjects table.
     subjects_table_ctl: TableControls,
+    /// Bumped once per worker [`Event`] applied — the invalidation signal for the per-frame view
+    /// caches below. Every field they derive from is written in [`Self::drain_events`], so a change
+    /// of epoch is the one thing they all have to watch. Bumping on *every* event over-invalidates
+    /// (a progress tick rebuilds a table it did not affect) rather than risk showing stale rows: an
+    /// extra rebuild costs one frame, a missed one shows wrong data until the user clicks something.
+    data_epoch: u64,
+    /// Derived display rows for the subjects table (see [`Self::subject_rows`]).
+    subject_rows: SubjectRowCache,
+    /// Derived cell text + row order for the project Report table (see [`Self::report_rows`]).
+    report_rows: ReportRowCache,
+    /// Matching-row indices for the Y / mtDNA / autosomal variant tables.
+    y_profile_rows: VariantRows,
+    mt_profile_rows: VariantRows,
+    auto_profile_rows: VariantRows,
     /// Collapse the subjects side panel to a thin strip so the detail panel (charts/tables)
     /// gets the full width.
     subjects_collapsed: bool,
@@ -1042,6 +1057,7 @@ mod detail;
 mod events;
 mod ibd;
 mod modals;
+mod rowcache;
 mod sources;
 
 impl NavigatorApp {
@@ -1155,6 +1171,12 @@ impl NavigatorApp {
             llm_testing: false,
             llm_test_msg: None,
             subjects_table_ctl: TableControls::sorted_by(0),
+            data_epoch: 0,
+            subject_rows: SubjectRowCache::default(),
+            report_rows: ReportRowCache::default(),
+            y_profile_rows: VariantRows::default(),
+            mt_profile_rows: VariantRows::default(),
+            auto_profile_rows: VariantRows::default(),
             subjects_collapsed: false,
             projects_collapsed: false,
             overview: Vec::new(),
@@ -1689,6 +1711,8 @@ fn draw_consensus_profile(
     kind: &str,
     id_salt: &str,
     snp_names: &std::collections::HashMap<i64, String>,
+    epoch: u64,
+    rows: &mut VariantRows,
 ) {
     if profile.variants.is_empty() {
         ui.label(egui::RichText::new(format!("No {kind} across sources.")).weak());
@@ -1745,7 +1769,29 @@ fn draw_consensus_profile(
     // otherwise force endless page scrolling. Status/text filters narrow the list; a cap bounds a
     // pathological profile. The header/filter row above stays fixed; only the grid scrolls.
     const CAP: usize = 2000;
-    let (mut shown, mut total_match) = (0usize, 0usize);
+    // A catalogued Y-SNP name at this site (for a position-only / novel row).
+    let cataloged_at = |v: &navigator_domain::consensus::ConsensusVariant| {
+        if v.name.is_empty() {
+            snp_names.get(&v.position).map(String::as_str)
+        } else {
+            None
+        }
+    };
+    // Which variants match is cached — only `CAP` rows are ever rendered, but the total needs the
+    // whole profile scanned, and this fn runs every frame. (`snp_names` feeds the search, and it is
+    // loaded by an event, so `epoch` covers it too.)
+    let status = *filter;
+    let matching = rows.get(epoch, status, &q, &profile.variants, |v| {
+        if status.is_some_and(|f| v.status != f) {
+            return false;
+        }
+        q.is_empty()
+            || v.name.to_ascii_lowercase().contains(&q)
+            || v.position.to_string().contains(&q)
+            || cataloged_at(v).is_some_and(|n| n.to_ascii_lowercase().contains(&q))
+    });
+    let total_match = matching.len();
+    let shown = total_match.min(CAP);
     let pane_h = profile_pane_height(ui, profile.variants.len());
     egui::ScrollArea::vertical()
         .id_salt(format!("{id_salt}_scroll"))
@@ -1760,28 +1806,9 @@ fn draw_consensus_profile(
                         ui.strong(h);
                     }
                     ui.end_row();
-                    for v in &profile.variants {
-                        if filter.is_some_and(|f| v.status != f) {
-                            continue;
-                        }
-                        // A catalogued Y-SNP name at this site (for a position-only / novel row).
-                        let cataloged = if v.name.is_empty() {
-                            snp_names.get(&v.position).map(String::as_str)
-                        } else {
-                            None
-                        };
-                        if !q.is_empty()
-                            && !v.name.to_ascii_lowercase().contains(&q)
-                            && !v.position.to_string().contains(&q)
-                            && !cataloged.is_some_and(|n| n.to_ascii_lowercase().contains(&q))
-                        {
-                            continue;
-                        }
-                        total_match += 1;
-                        if shown >= CAP {
-                            continue;
-                        }
-                        shown += 1;
+                    for &i in &matching[..shown] {
+                        let v = &profile.variants[i as usize];
+                        let cataloged = cataloged_at(v);
                         {
                             let conflict = v.status == YVariantStatus::Conflict;
                             // Prefer the consensus name; else the catalogued Y-SNP at this site (teal,
@@ -1834,13 +1861,9 @@ fn draw_consensus_profile(
                 });
         });
     ui.label(
-        egui::RichText::new(format!(
-            "{} of {} matching variants",
-            shown.min(total_match),
-            total_match
-        ))
-        .weak()
-        .small(),
+        egui::RichText::new(format!("{shown} of {total_match} matching variants"))
+            .weak()
+            .small(),
     );
     if total_match > CAP {
         ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", total_match - CAP)).weak());
@@ -1855,6 +1878,8 @@ fn draw_diploid_profile(
     profile: &navigator_app::DiploidProfile,
     filter: &mut Option<YVariantStatus>,
     query: &mut String,
+    epoch: u64,
+    rows: &mut VariantRows,
 ) {
     if profile.variants.is_empty() {
         ui.label(egui::RichText::new("No autosomal sites across sources.").weak());
@@ -1956,28 +1981,27 @@ fn draw_diploid_profile(
     };
     // Bound the rows to a fixed-height scroll pane (the panel is ~1.2M sites). A hard cap keeps only
     // `shown` widgets built per frame, never the full panel; the status/text filters narrow further.
+    // Which sites match is cached (`rows`) — the count needs the whole panel scanned, and this fn
+    // runs every frame.
     const CAP: usize = 2000;
-    let (mut shown, mut total_match) = (0usize, 0usize);
+    let status = *filter;
+    let matching = rows.get(epoch, status, &q, &profile.variants, |v| {
+        status.map_or(true, |f| v.status == f) && matches(v)
+    });
+    let total_match = matching.len();
+    let shown = total_match.min(CAP);
     let pane_h = profile_pane_height(ui, profile.variants.len());
     egui::ScrollArea::vertical()
         .id_salt("diploid_profile_scroll")
         .max_height(pane_h)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for v in &profile.variants {
-                if !(filter.map_or(true, |f| v.status == f) && matches(v)) {
-                    continue;
-                }
-                total_match += 1;
-                if shown >= CAP {
-                    continue;
-                }
-                shown += 1;
-                render_row(ui, v);
+            for &i in &matching[..shown] {
+                render_row(ui, &profile.variants[i as usize]);
             }
         });
     ui.label(
-        egui::RichText::new(format!("{} of {} matching sites", shown.min(total_match), total_match))
+        egui::RichText::new(format!("{shown} of {total_match} matching sites"))
             .weak()
             .small(),
     );

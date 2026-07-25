@@ -35,6 +35,12 @@ impl TableControls {
         &mut self.filters[col]
     }
 
+    /// The raw per-column filter text, for change-detection by the row caches (comparing this is
+    /// allocation-free, unlike calling [`Self::filter_norm`] per column every frame).
+    pub(crate) fn filters_raw(&self) -> &[String] {
+        &self.filters
+    }
+
     /// Trimmed, lower-cased filter text for `col` (empty when unset) — ready for `contains`.
     pub(crate) fn filter_norm(&self, col: usize) -> String {
         self.filters
