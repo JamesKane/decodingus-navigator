@@ -893,15 +893,27 @@ impl App {
         Ok(stats)
     }
 
-    /// Ensure a prebuilt ancestry/IBD asset at `path` is present, downloading it — and the asset
-    /// manifest it's verified against — from the published GitHub release when missing. End users get
-    /// the panels this way instead of running the offline `panelbuild` tool. Manifest-driven: only an
-    /// asset the manifest actually lists is fetched (an unpublished optional asset stays absent), and
-    /// an explicit `$NAVIGATOR_*` path override is never fetched over. Best-effort progress → stderr.
+    /// See [`asset_action`] for the present/stale/absent decision this drives.
+    ///
+    /// Ensure a prebuilt ancestry/IBD asset at `path` is present **and current**, downloading it —
+    /// and the asset manifest it's verified against — from the published GitHub release. End users
+    /// get the panels this way instead of running the offline `panelbuild` tool.
+    ///
+    /// Three cases, all manifest-driven:
+    ///
+    /// * **Absent** → download it, provided the manifest lists it (an unpublished optional asset
+    ///   simply stays absent and its feature degrades).
+    /// * **Manifest doesn't list it** → re-fetch the manifest once, then re-check. The cached
+    ///   manifest is otherwise never refreshed, so an install that predates an asset's publication
+    ///   would never learn the asset exists — which is exactly what happened to `ancestry_haps`.
+    /// * **Present but the wrong size** → the published asset was revised; replace it. Without this
+    ///   an install that already has an asset keeps the stale one forever, because a revision is
+    ///   invisible to a plain existence check. The stale file is moved aside, not deleted, and put
+    ///   back if the download fails — a stale asset beats no asset.
+    ///
+    /// An explicit `$NAVIGATOR_*` path override is never fetched over or repaired: that file is the
+    /// user's own. Best-effort throughout — network failures leave on-disk state alone.
     pub(crate) async fn ensure_ancestry_asset(&self, build: ReferenceBuild, path: &Path) -> Result<(), AppError> {
-        if path.exists() {
-            return Ok(());
-        }
         let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
             return Ok(());
         };
@@ -911,26 +923,68 @@ impl App {
             return Ok(());
         }
         let base = asset_release_base_url(build);
-
-        // The manifest (small) both integrity-checks the asset (at read) and lists what's published.
         let manifest_name = format!("ancestry_manifest_{}.json", build.as_str());
-        if !default.with_file_name(&manifest_name).exists() {
+        let manifest_path = default.with_file_name(&manifest_name);
+
+        // (1) The manifest: fetch when absent, and re-fetch when it doesn't list this asset (a
+        //     manifest cached before the asset was published). Keep the old copy in memory so a
+        //     failed refresh doesn't cost us the integrity data we already had.
+        let listed = |m: &Option<navigator_analysis::manifest::AssetManifest>| {
+            m.as_ref().is_some_and(|m| m.assets.contains_key(&name))
+        };
+        let mut manifest = load_asset_manifest(build);
+        if !listed(&manifest) {
+            let previous = std::fs::read(&manifest_path).ok();
+            let _ = std::fs::remove_file(&manifest_path); // else the gateway serves the cached copy
             let url = format!("{base}/{manifest_name}");
-            if let Err(e) = self.gateway.resolve_ancestry_asset(&manifest_name, &url, &mut |_, _| {}).await {
-                eprintln!("ancestry assets: could not fetch {manifest_name} ({e}) — leaving {name} to on-disk state");
-                return Ok(());
+            match self.gateway.resolve_ancestry_asset(&manifest_name, &url, &mut |_, _| {}).await {
+                Ok(_) => manifest = load_asset_manifest(build),
+                Err(e) => {
+                    if let Some(bytes) = previous {
+                        let _ = std::fs::write(&manifest_path, bytes);
+                    }
+                    eprintln!("ancestry assets: could not fetch {manifest_name} ({e}) — leaving {name} to on-disk state");
+                    return Ok(());
+                }
             }
         }
-        // Fetch only assets the manifest publishes for this build (e.g. ancestry_freq_ancient isn't
-        // shipped → it simply stays absent and the feature degrades, unchanged).
-        match load_asset_manifest(build) {
-            Some(m) if m.assets.contains_key(&name) => {}
-            _ => return Ok(()),
-        }
+        // Fetch only assets the manifest publishes for this build.
+        let Some(entry) = manifest.as_ref().and_then(|m| m.assets.get(&name)).cloned() else {
+            return Ok(());
+        };
 
-        eprintln!("ancestry assets: downloading {name} (first use — no build needed) …");
+        // (2) What to do with what's on disk. Content is verified at read time by
+        //     `read_verified_asset`; hashing every asset here would cost seconds per paint.
+        let on_disk = std::fs::metadata(&default).ok().map(|m| m.len());
+        let action = asset_action(Some(&entry), on_disk);
+        if action == AssetAction::Ready {
+            return Ok(());
+        }
+        // Wrong size → a revision (or a truncated download). Quarantine, then fetch.
+        let stale = if action == AssetAction::Replace {
+            let aside = default.with_extension("stale");
+            match std::fs::rename(&default, &aside) {
+                Ok(()) => {
+                    eprintln!(
+                        "ancestry assets: {name} is {} bytes, the published asset is {} — replacing it",
+                        on_disk.unwrap_or(0),
+                        entry.bytes
+                    );
+                    Some(aside)
+                }
+                Err(e) => {
+                    eprintln!("ancestry assets: cannot replace stale {name} ({e}) — keeping the existing file");
+                    return Ok(());
+                }
+            }
+        } else {
+            eprintln!("ancestry assets: downloading {name} (first use — no build needed) …");
+            None
+        };
+
         let mut last = 0u64;
-        self.gateway
+        let fetched = self
+            .gateway
             .resolve_ancestry_asset(&name, &format!("{base}/{name}"), &mut |done, total| {
                 if done.saturating_sub(last) >= 16 * 1024 * 1024 {
                     last = done;
@@ -940,10 +994,25 @@ impl App {
                     }
                 }
             })
-            .await
-            .map_err(|e| AppError::Import(format!("downloading ancestry asset {name}: {e}")))?;
-        eprintln!("ancestry assets: {name} ready");
-        Ok(())
+            .await;
+        match fetched {
+            Ok(_) => {
+                if let Some(aside) = stale {
+                    let _ = std::fs::remove_file(aside);
+                }
+                eprintln!("ancestry assets: {name} ready");
+                Ok(())
+            }
+            Err(e) => {
+                // Put the old asset back: analysing against a superseded panel beats not analysing.
+                if let Some(aside) = stale {
+                    let _ = std::fs::rename(&aside, &default);
+                    eprintln!("ancestry assets: {name} download failed ({e}) — kept the existing copy");
+                    return Ok(());
+                }
+                Err(AppError::Import(format!("downloading ancestry asset {name}: {e}")))
+            }
+        }
     }
 
     /// Load the CHM13 IBD panel — downloading the prebuilt asset from the release on first use (no
@@ -1331,5 +1400,57 @@ impl App {
             }
         }
         Ok(reconciliation::classify_identity(concordance, sites, y_dist, y_markers))
+    }
+}
+
+/// What [`App::ensure_ancestry_asset`] must do for one asset, from the manifest entry (`None` when
+/// the manifest doesn't list it) and the on-disk size (`None` when the file is absent).
+///
+/// Size, not hash: a published asset is revised by rebuilding it, which changes its length, and the
+/// authoritative content check already happens at read time. Hashing a 133 MB panel on every call
+/// would cost seconds per paint to catch a case (same size, different bytes) that read-time
+/// verification catches anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssetAction {
+    /// Present at the published size — use it.
+    Ready,
+    /// Absent — fetch it.
+    Download,
+    /// Present but superseded (or truncated) — move aside and fetch.
+    Replace,
+    /// Not published for this build — leave it absent and let the feature degrade.
+    Skip,
+}
+
+pub(crate) fn asset_action(entry: Option<&navigator_analysis::manifest::AssetEntry>, on_disk: Option<u64>) -> AssetAction {
+    match (entry, on_disk) {
+        (None, _) => AssetAction::Skip,
+        (Some(_), None) => AssetAction::Download,
+        (Some(e), Some(len)) if len == e.bytes => AssetAction::Ready,
+        (Some(_), Some(_)) => AssetAction::Replace,
+    }
+}
+
+#[cfg(test)]
+mod asset_tests {
+    use super::*;
+    use navigator_analysis::manifest::AssetEntry;
+
+    fn entry(bytes: u64) -> AssetEntry {
+        AssetEntry { sha256: "deadbeef".into(), bytes }
+    }
+
+    #[test]
+    fn asset_action_covers_the_present_absent_and_superseded_cases() {
+        // Unpublished asset: nothing to fetch whatever is on disk (the feature degrades instead).
+        assert_eq!(asset_action(None, None), AssetAction::Skip);
+        assert_eq!(asset_action(None, Some(10)), AssetAction::Skip);
+        // Published + absent → download; published + right size → use it.
+        assert_eq!(asset_action(Some(&entry(100)), None), AssetAction::Download);
+        assert_eq!(asset_action(Some(&entry(100)), Some(100)), AssetAction::Ready);
+        // The case a plain existence check misses: a locally-present asset the release has revised.
+        assert_eq!(asset_action(Some(&entry(139_815_581)), Some(13_774_065)), AssetAction::Replace);
+        // …and a truncated download.
+        assert_eq!(asset_action(Some(&entry(100)), Some(41)), AssetAction::Replace);
     }
 }

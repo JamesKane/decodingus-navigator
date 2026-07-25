@@ -1273,6 +1273,12 @@ fn load_asset_manifest(build: ReferenceBuild) -> Option<navigator_analysis::mani
 /// Read an asset file (`None` if absent), verifying its SHA-256 against the build manifest when one
 /// is present. A **checksum mismatch is a hard error** — refuse a corrupt / truncated asset rather
 /// than analyze against it. A missing manifest (or an unlisted file) passes through unverified.
+///
+/// A mismatched file in the **managed cache** is also quarantined (renamed `.corrupt`) so the next
+/// [`App::ensure_ancestry_asset`] downloads a good copy: without that, telling the user to
+/// "re-download it" asks for something the app gives them no way to do, and the error repeats
+/// forever. A file at a user-specified `$NAVIGATOR_*` override is never touched — it is theirs, and
+/// a mismatch there most likely means their manifest is stale, not their asset bad.
 fn read_verified_asset(build: ReferenceBuild, path: &Path) -> Result<Option<Vec<u8>>, AppError> {
     let Ok(bytes) = std::fs::read(path) else {
         return Ok(None);
@@ -1280,8 +1286,15 @@ fn read_verified_asset(build: ReferenceBuild, path: &Path) -> Result<Option<Vec<
     if let Some(manifest) = load_asset_manifest(build) {
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             if let Err((expected, got)) = manifest.verify(name, &bytes) {
+                let managed = refgenome_cache::base_dir().join("ancestry").join(name);
+                let quarantined = path == managed && std::fs::rename(path, path.with_extension("corrupt")).is_ok();
                 return Err(AppError::Import(format!(
-                    "asset {name} failed its integrity check (manifest sha256 {expected}, file {got}) — re-download it"
+                    "asset {name} failed its integrity check (manifest sha256 {expected}, file {got}){}",
+                    if quarantined {
+                        " — moved aside; retry to download a fresh copy"
+                    } else {
+                        " — re-download it"
+                    }
                 )));
             }
         }
