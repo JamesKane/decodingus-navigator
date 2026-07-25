@@ -2075,6 +2075,33 @@ pub(crate) fn prefer_external_calls() -> bool {
     resolve_prefer_external(env.as_deref(), AppSettings::load().prefer_external_calls)
 }
 
+/// The painter's built-in knob defaults as plain scalars, for the Settings UI to show when a knob is
+/// unset. The UI does not depend on `navigator-analysis`, and duplicating the literals there would
+/// let the two drift apart — which is exactly how a stale calibration gets written back to settings.
+pub struct LaiKnobDefaults {
+    pub recomb_per_cm: f64,
+    pub max_ref_haps: u32,
+    pub min_ancestry: f64,
+    pub switch_per_cm: f64,
+    pub min_segment_cm: f64,
+    pub size_normalize: f64,
+    pub mismatch: f64,
+}
+
+/// [`CopyingLaiParams::default`], flattened for the UI.
+pub fn lai_knob_defaults() -> LaiKnobDefaults {
+    let d = navigator_analysis::lai::CopyingLaiParams::default();
+    LaiKnobDefaults {
+        recomb_per_cm: d.recomb_per_cm,
+        max_ref_haps: d.max_ref_haps as u32,
+        min_ancestry: d.min_ancestry,
+        switch_per_cm: d.switch_per_cm,
+        min_segment_cm: d.min_segment_cm,
+        size_normalize: d.size_normalize,
+        mismatch: d.mismatch,
+    }
+}
+
 /// The copying-LAI chromosome-painter parameters, resolved from [`AppSettings`] with the built-in
 /// [`CopyingLaiParams::default`] for any unset knob. Read at paint time so edits apply immediately.
 pub(crate) fn copying_lai_params() -> navigator_analysis::lai::CopyingLaiParams {
@@ -2085,7 +2112,8 @@ pub(crate) fn copying_lai_params() -> navigator_analysis::lai::CopyingLaiParams 
         max_ref_haps: s.lai_max_ref_haps.map(|v| v as usize).unwrap_or(d.max_ref_haps),
         min_ancestry: s.lai_min_ancestry.unwrap_or(d.min_ancestry),
         switch_per_cm: s.lai_switch_per_cm.unwrap_or(d.switch_per_cm),
-        min_segment_sites: s.lai_min_segment_sites.map(|v| v as usize).unwrap_or(d.min_segment_sites),
+        min_segment_cm: s.lai_min_segment_cm.unwrap_or(d.min_segment_cm),
+        size_normalize: s.lai_size_normalize.unwrap_or(d.size_normalize),
         mismatch: s.lai_mismatch.unwrap_or(d.mismatch),
         min_ref_haps: d.min_ref_haps,
     }
@@ -4107,7 +4135,8 @@ mod settings_tests {
             lai_max_ref_haps: Some(40),
             lai_min_ancestry: Some(0.03),
             lai_switch_per_cm: Some(0.04),
-            lai_min_segment_sites: Some(15),
+            lai_min_segment_cm: Some(3.0),
+            lai_size_normalize: Some(0.4),
             lai_mismatch: Some(0.01),
         };
         let json = serde_json::to_string(&s).unwrap();

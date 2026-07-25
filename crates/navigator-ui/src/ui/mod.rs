@@ -288,7 +288,8 @@ struct SettingsForm {
     lai_max_ref_haps: u32,
     lai_min_ancestry: f64,
     lai_switch_per_cm: f64,
-    lai_min_segment_sites: u32,
+    lai_min_segment_cm: f64,
+    lai_size_normalize: f64,
     lai_mismatch: f64,
     /// VCF-liftover tool state (input/output paths, target build, PAR filter).
     lift_in: String,
@@ -301,6 +302,8 @@ impl SettingsForm {
     /// Scalar fields from the persisted `AppSettings` (reference rows filled later by the worker).
     fn from_settings() -> Self {
         let s = AppSettings::load();
+        // Unset knobs show the painter's own calibrated defaults, never a copy of them.
+        let lai = navigator_app::lai_knob_defaults();
         SettingsForm {
             appview_url: s.appview_url.unwrap_or_default(),
             y_tree_provider: s.y_tree_provider.unwrap_or_else(|| "decodingus".to_string()),
@@ -321,12 +324,13 @@ impl SettingsForm {
                 .unwrap_or(navigator_app::llm::DEFAULT_LLM_MAX_TOKENS)
                 .to_string(),
             references: Vec::new(),
-            lai_recomb_per_cm: s.lai_recomb_per_cm.unwrap_or(0.1),
-            lai_max_ref_haps: s.lai_max_ref_haps.unwrap_or(50),
-            lai_min_ancestry: s.lai_min_ancestry.unwrap_or(0.05),
-            lai_switch_per_cm: s.lai_switch_per_cm.unwrap_or(0.05),
-            lai_min_segment_sites: s.lai_min_segment_sites.unwrap_or(20),
-            lai_mismatch: s.lai_mismatch.unwrap_or(0.02),
+            lai_recomb_per_cm: s.lai_recomb_per_cm.unwrap_or(lai.recomb_per_cm),
+            lai_max_ref_haps: s.lai_max_ref_haps.unwrap_or(lai.max_ref_haps),
+            lai_min_ancestry: s.lai_min_ancestry.unwrap_or(lai.min_ancestry),
+            lai_switch_per_cm: s.lai_switch_per_cm.unwrap_or(lai.switch_per_cm),
+            lai_min_segment_cm: s.lai_min_segment_cm.unwrap_or(lai.min_segment_cm),
+            lai_size_normalize: s.lai_size_normalize.unwrap_or(lai.size_normalize),
+            lai_mismatch: s.lai_mismatch.unwrap_or(lai.mismatch),
             lift_in: String::new(),
             lift_out: String::new(),
             lift_target: "chm13v2.0".to_string(),

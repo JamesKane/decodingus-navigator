@@ -92,9 +92,14 @@ pub struct AppSettings {
     /// Ancestry-segment switch intensity per cM (Viterbi smoothing). Lower → longer segments. Default 0.05.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lai_switch_per_cm: Option<f64>,
-    /// Minimum segment length in sites (shorter runs merge into the neighbour). Default 20.
+    /// Minimum segment length in centiMorgans (shorter runs merge into the neighbour). Default 4.0.
+    /// In genetic distance, not sites, so the setting keeps its meaning when the panel's marker
+    /// density changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lai_min_segment_sites: Option<u32>,
+    pub lai_min_segment_cm: Option<f64>,
+    /// Per-population size correction exponent (0 = off, 1 = full per-haplotype average). Default 0.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_size_normalize: Option<f64>,
     /// Copy mismatch/mutation rate μ. Default 0.02.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lai_mismatch: Option<f64>,
