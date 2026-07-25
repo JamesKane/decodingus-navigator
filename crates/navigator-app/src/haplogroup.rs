@@ -8,6 +8,89 @@ use crate::fastpath::{chr_m_gvcf_for_alignment, chr_y_gvcf_for_alignment};
 /// contigs / lift paths get distinct cache rows.
 const GENOTYPE_KIND: &str = "tree-genotype";
 
+/// Parse a stored painting JSON into a [`PaintingResult`], tolerating the legacy form (a bare
+/// `Vec<AncestrySegment>` with no side labels) by wrapping it with the neutral Side A/B defaults.
+fn parse_painting_json(s: &str) -> Result<PaintingResult, AppError> {
+    match serde_json::from_str::<PaintingResult>(s) {
+        Ok(r) => Ok(r),
+        Err(_) => {
+            let segments: Vec<AncestrySegment> = serde_json::from_str(s)?;
+            Ok(PaintingResult { segments, ..Default::default() })
+        }
+    }
+}
+
+/// Which phased side (0/1) carries the parent's transmitted alleles, by **transmission consistency**:
+/// at sites where the child is heterozygous and the parent homozygous, the parent transmitted a known
+/// allele — the side carrying it is the parent's. (Parent-child IBD is genome-wide IBD1, so IBD
+/// overlap alone can't distinguish the sides; the phased alleles can.) `None` when there are too few
+/// informative sites or the signal is ambiguous (guards against a mis-called relative).
+fn anchor_side_to_parent(phased: &navigator_analysis::phasing::PhasedGenotypes, parent: &[SiteGenotype]) -> Option<u8> {
+    let pd: std::collections::HashMap<(&str, i64), i32> = parent
+        .iter()
+        .filter(|g| g.dosage >= 0)
+        .map(|g| ((g.contig.as_str(), g.position), g.dosage))
+        .collect();
+    let (mut m0, mut m1) = (0u32, 0u32);
+    for s in &phased.sites {
+        if s.side0 == s.side1 {
+            continue; // child homozygous — uninformative for side assignment
+        }
+        let Some(&d) = pd.get(&(s.contig.as_str(), s.position)) else {
+            continue;
+        };
+        let transmitted = match d {
+            0 => 0u8,
+            2 => 1u8,
+            _ => continue, // parent heterozygous — uninformative
+        };
+        // side0 != side1 and both are 0/1, so exactly one equals `transmitted`.
+        if s.side0 == transmitted {
+            m0 += 1;
+        } else {
+            m1 += 1;
+        }
+    }
+    let total = m0 + m1;
+    if total < 50 {
+        return None;
+    }
+    let (hi, side) = if m0 >= m1 { (m0, 0u8) } else { (m1, 1u8) };
+    if (hi as f64) / (total as f64) >= 0.75 {
+        Some(side)
+    } else {
+        None
+    }
+}
+
+/// `(this-side, other-side)` labels from a parent's recorded sex — once one parent is anchored the
+/// other side is definitionally the other parent. `None` if the sex isn't a clear male/female.
+fn parent_labels_for_sex(sex: Option<&str>) -> Option<(&'static str, &'static str)> {
+    match sex.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("female") | Some("f") => Some(("Mother", "Father")),
+        Some("male") | Some("m") => Some(("Father", "Mother")),
+        _ => None,
+    }
+}
+
+/// The two side labels for a painting: Mother/Father (or "Parent: <name>"/"Other parent") when the
+/// painting is phased and a parent side was anchored; otherwise the neutral Side A/Side B.
+fn build_side_labels(phased: bool, anchor: Option<u8>, parent: Option<&(Option<String>, String)>) -> [String; 2] {
+    match (phased, anchor, parent) {
+        (true, Some(side), Some((sex, name))) => {
+            let (this_label, other_label) = match parent_labels_for_sex(sex.as_deref()) {
+                Some((t, o)) => (t.to_string(), o.to_string()),
+                None => (format!("Parent: {name}"), "Other parent".to_string()),
+            };
+            let mut labels = [String::new(), String::new()];
+            labels[side as usize] = this_label;
+            labels[1 - side as usize] = other_label;
+            labels
+        }
+        _ => [side_label_default(0), side_label_default(1)],
+    }
+}
+
 /// Session memo of fetched haplotree JSON (resolved cache path → body), shared by [`App::fetch_tree`] and
 /// cleared by [`App::refresh_trees`]. Trees are 4–121 MB and consulted many times per placement, so
 /// they're resolved at most once per process; a corrected AppView tree is picked up by clearing this
@@ -3097,30 +3180,36 @@ impl App {
     /// The cached chromosome painting for a subject, if one was painted from the **current** autosomal
     /// consensus (signature = the consensus's `last_reconciled_at`). `None` if absent or stale (the
     /// consensus was rebuilt since). Cheap — a cache read, no genotyping or HMM.
-    pub async fn cached_painting(&self, biosample_guid: SampleGuid) -> Result<Option<Vec<AncestrySegment>>, AppError> {
+    pub async fn cached_painting(&self, biosample_guid: SampleGuid) -> Result<Option<PaintingResult>, AppError> {
         let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
             return Ok(None);
         };
         let Some(p) = consensus_painting::get(self.store.pool(), biosample_guid).await? else {
             return Ok(None);
         };
-        if p.consensus_sig == row.last_reconciled_at {
-            Ok(Some(serde_json::from_str(&p.segments)?))
-        } else {
-            Ok(None) // painted from an older consensus — stale
+        if p.consensus_sig != row.last_reconciled_at {
+            return Ok(None); // painted from an older consensus — stale
         }
+        Ok(Some(parse_painting_json(&p.segments)?))
     }
 
-    /// Paint each chromosome with diploid local ancestry from the subject's **consensus** — no BAM
-    /// walk. This is the explicit compute/refresh path: it **always** re-runs the diploid pair-state
-    /// HMM over the consensus genotypes (anchored on the admixture prior) and refreshes the cache,
-    /// keyed to the consensus's `last_reconciled_at`. The cheap cache-read path is
-    /// [`Self::cached_painting`] (used on subject load); recomputing here is what lets a code change
-    /// to the painter (e.g. the global-composition gate) take effect without wiping the consensus.
+    /// Paint each chromosome with local ancestry from the subject's **consensus** — no BAM walk. The
+    /// explicit compute/refresh path: it always re-runs and refreshes the cache, keyed to the
+    /// consensus's `last_reconciled_at`, so a painter code change takes effect without wiping the
+    /// consensus. The cheap cache-read path is [`Self::cached_painting`] (used on subject load).
+    ///
+    /// **Parent-split**: when the phased-haplotype reference asset is present, the consensus is
+    /// statistically phased (Li & Stephens) and each side painted independently → two genuine
+    /// parental sides. If a parent is found in the workspace (a `ParentChild` IBD relationship), the
+    /// side carrying that parent's transmitted alleles is anchored and the sides are labelled
+    /// Mother/Father; otherwise Side A/Side B. Without the asset it falls back to the unphased diploid
+    /// painter (two arbitrary sorted copies).
     pub async fn paint_local_ancestry_from_consensus(
         &self,
         biosample_guid: SampleGuid,
-    ) -> Result<Vec<AncestrySegment>, AppError> {
+    ) -> Result<PaintingResult, AppError> {
+        use navigator_analysis::phasing::{PhaseParams, Phaser, ReferencePhaser};
+
         let row = consensus_profile::get(self.store.pool(), biosample_guid, "Auto")
             .await?
             .ok_or_else(|| {
@@ -3132,37 +3221,168 @@ impl App {
         let genotypes = consensus_genotypes(&profile);
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
+
+        // Super-pop AIM panel (required — the emission frequencies for both painters).
         self.ensure_ancestry_asset(build, &ancestry_panel_path(build)).await?;
         let panel_path = ancestry_panel_path(build);
         let panel_bytes = read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
         let panel = AncestryPanel::from_bytes(&panel_bytes)?;
-        let segments = tokio::task::spawn_blocking(move || {
+
+        // Phased-haplotype reference (optional) — its presence switches on the parent-split path.
+        let haps_path = ancestry_haps_path(build);
+        let _ = self.ensure_ancestry_asset(build, &haps_path).await; // best-effort auto-download
+        let hap_ref = read_verified_asset(build, &haps_path)
+            .ok()
+            .flatten()
+            .and_then(|b| ancestry_analysis::HaplotypeReference::from_bytes(&b).ok())
+            .filter(|h| !h.is_empty());
+
+        // Look for a workspace parent to anchor the two sides (only meaningful when we can phase).
+        // Scoped to the child's home project + hard-capped, so it never scans the whole workspace.
+        let parent = if hap_ref.is_some() {
+            self.find_parent_for_anchor(biosample_guid, &genotypes).await
+        } else {
+            None
+        };
+        let (parent_genos, parent_meta) = match parent {
+            Some((g, sex, name)) => (Some(g), Some((sex, name))),
+            None => (None, None),
+        };
+        // Copying-LAI knobs from settings (read here, on the async side, and moved into the blocking
+        // closure) so live Settings edits recalibrate the painter on the next paint.
+        let lai_params = copying_lai_params();
+
+        let (segments, phased, anchor_side) = tokio::task::spawn_blocking(move || {
+            // Genome-wide super-pop composition — the prior anchoring both painters (and the copying
+            // LAI's global-composition gate that suppresses spurious continents).
             let composition = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
             let prior: Vec<(String, f64)> = composition
                 .components
                 .iter()
                 .map(|c| (c.population_code.clone(), c.percentage / 100.0))
                 .collect();
-            ancestry_analysis::paint_local_ancestry(
-                &genotypes,
-                &panel,
-                &prior,
-                &ancestry_analysis::PaintParams::default(),
-            )
+            match hap_ref {
+                Some(hap) => {
+                    // Genetic map for distance-scaled switch costs (observed contig extents → uniform
+                    // fallback if the real map asset is absent).
+                    let mut lengths: std::collections::BTreeMap<String, i32> = std::collections::BTreeMap::new();
+                    for g in &genotypes {
+                        let e = lengths.entry(g.contig.clone()).or_insert(0);
+                        *e = (*e).max(g.position as i32);
+                    }
+                    let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+                    let gmap = load_genetic_map(build, &pairs);
+
+                    // Statistically phase, then paint each side by haplotype copying against the
+                    // reference (RFMix-style) — resolves fine sub-populations from haplotype structure,
+                    // superseding the frequency-emission painter + AF fine step. The `prior` gates the
+                    // reference to the continents the sample actually has.
+                    let phaser = ReferencePhaser::new(&hap, &gmap, PhaseParams::default());
+                    let phased_g = phaser.phase(&genotypes);
+                    let segs = navigator_analysis::lai::paint_copying_lai(&phased_g, &hap, &gmap, &prior, &lai_params);
+                    let anchor = parent_genos.as_ref().and_then(|pg| anchor_side_to_parent(&phased_g, pg));
+                    (segs, true, anchor)
+                }
+                None => {
+                    // No haplotype reference → the unphased frequency painter (super-population only).
+                    let segs = ancestry_analysis::paint_local_ancestry(
+                        &genotypes,
+                        &panel,
+                        &prior,
+                        &ancestry_analysis::PaintParams::default(),
+                    );
+                    (segs, false, None)
+                }
+            }
         })
         .await?;
+
+        let side_labels = build_side_labels(phased, anchor_side, parent_meta.as_ref());
+        let result = PaintingResult { segments, side_labels, phased };
 
         // Cache keyed to the consensus signature so it's reused until the consensus is rebuilt.
         consensus_painting::upsert(
             self.store.pool(),
             biosample_guid,
             &sig,
-            &serde_json::to_string(&segments)?,
+            &serde_json::to_string(&result)?,
             &Utc::now().to_rfc3339(),
         )
         .await?;
-        Ok(segments)
+        Ok(result)
+    }
+
+    /// Find a workspace subject that is this subject's parent, to anchor the painted sides, and load
+    /// its consensus genotypes. Returns `(genotypes, recorded-sex, display-name)`, or `None`.
+    ///
+    /// Scalable by construction — it must **not** scan the whole workspace (which can hold tens of
+    /// thousands of subjects). Candidates are restricted to the child's **home project** (families /
+    /// trios are imported together) and hard-capped; a workspace with no small family context simply
+    /// gets no auto-anchoring (the sides stay Side A/B). Each candidate is screened by a cheap
+    /// **Mendelian test** — a true parent shares ≥1 allele at every site, so opposite-homozygous
+    /// sites are ~0 — which is O(sites) and needs no IBD segment detection or genetic map. The best
+    /// (lowest opposite-homozygosity) candidate below the threshold is returned; the phased-side
+    /// assignment itself is done later by transmission consistency.
+    async fn find_parent_for_anchor(
+        &self,
+        child: SampleGuid,
+        child_genotypes: &[SiteGenotype],
+    ) -> Option<(Vec<SiteGenotype>, Option<String>, String)> {
+        // Auto-anchoring is for small family/trio projects; larger sets are skipped (a research
+        // corpus shouldn't trigger a many-way scan, and parent detection there isn't meaningful).
+        const MAX_CANDIDATES: usize = 32;
+        // Opposite-homozygous fraction below which a pair is treated as parent-child (Mendel forbids
+        // opposite homozygotes for a true parent-child pair; the slack absorbs genotyping error).
+        const MAX_OPP_HOM_FRAC: f64 = 0.01;
+        const MIN_SHARED_SITES: u32 = 500;
+
+        let me = biosample::get(self.store.pool(), child).await.ok()??;
+        let project_id = me.project_id?; // no home project → no family context to search
+        let mut candidates = self.list_biosamples(project_id).await.ok()?;
+        candidates.retain(|b| b.guid != child);
+        if candidates.is_empty() || candidates.len() > MAX_CANDIDATES {
+            return None;
+        }
+
+        let child_dosage: std::collections::HashMap<(&str, i64), i32> = child_genotypes
+            .iter()
+            .filter(|g| g.dosage >= 0)
+            .map(|g| ((g.contig.as_str(), g.position), g.dosage))
+            .collect();
+
+        let mut best: Option<(Option<String>, String, Vec<SiteGenotype>)> = None;
+        let mut best_frac = f64::INFINITY;
+        for b in candidates {
+            let Some(genos) = self.load_consensus_genotypes(b.guid).await else {
+                continue;
+            };
+            let (mut shared, mut opp) = (0u32, 0u32);
+            for g in genos.iter().filter(|g| g.dosage >= 0) {
+                if let Some(&cd) = child_dosage.get(&(g.contig.as_str(), g.position)) {
+                    shared += 1;
+                    if (cd == 0 && g.dosage == 2) || (cd == 2 && g.dosage == 0) {
+                        opp += 1;
+                    }
+                }
+            }
+            if shared < MIN_SHARED_SITES {
+                continue;
+            }
+            let frac = opp as f64 / shared as f64;
+            if frac < MAX_OPP_HOM_FRAC && frac < best_frac {
+                best_frac = frac;
+                best = Some((b.sex.clone(), b.donor_identifier.clone(), genos));
+            }
+        }
+        best.map(|(sex, name, genos)| (genos, sex, name))
+    }
+
+    /// Load a subject's autosomal consensus genotypes (`"Auto"` profile), or `None` if absent.
+    async fn load_consensus_genotypes(&self, guid: SampleGuid) -> Option<Vec<SiteGenotype>> {
+        let row = consensus_profile::get(self.store.pool(), guid, "Auto").await.ok()??;
+        let profile: DiploidProfile = serde_json::from_str(&row.payload).ok()?;
+        Some(consensus_genotypes(&profile))
     }
 
     /// The cached ROH result for a subject, if one was computed from the **current** autosomal
@@ -4312,5 +4532,106 @@ mod vset_autosomal_calls_tests {
                 ("7".to_string(), 400, 'A', 'C'),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod painting_anchor_tests {
+    use super::*;
+    use navigator_analysis::phasing::{PhasedGenotypes, PhasedSite};
+
+    fn parent_geno(pos: i64, dosage: i32) -> SiteGenotype {
+        SiteGenotype {
+            name: String::new(),
+            contig: "chr1".to_string(),
+            position: pos,
+            reference_allele: "A".to_string(),
+            alternate_allele: "G".to_string(),
+            ploidy: 2,
+            dosage,
+            gq: 60,
+            depth: 30,
+            ref_depth: 15,
+            alt_depth: 15,
+            pls: vec![],
+            gt: None,
+            allele_depths: None,
+        }
+    }
+
+    /// A child phased over `n` heterozygous sites where `side` carries the alt allele on every site.
+    fn child_het(n: usize, side_carrying_alt: u8) -> PhasedGenotypes {
+        PhasedGenotypes {
+            sites: (0..n)
+                .map(|i| {
+                    let (s0, s1) = if side_carrying_alt == 0 { (1u8, 0u8) } else { (0u8, 1u8) };
+                    PhasedSite {
+                        contig: "chr1".to_string(),
+                        position: 1 + i as i64 * 1000,
+                        side0: s0,
+                        side1: s1,
+                        confidence: 1.0,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn anchors_to_the_side_carrying_the_transmitted_allele() {
+        // Parent is hom-alt everywhere → transmits the alt allele; the side carrying alt is theirs.
+        let parent: Vec<SiteGenotype> = (0..60).map(|i| parent_geno(1 + i as i64 * 1000, 2)).collect();
+        assert_eq!(anchor_side_to_parent(&child_het(60, 0), &parent), Some(0));
+        assert_eq!(anchor_side_to_parent(&child_het(60, 1), &parent), Some(1));
+
+        // Parent hom-ref everywhere → transmits ref; the side carrying ref (the OTHER side) is theirs.
+        let parent_ref: Vec<SiteGenotype> = (0..60).map(|i| parent_geno(1 + i as i64 * 1000, 0)).collect();
+        assert_eq!(anchor_side_to_parent(&child_het(60, 0), &parent_ref), Some(1));
+    }
+
+    #[test]
+    fn ambiguous_or_sparse_evidence_does_not_anchor() {
+        // Parent heterozygous everywhere → no informative sites.
+        let het_parent: Vec<SiteGenotype> = (0..60).map(|i| parent_geno(1 + i as i64 * 1000, 1)).collect();
+        assert_eq!(anchor_side_to_parent(&child_het(60, 0), &het_parent), None);
+        // Too few informative sites (< 50).
+        let parent: Vec<SiteGenotype> = (0..10).map(|i| parent_geno(1 + i as i64 * 1000, 2)).collect();
+        assert_eq!(anchor_side_to_parent(&child_het(10, 0), &parent), None);
+    }
+
+    #[test]
+    fn side_labels_from_sex_and_anchor() {
+        // Unphased → neutral Side A/B regardless of anchor.
+        assert_eq!(build_side_labels(false, Some(0), None), ["Side A".to_string(), "Side B".to_string()]);
+
+        // Phased, anchored to side 0, parent female → side 0 Mother, side 1 Father.
+        let mother = (Some("female".to_string()), "Mum".to_string());
+        assert_eq!(
+            build_side_labels(true, Some(0), Some(&mother)),
+            ["Mother".to_string(), "Father".to_string()]
+        );
+        // Anchored to side 1, parent male → side 1 Father, side 0 Mother.
+        let father = (Some("M".to_string()), "Dad".to_string());
+        assert_eq!(
+            build_side_labels(true, Some(1), Some(&father)),
+            ["Mother".to_string(), "Father".to_string()]
+        );
+        // Unknown sex → "Parent: <name>" / "Other parent".
+        let unknown = (None, "Kim".to_string());
+        assert_eq!(
+            build_side_labels(true, Some(0), Some(&unknown)),
+            ["Parent: Kim".to_string(), "Other parent".to_string()]
+        );
+        // Phased but no anchor → neutral.
+        assert_eq!(build_side_labels(true, None, None), ["Side A".to_string(), "Side B".to_string()]);
+    }
+
+    #[test]
+    fn parent_labels_for_sex_variants() {
+        assert_eq!(parent_labels_for_sex(Some("female")), Some(("Mother", "Father")));
+        assert_eq!(parent_labels_for_sex(Some(" Male ")), Some(("Father", "Mother")));
+        assert_eq!(parent_labels_for_sex(Some("f")), Some(("Mother", "Father")));
+        assert_eq!(parent_labels_for_sex(None), None);
+        assert_eq!(parent_labels_for_sex(Some("unknown")), None);
     }
 }

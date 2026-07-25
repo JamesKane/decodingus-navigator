@@ -8,7 +8,7 @@ use std::sync::mpsc::Receiver;
 use crate::charts::{
     asset_status_line, coverage_histogram_chart, draw_ancestry_donut, draw_chromosome_painting, draw_color_donut,
     draw_composition_bar, draw_ibd_segments, draw_pca_scatter, draw_population_components, draw_roh,
-    draw_variant_track, parse_hex_color, TrackRegion, VariantMark,
+    draw_variant_track, parse_hex_color, top_populations_for_side, TrackRegion, VariantMark,
 };
 use crate::widgets::{
     capitalize_first, card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt, provider_abbrev,
@@ -16,11 +16,11 @@ use crate::widgets::{
 };
 use eframe::egui;
 use navigator_app::{
-    AncestryResult, AncestrySegment, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState, ChatTurn,
+    AncestryResult, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState, ChatTurn,
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DescentReport, DnaType, FtdnaGenealogy, FtdnaImportPlan,
     FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
-    MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PrivateBucket, PrivateClass,
+    MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PaintingResult, PrivateBucket, PrivateClass,
     ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
     SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult,
     UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
@@ -283,6 +283,14 @@ struct SettingsForm {
     llm_model: String,
     llm_max_tokens: String,
     references: Vec<RefRow>,
+    /// Chromosome-painter (copying-LAI) calibration knobs. Defaults mirror `CopyingLaiParams::default`.
+    lai_recomb_per_cm: f64,
+    lai_max_ref_haps: u32,
+    lai_min_ancestry: f64,
+    lai_switch_per_cm: f64,
+    lai_min_segment_cm: f64,
+    lai_size_normalize: f64,
+    lai_mismatch: f64,
     /// VCF-liftover tool state (input/output paths, target build, PAR filter).
     lift_in: String,
     lift_out: String,
@@ -294,6 +302,8 @@ impl SettingsForm {
     /// Scalar fields from the persisted `AppSettings` (reference rows filled later by the worker).
     fn from_settings() -> Self {
         let s = AppSettings::load();
+        // Unset knobs show the painter's own calibrated defaults, never a copy of them.
+        let lai = navigator_app::lai_knob_defaults();
         SettingsForm {
             appview_url: s.appview_url.unwrap_or_default(),
             y_tree_provider: s.y_tree_provider.unwrap_or_else(|| "decodingus".to_string()),
@@ -314,6 +324,13 @@ impl SettingsForm {
                 .unwrap_or(navigator_app::llm::DEFAULT_LLM_MAX_TOKENS)
                 .to_string(),
             references: Vec::new(),
+            lai_recomb_per_cm: s.lai_recomb_per_cm.unwrap_or(lai.recomb_per_cm),
+            lai_max_ref_haps: s.lai_max_ref_haps.unwrap_or(lai.max_ref_haps),
+            lai_min_ancestry: s.lai_min_ancestry.unwrap_or(lai.min_ancestry),
+            lai_switch_per_cm: s.lai_switch_per_cm.unwrap_or(lai.switch_per_cm),
+            lai_min_segment_cm: s.lai_min_segment_cm.unwrap_or(lai.min_segment_cm),
+            lai_size_normalize: s.lai_size_normalize.unwrap_or(lai.size_normalize),
+            lai_mismatch: s.lai_mismatch.unwrap_or(lai.mismatch),
             lift_in: String::new(),
             lift_out: String::new(),
             lift_target: "chm13v2.0".to_string(),
@@ -766,8 +783,9 @@ pub struct NavigatorApp {
     estimating_donor_ancestry: bool,
     /// Whether the heavy deep (ancient) ancestry estimate is in flight.
     estimating_deep_ancestry: bool,
-    /// Local-ancestry painting: (alignment id, segments). `painting_running` while genotyping.
-    painting: Option<(i64, Vec<AncestrySegment>)>,
+    /// Local-ancestry painting: (alignment id, result with per-side segments + side labels).
+    /// `painting_running` while genotyping.
+    painting: Option<(i64, PaintingResult)>,
     painting_running: bool,
     /// Runs-of-homozygosity result for the selected subject. `roh_running` while the HMM computes.
     roh: Option<navigator_app::RohResult>,

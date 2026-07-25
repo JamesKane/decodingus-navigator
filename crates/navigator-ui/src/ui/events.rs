@@ -532,10 +532,10 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadConsensus(guid)); // the mt call was recorded
                     }
                 }
-                Event::AncestryPainting { alignment_id, segments } => {
+                Event::AncestryPainting { alignment_id, result } => {
                     self.painting_running = false;
-                    self.status = format!("Painted {} ancestry segments", segments.len());
-                    self.painting = Some((alignment_id, segments));
+                    self.status = format!("Painted {} ancestry segments", result.segments.len());
+                    self.painting = Some((alignment_id, result));
                 }
                 Event::RohResultReady { biosample_guid, result } => {
                     if self.selected_sample == Some(biosample_guid) {

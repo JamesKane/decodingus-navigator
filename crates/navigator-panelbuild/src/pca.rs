@@ -166,7 +166,7 @@ fn parse_gt(gt: &str) -> i8 {
     }
 }
 
-fn open_maybe_gz(path: &Path) -> Result<Box<dyn BufRead>> {
+pub(crate) fn open_maybe_gz(path: &Path) -> Result<Box<dyn BufRead>> {
     let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     if path.extension().and_then(|e| e.to_str()) == Some("gz") {
         Ok(Box::new(BufReader::new(MultiGzDecoder::new(f))))
@@ -175,11 +175,11 @@ fn open_maybe_gz(path: &Path) -> Result<Box<dyn BufRead>> {
     }
 }
 
-fn first_base(s: &str) -> char {
+pub(crate) fn first_base(s: &str) -> char {
     s.chars().next().map(|c| c.to_ascii_uppercase()).unwrap_or('N')
 }
 
-fn load_samples(path: &Path) -> Result<Vec<String>> {
+pub(crate) fn load_samples(path: &Path) -> Result<Vec<String>> {
     let mut s = String::new();
     open_maybe_gz(path)?.read_to_string(&mut s)?;
     Ok(s.lines()
@@ -189,7 +189,7 @@ fn load_samples(path: &Path) -> Result<Vec<String>> {
 }
 
 /// `sample → fine population` (e.g. NA12718 → CEU).
-fn load_fine_map(path: &Path) -> Result<HashMap<String, String>> {
+pub(crate) fn load_fine_map(path: &Path) -> Result<HashMap<String, String>> {
     let mut s = String::new();
     open_maybe_gz(path)?.read_to_string(&mut s)?;
     Ok(s.lines()
@@ -782,7 +782,7 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
     Ok(())
 }
 
-fn write_bin(out: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_bin(out: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent).ok();
     }

@@ -131,6 +131,159 @@ impl PcaLoadings {
     }
 }
 
+/// One reference site for [`HaplotypeReference`]: its coordinate and the biallelic ref/alt the
+/// packed haplotype bit refers to (`1` = alt allele, `0` = ref).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HapSite {
+    pub contig: String,
+    /// 1-based.
+    pub position: i64,
+    pub reference_allele: char,
+    pub alternate_allele: char,
+}
+
+/// A reference panel of **phased haplotypes** at the painting loci — the substrate for statistical
+/// phasing (the Li & Stephens copying model) and, later, copying-model local-ancestry inference.
+///
+/// Distinct from [`AncestryPanel`], which stores per-population allele *frequencies*: this carries
+/// each individual reference *haplotype*'s allele at every site plus its population label, so a
+/// sample can be phased as a mosaic of these haplotypes. Built offline by `navigator-panelbuild`
+/// from the **phased** 1000G-on-CHM13 VCFs. Only modern, phased references enter it (1000G super +
+/// fine populations); pseudo-haploid / unphased sources (ancient, AADR continental groups) are
+/// excluded — those contribute to the frequency panel used by the two-tier fine-resolution step.
+///
+/// Alleles are bit-packed row-major: haplotype `h`'s allele at site `s` is bit `h * n_sites + s`
+/// of [`alleles`](Self::alleles). This keeps a ~5000-haplotype × ~20k-site reference near ~12 MB.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HaplotypeReference {
+    /// Canonical reference build the site coordinates are in (e.g. "chm13v2.0").
+    pub build: String,
+    /// Reference sites, sorted by `(contig, position)`; the column order of every haplotype row.
+    pub sites: Vec<HapSite>,
+    /// Distinct population codes; `hap_pop[h]` indexes into this axis.
+    pub populations: Vec<String>,
+    /// One entry per haplotype: the index into [`populations`](Self::populations) of its label.
+    pub hap_pop: Vec<u16>,
+    /// `n_haplotypes × n_sites` alleles, bit-packed row-major (see the type doc). `1` = alt.
+    pub alleles: Vec<u64>,
+    pub n_sites: usize,
+    pub n_haplotypes: usize,
+}
+
+impl HaplotypeReference {
+    /// Deserialize from the bundled/built binary (bincode).
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AnalysisError> {
+        bincode::deserialize(bytes).map_err(|e| AnalysisError::Message(format!("hap reference decode: {e}")))
+    }
+
+    /// Serialize to the binary form the builder writes and the app bundles.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, AnalysisError> {
+        bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("hap reference encode: {e}")))
+    }
+
+    /// Pack per-haplotype allele rows (`rows[h][s]` = 0/1) into the bit-packed form. `hap_pop[h]`
+    /// is the population index of haplotype `h`. Used by the offline builder and by tests.
+    pub fn from_rows(build: String, sites: Vec<HapSite>, populations: Vec<String>, hap_pop: Vec<u16>, rows: &[Vec<u8>]) -> Self {
+        let n_sites = sites.len();
+        let n_haplotypes = rows.len();
+        let total_bits = n_sites * n_haplotypes;
+        let mut alleles = vec![0u64; total_bits.div_ceil(64)];
+        for (h, row) in rows.iter().enumerate() {
+            let base = h * n_sites;
+            for (s, &a) in row.iter().enumerate() {
+                if a != 0 {
+                    let bit = base + s;
+                    alleles[bit / 64] |= 1u64 << (bit % 64);
+                }
+            }
+        }
+        HaplotypeReference {
+            build,
+            sites,
+            populations,
+            hap_pop,
+            alleles,
+            n_sites,
+            n_haplotypes,
+        }
+    }
+
+    /// Allele (0 = ref, 1 = alt) of haplotype `hap` at site index `site`.
+    #[inline]
+    pub fn allele(&self, hap: usize, site: usize) -> u8 {
+        let bit = hap * self.n_sites + site;
+        ((self.alleles[bit / 64] >> (bit % 64)) & 1) as u8
+    }
+
+    /// Population code of haplotype `hap`.
+    pub fn population_of(&self, hap: usize) -> &str {
+        &self.populations[self.hap_pop[hap] as usize]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.n_sites == 0 || self.n_haplotypes == 0
+    }
+
+    /// The same reference with the haplotypes in `drop` removed (sites, population axis and every
+    /// other haplotype unchanged). Leave-one-out validation of the copying painter needs it: a test
+    /// individual taken *from* the reference would otherwise be painted by copying itself, which
+    /// measures nothing. Unknown indices are ignored.
+    pub fn without_haplotypes(&self, drop: &[usize]) -> Self {
+        let dropped: std::collections::HashSet<usize> = drop.iter().copied().collect();
+        let keep: Vec<usize> = (0..self.n_haplotypes).filter(|h| !dropped.contains(h)).collect();
+        let mut alleles = vec![0u64; (keep.len() * self.n_sites).div_ceil(64)];
+        for (new_h, &old_h) in keep.iter().enumerate() {
+            let base = new_h * self.n_sites;
+            for s in 0..self.n_sites {
+                if self.allele(old_h, s) != 0 {
+                    let bit = base + s;
+                    alleles[bit / 64] |= 1u64 << (bit % 64);
+                }
+            }
+        }
+        HaplotypeReference {
+            build: self.build.clone(),
+            sites: self.sites.clone(),
+            populations: self.populations.clone(),
+            hap_pop: keep.iter().map(|&h| self.hap_pop[h]).collect(),
+            alleles,
+            n_sites: self.n_sites,
+            n_haplotypes: keep.len(),
+        }
+    }
+
+    /// The same reference thinned to every `step`-th site (`step` <= 1 returns a clone). Marker
+    /// density is the copying model's binding constraint — a shared tract only identifies whose
+    /// haplotype it is if enough markers fall inside it — so measuring accuracy against density
+    /// needs the same panel at several densities, which this produces without rebuilding the asset.
+    pub fn thin_sites(&self, step: usize) -> Self {
+        if step <= 1 {
+            return self.clone();
+        }
+        let keep: Vec<usize> = (0..self.n_sites).step_by(step).collect();
+        let n_sites = keep.len();
+        let mut alleles = vec![0u64; (self.n_haplotypes * n_sites).div_ceil(64)];
+        for h in 0..self.n_haplotypes {
+            let base = h * n_sites;
+            for (new_s, &old_s) in keep.iter().enumerate() {
+                if self.allele(h, old_s) != 0 {
+                    let bit = base + new_s;
+                    alleles[bit / 64] |= 1u64 << (bit % 64);
+                }
+            }
+        }
+        HaplotypeReference {
+            build: self.build.clone(),
+            sites: keep.iter().map(|&s| self.sites[s].clone()).collect(),
+            populations: self.populations.clone(),
+            hap_pop: self.hap_pop.clone(),
+            alleles,
+            n_sites,
+            n_haplotypes: self.n_haplotypes,
+        }
+    }
+}
+
 /// Project a sample's genotypes onto the reference PCA space: centre each site by its panel
 /// mean and accumulate `centered · loading` into each component. A missing genotype contributes
 /// 0 (mean-imputed), then the projection is rescaled by `total_sites / sites_used` so a sample
@@ -343,6 +496,289 @@ pub fn paint_local_ancestry(
     segments
 }
 
+/// The HMM state scaffold shared by the diploid (unphased) and haploid (phased-side) painters: the
+/// kept super-population states, each panel population's super-pop, and the prior π over the kept
+/// states. Selection + global-composition gating are identical to [`paint_local_ancestry`], so both
+/// painters anchor to the same global estimate and can't invent a globally-absent continent.
+struct PaintStates {
+    states: Vec<String>,
+    pop_state: Vec<String>,
+    pi: Vec<f64>,
+}
+
+fn build_paint_states(panel: &AncestryPanel, prior: &[(String, f64)], params: &PaintParams) -> Option<PaintStates> {
+    let pop_state: Vec<String> = panel
+        .populations
+        .iter()
+        .map(|c| population_super(c).unwrap_or(c).to_string())
+        .collect();
+    let mut all_states: Vec<String> = Vec::new();
+    for s in &pop_state {
+        if !all_states.contains(s) {
+            all_states.push(s.clone());
+        }
+    }
+    if all_states.is_empty() {
+        return None;
+    }
+
+    let mut full_pi = vec![0.0f64; all_states.len()];
+    for (code, w) in prior {
+        let sp = population_super(code).unwrap_or(code);
+        if let Some(j) = all_states.iter().position(|x| x == sp) {
+            full_pi[j] += w.max(0.0);
+        }
+    }
+    let tot: f64 = full_pi.iter().sum();
+    if tot > 0.0 {
+        full_pi.iter_mut().for_each(|p| *p /= tot);
+    } else {
+        full_pi.iter_mut().for_each(|p| *p = 1.0 / all_states.len() as f64);
+    }
+
+    let argmax = full_pi
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let keep: Vec<usize> = (0..all_states.len())
+        .filter(|&i| full_pi[i] >= params.min_ancestry || i == argmax)
+        .collect();
+    let states: Vec<String> = keep.iter().map(|&i| all_states[i].clone()).collect();
+
+    let mut pi: Vec<f64> = keep.iter().map(|&i| full_pi[i]).collect();
+    let ktot: f64 = pi.iter().sum();
+    if ktot > 0.0 {
+        pi.iter_mut().for_each(|p| *p /= ktot);
+    } else {
+        pi.iter_mut().for_each(|p| *p = 1.0 / states.len() as f64);
+    }
+    Some(PaintStates { states, pop_state, pi })
+}
+
+/// Per-state alt-allele frequency at one site: the mean fine-pop frequency within each kept
+/// super-population state (`0.5` when a state has no contributing population). `states` order.
+fn per_state_af(freqs: &[f32], pop_state: &[String], states: &[String]) -> Vec<f64> {
+    let k = states.len();
+    let mut sum = vec![0.0f64; k];
+    let mut cnt = vec![0usize; k];
+    for (p, &f) in freqs.iter().enumerate() {
+        if let Some(j) = states.iter().position(|x| *x == pop_state[p]) {
+            sum[j] += f as f64;
+            cnt[j] += 1;
+        }
+    }
+    (0..k)
+        .map(|j| if cnt[j] > 0 { sum[j] / cnt[j] as f64 } else { 0.5 })
+        .collect()
+}
+
+/// Haploid emission: ln P(observe allele `a` (0/1) | copied super-pop alt frequency `f`).
+fn emit_haploid_ln(a: u8, f: f64) -> f64 {
+    let f = f.clamp(1e-4, 1.0 - 1e-4);
+    let p = if a == 1 { f } else { 1.0 - f };
+    p.max(1e-300).ln()
+}
+
+/// Haploid Viterbi: the MAP super-population per site for **one** phased haplotype. Hidden state =
+/// the super-population being copied; emission is [`emit_haploid_ln`] on the side's allele;
+/// transitions penalise ancestry switches by physical distance (same `switch_prob`/`ln_trans` as
+/// the diploid painter). `sites` are `(pos, per-state AF, allele 0/1)`, position-sorted.
+fn haploid_viterbi(sites: &[(i64, Vec<f64>, u8)], pi: &[f64], rate: f64, k: usize) -> Vec<usize> {
+    let n = sites.len();
+    let lnpi: Vec<f64> = (0..k).map(|s| pi[s].max(1e-300).ln()).collect();
+    let mut v = vec![vec![f64::NEG_INFINITY; k]; n];
+    let mut bp = vec![vec![0usize; k]; n];
+    for s in 0..k {
+        v[0][s] = lnpi[s] + emit_haploid_ln(sites[0].2, sites[0].1[s]);
+    }
+    for i in 1..n {
+        let sw = switch_prob(sites[i].0 - sites[i - 1].0, rate);
+        for b in 0..k {
+            let (mut best, mut arg) = (f64::NEG_INFINITY, 0usize);
+            for (a, &va) in v[i - 1].iter().enumerate() {
+                let val = va + ln_trans(a, b, sw, pi);
+                if val > best {
+                    best = val;
+                    arg = a;
+                }
+            }
+            v[i][b] = best + emit_haploid_ln(sites[i].2, sites[i].1[b]);
+            bp[i][b] = arg;
+        }
+    }
+    let mut last = (0..k).max_by(|&a, &b| v[n - 1][a].total_cmp(&v[n - 1][b])).unwrap_or(0);
+    let mut path = vec![0usize; n];
+    path[n - 1] = last;
+    for i in (1..n).rev() {
+        last = bp[i][last];
+        path[i - 1] = last;
+    }
+    path
+}
+
+/// Paint local ancestry from **phased** genotypes: a haploid ancestry HMM run independently on each
+/// of the two phased sides, so the two output tracks are internally-consistent parental sides
+/// (segment `copy` = phased side 0/1, consistent across the whole genome) — the parent-split the
+/// unphased [`paint_local_ancestry`] cannot produce. `prior` is the genome-wide composition
+/// (anchors the state set); `panel` supplies per-super-pop allele frequencies.
+pub fn paint_local_ancestry_phased(
+    phased: &crate::phasing::PhasedGenotypes,
+    panel: &AncestryPanel,
+    prior: &[(String, f64)],
+    params: &PaintParams,
+) -> Vec<AncestrySegment> {
+    let Some(PaintStates { states, pop_state, pi }) = build_paint_states(panel, prior, params) else {
+        return Vec::new();
+    };
+    let k = states.len();
+
+    // Per-site per-state AF, keyed by (contig, pos) — computed once, shared by both sides.
+    let site_af: HashMap<(&str, i64), Vec<f64>> = panel
+        .sites
+        .iter()
+        .filter(|s| s.freqs.len() == panel.populations.len())
+        .map(|s| ((s.contig.as_str(), s.position), per_state_af(&s.freqs, &pop_state, &states)))
+        .collect();
+
+    let contigs: std::collections::BTreeSet<&str> = phased.sites.iter().map(|s| s.contig.as_str()).collect();
+    let mut segments = Vec::new();
+    for contig in contigs {
+        for side in [0u8, 1u8] {
+            // Build this side's position-sorted (pos, AF, allele) sites for this contig.
+            let mut sites: Vec<(i64, Vec<f64>, u8)> = phased
+                .sites
+                .iter()
+                .filter(|s| s.contig == contig)
+                .filter_map(|s| {
+                    site_af
+                        .get(&(contig, s.position))
+                        .map(|af| (s.position, af.clone(), if side == 0 { s.side0 } else { s.side1 }))
+                })
+                .collect();
+            sites.sort_by_key(|s| s.0);
+            if sites.is_empty() {
+                continue;
+            }
+            let path = haploid_viterbi(&sites, &pi, params.rate, k);
+            // collapse_copy needs (pos, _, dosage-ish); the AF/allele payload is unused there.
+            let collapse_sites: Vec<(i64, Vec<f64>, i32)> =
+                sites.iter().map(|s| (s.0, Vec::new(), s.2 as i32)).collect();
+            segments.extend(collapse_copy(contig, &collapse_sites, &path, &states, params.min_segment_sites, side));
+        }
+    }
+    segments
+}
+
+/// Tuning for [`resolve_fine_populations`] (the two-tier super→fine step).
+#[derive(Debug, Clone)]
+pub struct FineResolveParams {
+    /// Minimum informative sites in a segment before a fine call is attempted.
+    pub min_sites: usize,
+    /// Minimum average per-site ln-likelihood advantage of the best fine population over the
+    /// runner-up to accept the call (otherwise the segment keeps `fine_population_code = None`).
+    pub min_margin_per_site: f64,
+}
+
+impl Default for FineResolveParams {
+    fn default() -> Self {
+        Self {
+            min_sites: 10,
+            min_margin_per_site: 0.02,
+        }
+    }
+}
+
+/// Two-tier fine resolution: for each already-painted super-population segment, pick the most likely
+/// **fine** population *within that super-population* from the fine-frequency panel, scoring the
+/// segment's phased-side alleles by the haploid likelihood under each candidate fine population.
+/// Sets [`AncestrySegment::fine_population_code`] in place; leaves it `None` when the segment is too
+/// short or the best fine call isn't clearly ahead of the runner-up (mirrors the super→fine admixture
+/// hierarchy). `fine_panel.populations` are fine-pop codes; each site's `freqs` are per-fine-pop AF.
+pub fn resolve_fine_populations(
+    segments: &mut [AncestrySegment],
+    phased: &crate::phasing::PhasedGenotypes,
+    fine_panel: &AncestryPanel,
+    params: &FineResolveParams,
+) {
+    if fine_panel.is_empty() || fine_panel.populations.is_empty() {
+        return;
+    }
+    // Fine-panel column index → (code, super-pop code).
+    let col_super: Vec<(&str, Option<&'static str>)> = fine_panel
+        .populations
+        .iter()
+        .map(|c| (c.as_str(), population_super(c)))
+        .collect();
+
+    // Site lookup: (contig, pos) → fine-panel site index (only well-formed sites).
+    let site_idx: HashMap<(&str, i64), usize> = fine_panel
+        .sites
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.freqs.len() == fine_panel.populations.len())
+        .map(|(i, s)| ((s.contig.as_str(), s.position), i))
+        .collect();
+
+    // Phased allele lookup: (contig, side, pos) → allele 0/1.
+    let mut allele: HashMap<(&str, u8, i64), u8> = HashMap::with_capacity(phased.sites.len() * 2);
+    for s in &phased.sites {
+        allele.insert((s.contig.as_str(), 0, s.position), s.side0);
+        allele.insert((s.contig.as_str(), 1, s.position), s.side1);
+    }
+
+    for seg in segments.iter_mut() {
+        let sp = seg.population_code.as_str();
+        // Candidate fine columns in this segment's super-population, excluding a fine code identical
+        // to the super code (no extra resolution to offer, e.g. MEA/CAS/OCE).
+        let candidates: Vec<usize> = col_super
+            .iter()
+            .enumerate()
+            .filter(|(_, (code, sup))| *sup == Some(sp) && *code != sp)
+            .map(|(i, _)| i)
+            .collect();
+        if candidates.is_empty() {
+            continue;
+        }
+
+        // Per-candidate summed ln-likelihood over the segment's informative sites on this side.
+        let mut ll = vec![0.0f64; candidates.len()];
+        let mut n = 0usize;
+        for s in phased
+            .sites
+            .iter()
+            .filter(|s| s.contig == seg.contig && s.position >= seg.start && s.position <= seg.end)
+        {
+            let Some(&si) = site_idx.get(&(seg.contig.as_str(), s.position)) else {
+                continue;
+            };
+            let Some(&a) = allele.get(&(seg.contig.as_str(), seg.copy, s.position)) else {
+                continue;
+            };
+            let freqs = &fine_panel.sites[si].freqs;
+            n += 1;
+            for (ci, &col) in candidates.iter().enumerate() {
+                ll[ci] += emit_haploid_ln(a, freqs[col] as f64);
+            }
+        }
+        if n < params.min_sites {
+            continue;
+        }
+
+        // Best and runner-up; accept only with a clear per-site margin.
+        let mut order: Vec<usize> = (0..candidates.len()).collect();
+        order.sort_by(|&a, &b| ll[b].total_cmp(&ll[a]));
+        let best = order[0];
+        let runner = order.get(1).map(|&i| ll[i]).unwrap_or(f64::NEG_INFINITY);
+        let margin = (ll[best] - runner) / n as f64;
+        if runner.is_finite() && margin < params.min_margin_per_site {
+            continue;
+        }
+        seg.fine_population_code = Some(fine_panel.populations[candidates[best]].clone());
+    }
+}
+
 /// Log transition prob `a → b` given switch probability `sw` and prior `pi`:
 /// stay with `1-sw`, else jump to `b` with `pi[b]`.
 fn ln_trans(a: usize, b: usize, sw: f64, pi: &[f64]) -> f64 {
@@ -442,6 +878,7 @@ fn collapse_copy(
             population_code: states[s].clone(),
             posterior: 1.0,
             copy,
+            fine_population_code: None,
         })
         .collect()
 }
@@ -1377,6 +1814,71 @@ fn confidence_from_completeness(snps_with_data: usize, total_snps: usize) -> f64
 mod tests {
     use super::*;
 
+    /// Dropping haplotypes keeps every remaining row's alleles and population label intact.
+    #[test]
+    fn without_haplotypes_preserves_the_kept_rows() {
+        let sites: Vec<HapSite> = (0..7)
+            .map(|i| HapSite {
+                contig: "chr1".to_string(),
+                position: 100 + i as i64,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+            })
+            .collect();
+        // 4 haplotypes with distinct patterns (row h has bit set where (s + h) % 3 == 0).
+        let rows: Vec<Vec<u8>> = (0..4)
+            .map(|h| (0..7).map(|s| ((s + h) % 3 == 0) as u8).collect())
+            .collect();
+        let full = HaplotypeReference::from_rows(
+            "t".to_string(),
+            sites,
+            vec!["GBR".to_string(), "YRI".to_string()],
+            vec![0, 0, 1, 1],
+            &rows,
+        );
+
+        let reduced = full.without_haplotypes(&[1, 2, 99]); // 99 is not a haplotype — ignored
+        assert_eq!(reduced.n_haplotypes, 2);
+        assert_eq!(reduced.n_sites, full.n_sites);
+        for (new_h, old_h) in [(0usize, 0usize), (1, 3)] {
+            assert_eq!(reduced.population_of(new_h), full.population_of(old_h));
+            for s in 0..full.n_sites {
+                assert_eq!(reduced.allele(new_h, s), full.allele(old_h, s), "hap {new_h} site {s}");
+            }
+        }
+    }
+
+    /// Thinning keeps every step-th site's alleles intact on every haplotype.
+    #[test]
+    fn thin_sites_keeps_every_nth_column() {
+        let sites: Vec<HapSite> = (0..9)
+            .map(|i| HapSite {
+                contig: "chr1".to_string(),
+                position: 100 + i as i64,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+            })
+            .collect();
+        let rows: Vec<Vec<u8>> = (0..3).map(|h| (0..9).map(|s| ((s + h) % 2 == 0) as u8).collect()).collect();
+        let full = HaplotypeReference::from_rows(
+            "t".to_string(),
+            sites,
+            vec!["GBR".to_string()],
+            vec![0, 0, 0],
+            &rows,
+        );
+        let thin = full.thin_sites(3);
+        assert_eq!(thin.n_sites, 3);
+        assert_eq!(thin.n_haplotypes, 3);
+        for (new_s, old_s) in [(0usize, 0usize), (1, 3), (2, 6)] {
+            assert_eq!(thin.sites[new_s], full.sites[old_s]);
+            for h in 0..3 {
+                assert_eq!(thin.allele(h, new_s), full.allele(h, old_s), "hap {h} site {new_s}");
+            }
+        }
+        assert_eq!(full.thin_sites(1).n_sites, full.n_sites);
+    }
+
     #[test]
     fn dosage_from_alleles_counts_alt_with_strand_flip() {
         // ref=A alt=G: hom-ref, het, hom-alt.
@@ -1706,6 +2208,93 @@ mod tests {
             gated.iter().all(|s| s.population_code == "A"),
             "gated painting must not invent globally-absent B: {gated:?}"
         );
+    }
+
+    /// Phased painting: two genuine parental sides. Side 0 is ancestry A (alt) on the first half,
+    /// B (ref) on the second; side 1 is the mirror. Each side must paint as a consistent two-segment
+    /// track (A→B on side 0, B→A on side 1) — the parent-split the unphased painter cannot express.
+    #[test]
+    fn painting_phased_two_consistent_sides() {
+        use crate::phasing::{PhasedGenotypes, PhasedSite};
+        let n = 80usize;
+        let panel = two_pop_panel(n);
+        let sites: Vec<PhasedSite> = (0..n)
+            .map(|i| {
+                let first_half = i < n / 2;
+                // side0: alt (A) then ref (B); side1: ref (B) then alt (A).
+                let (s0, s1) = if first_half { (1u8, 0u8) } else { (0u8, 1u8) };
+                PhasedSite {
+                    contig: "chr1".to_string(),
+                    position: 1 + i as i64 * 1_000_000,
+                    side0: s0,
+                    side1: s1,
+                    confidence: 1.0,
+                }
+            })
+            .collect();
+        let phased = PhasedGenotypes { sites };
+        let prior = vec![("A".to_string(), 0.5), ("B".to_string(), 0.5)];
+        let segs = paint_local_ancestry_phased(&phased, &panel, &prior, &PaintParams::default());
+
+        let side0: Vec<&AncestrySegment> = segs.iter().filter(|s| s.copy == 0).collect();
+        let side1: Vec<&AncestrySegment> = segs.iter().filter(|s| s.copy == 1).collect();
+        assert_eq!(side0.len(), 2, "side 0: {side0:?}");
+        assert_eq!(side1.len(), 2, "side 1: {side1:?}");
+        assert_eq!(
+            (side0[0].population_code.as_str(), side0[1].population_code.as_str()),
+            ("A", "B")
+        );
+        assert_eq!(
+            (side1[0].population_code.as_str(), side1[1].population_code.as_str()),
+            ("B", "A")
+        );
+    }
+
+    /// Two-tier fine resolution: a EUR segment whose phased side is alt-rich must resolve to the
+    /// alt-rich fine population (GBR), not the alt-poor one (TSI). A fine code equal to the super
+    /// code offers no extra resolution and is skipped.
+    #[test]
+    fn fine_resolution_picks_alt_rich_fine_pop() {
+        use crate::phasing::{PhasedGenotypes, PhasedSite};
+        let n = 30usize;
+        // Fine panel over two EUR fine pops: GBR alt-rich, TSI alt-poor.
+        let fine_sites: Vec<PanelSite> = (0..n)
+            .map(|i| PanelSite {
+                contig: "chr1".to_string(),
+                position: 1 + i as i64 * 1_000_000,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+                freqs: vec![0.9, 0.1], // [GBR, TSI]
+            })
+            .collect();
+        let fine_panel = AncestryPanel {
+            build: "t".into(),
+            populations: vec!["GBR".into(), "TSI".into()],
+            sites: fine_sites,
+        };
+        // Phased side 0 is alt everywhere across a single EUR segment.
+        let phased = PhasedGenotypes {
+            sites: (0..n)
+                .map(|i| PhasedSite {
+                    contig: "chr1".to_string(),
+                    position: 1 + i as i64 * 1_000_000,
+                    side0: 1,
+                    side1: 0,
+                    confidence: 1.0,
+                })
+                .collect(),
+        };
+        let mut segs = vec![AncestrySegment {
+            contig: "chr1".to_string(),
+            start: 1,
+            end: 1 + (n as i64 - 1) * 1_000_000,
+            population_code: "EUR".to_string(),
+            posterior: 1.0,
+            copy: 0,
+            fine_population_code: None,
+        }];
+        resolve_fine_populations(&mut segs, &phased, &fine_panel, &FineResolveParams::default());
+        assert_eq!(segs[0].fine_population_code.as_deref(), Some("GBR"));
     }
 
     #[test]

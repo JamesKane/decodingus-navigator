@@ -25,6 +25,7 @@ pub mod ibd;
 pub mod ibd_attest;
 pub mod ibd_panel;
 pub mod index;
+pub mod lai;
 pub mod library_stats;
 pub mod manifest;
 pub mod mask;
@@ -34,6 +35,7 @@ pub mod mastervar;
 /// path so existing `navigator_analysis::mtvariants::…` call sites are unchanged.
 pub use du_bio::mt as mtvariants;
 pub mod parity;
+pub mod phasing;
 pub mod preflight;
 pub mod probe;
 pub mod read_metrics;

@@ -18,8 +18,7 @@ use ui::NavigatorApp;
 /// `~/.decodingus/navigator-rs.db` (separate from the legacy H2 file). Shared by the GUI and
 /// the CLI subcommands so scripted ingestion lands in the same workbench the GUI shows.
 pub(crate) fn default_db_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let dir = PathBuf::from(home).join(".decodingus");
+    let dir = navigator_domain::paths::decodingus_dir();
     let _ = std::fs::create_dir_all(&dir);
     dir.join("navigator-rs.db")
 }

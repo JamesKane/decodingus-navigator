@@ -42,7 +42,16 @@ ASSET_RELEASE="${NAVIGATOR_ASSET_RELEASE:-}"
 ASSET_REPO="${NAVIGATOR_ASSET_REPO:-JamesKane/decodingus-navigator}"
 ASSET_BUILD="${NAVIGATOR_ASSET_BUILD:-chm13v2.0}"
 
+# Assets that ship on demand rather than in the installer: the app downloads them at first use via
+# App::ensure_ancestry_asset. `ancestry_haps` (the phased haplotype reference behind the chromosome
+# painter) is 133 MB — more than the rest of the bundle combined — and only a subject who paints
+# needs it, so bundling it would grow every download for a feature many users never open.
+# Local-dir mode omits it by simply not listing it in PATTERNS; release mode has to filter, because
+# it fetches whatever the manifest names.
+ON_DEMAND_PREFIXES="ancestry_haps_"
+
 # The full Option-A bundle: ancestry panels/PCA/freqs + manifest + genetic map + IBD panel.
+# NOTE: keep in step with ON_DEMAND_PREFIXES above — anything omitted here must be downloadable.
 PATTERNS=(
   "ancestry_panel_"*.bin
   "ancestry_pca_"*.bin
@@ -72,7 +81,17 @@ elif [ -n "$ASSET_RELEASE" ]; then
   names="$(grep -oE '"[A-Za-z0-9_.-]+\.bin"' "$STAGE/$manifest" | tr -d '"' | sort -u)"
   [ -n "$names" ] || { echo "stage-assets: ERROR — no .bin assets listed in $manifest" >&2; exit 1; }
   fetched=0
+  skipped=0
   for name in $names; do
+    skip=""
+    for prefix in $ON_DEMAND_PREFIXES; do
+      case "$name" in "$prefix"*) skip=1 ;; esac
+    done
+    if [ -n "$skip" ]; then
+      echo "  skipping $name (downloaded on demand, not bundled)"
+      skipped=$((skipped + 1))
+      continue
+    fi
     if [ ! -f "$STAGE/$name" ]; then
       echo "  downloading $name"
       curl -fSL --retry 3 --retry-delay 2 -o "$STAGE/$name" "$base/$name"
@@ -86,7 +105,7 @@ elif [ -n "$ASSET_RELEASE" ]; then
     }
     fetched=$((fetched + 1))
   done
-  echo "stage-assets: fetched manifest + $fetched verified asset(s) into $STAGE"
+  echo "stage-assets: fetched manifest + $fetched verified asset(s) into $STAGE (${skipped} on-demand asset(s) skipped)"
 else
   echo "stage-assets: WARNING — no asset source (NAVIGATOR_ASSET_SRC dir or NAVIGATOR_ASSET_RELEASE tag); bundling an empty asset set." >&2
 fi

@@ -3,6 +3,7 @@
 # integrity manifest. Produces (in $ASSETS):
 #   ancestry_pca_<build>.bin          modern PCA (PC1×PC2 scatter reference)
 #   ancestry_freq_global_<build>.bin  fine per-population AF (fine admixture)
+#   ancestry_haps_<build>.bin         phased 1000G haplotype reference (phasing / parent-split painter)
 #   ancestry_freq_ancient_<build>.bin deep-source AF: WHG/ANF/Steppe (deep ancestry) + its gates
 #   genetic_map_<build>.bin           IBD recombination map (bp->cM)
 #   ibd_panel_<build>.bin             chip-compatible multi-build IBD SNP panel
@@ -62,6 +63,28 @@ cargo run --release -q -p navigator-panelbuild -- fine-panel \
   --matrix "$MATRICES" --samples "$SAMPLES" --pops "$POPMAP" \
   --out "$FINE_OUT" --min-call-rate "$MIN_CALL_RATE"
 
+# (3b) Phased haplotype reference (copying-model LAI / parent-split chromosome painter). Union of the
+#      PHASED sources only — 1000G (`$TMP/1kgp.matrix.tsv.gz`) plus, when present, HGDP statphase
+#      (`$TMP/hgdp.matrix.tsv.gz`, built by fetch_hgdp_statphase.sh); both keep their `|` phase. HGDP's
+#      per-population depth (French/Sardinian/Basque/Russian/Orcadian) gives sub-continental European
+#      resolution 1000G alone (GBR/CEU/FIN/IBS/TSI) can't. AADR (pseudo-haploid) / SGDP (unphased PLINK)
+#      are excluded — pseudo-haplotypes would be noisier copy templates and bias the LAI against them.
+#      Best-effort: the painter falls back to the unphased frequency path when this asset is absent.
+KGP_MATRIX="$TMP/1kgp.matrix.tsv.gz"; KGP_SAMPLES="$TMP/1kgp.samples.txt"
+if [[ -s "$KGP_MATRIX" && -s "$KGP_SAMPLES" ]]; then
+  HAP_MATRICES="$KGP_MATRIX"; HAP_SAMPLES="$KGP_SAMPLES"
+  if [[ -s "$TMP/hgdp.matrix.tsv.gz" && -s "$TMP/hgdp.samples.txt" ]]; then
+    HAP_MATRICES="$HAP_MATRICES,$TMP/hgdp.matrix.tsv.gz"; HAP_SAMPLES="$HAP_SAMPLES,$TMP/hgdp.samples.txt"
+    log "hap panel: including HGDP statphase source"
+  fi
+  log "panelbuild hap-panel (phased: $HAP_MATRICES) -> $HAPS_OUT"
+  cargo run --release -q -p navigator-panelbuild -- hap-panel \
+    --matrix "$HAP_MATRICES" --samples "$HAP_SAMPLES" --pops "$POPMAP" \
+    --out "$HAPS_OUT" || log "WARN: hap panel not built (parent-split painter falls back to unphased)"
+else
+  log "NOTE: $KGP_MATRIX missing — skip hap panel (re-run 04_build_matrices.sh with a 1000G slice)"
+fi
+
 # (4) IBD genetic map (recombination map, GRCh38 -> CHM13). Best-effort — IBD falls back to uniform.
 build_genetic_map "$GMAP_OUT" || log "WARN: genetic map not built (IBD will use uniform 1 cM/Mb)"
 
@@ -84,4 +107,4 @@ cargo run --release -q -p navigator-panelbuild -- manifest --dir "$ASSETS" --bui
   || die "panelbuild manifest failed"
 
 log "stage 5 complete. Assets in $ASSETS:"
-ls -lh "$PANEL_OUT" "$PCA_OUT" "$FINE_OUT" "$ANCIENT_OUT" "$GMAP_OUT" "$IBD_PANEL_OUT" "$MANIFEST" 2>/dev/null >&2 || true
+ls -lh "$PANEL_OUT" "$PCA_OUT" "$FINE_OUT" "$HAPS_OUT" "$ANCIENT_OUT" "$GMAP_OUT" "$IBD_PANEL_OUT" "$MANIFEST" 2>/dev/null >&2 || true

@@ -9,6 +9,7 @@ license.workspace = true
 # a build name -> a cached, decompressed, indexed reference FASTA, fetching on a miss; caches
 # liftover chains for du-bio. No samtools/GATK: indexing is in-Rust via noodles-fasta.
 [dependencies]
+navigator-domain = { workspace = true }   # `paths::decodingus_dir` — the one definition of the cache root
 du-bio = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

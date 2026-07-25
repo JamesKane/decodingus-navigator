@@ -491,6 +491,63 @@ impl NavigatorApp {
                 });
                 ui.add_space(8.0);
 
+                // --- Chromosome painter (copying-LAI) calibration ---
+                // Reset buttons restore the painter's calibrated defaults (see `lai_knob_defaults`).
+                let lai = navigator_app::lai_knob_defaults();
+                ui.label(egui::RichText::new(self.tr("settings.painter")).strong());
+                ui.label(egui::RichText::new(self.tr("settings.painterHint")).small().weak());
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.painter.recomb"));
+                    ui.add(egui::Slider::new(&mut form.lai_recomb_per_cm, 0.02..=3.0).step_by(0.01).fixed_decimals(2));
+                    if ui.small_button(format!("{:.2}", lai.recomb_per_cm)).clicked() {
+                        form.lai_recomb_per_cm = lai.recomb_per_cm;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.painter.cap"));
+                    ui.add(egui::Slider::new(&mut form.lai_max_ref_haps, 10..=400));
+                    if ui.small_button(lai.max_ref_haps.to_string()).clicked() {
+                        form.lai_max_ref_haps = lai.max_ref_haps;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.painter.gate"));
+                    ui.add(egui::Slider::new(&mut form.lai_min_ancestry, 0.0..=0.20).step_by(0.005).fixed_decimals(3));
+                    if ui.small_button(format!("{:.2}", lai.min_ancestry)).clicked() {
+                        form.lai_min_ancestry = lai.min_ancestry;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.painter.switch"));
+                    ui.add(egui::Slider::new(&mut form.lai_switch_per_cm, 0.01..=0.5).step_by(0.01).fixed_decimals(2));
+                    if ui.small_button(format!("{:.2}", lai.switch_per_cm)).clicked() {
+                        form.lai_switch_per_cm = lai.switch_per_cm;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.painter.minSeg"));
+                    ui.add(egui::Slider::new(&mut form.lai_min_segment_cm, 0.5..=12.0).step_by(0.5).fixed_decimals(1));
+                    if ui.small_button(format!("{:.1}", lai.min_segment_cm)).clicked() {
+                        form.lai_min_segment_cm = lai.min_segment_cm;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.painter.sizeNorm"));
+                    ui.add(egui::Slider::new(&mut form.lai_size_normalize, 0.0..=1.0).step_by(0.05).fixed_decimals(2));
+                    if ui.small_button(format!("{:.2}", lai.size_normalize)).clicked() {
+                        form.lai_size_normalize = lai.size_normalize;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.painter.mismatch"));
+                    ui.add(egui::Slider::new(&mut form.lai_mismatch, 0.005..=0.10).step_by(0.005).fixed_decimals(3));
+                    if ui.small_button(format!("{:.3}", lai.mismatch)).clicked() {
+                        form.lai_mismatch = lai.mismatch;
+                    }
+                });
+                ui.label(egui::RichText::new(self.tr("settings.painterApply")).small().weak());
+                ui.add_space(8.0);
+
                 // --- AI assistant (local LLM) ---
                 ui.label(egui::RichText::new(self.tr("settings.ai")).strong());
                 ui.checkbox(&mut form.llm_enabled, self.tr("settings.ai.enable"));
@@ -756,6 +813,14 @@ impl NavigatorApp {
                 last_nav: AppSettings::load().last_nav,
                 last_subject: AppSettings::load().last_subject,
                 last_detail_tab: AppSettings::load().last_detail_tab,
+                // Chromosome-painter calibration knobs.
+                lai_recomb_per_cm: Some(form.lai_recomb_per_cm),
+                lai_max_ref_haps: Some(form.lai_max_ref_haps),
+                lai_min_ancestry: Some(form.lai_min_ancestry),
+                lai_switch_per_cm: Some(form.lai_switch_per_cm),
+                lai_min_segment_cm: Some(form.lai_min_segment_cm),
+                lai_size_normalize: Some(form.lai_size_normalize),
+                lai_mismatch: Some(form.lai_mismatch),
             };
             match settings.save() {
                 Ok(()) => self.status = self.tr("settings.saved").to_string(),

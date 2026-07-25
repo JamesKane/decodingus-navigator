@@ -76,6 +76,33 @@ pub struct AppSettings {
     /// `"ancestry"` / `"sources"` / `"ibd"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_detail_tab: Option<String>,
+
+    // ── Chromosome-painter (copying-LAI) calibration knobs (all `None` → the built-in default) ──
+    /// Reference-haplotype switch intensity per cM (copying recombination). Lower → longer copied
+    /// tracts → cleaner population calls / less drifted-isolate over-attraction. Default 0.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_recomb_per_cm: Option<f64>,
+    /// Per-population reference cap (haplotypes). Balances the panel so large 1000G samples don't
+    /// out-vote by count. Default 50.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_max_ref_haps: Option<u32>,
+    /// Global-composition gate: drop super-populations below this genome-wide fraction. Default 0.05.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_min_ancestry: Option<f64>,
+    /// Ancestry-segment switch intensity per cM (Viterbi smoothing). Lower → longer segments. Default 0.05.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_switch_per_cm: Option<f64>,
+    /// Minimum segment length in centiMorgans (shorter runs merge into the neighbour). Default 4.0.
+    /// In genetic distance, not sites, so the setting keeps its meaning when the panel's marker
+    /// density changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_min_segment_cm: Option<f64>,
+    /// Per-population size correction exponent (0 = off, 1 = full per-haplotype average). Default 0.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_size_normalize: Option<f64>,
+    /// Copy mismatch/mutation rate μ. Default 0.02.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lai_mismatch: Option<f64>,
 }
 
 impl AppSettings {
@@ -88,9 +115,15 @@ impl AppSettings {
     }
 
     /// Load settings; a missing or unreadable/invalid file yields the empty default.
+    ///
+    /// Reads through [`navigator_refgenome::cache::read_atomic`] so a concurrent [`Self::save`]
+    /// can't make the load fail: on Windows the file is briefly unopenable mid-replace, and this
+    /// returning the default would quietly discard the user's settings — including, since
+    /// `copying_lai_params()` reads them at paint time, their painter calibration.
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path())
+        navigator_refgenome::cache::read_atomic(&Self::path())
             .ok()
+            .and_then(|b| String::from_utf8(b).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
     }

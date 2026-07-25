@@ -202,6 +202,45 @@ impl NavigatorApp {
         ui.add_space(6.0);
     }
 
+    /// Simple-mode "Your DNA sides": the parent-split chromosome painting in plain language. Paints
+    /// from the consensus on demand (same command/state as the Advanced card), shows the two side
+    /// tracks with their labels, and a top-populations summary per side.
+    pub(crate) fn simple_dna_sides_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        card(ui, self.tr("card.dnaSides"), |ui| {
+            ui.label(egui::RichText::new(self.tr("dnaSides.intro")).small());
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let painted = matches!(&self.painting, Some((id, s)) if *id == navigator_app::CONSENSUS_SOURCE_ID && !s.segments.is_empty());
+                let label = if painted { self.tr("common.refresh") } else { self.tr("ancestry.paint") };
+                if ui.add_enabled(!self.painting_running, egui::Button::new(label)).clicked() {
+                    self.painting_running = true;
+                    self.status = "Painting local ancestry from consensus…".into();
+                    let _ = self.tx.send(Command::PaintAncestryFromConsensus { biosample_guid: guid });
+                }
+                if self.painting_running {
+                    ui.spinner();
+                }
+            });
+            if let Some((id, result)) = &self.painting {
+                if *id == navigator_app::CONSENSUS_SOURCE_ID && !result.segments.is_empty() {
+                    ui.add_space(8.0);
+                    draw_chromosome_painting(ui, &result.segments, &result.side_labels);
+                    ui.add_space(6.0);
+                    for (i, label) in result.side_labels.iter().enumerate() {
+                        let top = top_populations_for_side(&result.segments, i as u8, 3);
+                        if !top.is_empty() {
+                            ui.label(
+                                egui::RichText::new(format!("{}: {}", label, top.join(", ")))
+                                    .small()
+                                    .weak(),
+                            );
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     pub(crate) fn subjects_central(&mut self, ui: &mut egui::Ui) {
         let Some(guid) = self.selected_sample else {
             // First launch (Simple mode, empty workspace) has no left panel and so no reachable
@@ -241,6 +280,9 @@ impl NavigatorApp {
                 ui.add_space(10.0);
                 // Relatives are live/online, so they render outside the precomputed brief.
                 self.simple_relatives_section(ui);
+                // "Your DNA sides" — the parent-split chromosome painting, in plain language.
+                ui.add_space(10.0);
+                self.simple_dna_sides_section(ui, guid);
                 // Ask-my-results chat (local AI; enabled-gated).
                 ui.add_space(10.0);
                 self.simple_chat_section(ui, guid);
@@ -466,7 +508,7 @@ impl NavigatorApp {
                     ui.add_space(10.0);
                     card(ui, self.tr("card.chromosomePainting"), |ui| {
                         ui.horizontal(|ui| {
-                            let painted = matches!(&self.painting, Some((id, s)) if *id == navigator_app::CONSENSUS_SOURCE_ID && !s.is_empty());
+                            let painted = matches!(&self.painting, Some((id, s)) if *id == navigator_app::CONSENSUS_SOURCE_ID && !s.segments.is_empty());
                             let label = if painted { self.tr("common.refresh") } else { self.tr("ancestry.paint") };
                             if ui.add_enabled(!self.painting_running, egui::Button::new(label)).clicked() {
                                 self.painting_running = true;
@@ -478,10 +520,10 @@ impl NavigatorApp {
                             }
                             ui.label(egui::RichText::new(self.tr("hint.chromosomePainting")).weak().small());
                         });
-                        if let Some((id, segs)) = &self.painting {
-                            if *id == navigator_app::CONSENSUS_SOURCE_ID && !segs.is_empty() {
+                        if let Some((id, result)) = &self.painting {
+                            if *id == navigator_app::CONSENSUS_SOURCE_ID && !result.segments.is_empty() {
                                 ui.add_space(8.0);
-                                draw_chromosome_painting(ui, segs);
+                                draw_chromosome_painting(ui, &result.segments, &result.side_labels);
                             }
                         }
                     });

@@ -49,7 +49,8 @@ pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexI
 pub use navigator_analysis::sv::types::{SvAnalysisResult, SvCall, SvType};
 pub use navigator_analysis::unified::UnifiedMetricsResult;
 pub use navigator_domain::ancestry::{
-    AncestryResult, AncestrySegment, ConfidenceInterval, PopulationComponent, SuperPopulationSummary,
+    side_label_default, AncestryResult, AncestrySegment, ConfidenceInterval, PaintingResult, PopulationComponent,
+    SuperPopulationSummary,
 };
 // The ancestry panel format, re-exported so panel tooling/tests depend only on navigator-app.
 pub use navigator_analysis::ancestry::{AncestryPanel, PanelSite as AncestryPanelSite};
@@ -669,8 +670,7 @@ fn tree_cache_path(file: &str) -> PathBuf {
         .ok()
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".decodingus").join("trees")
+            navigator_domain::paths::decodingus_dir().join("trees")
         });
     dir.join(file)
 }
@@ -1044,6 +1044,14 @@ fn ancestry_freq_global_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ANCESTRY_FREQ", "ancestry_freq_global", build, "bin")
 }
 
+/// The phased-haplotype reference asset (`$NAVIGATOR_ANCESTRY_HAPS` override, else
+/// `<base>/ancestry/ancestry_haps_<build>.bin`): the phased 1000G haplotypes the statistical phaser
+/// copies from, for the parent-split chromosome painter. Optional — when absent, the painter falls
+/// back to the unphased diploid path (two arbitrary sorted copies rather than parental sides).
+fn ancestry_haps_path(build: ReferenceBuild) -> PathBuf {
+    ancestry_asset_path("NAVIGATOR_ANCESTRY_HAPS", "ancestry_haps", build, "bin")
+}
+
 /// The **ancient** deep-source frequency asset (`$NAVIGATOR_ANCESTRY_FREQ_ANCIENT` override, else
 /// `<base>/ancestry/ancestry_freq_ancient_<build>.bin`): per-site WHG/ANF/Steppe alt-allele
 /// frequencies, built by `panelbuild ancient-panel` from the AADR. Optional — deep ancestry is
@@ -1264,6 +1272,12 @@ fn load_asset_manifest(build: ReferenceBuild) -> Option<navigator_analysis::mani
 /// Read an asset file (`None` if absent), verifying its SHA-256 against the build manifest when one
 /// is present. A **checksum mismatch is a hard error** — refuse a corrupt / truncated asset rather
 /// than analyze against it. A missing manifest (or an unlisted file) passes through unverified.
+///
+/// A mismatched file in the **managed cache** is also quarantined (renamed `.corrupt`) so the next
+/// [`App::ensure_ancestry_asset`] downloads a good copy: without that, telling the user to
+/// "re-download it" asks for something the app gives them no way to do, and the error repeats
+/// forever. A file at a user-specified `$NAVIGATOR_*` override is never touched — it is theirs, and
+/// a mismatch there most likely means their manifest is stale, not their asset bad.
 fn read_verified_asset(build: ReferenceBuild, path: &Path) -> Result<Option<Vec<u8>>, AppError> {
     let Ok(bytes) = std::fs::read(path) else {
         return Ok(None);
@@ -1271,8 +1285,15 @@ fn read_verified_asset(build: ReferenceBuild, path: &Path) -> Result<Option<Vec<
     if let Some(manifest) = load_asset_manifest(build) {
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             if let Err((expected, got)) = manifest.verify(name, &bytes) {
+                let managed = refgenome_cache::base_dir().join("ancestry").join(name);
+                let quarantined = path == managed && std::fs::rename(path, path.with_extension("corrupt")).is_ok();
                 return Err(AppError::Import(format!(
-                    "asset {name} failed its integrity check (manifest sha256 {expected}, file {got}) — re-download it"
+                    "asset {name} failed its integrity check (manifest sha256 {expected}, file {got}){}",
+                    if quarantined {
+                        " — moved aside; retry to download a fresh copy"
+                    } else {
+                        " — re-download it"
+                    }
                 )));
             }
         }
@@ -2064,6 +2085,50 @@ fn resolve_prefer_external(env: Option<&str>, settings: Option<bool>) -> bool {
 pub(crate) fn prefer_external_calls() -> bool {
     let env = std::env::var("NAVIGATOR_PREFER_EXTERNAL_CALLS").ok();
     resolve_prefer_external(env.as_deref(), AppSettings::load().prefer_external_calls)
+}
+
+/// The painter's built-in knob defaults as plain scalars, for the Settings UI to show when a knob is
+/// unset. The UI does not depend on `navigator-analysis`, and duplicating the literals there would
+/// let the two drift apart — which is exactly how a stale calibration gets written back to settings.
+pub struct LaiKnobDefaults {
+    pub recomb_per_cm: f64,
+    pub max_ref_haps: u32,
+    pub min_ancestry: f64,
+    pub switch_per_cm: f64,
+    pub min_segment_cm: f64,
+    pub size_normalize: f64,
+    pub mismatch: f64,
+}
+
+/// [`CopyingLaiParams::default`], flattened for the UI.
+pub fn lai_knob_defaults() -> LaiKnobDefaults {
+    let d = navigator_analysis::lai::CopyingLaiParams::default();
+    LaiKnobDefaults {
+        recomb_per_cm: d.recomb_per_cm,
+        max_ref_haps: d.max_ref_haps as u32,
+        min_ancestry: d.min_ancestry,
+        switch_per_cm: d.switch_per_cm,
+        min_segment_cm: d.min_segment_cm,
+        size_normalize: d.size_normalize,
+        mismatch: d.mismatch,
+    }
+}
+
+/// The copying-LAI chromosome-painter parameters, resolved from [`AppSettings`] with the built-in
+/// [`CopyingLaiParams::default`] for any unset knob. Read at paint time so edits apply immediately.
+pub(crate) fn copying_lai_params() -> navigator_analysis::lai::CopyingLaiParams {
+    let s = AppSettings::load();
+    let d = navigator_analysis::lai::CopyingLaiParams::default();
+    navigator_analysis::lai::CopyingLaiParams {
+        recomb_per_cm: s.lai_recomb_per_cm.unwrap_or(d.recomb_per_cm),
+        max_ref_haps: s.lai_max_ref_haps.map(|v| v as usize).unwrap_or(d.max_ref_haps),
+        min_ancestry: s.lai_min_ancestry.unwrap_or(d.min_ancestry),
+        switch_per_cm: s.lai_switch_per_cm.unwrap_or(d.switch_per_cm),
+        min_segment_cm: s.lai_min_segment_cm.unwrap_or(d.min_segment_cm),
+        size_normalize: s.lai_size_normalize.unwrap_or(d.size_normalize),
+        mismatch: s.lai_mismatch.unwrap_or(d.mismatch),
+        min_ref_haps: d.min_ref_haps,
+    }
 }
 
 /// `haplogroup_call.source_key` for an alignment's **external** (sidecar fast-path) Y call. External
@@ -4078,6 +4143,13 @@ mod settings_tests {
             last_nav: Some("subjects".into()),
             last_subject: Some("11111111-1111-1111-1111-111111111111".into()),
             last_detail_tab: Some("ancestry".into()),
+            lai_recomb_per_cm: Some(0.15),
+            lai_max_ref_haps: Some(40),
+            lai_min_ancestry: Some(0.03),
+            lai_switch_per_cm: Some(0.04),
+            lai_min_segment_cm: Some(3.0),
+            lai_size_normalize: Some(0.4),
+            lai_mismatch: Some(0.01),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<AppSettings>(&json).unwrap(), s);
