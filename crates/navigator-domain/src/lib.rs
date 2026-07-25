@@ -18,6 +18,7 @@ pub mod contig;
 pub mod filetype;
 pub mod ftdna_csv;
 pub mod ftdna;
+pub mod i18n;
 pub mod identity;
 pub mod labs;
 pub mod llm_prompt;
