@@ -85,8 +85,7 @@ pub fn base_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("NAVIGATOR_REFGENOME_DIR") {
         return PathBuf::from(dir);
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".decodingus")
+    navigator_domain::paths::decodingus_dir()
 }
 
 /// The decompressed, indexed reference FASTA path for a build.

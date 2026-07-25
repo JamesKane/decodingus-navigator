@@ -64,8 +64,7 @@ pub fn asset_dir() -> PathBuf {
     if let Some(base) = std::env::var_os("NAVIGATOR_REFGENOME_DIR") {
         return PathBuf::from(base).join("ysnp");
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".decodingus").join("ysnp")
+    crate::paths::decodingus_dir().join("ysnp")
 }
 
 /// Split a TSV line into trimmed cells, ignoring a trailing empty cell from a final tab.

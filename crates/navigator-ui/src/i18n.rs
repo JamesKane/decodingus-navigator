@@ -52,10 +52,7 @@ impl Lang {
 /// Path of the persisted-language file (`~/.decodingus/navigator-lang`), matching the
 /// `~/.decodingus` convention used for the workspace DB.
 fn lang_file() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    std::path::PathBuf::from(home)
-        .join(".decodingus")
-        .join("navigator-lang")
+    navigator_domain::paths::decodingus_dir().join("navigator-lang")
 }
 
 /// The previously chosen UI language, if one was saved.

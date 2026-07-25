@@ -670,8 +670,7 @@ fn tree_cache_path(file: &str) -> PathBuf {
         .ok()
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".decodingus").join("trees")
+            navigator_domain::paths::decodingus_dir().join("trees")
         });
     dir.join(file)
 }

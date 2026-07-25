@@ -3333,6 +3333,7 @@ version = "0.1.0"
 dependencies = [
  "du-bio",
  "flate2",
+ "navigator-domain",
  "noodles",
  "reqwest",
  "serde",

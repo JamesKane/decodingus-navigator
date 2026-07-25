@@ -1024,9 +1024,9 @@ fn write_sweep_tsv(path: &Path, rows: &[(CopyingLaiParams, Summary)]) -> Result<
 
 fn expand(path: &Path) -> PathBuf {
     match path.to_str().and_then(|s| s.strip_prefix("~/")) {
-        Some(rest) => match std::env::var("HOME") {
-            Ok(home) => PathBuf::from(home).join(rest),
-            Err(_) => path.to_path_buf(),
+        Some(rest) => match navigator_domain::paths::home_dir() {
+            Some(home) => home.join(rest),
+            None => path.to_path_buf(),
         },
         None => path.to_path_buf(),
     }

@@ -21,6 +21,7 @@ pub mod identity;
 pub mod labs;
 pub mod llm_prompt;
 pub mod mtdna;
+pub mod paths;
 pub mod reconciliation;
 pub mod results_context;
 pub mod seq;
