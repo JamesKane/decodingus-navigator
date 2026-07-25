@@ -151,11 +151,10 @@ impl Default for IbdDetectorConfig {
 
 /// Normalize a chromosome name to its bare form ("chr1" -> "1", "chrX" -> "X").
 pub fn normalize_chromosome(chr: &str) -> String {
-    let s = chr.to_lowercase();
-    let s = s.strip_prefix("chr").unwrap_or(&s);
+    let s = crate::contig::bare(chr);
     match s.parse::<i64>() {
         Ok(n) => n.to_string(),
-        Err(_) => s.to_uppercase(),
+        Err(_) => s.to_ascii_uppercase(),
     }
 }
 

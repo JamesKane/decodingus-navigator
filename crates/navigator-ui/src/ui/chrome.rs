@@ -39,6 +39,23 @@ impl NavigatorApp {
         crate::i18n::tr(self.lang, key)
     }
 
+    /// The loaded subject for `guid`, from whichever list holds it: `all_biosamples` (the workspace
+    /// table) or `samples` (the current project's members).
+    pub(crate) fn find_subject(&self, guid: SampleGuid) -> Option<&Biosample> {
+        self.all_biosamples
+            .iter()
+            .chain(self.samples.iter())
+            .find(|b| b.guid == guid)
+    }
+
+    /// The display name for `guid` — its donor identifier, falling back to the bare guid. Used
+    /// wherever the UI has to name a subject it is about to act on (the confirm modals).
+    pub(crate) fn subject_label(&self, guid: SampleGuid) -> String {
+        self.find_subject(guid)
+            .map(|b| b.donor_identifier.clone())
+            .unwrap_or_else(|| guid.0.to_string())
+    }
+
     /// Set the interface mode (Simple ⇄ Advanced), pin it (so the first-run heuristic stops
     /// overriding), persist the choice, and keep the nav consistent (Simple hides
     /// Projects/Community). Chosen from Settings → Appearance.

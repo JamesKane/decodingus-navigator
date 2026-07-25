@@ -11,6 +11,7 @@
 //! a rare terminal haplogroup (see [`BriefPack::lineage_lookup`]).
 
 use crate::ancestry::SuperPopulationSummary;
+use crate::roh::RohPattern;
 use crate::testtype::TargetType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -413,38 +414,46 @@ pub fn ancestry_summary(super_pops: &[SuperPopulationSummary]) -> String {
     }
 }
 
-/// Build the runs-of-homozygosity brief section from the summary numbers. Deterministic and
-/// self-contained — it derives the plain-language pattern label and sentence from F_ROH and the run
-/// lengths (thresholds mirror `navigator_analysis::roh`: F_ROH below ~0.02 reads as outbred; above,
-/// a long run (≥15 Mb) points to recent shared ancestry, otherwise many short runs read as an
-/// endogamous background). Framed strictly as *shared ancestry between the parents' lines* — a
-/// genealogical read, never a clinical one.
-pub fn roh_brief(f_roh: f64, n_segments: usize, total_mb: f64, longest_mb: f64) -> RohBrief {
-    let (pattern, summary_phrase) = if n_segments == 0 || f_roh < 0.02 {
-        (
+/// Put the plain-language wording on the runs-of-homozygosity verdict the analysis engine already
+/// reached. `pattern` is `navigator_analysis::roh`'s own [`RohPattern`] — the classification is *not*
+/// re-derived here, so the Simple brief and the Advanced ROH chart can never disagree about whether
+/// a subject reads as outbred, endogamous, or recently consanguineous. Framed strictly as *shared
+/// ancestry between the parents' lines* — a genealogical read, never a clinical one.
+pub fn roh_brief(pattern: RohPattern, f_roh: f64, n_segments: usize, total_mb: f64, longest_mb: f64) -> RohBrief {
+    // No runs at all reads as outbred regardless of the classifier's view of an empty distribution.
+    let effective = if n_segments == 0 { RohPattern::Outbred } else { pattern };
+    let (pattern, summary_phrase) = match effective {
+        RohPattern::Outbred => (
             "Outbred",
             "Your two DNA copies rarely match over long stretches, so your parents' lines don't share a \
              recent common ancestor — the usual pattern for a large, outbred population."
                 .to_string(),
-        )
-    } else if longest_mb >= 15.0 {
-        (
+        ),
+        RohPattern::RecentConsanguinity => (
             "Recent shared ancestry",
             format!(
                 "Some long identical stretches (about {:.0} Mb of runs in total, the longest {:.0} Mb) point \
                  to a common ancestor on both of your parents' sides within the last few generations.",
                 total_mb, longest_mb
             ),
-        )
-    } else {
-        (
+        ),
+        RohPattern::Endogamy => (
             "Endogamous background",
             format!(
                 "Many short identical stretches (about {:.0} Mb across {} runs) reflect a background level of \
                  shared ancestry — common where a community historically married within a close group.",
                 total_mb, n_segments
             ),
-        )
+        ),
+        RohPattern::Mixed => (
+            "Mixed shared ancestry",
+            format!(
+                "Identical stretches of both kinds (about {:.0} Mb across {} runs, the longest {:.0} Mb) — a \
+                 background of shared ancestry in your parents' community, plus at least one nearer \
+                 connection between their lines.",
+                total_mb, n_segments, longest_mb
+            ),
+        ),
     };
     RohBrief {
         f_roh,
@@ -515,18 +524,24 @@ mod tests {
 
     #[test]
     fn roh_brief_reads_the_pattern() {
+        // The wording follows the analysis engine's verdict; it is not re-derived from the numbers.
         // Trace-endogamy / outbred (James: F_ROH ~0.008): outbred phrasing, no scary numbers cited.
-        let outbred = roh_brief(0.008, 6, 22.7, 7.1);
+        let outbred = roh_brief(RohPattern::Outbred, 0.008, 6, 22.7, 7.1);
         assert_eq!(outbred.pattern, "Outbred");
         assert!(outbred.summary_phrase.contains("outbred"));
         // Elevated F_ROH from many short runs → endogamous background.
-        let endog = roh_brief(0.035, 40, 90.0, 8.0);
+        let endog = roh_brief(RohPattern::Endogamy, 0.035, 40, 90.0, 8.0);
         assert_eq!(endog.pattern, "Endogamous background");
         assert!(endog.summary_phrase.contains("shared ancestry"));
-        // A long run → recent shared ancestry (consanguinity).
-        let recent = roh_brief(0.08, 12, 220.0, 40.0);
+        // Long-run-dominated → recent shared ancestry (consanguinity).
+        let recent = roh_brief(RohPattern::RecentConsanguinity, 0.08, 12, 220.0, 40.0);
         assert_eq!(recent.pattern, "Recent shared ancestry");
         assert!(recent.summary_phrase.contains("few generations"));
+        // Both classes present — previously mislabelled as "recent" purely because one run was ≥15 Mb.
+        let mixed = roh_brief(RohPattern::Mixed, 0.05, 30, 150.0, 18.0);
+        assert_eq!(mixed.pattern, "Mixed shared ancestry");
+        // No runs at all always reads as outbred, whatever the classifier says of an empty set.
+        assert_eq!(roh_brief(RohPattern::Mixed, 0.0, 0, 0.0, 0.0).pattern, "Outbred");
     }
 
     #[test]

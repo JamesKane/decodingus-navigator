@@ -882,13 +882,7 @@ impl NavigatorApp {
     /// layer refuses (surfaced via the status bar) when the subject still has dependent data.
     pub(crate) fn delete_subject_modal(&mut self, ctx: &egui::Context) {
         let Some(guid) = self.confirm_delete else { return };
-        let name = self
-            .all_biosamples
-            .iter()
-            .chain(self.samples.iter())
-            .find(|b| b.guid == guid)
-            .map(|b| b.donor_identifier.clone())
-            .unwrap_or_else(|| guid.0.to_string());
+        let name = self.subject_label(guid);
 
         let mut close = false;
         modal_frame(ctx, "delete_subject_modal", 400.0, |ui| {
@@ -928,13 +922,7 @@ impl NavigatorApp {
     /// subject itself — the recovery tool for a botched import.
     pub(crate) fn clear_subject_modal(&mut self, ctx: &egui::Context) {
         let Some(guid) = self.confirm_clear else { return };
-        let name = self
-            .all_biosamples
-            .iter()
-            .chain(self.samples.iter())
-            .find(|b| b.guid == guid)
-            .map(|b| b.donor_identifier.clone())
-            .unwrap_or_else(|| guid.0.to_string());
+        let name = self.subject_label(guid);
 
         let mut close = false;
         modal_frame(ctx, "clear_subject_modal", 420.0, |ui| {
@@ -970,13 +958,7 @@ impl NavigatorApp {
     /// coverage/ancestry/imported data; the placement re-derives on the next full analysis / re-import.
     pub(crate) fn reset_haplo_modal(&mut self, ctx: &egui::Context) {
         let Some(guid) = self.confirm_reset_haplo else { return };
-        let name = self
-            .all_biosamples
-            .iter()
-            .chain(self.samples.iter())
-            .find(|b| b.guid == guid)
-            .map(|b| b.donor_identifier.clone())
-            .unwrap_or_else(|| guid.0.to_string());
+        let name = self.subject_label(guid);
 
         let mut close = false;
         modal_frame(ctx, "reset_haplo_modal", 440.0, |ui| {

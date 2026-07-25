@@ -11,8 +11,8 @@ use crate::charts::{
     draw_variant_track, parse_hex_color, top_populations_for_side, TrackRegion, VariantMark,
 };
 use crate::widgets::{
-    capitalize_first, card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt, provider_abbrev,
-    show_assignment, sortable_header, stat_card, variant_change, TableControls,
+    button_hit, capitalize_first, card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt,
+    provider_abbrev, show_assignment, sortable_header, stat_card, variant_change, TableControls,
 };
 use eframe::egui;
 use navigator_app::{
@@ -948,8 +948,7 @@ const AUTO_DETECT: &str = "(auto-detect)";
 
 /// The workbench accent (primary buttons, selection, active tabs).
 pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(45, 125, 246);
-/// Destructive-action red (Delete) — used by the subject header in Phase 2.
-#[allow(dead_code)]
+/// Destructive-action red (Delete buttons, the confirm modals, unconfirmed rows).
 const DANGER: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
 
 /// Rows shown before the heavy variant/site tables (Y/mt/autosomal consensus profiles, private-Y,

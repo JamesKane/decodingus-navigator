@@ -576,13 +576,7 @@ impl NavigatorApp {
 
     /// The subject-detail header: big name, ID + sex, and Add Data / Edit / Delete actions.
     fn subject_detail_header(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        let bio = self
-            .all_biosamples
-            .iter()
-            .chain(self.samples.iter())
-            .find(|b| b.guid == guid)
-            .cloned();
-        let Some(bio) = bio else { return };
+        let Some(bio) = self.find_subject(guid).cloned() else { return };
         ui.add_space(6.0);
         // When the subject was opened from a project's report, offer a way back to that project.
         if let Some(pid) = self.return_to_project {
@@ -721,12 +715,7 @@ impl NavigatorApp {
                         .clicked()
                     {
                         if let Some(guid) = self.selected_sample {
-                            let current = self
-                                .all_biosamples
-                                .iter()
-                                .chain(self.samples.iter())
-                                .find(|b| b.guid == guid)
-                                .and_then(|b| b.project_id);
+                            let current = self.find_subject(guid).and_then(|b| b.project_id);
                             self.assign_project = Some((guid, current));
                         }
                     }

@@ -2685,11 +2685,7 @@ impl NavigatorApp {
             // clicks; treat a button as hit when it was clicked OR the row swallowed the click
             // while the pointer was over it.
             let row_clicked = inner.response.interact(egui::Sense::click()).clicked();
-            let hit = |b: &Option<egui::Response>| {
-                b.as_ref()
-                    .is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
-            };
-            if hit(&edit_btn) {
+            if button_hit(&edit_btn, row_clicked) {
                 want_edit_run = Some(EditRun {
                     id: r.id,
                     guid,
@@ -2699,13 +2695,13 @@ impl NavigatorApp {
                     library_layout: r.library_layout.clone().unwrap_or_default(),
                     sequencing_facility: r.sequencing_facility.clone().unwrap_or_default(),
                 });
-            } else if hit(&del_btn) {
+            } else if button_hit(&del_btn, row_clicked) {
                 want_delete = Some(DataDelete::Run {
                     id: r.id,
                     guid,
                     label: format!("run “{}”", testtype::display_name(&r.test_type)),
                 });
-            } else if hit(&merge_btn) {
+            } else if button_hit(&merge_btn, row_clicked) {
                 want_merge = Some(r.id);
             } else if row_clicked {
                 pick_run = Some(r.id);
@@ -2754,11 +2750,7 @@ impl NavigatorApp {
                             });
                         let (edit_btn, del_btn) = row.inner;
                         let row_clicked = row.response.interact(egui::Sense::click()).clicked();
-                        let hit = |b: &Option<egui::Response>| {
-                            b.as_ref()
-                                .is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
-                        };
-                        if hit(&edit_btn) {
+                        if button_hit(&edit_btn, row_clicked) {
                             want_edit_aln = Some(EditAlignment {
                                 id: a.id,
                                 run_id: r.id,
@@ -2766,7 +2758,7 @@ impl NavigatorApp {
                                 aligner: a.aligner.clone(),
                                 variant_caller: a.variant_caller.clone().unwrap_or_default(),
                             });
-                        } else if hit(&del_btn) {
+                        } else if button_hit(&del_btn, row_clicked) {
                             want_delete = Some(DataDelete::Alignment {
                                 id: a.id,
                                 run_id: r.id,

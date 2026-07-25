@@ -1311,18 +1311,15 @@ impl App {
                     .await??;
                     let index: HashMap<String, String> = file_contigs
                         .into_iter()
-                        .map(|c| {
-                            let key = c.strip_prefix("chr").unwrap_or(&c).to_ascii_uppercase();
-                            (key, c)
-                        })
+                        .map(|c| (navigator_analysis::contig::bare_upper(&c), c))
                         .collect();
                     let sites: Vec<Site> = panel
                         .sites
                         .iter()
                         .filter_map(|s| {
                             let l = s.locus(&build)?;
-                            let norm = l.contig.strip_prefix("chr").unwrap_or(&l.contig).to_ascii_uppercase();
-                            let contig = index.get(&norm)?.clone();
+                            let key = navigator_analysis::contig::bare_upper(&l.contig);
+                            let contig = index.get(&key)?.clone();
                             Some(Site {
                                 name: s.rsid.clone(),
                                 contig,

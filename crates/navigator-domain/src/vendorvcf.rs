@@ -90,11 +90,7 @@ pub fn classify(meta: &str, contigs: &[String], filename: &str, readme: Option<&
 }
 
 fn core(name: &str) -> &str {
-    name.strip_prefix("chr")
-        .unwrap_or(name)
-        .split('_')
-        .next()
-        .unwrap_or(name)
+    crate::contig::bare(name).split('_').next().unwrap_or(name)
 }
 fn is_y_contig(name: &str) -> bool {
     core(name) == "Y"

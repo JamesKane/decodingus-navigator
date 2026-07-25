@@ -83,9 +83,8 @@ enum Region {
 }
 
 fn region(chrom: &str) -> Region {
-    let lc = chrom.trim().trim_matches('"').to_ascii_lowercase();
-    let core = lc.strip_prefix("chr").unwrap_or(&lc);
-    match core {
+    let core = crate::contig::bare(chrom.trim().trim_matches('"')).to_ascii_lowercase();
+    match core.as_str() {
         "y" | "24" => Region::Y,
         "mt" | "m" | "26" => Region::Mt,
         c if c.parse::<u32>().map(|n| (1..=22).contains(&n)).unwrap_or(false) => Region::Autosomal,
@@ -317,8 +316,7 @@ pub fn autosomal_calls(text: &str) -> Vec<ChipAutosomalCall> {
             continue;
         }
         // Normalize the chromosome to chrN (1..22) — matches the CHM13 panel + liftover contig naming.
-        let core = cols[1].trim().trim_matches('"').to_ascii_lowercase();
-        let core = core.strip_prefix("chr").unwrap_or(&core);
+        let core = crate::contig::bare(cols[1].trim().trim_matches('"')).to_ascii_lowercase();
         let Ok(position) = cols[2].parse::<i64>() else { continue };
         let genotype = if cols.len() >= 5 {
             format!("{}{}", cols[3], cols[4])

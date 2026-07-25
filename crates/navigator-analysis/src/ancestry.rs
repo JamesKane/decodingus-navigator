@@ -296,21 +296,40 @@ pub fn project_pca(genotypes: &[SiteGenotype], pca: &PcaLoadings) -> Vec<f64> {
         .map(|g| ((g.contig.as_str(), g.position), g.dosage))
         .collect();
 
-    let mut coords = vec![0.0f64; pca.n_components];
+    let centered = pca.sites.iter().enumerate().filter_map(|(i, (contig, pos))| {
+        let &d = dosage.get(&(contig.as_str(), *pos))?;
+        Some((i, d as f64 - pca.means[i] as f64))
+    });
+    project_centered(pca.sites.len(), pca.n_components, centered, |i, c| {
+        pca.loading(i, c) as f64
+    })
+}
+
+/// The PCA projection kernel: accumulate `centered · loading` into each component over the sites
+/// the sample actually has, then un-shrink by `n_sites / used` so a sample with missing genotypes
+/// isn't pulled toward the origin (see [`project_pca`]).
+///
+/// `centered` yields `(site index, dosage − site mean)` for each present site; `loading` reads the
+/// `(site, component)` basis entry. Both are supplied by the caller because the runtime projector
+/// and the offline basis builder hold their basis in different layouts (`PcaLoadings` vs a
+/// `DMatrix`) — the scaling policy, which has to agree between them, lives here.
+pub fn project_centered(
+    n_sites: usize,
+    n_components: usize,
+    centered: impl Iterator<Item = (usize, f64)>,
+    loading: impl Fn(usize, usize) -> f64,
+) -> Vec<f64> {
+    let mut coords = vec![0.0f64; n_components];
     let mut used = 0usize;
-    for (i, (contig, pos)) in pca.sites.iter().enumerate() {
-        let centered = match dosage.get(&(contig.as_str(), *pos)) {
-            Some(&d) => d as f64 - pca.means[i] as f64,
-            None => continue,
-        };
+    for (i, value) in centered {
         used += 1;
         for (c, coord) in coords.iter_mut().enumerate() {
-            *coord += centered * pca.loading(i, c) as f64;
+            *coord += value * loading(i, c);
         }
     }
     // Un-shrink: reference coords were built from all sites; scale up for the missing fraction.
     if used > 0 {
-        let scale = pca.sites.len() as f64 / used as f64;
+        let scale = n_sites as f64 / used as f64;
         for coord in &mut coords {
             *coord *= scale;
         }

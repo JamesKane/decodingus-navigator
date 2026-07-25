@@ -317,6 +317,9 @@ impl App {
     /// `None` until those analyses have run.
     pub async fn project_report(&self, project_id: i64) -> Result<Vec<ProjectSampleReport>, AppError> {
         let mut out = Vec::new();
+        // One bulk reconciliation for the whole workspace rather than two queries per member —
+        // same precedence (per-run vote → placed label → manual override) as `haplogroup_consensus`.
+        let terminals = self.haplogroup_terminals().await?;
         for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
             let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
             let mut coverage = None;
@@ -338,14 +341,7 @@ impl App {
             };
             // Prefer the coverage-bearing alignment; else fall back to the first.
             let primary_alignment_id = coverage_aln.or_else(|| alignments.first().map(|a| a.id));
-            let y_haplogroup = self
-                .haplogroup_consensus(biosample.guid, DnaType::Y)
-                .await?
-                .map(|c| c.haplogroup);
-            let mt_haplogroup = self
-                .haplogroup_consensus(biosample.guid, DnaType::Mt)
-                .await?
-                .map(|c| c.haplogroup);
+            let (y_haplogroup, mt_haplogroup) = terminals.get(&biosample.guid).cloned().unwrap_or_default();
             // Sex + read-metrics from whichever alignment has them cached.
             let mut sex = None;
             let mut metrics = None;
@@ -401,6 +397,8 @@ impl App {
     pub async fn project_str_overview(&self, project_id: i64) -> Result<Vec<ProjectStrMember>, AppError> {
         use navigator_domain::{strpanel, strprofile};
         let mut out = Vec::new();
+        // One bulk reconciliation for the whole workspace rather than two queries per member.
+        let terminals = self.haplogroup_terminals().await?;
         for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
             let profiles = self.list_str_profiles(biosample.guid).await?;
             if profiles.is_empty() {
@@ -423,9 +421,8 @@ impl App {
                 .unwrap_or("FTDNA");
             let test = strpanel::classify_panel(&normed, Some(provider)).panel_name;
 
-            let consensus = self.haplogroup_consensus(biosample.guid, DnaType::Y).await?;
-            let y_confirmed = consensus.is_some();
-            let y_haplogroup = consensus.map(|c| c.haplogroup);
+            let y_haplogroup = terminals.get(&biosample.guid).and_then(|(y, _)| y.clone());
+            let y_confirmed = y_haplogroup.is_some();
 
             out.push(ProjectStrMember {
                 guid: biosample.guid,

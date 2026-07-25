@@ -430,18 +430,9 @@ async fn backfill_accessions(args: AccessionArgs) -> i32 {
         Ok(a) => a,
         Err(c) => return c,
     };
-    let project_id = match &args.project {
-        Some(name) => {
-            let overview = app.project_overview().await.unwrap_or_default();
-            match overview.iter().find(|o| o.project.name == *name) {
-                Some(o) => Some(o.project.id),
-                None => {
-                    eprintln!("error: no project named \"{name}\"");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
+        Ok(v) => v,
+        Err(c) => return c,
     };
     let r = match app.backfill_accessions(project_id, args.apply, args.all, args.limit).await {
         Ok(r) => r,
@@ -476,18 +467,9 @@ async fn backfill_catalog_ids(args: CatalogArgs) -> i32 {
         Ok(a) => a,
         Err(c) => return c,
     };
-    let project_id = match &args.project {
-        Some(name) => {
-            let overview = app.project_overview().await.unwrap_or_default();
-            match overview.iter().find(|o| o.project.name == *name) {
-                Some(o) => Some(o.project.id),
-                None => {
-                    eprintln!("error: no project named \"{name}\"");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
+        Ok(v) => v,
+        Err(c) => return c,
     };
     let r = match app.backfill_catalog_ids(project_id, args.apply).await {
         Ok(r) => r,
@@ -569,18 +551,9 @@ async fn backfill_profiles(args: BackfillArgs) -> i32 {
         Ok(a) => a,
         Err(c) => return c,
     };
-    let project_id = match &args.project {
-        Some(name) => {
-            let overview = app.project_overview().await.unwrap_or_default();
-            match overview.iter().find(|o| o.project.name == *name) {
-                Some(o) => Some(o.project.id),
-                None => {
-                    eprintln!("error: no project named \"{name}\"");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
+        Ok(v) => v,
+        Err(c) => return c,
     };
 
     let r = match app.backfill_read_profiles(project_id, args.rescan).await {
@@ -621,19 +594,9 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
         Err(c) => return c,
     };
 
-    // Resolve the optional project filter to an id.
-    let project_id = match &args.project {
-        Some(name) => {
-            let overview = app.project_overview().await.unwrap_or_default();
-            match overview.iter().find(|o| o.project.name == *name) {
-                Some(o) => Some(o.project.id),
-                None => {
-                    eprintln!("error: no project named \"{name}\"");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
+        Ok(v) => v,
+        Err(c) => return c,
     };
 
     let bios = match app.list_all_biosamples().await {
@@ -695,19 +658,9 @@ async fn reingest_external(args: ReingestArgs) -> i32 {
         Err(c) => return c,
     };
 
-    // Resolve the optional project filter to an id.
-    let project_id = match &args.project {
-        Some(name) => {
-            let overview = app.project_overview().await.unwrap_or_default();
-            match overview.iter().find(|o| o.project.name == *name) {
-                Some(o) => Some(o.project.id),
-                None => {
-                    eprintln!("error: no project named \"{name}\"");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
+        Ok(v) => v,
+        Err(c) => return c,
     };
 
     let bios = match app.list_all_biosamples().await {
@@ -871,6 +824,21 @@ async fn open(db: Option<PathBuf>) -> Result<App, i32> {
         eprintln!("error: could not open workspace {}: {e}", path.display());
         1
     })
+}
+
+/// Resolve an optional `--project NAME` filter to its id. `Ok(None)` means "no filter"; `Err(code)`
+/// means the name matched nothing — the message is already printed, so the caller just returns the
+/// code as its exit status.
+async fn resolve_project_filter(app: &App, name: Option<&String>) -> Result<Option<i64>, i32> {
+    let Some(name) = name else { return Ok(None) };
+    let overview = app.project_overview().await.unwrap_or_default();
+    match overview.iter().find(|o| o.project.name == *name) {
+        Some(o) => Ok(Some(o.project.id)),
+        None => {
+            eprintln!("error: no project named \"{name}\"");
+            Err(1)
+        }
+    }
 }
 
 /// Find a subject by exact donor identifier, returning its guid if present.

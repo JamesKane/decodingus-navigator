@@ -706,13 +706,7 @@ fn tree_cache_is_fresh(path: &Path) -> bool {
         .and_then(|v| v.trim().parse::<u64>().ok())
         .or_else(|| AppSettings::load().tree_ttl_days)
         .unwrap_or(TREE_CACHE_TTL_DAYS_DEFAULT);
-    let ttl = std::time::Duration::from_secs(days * 24 * 3600);
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|mtime| std::time::SystemTime::now().duration_since(mtime).ok())
-        .map(|age| age < ttl)
-        .unwrap_or(false)
+    brief::cache_is_fresh(path, days)
 }
 
 /// Score a tree against the sample calls and attach the terminal's child-branch evidence.
@@ -1587,21 +1581,6 @@ fn contributing_subdirs(root: &std::path::Path, files: &[PathBuf]) -> std::colle
         }
     }
     set
-}
-
-/// Whether `name` is a primary chromosome (1–22, X, Y, M/MT), with or without a `chr` prefix —
-/// the contigs the whole-genome caller considers (skipping alts / decoys / unplaced).
-fn is_primary_contig(name: &str) -> bool {
-    let s = name.strip_prefix("chr").unwrap_or(name).to_ascii_uppercase();
-    matches!(s.as_str(), "X" | "Y" | "M" | "MT") || s.parse::<u32>().map(|n| (1..=22).contains(&n)).unwrap_or(false)
-}
-
-/// Whether `name` is a **haploid** contig — chrY and chrM/MT carry a single allele, so the diploid
-/// (het 0/1 + hom-alt 1/1) model doesn't apply; the haploid caller + Y/mt haplogroup placement own
-/// them. (chrX is haploid only in a male — left to the sex-aware refinement, not treated here.)
-fn is_haploid_contig(name: &str) -> bool {
-    let s = name.strip_prefix("chr").unwrap_or(name).to_ascii_uppercase();
-    matches!(s.as_str(), "Y" | "M" | "MT")
 }
 
 /// The result of one [`App::drain_outbox`] pass — what the UI reports / shows in its indicator.
@@ -3945,23 +3924,6 @@ mod ibd_federated_tests {
 #[cfg(test)]
 mod export_tests {
     use super::*;
-
-    #[test]
-    fn primary_contig_filter() {
-        for ok in ["chr1", "1", "chr22", "22", "chrX", "X", "chrY", "Y", "chrM", "MT"] {
-            assert!(is_primary_contig(ok), "{ok} should be primary");
-        }
-        for no in [
-            "chr23",
-            "chrUn_KI270302v1",
-            "chr1_KI270706v1_random",
-            "HLA-A",
-            "GL000220.1",
-            "",
-        ] {
-            assert!(!is_primary_contig(no), "{no} should not be primary");
-        }
-    }
 
     #[test]
     fn diploid_vcf_export_metadata() {

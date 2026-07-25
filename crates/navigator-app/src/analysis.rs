@@ -1,7 +1,7 @@
 //! `impl App` methods extracted from `lib.rs` (the `analysis` cluster). Split out in the
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
-use navigator_analysis::CancelToken;
+use navigator_analysis::{contig, CancelToken};
 
 impl App {
     // ---- analysis (compute + persist) --------------------------------------
@@ -512,14 +512,7 @@ impl App {
         let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
         // chrY / chrM are haploid (one allele); autosomes + chrX (in a female) are diploid. We
         // genotype chrY/chrM haploid and everything else diploid — sex-aware chrX is a refinement.
-        let ploidy: u8 = {
-            let c = contig.strip_prefix("chr").unwrap_or(&contig).to_ascii_uppercase();
-            if c == "Y" || c == "M" || c == "MT" {
-                1
-            } else {
-                2
-            }
-        };
+        let ploidy: u8 = if contig::is_haploid(&contig) { 1 } else { 2 };
         let params = navigator_analysis::strcaller::StrCallerParams::default();
         let genos = tokio::task::spawn_blocking(move || {
             let loci = navigator_analysis::strref::load_hipstr_contig(&bed, &contig, 2)?;
@@ -743,7 +736,7 @@ impl App {
         let mut all = Vec::new();
         for contig in contigs
             .into_iter()
-            .filter(|c| is_primary_contig(c) && !is_haploid_contig(c))
+            .filter(|c| contig::is_main_assembly(c) && !contig::is_haploid(c))
         {
             all.extend(self.run_diploid_calls(alignment_id, contig, cancel.clone()).await?);
         }
@@ -813,7 +806,7 @@ impl App {
                     tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, Some(&reference)))
                         .await??
                         .into_iter()
-                        .filter(|c| is_primary_contig(c))
+                        .filter(|c| contig::is_main_assembly(c))
                         .collect()
                 }
             };

@@ -186,6 +186,15 @@ pub(crate) fn chip(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::C
     response
 }
 
+/// Whether a button embedded in a clickable row was activated: either it was clicked directly, or
+/// the row swallowed the press while the pointer was over the button. Both selectable-row lists (runs
+/// and their alignments) need the same rule, so it has one definition.
+pub(crate) fn button_hit(button: &Option<egui::Response>, row_clicked: bool) -> bool {
+    button
+        .as_ref()
+        .is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
+}
+
 /// 3-letter provider abbreviation for the run chip (PACBIO → PAC).
 pub(crate) fn provider_abbrev(platform: &str) -> String {
     let p = platform.trim();

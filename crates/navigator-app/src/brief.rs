@@ -41,7 +41,7 @@ fn brief_pack_cache_path() -> std::path::PathBuf {
 }
 
 /// Is the cached file within `ttl_days`? Unknown/unreadable mtime → not fresh (forces a refresh try).
-fn cache_is_fresh(path: &std::path::Path, ttl_days: u64) -> bool {
+pub(crate) fn cache_is_fresh(path: &std::path::Path, ttl_days: u64) -> bool {
     let ttl = std::time::Duration::from_secs(ttl_days * 24 * 3600);
     std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -170,10 +170,15 @@ impl App {
 
         // Runs-of-homozygosity (relatedness / endogamy). Read-only: only surfaced when it's already
         // been computed and cached (the brief must stay cheap — ROH computation is on-demand).
-        let roh = self
-            .cached_roh(biosample_guid)
-            .await?
-            .map(|r| brief::roh_brief(r.summary.f_roh, r.summary.n_segments, r.summary.total_roh_mb, r.summary.longest_mb));
+        let roh = self.cached_roh(biosample_guid).await?.map(|r| {
+            brief::roh_brief(
+                r.summary.pattern,
+                r.summary.f_roh,
+                r.summary.n_segments,
+                r.summary.total_roh_mb,
+                r.summary.longest_mb,
+            )
+        });
 
         // Global caveats.
         let mut caveats = Vec::new();

@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     // Try the stored contig name, then chr/bare variants, so a naming mismatch doesn't masquerade
     // as a coordinate error.
     let g38_base = |g38: &mut _, l: &navigator_analysis::ibd_panel::Locus| -> Option<char> {
-        let bare = l.contig.strip_prefix("chr").unwrap_or(&l.contig).to_string();
+        let bare = navigator_analysis::contig::bare(&l.contig).to_string();
         base_at(g38, &l.contig, l.position)
             .or_else(|| base_at(g38, &bare, l.position))
             .or_else(|| base_at(g38, &format!("chr{bare}"), l.position))

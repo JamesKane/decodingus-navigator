@@ -3734,7 +3734,7 @@ impl App {
         set.calls
             .iter()
             .filter_map(|c| {
-                let bare = c.contig.strip_prefix("chr").unwrap_or(&c.contig);
+                let bare = navigator_analysis::contig::bare(&c.contig);
                 let n: u32 = bare.parse().ok()?;
                 if !(1..=22).contains(&n) {
                     return None;
@@ -4011,7 +4011,7 @@ impl App {
         let names = tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, reference.as_deref()))
             .await??;
         // Candidate spellings for the requested contig, in preference order.
-        let bare = contig.strip_prefix("chr").unwrap_or(contig);
+        let bare = navigator_analysis::contig::bare(contig);
         let mut candidates: Vec<String> = vec![contig.to_string(), bare.to_string()];
         if bare.eq_ignore_ascii_case("M") || bare.eq_ignore_ascii_case("MT") {
             for alt in ["chrM", "chrMT", "M", "MT"] {
@@ -4287,7 +4287,7 @@ impl App {
         for (qcontig, set) in by_contig {
             // Tolerate naming conventions between the lift target and the header (e.g. a `chrY`
             // lift against a GRCh37 `Y`-named header): query the header's actual spelling.
-            let bare = qcontig.strip_prefix("chr").unwrap_or(&qcontig);
+            let bare = navigator_analysis::contig::bare(&qcontig);
             let Some(query_contig) = header_contigs
                 .iter()
                 .find(|n| n.eq_ignore_ascii_case(&qcontig) || n.eq_ignore_ascii_case(bare))
