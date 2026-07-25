@@ -223,6 +223,65 @@ impl HaplotypeReference {
     pub fn is_empty(&self) -> bool {
         self.n_sites == 0 || self.n_haplotypes == 0
     }
+
+    /// The same reference with the haplotypes in `drop` removed (sites, population axis and every
+    /// other haplotype unchanged). Leave-one-out validation of the copying painter needs it: a test
+    /// individual taken *from* the reference would otherwise be painted by copying itself, which
+    /// measures nothing. Unknown indices are ignored.
+    pub fn without_haplotypes(&self, drop: &[usize]) -> Self {
+        let dropped: std::collections::HashSet<usize> = drop.iter().copied().collect();
+        let keep: Vec<usize> = (0..self.n_haplotypes).filter(|h| !dropped.contains(h)).collect();
+        let mut alleles = vec![0u64; (keep.len() * self.n_sites).div_ceil(64)];
+        for (new_h, &old_h) in keep.iter().enumerate() {
+            let base = new_h * self.n_sites;
+            for s in 0..self.n_sites {
+                if self.allele(old_h, s) != 0 {
+                    let bit = base + s;
+                    alleles[bit / 64] |= 1u64 << (bit % 64);
+                }
+            }
+        }
+        HaplotypeReference {
+            build: self.build.clone(),
+            sites: self.sites.clone(),
+            populations: self.populations.clone(),
+            hap_pop: keep.iter().map(|&h| self.hap_pop[h]).collect(),
+            alleles,
+            n_sites: self.n_sites,
+            n_haplotypes: keep.len(),
+        }
+    }
+
+    /// The same reference thinned to every `step`-th site (`step` <= 1 returns a clone). Marker
+    /// density is the copying model's binding constraint — a shared tract only identifies whose
+    /// haplotype it is if enough markers fall inside it — so measuring accuracy against density
+    /// needs the same panel at several densities, which this produces without rebuilding the asset.
+    pub fn thin_sites(&self, step: usize) -> Self {
+        if step <= 1 {
+            return self.clone();
+        }
+        let keep: Vec<usize> = (0..self.n_sites).step_by(step).collect();
+        let n_sites = keep.len();
+        let mut alleles = vec![0u64; (self.n_haplotypes * n_sites).div_ceil(64)];
+        for h in 0..self.n_haplotypes {
+            let base = h * n_sites;
+            for (new_s, &old_s) in keep.iter().enumerate() {
+                if self.allele(h, old_s) != 0 {
+                    let bit = base + new_s;
+                    alleles[bit / 64] |= 1u64 << (bit % 64);
+                }
+            }
+        }
+        HaplotypeReference {
+            build: self.build.clone(),
+            sites: keep.iter().map(|&s| self.sites[s].clone()).collect(),
+            populations: self.populations.clone(),
+            hap_pop: self.hap_pop.clone(),
+            alleles,
+            n_sites,
+            n_haplotypes: self.n_haplotypes,
+        }
+    }
 }
 
 /// Project a sample's genotypes onto the reference PCA space: centre each site by its panel
@@ -1754,6 +1813,71 @@ fn confidence_from_completeness(snps_with_data: usize, total_snps: usize) -> f64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dropping haplotypes keeps every remaining row's alleles and population label intact.
+    #[test]
+    fn without_haplotypes_preserves_the_kept_rows() {
+        let sites: Vec<HapSite> = (0..7)
+            .map(|i| HapSite {
+                contig: "chr1".to_string(),
+                position: 100 + i as i64,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+            })
+            .collect();
+        // 4 haplotypes with distinct patterns (row h has bit set where (s + h) % 3 == 0).
+        let rows: Vec<Vec<u8>> = (0..4)
+            .map(|h| (0..7).map(|s| ((s + h) % 3 == 0) as u8).collect())
+            .collect();
+        let full = HaplotypeReference::from_rows(
+            "t".to_string(),
+            sites,
+            vec!["GBR".to_string(), "YRI".to_string()],
+            vec![0, 0, 1, 1],
+            &rows,
+        );
+
+        let reduced = full.without_haplotypes(&[1, 2, 99]); // 99 is not a haplotype — ignored
+        assert_eq!(reduced.n_haplotypes, 2);
+        assert_eq!(reduced.n_sites, full.n_sites);
+        for (new_h, old_h) in [(0usize, 0usize), (1, 3)] {
+            assert_eq!(reduced.population_of(new_h), full.population_of(old_h));
+            for s in 0..full.n_sites {
+                assert_eq!(reduced.allele(new_h, s), full.allele(old_h, s), "hap {new_h} site {s}");
+            }
+        }
+    }
+
+    /// Thinning keeps every step-th site's alleles intact on every haplotype.
+    #[test]
+    fn thin_sites_keeps_every_nth_column() {
+        let sites: Vec<HapSite> = (0..9)
+            .map(|i| HapSite {
+                contig: "chr1".to_string(),
+                position: 100 + i as i64,
+                reference_allele: 'A',
+                alternate_allele: 'G',
+            })
+            .collect();
+        let rows: Vec<Vec<u8>> = (0..3).map(|h| (0..9).map(|s| ((s + h) % 2 == 0) as u8).collect()).collect();
+        let full = HaplotypeReference::from_rows(
+            "t".to_string(),
+            sites,
+            vec!["GBR".to_string()],
+            vec![0, 0, 0],
+            &rows,
+        );
+        let thin = full.thin_sites(3);
+        assert_eq!(thin.n_sites, 3);
+        assert_eq!(thin.n_haplotypes, 3);
+        for (new_s, old_s) in [(0usize, 0usize), (1, 3), (2, 6)] {
+            assert_eq!(thin.sites[new_s], full.sites[old_s]);
+            for h in 0..3 {
+                assert_eq!(thin.allele(h, new_s), full.allele(h, old_s), "hap {h} site {new_s}");
+            }
+        }
+        assert_eq!(full.thin_sites(1).n_sites, full.n_sites);
+    }
 
     #[test]
     fn dosage_from_alleles_counts_alt_with_strand_flip() {

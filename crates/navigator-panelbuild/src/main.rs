@@ -26,6 +26,7 @@ use navigator_analysis::ancestry::{AncestryPanel, PanelSite};
 mod genetic_map;
 mod hap_panel;
 mod ibd_panel;
+mod lai_validate;
 mod manifest;
 mod pca;
 mod validate_ancient;
@@ -57,6 +58,10 @@ enum Cmd {
     /// Run the ancient panel's validation gates (simulate reference individuals, check the fit).
     /// The ancient asset must not be published until this passes.
     ValidateAncient(validate_ancient::ValidateAncientArgs),
+    /// Score the chromosome painter (copying LAI) against known truth: hold reference individuals
+    /// out of the panel, paint them, and report per-site accuracy — with `--sweep` to calibrate the
+    /// painter's knobs numerically instead of by eye.
+    ValidateLai(lai_validate::LaiValidateArgs),
     /// Build the IBD genetic-map asset from a CHM13-lifted recombination map.
     GeneticMap(genetic_map::GeneticMapArgs),
     /// Build the chip-compatible IBD panel (multi-build, palindrome-free) from a sites table.
@@ -124,6 +129,7 @@ fn main() -> Result<()> {
         Cmd::HapPanel(args) => hap_panel::build_hap_panel(args),
         Cmd::AncientPanel(args) => pca::build_ancient_panel(args),
         Cmd::ValidateAncient(args) => validate_ancient::validate_ancient(args),
+        Cmd::ValidateLai(args) => lai_validate::validate_lai(args),
         Cmd::GeneticMap(args) => genetic_map::build_genetic_map(args),
         Cmd::IbdPanel(args) => ibd_panel::build_ibd_panel(args),
         Cmd::Manifest(args) => manifest::build_manifest(args),

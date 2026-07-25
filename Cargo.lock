@@ -3324,6 +3324,7 @@ dependencies = [
  "navigator-analysis",
  "navigator-domain",
  "noodles",
+ "rayon",
 ]
 
 [[package]]
