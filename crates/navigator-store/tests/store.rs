@@ -3,7 +3,7 @@
 use chrono::Utc;
 use du_domain::ids::SampleGuid;
 use navigator_domain::workspace::{Biosample, NewAlignment, NewProject, NewSequenceRun};
-use navigator_store::{alignment, artifact, biosample, project, sequence_run, source_file, Store};
+use navigator_store::{alignment, artifact, biosample, biosample_project, project, sequence_run, source_file, Store};
 use uuid::Uuid;
 
 async fn store() -> Store {
@@ -689,4 +689,144 @@ async fn haplogroup_call_fingerprint_round_trips() {
         .await
         .unwrap()
         .is_none());
+}
+
+/// `member_counts` is a rewrite of `count_members_for_project` as one `GROUP BY`; the two must agree
+/// on every membership shape — M:N only, legacy home column only, both at once (must not double
+/// count), and a membership row whose subject has been deleted (must not count).
+#[tokio::test]
+async fn bulk_member_counts_match_the_per_project_count() {
+    let s = store().await;
+    let mk_project = |name: &str| NewProject {
+        name: name.into(),
+        description: None,
+        administrator: "jk".into(),
+    };
+    let p1 = project::create(s.pool(), &mk_project("P1")).await.unwrap();
+    let p2 = project::create(s.pool(), &mk_project("P2")).await.unwrap();
+    let empty = project::create(s.pool(), &mk_project("Empty")).await.unwrap();
+
+    // M:N member of p1 only.
+    let a = sample(None);
+    biosample::create(s.pool(), &a).await.unwrap();
+    biosample_project::add(s.pool(), a.guid, p1.id, None, "2026-07-25").await.unwrap();
+    // Legacy home column of p1 only.
+    let b = sample(Some(p1.id));
+    biosample::create(s.pool(), &b).await.unwrap();
+    // Both M:N and home for p1 — the UNION must count this once, not twice.
+    let c = sample(Some(p1.id));
+    biosample::create(s.pool(), &c).await.unwrap();
+    biosample_project::add(s.pool(), c.guid, p1.id, None, "2026-07-25").await.unwrap();
+    // Member of p2 only, so the GROUP BY has to key correctly.
+    let d = sample(None);
+    biosample::create(s.pool(), &d).await.unwrap();
+    biosample_project::add(s.pool(), d.guid, p2.id, None, "2026-07-25").await.unwrap();
+
+    let counts: std::collections::HashMap<i64, i64> =
+        biosample::member_counts(s.pool()).await.unwrap().into_iter().collect();
+    for p in [p1.id, p2.id, empty.id] {
+        let one = biosample::count_members_for_project(s.pool(), p).await.unwrap();
+        assert_eq!(counts.get(&p).copied().unwrap_or(0), one, "project {p}");
+    }
+    assert_eq!(counts.get(&p1.id).copied().unwrap_or(0), 3, "a, b, c — c counted once");
+    assert_eq!(counts.get(&empty.id), None, "a project with no members is absent, not zero");
+
+    // Removing a subject drops its membership first (a foreign key forbids a dangling
+    // `biosample_project` row, which is why both count forms can join to `biosample` safely).
+    biosample_project::remove(s.pool(), a.guid, p1.id).await.unwrap();
+    biosample::delete(s.pool(), a.guid).await.unwrap();
+    let counts: std::collections::HashMap<i64, i64> =
+        biosample::member_counts(s.pool()).await.unwrap().into_iter().collect();
+    let one = biosample::count_members_for_project(s.pool(), p1.id).await.unwrap();
+    assert_eq!(counts.get(&p1.id).copied().unwrap_or(0), one);
+    assert_eq!(one, 2, "b and c remain");
+}
+
+/// The bulk artifact/alignment loaders must return exactly what a per-item loop would.
+#[tokio::test]
+async fn bulk_loaders_match_the_per_item_queries() {
+    let s = store().await;
+    let mut guids = Vec::new();
+    let mut aln_ids = Vec::new();
+    for i in 0..3 {
+        let b = sample(None);
+        biosample::create(s.pool(), &b).await.unwrap();
+        guids.push(b.guid);
+        let run = sequence_run::create(
+            s.pool(),
+            &NewSequenceRun {
+                biosample_guid: b.guid,
+                platform_name: "ILLUMINA".into(),
+                instrument_model: None,
+                test_type: "WGS".into(),
+                library_layout: None,
+                total_reads: None,
+                pf_reads_aligned: None,
+                mean_read_length: None,
+                mean_insert_size: None,
+            },
+        )
+        .await
+        .unwrap();
+        // Two alignments on the middle subject, so grouping by subject is actually exercised.
+        for _ in 0..if i == 1 { 2 } else { 1 } {
+            let aln = alignment::create(
+                s.pool(),
+                &NewAlignment {
+                    sequence_run_id: run.id,
+                    reference_build: "chm13v2.0".into(),
+                    aligner: "bwa".into(),
+                    variant_caller: None,
+                    bam_path: None,
+                    reference_path: None,
+                    content_sha256: None,
+                },
+            )
+            .await
+            .unwrap();
+            for kind in ["coverage", "sex"] {
+                artifact::upsert(
+                    s.pool(),
+                    aln.id,
+                    kind,
+                    "1",
+                    Utc::now(),
+                    &format!("{{\"k\":\"{kind}\",\"a\":{}}}", aln.id),
+                    "walk",
+                    "full",
+                    Some("sig"),
+                )
+                .await
+                .unwrap();
+            }
+            aln_ids.push(aln.id);
+        }
+    }
+
+    // Alignments, grouped by owning subject.
+    let bulk = alignment::list_for_biosamples(s.pool(), &guids).await.unwrap();
+    for g in &guids {
+        let one = alignment::list_for_biosample(s.pool(), *g).await.unwrap();
+        let from_bulk: Vec<_> = bulk.iter().filter(|(bg, _)| bg == g).map(|(_, a)| a.clone()).collect();
+        assert_eq!(from_bulk, one, "alignments for {g:?}");
+    }
+    assert_eq!(bulk.len(), aln_ids.len());
+
+    // Artifacts, keyed by (alignment, kind, version).
+    let all = artifact::list_for_alignments(s.pool(), &aln_ids).await.unwrap();
+    assert_eq!(all.len(), aln_ids.len() * 2);
+    for id in &aln_ids {
+        for kind in ["coverage", "sex"] {
+            let one = artifact::get(s.pool(), *id, kind, "1").await.unwrap().unwrap();
+            let from_bulk = all
+                .iter()
+                .find(|a| a.alignment_id == *id && a.kind == kind && a.algorithm_version == "1")
+                .expect("artifact present in the bulk load");
+            assert_eq!(*from_bulk, one);
+        }
+    }
+
+    // Empty inputs must not query at all, and must not error.
+    assert!(alignment::list_for_biosamples(s.pool(), &[]).await.unwrap().is_empty());
+    assert!(artifact::list_for_alignments(s.pool(), &[]).await.unwrap().is_empty());
 }

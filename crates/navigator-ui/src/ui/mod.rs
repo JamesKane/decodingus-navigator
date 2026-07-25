@@ -1074,11 +1074,13 @@ impl NavigatorApp {
         let _ = tx.send(Command::LoadAssetStatus); // ancestry/IBD "data sources" line
         // Check for a newer installer at startup (unless the user opted out). Non-fatal — a failed
         // check just logs to the status line; the app never auto-updates.
-        if AppSettings::load().check_for_updates != Some(false) {
+        // One read of settings.json for the whole constructor — it was loaded six separate times.
+        let settings = AppSettings::load();
+        if settings.check_for_updates != Some(false) {
             let _ = tx.send(Command::CheckForUpdate);
         }
                                                    // Persisted theme wins; default dark. (Must match `dark_mode` below.)
-        let dark = !matches!(AppSettings::load().theme.as_deref(), Some("light"));
+        let dark = !matches!(settings.theme.as_deref(), Some("light"));
         apply_theme(&cc.egui_ctx, dark);
         // Persisted UI scale (egui zoom) — fixes tiny text on a native-4K display the OS reports at
         // scale factor 1.0. egui's keyboard zoom (Cmd +/-/0) also works but isn't persisted.
@@ -1087,7 +1089,7 @@ impl NavigatorApp {
         // applied once the list loads (see the `AllBiosamples` handler); nav/tab apply immediately
         // (nav is then reconciled to the interface mode by `normalize_for_mode`). Seed `saved_ui_sig`
         // with the restored intent so a matching restore doesn't trigger a redundant re-save.
-        let restore = AppSettings::load();
+        let restore = &settings;
         let restored_nav = restore.last_nav.as_deref().and_then(Nav::from_key).unwrap_or(Nav::Subjects);
         let restored_tab = restore
             .last_detail_tab
@@ -1130,7 +1132,7 @@ impl NavigatorApp {
             frame_time: 0.0,
             window_size: None,
             // The remembered size (if any) — seeded so an unchanged window never re-writes settings.
-            saved_window_size: AppSettings::load().window_size,
+            saved_window_size: settings.window_size,
             window_size_changed_at: 0.0,
             window_restored: false,
             startup_frames: 0,
@@ -1162,9 +1164,9 @@ impl NavigatorApp {
                 .or_else(|| std::env::var("LANG").ok().and_then(|l| crate::i18n::Lang::parse(&l)))
                 .unwrap_or(crate::i18n::Lang::En),
             // Persisted theme wins; default dark.
-            dark_mode: !matches!(AppSettings::load().theme.as_deref(), Some("light")),
+            dark_mode: dark,
             // A persisted manual scale takes precedence; otherwise probe the monitor on frame 1.
-            scale_probed: AppSettings::load().ui_scale.is_some(),
+            scale_probed: settings.ui_scale.is_some(),
             show_settings: false,
             settings_form: SettingsForm::from_settings(),
             llm_models: Vec::new(),

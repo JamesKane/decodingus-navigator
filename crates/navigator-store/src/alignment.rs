@@ -4,6 +4,7 @@ use du_domain::ids::SampleGuid;
 use navigator_domain::workspace::{Alignment, NewAlignment};
 use sqlx::SqlitePool;
 
+use crate::error::parse_sample_guid;
 use crate::StoreError;
 
 #[derive(sqlx::FromRow)]
@@ -152,6 +153,49 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
         .rows_affected();
     tx.commit().await?;
     Ok(affected > 0)
+}
+
+/// Alignments for several biosamples at once, as `(biosample guid, alignment)` in `alignment.id`
+/// order — one query instead of a [`list_for_biosample`] per member. An empty `guids` yields no query.
+pub async fn list_for_biosamples(
+    pool: &SqlitePool,
+    guids: &[SampleGuid],
+) -> Result<Vec<(SampleGuid, Alignment)>, StoreError> {
+    if guids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The placeholder list is sized from the guid count (never interpolated text); each guid is bound.
+    let placeholders = vec!["?"; guids.len()].join(",");
+    let cols = COLS
+        .split(", ")
+        .map(|c| format!("a.{c}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT r.biosample_guid, {cols} FROM alignment a JOIN sequence_run r ON a.sequence_run_id = r.id \
+         WHERE r.biosample_guid IN ({placeholders}) ORDER BY a.id"
+    );
+    // The owning subject rides along with the alignment columns, so one query answers "every
+    // alignment of these subjects, grouped by subject".
+    #[derive(sqlx::FromRow)]
+    struct OwnedRow {
+        biosample_guid: String,
+        #[sqlx(flatten)]
+        alignment: Row,
+    }
+    let mut q = sqlx::query_as::<_, OwnedRow>(&sql);
+    for g in guids {
+        q = q.bind(g.0.to_string());
+    }
+    let rows = q.fetch_all(pool).await?;
+    rows.into_iter()
+        .map(|r| {
+            Ok((
+                parse_sample_guid(&r.biosample_guid, "alignment")?,
+                r.alignment.into_domain(),
+            ))
+        })
+        .collect()
 }
 
 /// All alignments for a biosample (joined through its sequence runs).

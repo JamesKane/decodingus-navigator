@@ -30,30 +30,25 @@ fn main() -> eframe::Result<()> {
     // before any `App` is built, since `App::new` reloads the active account.
     navigator_app::use_os_keychain();
 
-    // First-run setup (both GUI and headless): seed bundled ancestry/IBD assets shipped inside the
-    // installer image into ~/.decodingus/ancestry/ if missing. No-op on a dev build (no bundle) and
-    // on later runs. Done before the CLI dispatch so a scripted analysis also gets the assets.
-    let seeded = navigator_app::seed_bundled_assets();
-    if seeded.copied > 0 {
-        eprintln!("seeded {} bundled asset(s) into the cache", seeded.copied);
-    }
-    // Likewise seed the chrY private-Y filtering masks (callable mask + cohort-shared exclude) into
-    // ~/.decodingus/masks/. These ship gzipped in the repo `assets/masks/`, so a dev build seeds too.
-    let seeded_masks = navigator_app::seed_bundled_masks();
-    if seeded_masks.copied > 0 {
-        eprintln!("seeded {} bundled mask(s) into the cache", seeded_masks.copied);
-    }
-    // And the bundled HipSTR reference BEDs into ~/.decodingus/str/ so STR calling works offline.
-    let seeded_str = navigator_app::seed_bundled_str();
-    if seeded_str.copied > 0 {
-        eprintln!("seeded {} bundled STR reference(s) into the cache", seeded_str.copied);
-    }
-
     // With a subcommand, run headless (ingest/probe) and exit; with none, launch the GUI.
     let parsed = cli::Cli::parse();
+
+    // First-run setup: seed the bundled ancestry/IBD assets, chrY masks, and HipSTR reference BEDs
+    // shipped inside the installer image into ~/.decodingus/ if missing. No-op on later runs.
+    //
+    // Headless seeds synchronously — the analysis starts at once, and there is no window whose
+    // appearance the copy could delay. The GUI seeds on a background thread instead, because the
+    // GRCh38 HipSTR BED alone is ~20 MB and that copy would otherwise sit in front of the first
+    // frame on exactly the run a new user is watching. `App::open` (on the worker thread) waits for
+    // it, so nothing can read a half-seeded cache.
     if let Some(command) = parsed.command {
+        let seeded = navigator_app::seed_bundled_all();
+        if seeded.copied > 0 {
+            eprintln!("seeded {} bundled asset(s) into the cache", seeded.copied);
+        }
         std::process::exit(cli::run(command));
     }
+    navigator_app::spawn_bundled_seed();
 
     let db_path = default_db_path();
     // Open at the remembered size (falling back to a comfortable default), with a sane floor. This is

@@ -1250,6 +1250,45 @@ pub fn seed_bundled_str() -> SeedSummary {
     seed_assets_from(&src, &dest).unwrap_or_default()
 }
 
+/// Every bundled asset directory — ancestry panels, chrY masks, STR references — seeded into the
+/// cache. Idempotent: a destination that already exists is skipped, so only a first run copies.
+pub fn seed_bundled_all() -> SeedSummary {
+    let mut total = SeedSummary::default();
+    for s in [seed_bundled_assets(), seed_bundled_masks(), seed_bundled_str()] {
+        total.copied += s.copied;
+        total.skipped += s.skipped;
+    }
+    total
+}
+
+/// The in-flight background seed started by [`spawn_bundled_seed`], if any.
+static BUNDLED_SEED: std::sync::Mutex<Option<std::thread::JoinHandle<SeedSummary>>> = std::sync::Mutex::new(None);
+
+/// Run [`seed_bundled_all`] on a background thread so a first-run copy does not sit in front of the
+/// GUI's first frame — the GRCh38 HipSTR BED alone is ~20 MB, and that delay lands exactly when a
+/// new user is watching for the window. Anything that reads the assets must call
+/// [`await_bundled_assets`] first; [`App::open`] does, which covers every data path.
+///
+/// Headless runs seed synchronously instead (the analysis starts immediately, with no window to
+/// show meanwhile), so they never call this and the await below is a no-op for them.
+pub fn spawn_bundled_seed() {
+    let mut slot = BUNDLED_SEED.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(std::thread::spawn(seed_bundled_all));
+    }
+}
+
+/// Block until a [`spawn_bundled_seed`] has finished. Returns immediately when none was started or
+/// it has already been awaited. Holding the lock across the join is deliberate: a second caller
+/// waits for the first to finish rather than racing past a half-copied asset directory.
+pub fn await_bundled_assets() -> SeedSummary {
+    let mut slot = BUNDLED_SEED.lock().unwrap_or_else(|e| e.into_inner());
+    match slot.take() {
+        Some(h) => h.join().unwrap_or_default(),
+        None => SeedSummary::default(),
+    }
+}
+
 /// The asset integrity manifest path for a build (`<base>/ancestry/ancestry_manifest_<build>.json`).
 fn ancestry_manifest_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("", "ancestry_manifest", build, "json")
@@ -3133,6 +3172,10 @@ impl App {
 
     /// Open/create the workspace database and build the app.
     pub async fn open(path: &std::path::Path) -> Result<Self, AppError> {
+        // The GUI seeds bundled assets on a background thread so the window paints first; wait for
+        // it here, on the worker thread, so no analysis can read a half-seeded cache. A no-op for
+        // headless runs (they seed synchronously up front) and for tests (they never spawn it).
+        await_bundled_assets();
         Ok(App::new(Store::open(path).await?))
     }
 }

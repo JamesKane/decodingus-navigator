@@ -747,6 +747,18 @@ pub fn resolve_fine_populations(
         allele.insert((s.contig.as_str(), 1, s.position), s.side1);
     }
 
+    // Sites grouped by contig in position order, so each segment binary-searches its own window.
+    // Scanning `phased.sites` per segment instead is O(segments × sites) — at genome scale (hundreds
+    // of segments over ~1M sites) that dominates the whole fine-resolution pass. Same grouped-by-
+    // contig shape as `paint_local_ancestry`.
+    let mut by_contig: HashMap<&str, Vec<&crate::phasing::PhasedSite>> = HashMap::new();
+    for s in &phased.sites {
+        by_contig.entry(s.contig.as_str()).or_default().push(s);
+    }
+    for sites in by_contig.values_mut() {
+        sites.sort_by_key(|s| s.position);
+    }
+
     for seg in segments.iter_mut() {
         let sp = seg.population_code.as_str();
         // Candidate fine columns in this segment's super-population, excluding a fine code identical
@@ -764,11 +776,10 @@ pub fn resolve_fine_populations(
         // Per-candidate summed ln-likelihood over the segment's informative sites on this side.
         let mut ll = vec![0.0f64; candidates.len()];
         let mut n = 0usize;
-        for s in phased
-            .sites
-            .iter()
-            .filter(|s| s.contig == seg.contig && s.position >= seg.start && s.position <= seg.end)
-        {
+        let contig_sites = by_contig.get(seg.contig.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+        let lo = contig_sites.partition_point(|s| s.position < seg.start);
+        let hi = contig_sites.partition_point(|s| s.position <= seg.end);
+        for s in &contig_sites[lo..hi] {
             let Some(&si) = site_idx.get(&(seg.contig.as_str(), s.position)) else {
                 continue;
             };
