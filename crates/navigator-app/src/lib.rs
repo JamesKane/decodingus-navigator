@@ -437,6 +437,41 @@ pub struct IbdSuggestion {
     pub signals: Vec<String>,
 }
 
+/// How much a federated-IBD candidate's composite score is worth believing, as the Simple-mode
+/// "Genetic relatives" card frames it.
+///
+/// This is a reading of the evidence, not a rendering of it: where the line falls between "strong"
+/// and "merely possible" decides which of three claims the app makes about a stranger's relatedness
+/// to the user. It lives beside [`IbdSuggestion`] rather than in the card that draws it so the rule
+/// has one home — and so tuning it later is a change to the interpretation, not to a widget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchStrength {
+    /// The signals agree strongly; presented as a likely relative.
+    Strong,
+    /// Enough agreement to be worth pursuing.
+    Likely,
+    /// Weak or single-signal evidence; presented as a possibility only.
+    Possible,
+}
+
+impl IbdSuggestion {
+    /// Classify this candidate's composite `score` into the tier the UI names.
+    ///
+    /// The AppView's score is a 0–1 composite over the contributing `signals`, so the cutoffs are
+    /// deliberately conservative: a candidate is only called strong when the evidence is well clear
+    /// of the middle of the range, because overstating a match invites someone to contact a stranger
+    /// on the strength of it.
+    pub fn strength(&self) -> MatchStrength {
+        if self.score >= 0.8 {
+            MatchStrength::Strong
+        } else if self.score >= 0.5 {
+            MatchStrength::Likely
+        } else {
+            MatchStrength::Possible
+        }
+    }
+}
+
 /// Result of requesting an introduction to a candidate: the AppView's request URI and its
 /// status (initially `PENDING`, awaiting the consent round-trip).
 #[derive(Debug, Clone, PartialEq)]
@@ -3962,6 +3997,30 @@ mod ibd_federated_tests {
     fn parse_suggestions_empty_or_malformed_is_empty() {
         assert!(parse_ibd_suggestions(&serde_json::json!({})).is_empty());
         assert!(parse_ibd_suggestions(&serde_json::json!({ "items": "nope" })).is_empty());
+    }
+
+    /// The tier boundaries decide which of three claims the app makes about a stranger's
+    /// relatedness, so they are pinned here rather than left implicit in whatever draws the card.
+    #[test]
+    fn match_strength_tiers_are_conservative() {
+        let at = |score: f64| {
+            IbdSuggestion {
+                suggested_sample_guid: "h".into(),
+                suggestion_type: "SHARED_MATCH".into(),
+                score,
+                signals: Vec::new(),
+            }
+            .strength()
+        };
+        // Boundaries are inclusive at the bottom of each tier.
+        assert_eq!(at(1.0), MatchStrength::Strong);
+        assert_eq!(at(0.8), MatchStrength::Strong);
+        assert_eq!(at(0.79), MatchStrength::Likely);
+        assert_eq!(at(0.5), MatchStrength::Likely);
+        assert_eq!(at(0.49), MatchStrength::Possible);
+        assert_eq!(at(0.0), MatchStrength::Possible);
+        // A missing score parses as 0.0, which must read as the weakest claim, never the strongest.
+        assert_eq!(at(f64::NAN), MatchStrength::Possible, "an unusable score must not overstate");
     }
 }
 

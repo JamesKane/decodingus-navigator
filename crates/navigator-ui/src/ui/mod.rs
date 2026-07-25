@@ -20,7 +20,7 @@ use navigator_app::{
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DescentReport, DnaType, FtdnaGenealogy, FtdnaImportPlan,
     FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
-    MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PaintingResult, PrivateBucket, PrivateClass,
+    MatchKind, MatchStrength, MtRegion, MtVariant, NarratedBrief, PackStatus, PaintingResult, PrivateBucket, PrivateClass,
     ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
     SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult,
     UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,

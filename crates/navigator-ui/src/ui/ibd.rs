@@ -234,10 +234,12 @@ impl NavigatorApp {
             .iter()
             .map(|s| {
                 let handle: String = s.suggested_sample_guid.chars().take(12).collect();
-                let strength = self.tr(match s.score {
-                    x if x >= 0.8 => "brief.matchStrong",
-                    x if x >= 0.5 => "brief.matchLikely",
-                    _ => "brief.matchPossible",
+                // Which tier a score falls in is decided by `IbdSuggestion::strength`; this only
+                // names it. The card is not the place to hold an opinion about someone's relatedness.
+                let strength = self.tr(match s.strength() {
+                    MatchStrength::Strong => "brief.matchStrong",
+                    MatchStrength::Likely => "brief.matchLikely",
+                    MatchStrength::Possible => "brief.matchPossible",
                 });
                 let why = if s.signals.is_empty() {
                     String::new()
