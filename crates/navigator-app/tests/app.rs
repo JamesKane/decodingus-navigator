@@ -3010,3 +3010,130 @@ async fn add_sample_dir_skips_called_vcf_when_gvcf_present() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The full-analysis pipeline is planned in one place so the GUI worker and the `analyze` CLI can
+/// never drift again — they had, and the CLI's copy re-genotyped Y unconditionally, overwriting a
+/// trusted external call. These assert the plan's shape and its skip conditions.
+mod full_analysis_plan {
+    use super::*;
+    use navigator_app::AnalysisStep;
+
+    /// An alignment with no cached coverage and no external calls, on a WGS run.
+    async fn alignment(app: &App) -> i64 {
+        let b = app
+            .add_biosample(None, "PLAN1", None, Some("male".into()))
+            .await
+            .unwrap();
+        let run = app
+            .record_sequence_run(NewSequenceRun {
+                biosample_guid: b.guid,
+                platform_name: "ILLUMINA".into(),
+                instrument_model: None,
+                test_type: "WGS".into(),
+                library_layout: None,
+                total_reads: None,
+                pf_reads_aligned: None,
+                mean_read_length: None,
+                mean_insert_size: None,
+            })
+            .await
+            .unwrap();
+        app.record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa-mem2".into(),
+            variant_caller: None,
+            bam_path: Some("/nonexistent/plan.bam".into()),
+            reference_path: None,
+            content_sha256: None,
+        })
+        .await
+        .unwrap()
+        .id
+    }
+
+    /// With no coverage yet the mitochondrial steps are assumed present (an unknown genome is not
+    /// silently narrowed), quality metrics always leads, and ancestry is opt-in.
+    #[tokio::test]
+    async fn plans_the_full_pipeline_for_an_unanalyzed_alignment() {
+        let app = app().await;
+        let id = alignment(&app).await;
+
+        let steps = app.plan_full_analysis(id, false, None).await.unwrap();
+        assert_eq!(steps.first(), Some(&AnalysisStep::QualityMetrics), "metrics must lead");
+        for expected in [
+            AnalysisStep::StructuralVariants,
+            AnalysisStep::MitoDenovo { contig: "chrM".into() },
+            AnalysisStep::YHaplogroup,
+            AnalysisStep::MtHaplogroup,
+        ] {
+            assert!(steps.contains(&expected), "{expected:?} missing from {steps:?}");
+        }
+        // Subject-level: the Y signature is planned so the descent report needs no extra click.
+        assert!(
+            steps.iter().any(|s| matches!(s, AnalysisStep::YSignature { .. })),
+            "Y signature missing from {steps:?}"
+        );
+        // Ancestry is the one-click Simple extra, not part of a default run.
+        assert!(
+            !steps
+                .iter()
+                .any(|s| matches!(s, AnalysisStep::AutosomalProfile { .. } | AnalysisStep::Ancestry { .. })),
+            "ancestry must be opt-in: {steps:?}"
+        );
+
+        // Opting in appends both ancestry steps, profile before estimate (the estimate reads it).
+        let with = app.plan_full_analysis(id, true, None).await.unwrap();
+        let profile_at = with
+            .iter()
+            .position(|s| matches!(s, AnalysisStep::AutosomalProfile { .. }))
+            .expect("autosomal profile planned");
+        let ancestry_at = with
+            .iter()
+            .position(|s| matches!(s, AnalysisStep::Ancestry { .. }))
+            .expect("ancestry planned");
+        assert!(profile_at < ancestry_at, "profile must precede the estimate: {with:?}");
+        assert_eq!(ancestry_at, with.len() - 1, "ancestry runs last (heaviest)");
+    }
+
+    /// Coverage showing no chrM reads (a Big Y) drops both mitochondrial steps — scoring zero chrM
+    /// data would only record a meaningless RSRS root.
+    #[tokio::test]
+    async fn drops_the_mitochondrial_steps_without_chrm_reads() {
+        use navigator_analysis::coverage::{ContigCoverageStats, CoverageResult};
+        let app = app().await;
+        let id = alignment(&app).await;
+
+        // Coverage carrying a single chrM entry, with `num_reads` the only field under test.
+        let chrm_with = |num_reads: u64| CoverageResult {
+            contig_coverage_stats: vec![ContigCoverageStats {
+                contig: "chrM".into(),
+                start_pos: 1,
+                end_pos: 16_569,
+                num_reads,
+                cov_bases: 0,
+                coverage: 0.0,
+                mean_depth: 0.0,
+                mean_base_q: 0.0,
+                mean_map_q: 0.0,
+                histogram: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let with_chrm = chrm_with(4_000);
+        let steps = app.plan_full_analysis(id, false, Some(&with_chrm)).await.unwrap();
+        assert!(steps.contains(&AnalysisStep::MtHaplogroup));
+        assert!(steps.iter().any(|s| matches!(s, AnalysisStep::MitoDenovo { .. })));
+
+        let no_chrm = chrm_with(0);
+        let steps = app.plan_full_analysis(id, false, Some(&no_chrm)).await.unwrap();
+        assert!(!steps.contains(&AnalysisStep::MtHaplogroup), "{steps:?}");
+        assert!(
+            !steps.iter().any(|s| matches!(s, AnalysisStep::MitoDenovo { .. })),
+            "{steps:?}"
+        );
+        // The rest of the pipeline is untouched.
+        assert!(steps.contains(&AnalysisStep::YHaplogroup));
+        assert!(steps.contains(&AnalysisStep::StructuralVariants));
+    }
+}

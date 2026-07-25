@@ -14,6 +14,7 @@ use navigator_domain::brief::{
     self, AncestryBrief, BriefPack, Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
+use navigator_domain::i18n::{self, tr, tr_fmt, Lang};
 use navigator_domain::reconciliation::{CompatibilityLevel, Consensus, DnaType};
 use navigator_domain::testtype::{self, TargetType};
 use navigator_refgenome::cache as refgenome_cache;
@@ -41,7 +42,7 @@ fn brief_pack_cache_path() -> std::path::PathBuf {
 }
 
 /// Is the cached file within `ttl_days`? Unknown/unreadable mtime → not fresh (forces a refresh try).
-fn cache_is_fresh(path: &std::path::Path, ttl_days: u64) -> bool {
+pub(crate) fn cache_is_fresh(path: &std::path::Path, ttl_days: u64) -> bool {
     let ttl = std::time::Duration::from_secs(ttl_days * 24 * 3600);
     std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -118,6 +119,11 @@ impl App {
         let test_code = run.as_ref().map(|r| r.test_type.clone());
 
         let (pack, pack_status) = self.load_brief_pack().await;
+        // The brief is prose written for the reader, so it is built in *their* language. Resolved
+        // here rather than passed in because every consumer wants the same thing: the UI renders it,
+        // the HTML export writes it to a file the user keeps, and the local-LLM prompt hands it to a
+        // model that should answer in the language the user is reading.
+        let lang = i18n::load_lang().unwrap_or(Lang::En);
 
         // Consensus lineages (None when not placed yet, or N/A for the test). Each terminal is
         // enriched best-effort from the live haplogroup endpoint (cached); pack values stand offline.
@@ -135,12 +141,12 @@ impl App {
         enriched |= y_enrich.is_some() || mt_enrich.is_some();
         let paternal = cons_y
             .as_ref()
-            .map(|c| build_lineage(LineageKind::Paternal, c, &pack, true, y_enrich.as_ref()));
+            .map(|c| build_lineage(lang, LineageKind::Paternal, c, &pack, true, y_enrich.as_ref()));
         let maternal = cons_mt
             .as_ref()
-            .map(|c| build_lineage(LineageKind::Maternal, c, &pack, false, mt_enrich.as_ref()));
+            .map(|c| build_lineage(lang, LineageKind::Maternal, c, &pack, false, mt_enrich.as_ref()));
 
-        let test = build_test(test_code.as_deref(), coverage.as_ref(), &pack);
+        let test = build_test(lang, test_code.as_deref(), coverage.as_ref(), &pack);
 
         // Ancestry composition (from the persisted consensus estimate; None for Y/mt-only tests).
         let ancestry = match self.donor_ancestry(biosample_guid).await? {
@@ -163,34 +169,37 @@ impl App {
                 } else {
                     None
                 };
-                Some(build_ancestry(&result, fine.as_ref(), ancient.as_ref(), &pack))
+                Some(build_ancestry(lang, &result, fine.as_ref(), ancient.as_ref(), &pack))
             }
             _ => None,
         };
 
         // Runs-of-homozygosity (relatedness / endogamy). Read-only: only surfaced when it's already
         // been computed and cached (the brief must stay cheap — ROH computation is on-demand).
-        let roh = self
-            .cached_roh(biosample_guid)
-            .await?
-            .map(|r| brief::roh_brief(r.summary.f_roh, r.summary.n_segments, r.summary.total_roh_mb, r.summary.longest_mb));
+        let roh = self.cached_roh(biosample_guid).await?.map(|r| {
+            brief::roh_brief(
+                lang,
+                r.summary.pattern,
+                r.summary.f_roh,
+                r.summary.n_segments,
+                r.summary.total_roh_mb,
+                r.summary.longest_mb,
+            )
+        });
 
         // Global caveats.
         let mut caveats = Vec::new();
         if matches!(pack_status, PackStatus::Bundled | PackStatus::Unavailable) {
-            caveats.push(
-                "Lineage descriptions are from the offline reference pack; connect to the internet for the latest."
-                    .to_string(),
-            );
+            caveats.push(tr(lang, "brief.caveatOfflinePack").to_string());
         }
         if !test.quality_ok {
-            caveats.push("This test's depth is limited, so some results are preliminary.".to_string());
+            caveats.push(tr(lang, "brief.caveatShallowDepth").to_string());
         }
 
         let headline = Headline {
             name: bio.donor_identifier.clone(),
             test_chip: test.test_name.clone(),
-            summary: headline_summary(&bio.donor_identifier, paternal.as_ref(), maternal.as_ref()),
+            summary: headline_summary(lang, &bio.donor_identifier, paternal.as_ref(), maternal.as_ref()),
         };
 
         Ok(SubjectBrief {
@@ -365,6 +374,7 @@ fn parse_haplo_enrichment(body: &str) -> HaploEnrichment {
 /// Assemble a lineage section from the consensus + pack content, overlaying live `enrich`ment when
 /// present (it wins over pack values for age/origin/story). `is_paternal` only chooses the lookup.
 fn build_lineage(
+    lang: Lang,
     kind: LineageKind,
     c: &Consensus,
     pack: &BriefPack,
@@ -408,10 +418,10 @@ fn build_lineage(
         haplogroup: c.haplogroup.clone(),
         lineage_path: c.lineage.clone(),
         matched_ancestor,
-        age_phrase: brief::age_phrase(formed_ybp),
-        origin_phrase: brief::origin_phrase(origin.as_deref()),
+        age_phrase: brief::age_phrase(lang, formed_ybp),
+        origin_phrase: brief::origin_phrase(lang, origin.as_deref()),
         story,
-        confidence_phrase: brief::confidence_phrase(c.confidence, c.run_count, conflict),
+        confidence_phrase: brief::confidence_phrase(lang, c.confidence, c.run_count, conflict),
         sources,
     }
 }
@@ -419,6 +429,7 @@ fn build_lineage(
 /// Assemble the ancestry section from the consensus estimate (+ optional fine-grained and ancient
 /// estimates).
 fn build_ancestry(
+    lang: Lang,
     result: &AncestryResult,
     fine: Option<&AncestryResult>,
     ancient: Option<&AncestryResult>,
@@ -428,8 +439,8 @@ fn build_ancestry(
     use navigator_domain::brief::AncientComponent;
 
     let super_populations = result.super_population_summary.clone();
-    let summary_phrase = brief::ancestry_summary(&super_populations);
-    let method_note = brief::ancestry_method_note(result.snps_with_genotype, &result.panel_type);
+    let summary_phrase = brief::ancestry_summary(lang, &super_populations);
+    let method_note = brief::ancestry_method_note(lang, result.snps_with_genotype, &result.panel_type);
 
     let fine_pops = fine
         .map(|f| {
@@ -497,10 +508,15 @@ fn build_ancestry(
 }
 
 /// Assemble the test & quality section.
-fn build_test(test_code: Option<&str>, coverage: Option<&crate::CoverageResult>, pack: &BriefPack) -> TestBrief {
+fn build_test(
+    lang: Lang,
+    test_code: Option<&str>,
+    coverage: Option<&crate::CoverageResult>,
+    pack: &BriefPack,
+) -> TestBrief {
     let code = test_code.unwrap_or("");
     let test_name = if code.is_empty() {
-        "Unknown test".to_string()
+        tr(lang, "brief.testUnknown").to_string()
     } else {
         testtype::display_name(code).to_string()
     };
@@ -509,16 +525,13 @@ fn build_test(test_code: Option<&str>, coverage: Option<&crate::CoverageResult>,
     // What it tells you + limits: pack description, else a target-derived fallback.
     let (what_it_tells, limitations) = match pack.test(code) {
         Some(e) => (e.what.clone(), e.limits.clone()),
-        None => fallback_test_text(target),
+        None => fallback_test_text(lang, target),
     };
 
     let (quality_phrase, quality_ok) = match coverage {
-        Some(c) => brief::quality_phrase(c.mean_coverage, target),
-        None if code.starts_with("ARRAY") => brief::chip_quality_phrase(0),
-        None => (
-            "sequencing depth not yet measured — run analysis to see quality".to_string(),
-            false,
-        ),
+        Some(c) => brief::quality_phrase(lang, c.mean_coverage, target),
+        None if code.starts_with("ARRAY") => brief::chip_quality_phrase(lang, 0),
+        None => (tr(lang, "brief.depthNotMeasured").to_string(), false),
     };
 
     TestBrief {
@@ -532,41 +545,36 @@ fn build_test(test_code: Option<&str>, coverage: Option<&crate::CoverageResult>,
 
 /// Plain-language test description when the pack doesn't cover the code, derived from what the test
 /// targets.
-fn fallback_test_text(target: TargetType) -> (String, Option<String>) {
-    match target {
-        TargetType::WholeGenome => (
-            "Reads your whole genome, covering your paternal line, maternal line and ancestry.".to_string(),
-            None,
-        ),
-        TargetType::YChromosome => (
-            "Tests your Y chromosome to determine your paternal line.".to_string(),
-            Some("Covers only the Y chromosome — no maternal line or ancestry composition.".to_string()),
-        ),
-        TargetType::MtDna => (
-            "Tests your mitochondrial DNA to determine your maternal line.".to_string(),
-            Some("Covers only mitochondrial DNA — no paternal line or ancestry composition.".to_string()),
-        ),
-        TargetType::Autosomal | TargetType::Mixed => (
-            "Genotypes markers across your genome for ancestry and a broad read of your lineages.".to_string(),
-            None,
-        ),
-        TargetType::XChromosome => (
-            "Tests your X chromosome.".to_string(),
-            Some("Covers only the X chromosome.".to_string()),
-        ),
-    }
+fn fallback_test_text(lang: Lang, target: TargetType) -> (String, Option<String>) {
+    let (what, limits) = match target {
+        TargetType::WholeGenome => ("brief.testWholeGenome", None),
+        TargetType::YChromosome => ("brief.testY", Some("brief.testYLimits")),
+        TargetType::MtDna => ("brief.testMt", Some("brief.testMtLimits")),
+        TargetType::Autosomal | TargetType::Mixed => ("brief.testAutosomal", None),
+        TargetType::XChromosome => ("brief.testX", Some("brief.testXLimits")),
+    };
+    (
+        tr(lang, what).to_string(),
+        limits.map(|k| tr(lang, k).to_string()),
+    )
 }
 
 /// The one-line "who you are" headline summary.
-fn headline_summary(name: &str, paternal: Option<&LineageBrief>, maternal: Option<&LineageBrief>) -> String {
+fn headline_summary(
+    lang: Lang,
+    name: &str,
+    paternal: Option<&LineageBrief>,
+    maternal: Option<&LineageBrief>,
+) -> String {
     match (paternal, maternal) {
-        (Some(p), Some(m)) => format!(
-            "Your data places {name}'s paternal line at {} and maternal line at {}.",
-            p.haplogroup, m.haplogroup
+        (Some(p), Some(m)) => tr_fmt(
+            lang,
+            "brief.headlineBoth",
+            &[name, &p.haplogroup, &m.haplogroup],
         ),
-        (Some(p), None) => format!("Your data places {name}'s paternal line at {}.", p.haplogroup),
-        (None, Some(m)) => format!("Your data places {name}'s maternal line at {}.", m.haplogroup),
-        (None, None) => "Import or analyze this person's DNA to reveal their paternal and maternal lines.".to_string(),
+        (Some(p), None) => tr_fmt(lang, "brief.headlinePaternal", &[name, &p.haplogroup]),
+        (None, Some(m)) => tr_fmt(lang, "brief.headlineMaternal", &[name, &m.haplogroup]),
+        (None, None) => tr(lang, "brief.headlineNone").to_string(),
     }
 }
 

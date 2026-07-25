@@ -5,6 +5,9 @@ use super::*;
 impl NavigatorApp {
     pub(crate) fn drain_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
+            // Any event may replace data the per-frame view caches derive from, so invalidate them
+            // all. See `NavigatorApp::data_epoch` for why this is deliberately over-broad.
+            self.data_epoch = self.data_epoch.wrapping_add(1);
             match event {
                 Event::Noop => {}
                 Event::Overview(v) => {

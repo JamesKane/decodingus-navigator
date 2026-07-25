@@ -296,21 +296,40 @@ pub fn project_pca(genotypes: &[SiteGenotype], pca: &PcaLoadings) -> Vec<f64> {
         .map(|g| ((g.contig.as_str(), g.position), g.dosage))
         .collect();
 
-    let mut coords = vec![0.0f64; pca.n_components];
+    let centered = pca.sites.iter().enumerate().filter_map(|(i, (contig, pos))| {
+        let &d = dosage.get(&(contig.as_str(), *pos))?;
+        Some((i, d as f64 - pca.means[i] as f64))
+    });
+    project_centered(pca.sites.len(), pca.n_components, centered, |i, c| {
+        pca.loading(i, c) as f64
+    })
+}
+
+/// The PCA projection kernel: accumulate `centered · loading` into each component over the sites
+/// the sample actually has, then un-shrink by `n_sites / used` so a sample with missing genotypes
+/// isn't pulled toward the origin (see [`project_pca`]).
+///
+/// `centered` yields `(site index, dosage − site mean)` for each present site; `loading` reads the
+/// `(site, component)` basis entry. Both are supplied by the caller because the runtime projector
+/// and the offline basis builder hold their basis in different layouts (`PcaLoadings` vs a
+/// `DMatrix`) — the scaling policy, which has to agree between them, lives here.
+pub fn project_centered(
+    n_sites: usize,
+    n_components: usize,
+    centered: impl Iterator<Item = (usize, f64)>,
+    loading: impl Fn(usize, usize) -> f64,
+) -> Vec<f64> {
+    let mut coords = vec![0.0f64; n_components];
     let mut used = 0usize;
-    for (i, (contig, pos)) in pca.sites.iter().enumerate() {
-        let centered = match dosage.get(&(contig.as_str(), *pos)) {
-            Some(&d) => d as f64 - pca.means[i] as f64,
-            None => continue,
-        };
+    for (i, value) in centered {
         used += 1;
         for (c, coord) in coords.iter_mut().enumerate() {
-            *coord += centered * pca.loading(i, c) as f64;
+            *coord += value * loading(i, c);
         }
     }
     // Un-shrink: reference coords were built from all sites; scale up for the missing fraction.
     if used > 0 {
-        let scale = pca.sites.len() as f64 / used as f64;
+        let scale = n_sites as f64 / used as f64;
         for coord in &mut coords {
             *coord *= scale;
         }
@@ -728,6 +747,18 @@ pub fn resolve_fine_populations(
         allele.insert((s.contig.as_str(), 1, s.position), s.side1);
     }
 
+    // Sites grouped by contig in position order, so each segment binary-searches its own window.
+    // Scanning `phased.sites` per segment instead is O(segments × sites) — at genome scale (hundreds
+    // of segments over ~1M sites) that dominates the whole fine-resolution pass. Same grouped-by-
+    // contig shape as `paint_local_ancestry`.
+    let mut by_contig: HashMap<&str, Vec<&crate::phasing::PhasedSite>> = HashMap::new();
+    for s in &phased.sites {
+        by_contig.entry(s.contig.as_str()).or_default().push(s);
+    }
+    for sites in by_contig.values_mut() {
+        sites.sort_by_key(|s| s.position);
+    }
+
     for seg in segments.iter_mut() {
         let sp = seg.population_code.as_str();
         // Candidate fine columns in this segment's super-population, excluding a fine code identical
@@ -745,11 +776,10 @@ pub fn resolve_fine_populations(
         // Per-candidate summed ln-likelihood over the segment's informative sites on this side.
         let mut ll = vec![0.0f64; candidates.len()];
         let mut n = 0usize;
-        for s in phased
-            .sites
-            .iter()
-            .filter(|s| s.contig == seg.contig && s.position >= seg.start && s.position <= seg.end)
-        {
+        let contig_sites = by_contig.get(seg.contig.as_str()).map(Vec::as_slice).unwrap_or(&[]);
+        let lo = contig_sites.partition_point(|s| s.position < seg.start);
+        let hi = contig_sites.partition_point(|s| s.position <= seg.end);
+        for s in &contig_sites[lo..hi] {
             let Some(&si) = site_idx.get(&(seg.contig.as_str(), s.position)) else {
                 continue;
             };

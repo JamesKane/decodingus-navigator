@@ -39,6 +39,23 @@ impl NavigatorApp {
         crate::i18n::tr(self.lang, key)
     }
 
+    /// The loaded subject for `guid`, from whichever list holds it: `all_biosamples` (the workspace
+    /// table) or `samples` (the current project's members).
+    pub(crate) fn find_subject(&self, guid: SampleGuid) -> Option<&Biosample> {
+        self.all_biosamples
+            .iter()
+            .chain(self.samples.iter())
+            .find(|b| b.guid == guid)
+    }
+
+    /// The display name for `guid` — its donor identifier, falling back to the bare guid. Used
+    /// wherever the UI has to name a subject it is about to act on (the confirm modals).
+    pub(crate) fn subject_label(&self, guid: SampleGuid) -> String {
+        self.find_subject(guid)
+            .map(|b| b.donor_identifier.clone())
+            .unwrap_or_else(|| guid.0.to_string())
+    }
+
     /// Set the interface mode (Simple ⇄ Advanced), pin it (so the first-run heuristic stops
     /// overriding), persist the choice, and keep the nav consistent (Simple hides
     /// Projects/Community). Chosen from Settings → Appearance.
@@ -526,69 +543,10 @@ impl NavigatorApp {
             return;
         }
 
-        // Build the display rows from immutable `self` reads first, so the render closures below
-        // can borrow only the table-control field (and locals) without conflicting.
-        struct Row {
-            guid: SampleGuid,
-            cells: [String; 6],
-        }
-        let mut rows: Vec<Row> = self
-            .all_biosamples
-            .iter()
-            .map(|s| {
-                // Y/mt from the bulk per-subject summary; the selected row prefers the freshly
-                // loaded consensus (reflects a just-run assignment before the summary reloads).
-                let sel = self.selected_sample == Some(s.guid);
-                let summary = self.haplo_summary.get(&s.guid);
-                let y = sel
-                    .then(|| self.consensus_y.as_ref().map(|c| c.haplogroup.clone()))
-                    .flatten()
-                    .or_else(|| summary.and_then(|(y, _)| y.clone()))
-                    .unwrap_or_else(|| "-".into());
-                let mt = sel
-                    .then(|| self.consensus_mt.as_ref().map(|c| c.haplogroup.clone()))
-                    .flatten()
-                    .or_else(|| summary.and_then(|(_, m)| m.clone()))
-                    .unwrap_or_else(|| "-".into());
-                // Analysis status: Complete once every alignment is analyzed, Pending while any is
-                // not (e.g. a just-imported file); a subject with no alignments has no status.
-                let status = match self.subject_status.get(&s.guid) {
-                    Some(SubjectAnalysisStatus::Complete) => self.tr("subjectStatus.complete"),
-                    Some(SubjectAnalysisStatus::Pending) => self.tr("subjectStatus.pending"),
-                    None => "-",
-                };
-                Row {
-                    guid: s.guid,
-                    cells: [
-                        s.donor_identifier.clone(),
-                        y,
-                        mt,
-                        s.sex.clone().unwrap_or_else(|| "-".into()),
-                        s.center_name.clone().unwrap_or_else(|| "-".into()),
-                        status.to_string(),
-                    ],
-                }
-            })
-            .collect();
-
-        // Inline per-column filters (AND across columns), then natural-sort by the active column.
-        for col in 0..SUBJECT_COLS.len() {
-            let f = self.subjects_table_ctl.filter_norm(col);
-            if !f.is_empty() {
-                rows.retain(|r| r.cells[col].to_lowercase().contains(&f));
-            }
-        }
-        if let Some(c) = self.subjects_table_ctl.sort_col() {
-            let asc = self.subjects_table_ctl.ascending();
-            rows.sort_by(|a, b| {
-                let o = natural_cmp(&a.cells[c], &b.cells[c]);
-                if asc {
-                    o
-                } else {
-                    o.reverse()
-                }
-            });
-        }
+        // The display rows are derived (6 `String` clones per subject, then a natural sort), so they
+        // are cached and rebuilt only when their inputs change — this fn runs every frame.
+        self.refresh_subject_rows();
+        let rows = &self.subject_rows.rows;
 
         let selected = self.selected_sample;
         let labels = SUBJECT_COLS.map(|(l, _)| l);

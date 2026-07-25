@@ -217,31 +217,17 @@ fn load_pop_set(path: &Path) -> Result<HashSet<String>> {
         .collect())
 }
 
-/// Project sample `s` onto the basis loadings `v` (sites × k), centring each site by the basis
-/// mean and accumulating `centered · loading`. Missing genotypes are skipped, then the result is
-/// un-shrunk by `n_sites / used` — mirroring the runtime `project_pca`, so a sparse ancient
-/// reference and a query sample land on the same scale as the basis coordinates.
+/// Project sample `s` onto the basis loadings `v` (sites × k), centring each site by the basis mean.
+/// Defers to the runtime's [`navigator_analysis::ancestry::project_centered`] so a sparse ancient
+/// reference and a query sample land on the same scale as the basis coordinates — the un-shrink
+/// policy has exactly one definition.
 fn project_sample(rows: &[Vec<i8>], s: usize, basis_means: &[f64], v: &DMatrix<f64>, k: usize) -> Vec<f64> {
-    let mut coord = vec![0.0f64; k];
-    let mut used = 0usize;
-    for (j, row) in rows.iter().enumerate() {
-        let d = row[s];
-        if d < 0 {
-            continue;
-        }
-        let centered = d as f64 - basis_means[j];
-        used += 1;
-        for (c, value) in coord.iter_mut().enumerate() {
-            *value += centered * v[(j, c)];
-        }
-    }
-    if used > 0 {
-        let scale = rows.len() as f64 / used as f64;
-        for value in coord.iter_mut() {
-            *value *= scale;
-        }
-    }
-    coord
+    let centered = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row[s] >= 0)
+        .map(|(j, row)| (j, row[s] as f64 - basis_means[j]));
+    navigator_analysis::ancestry::project_centered(rows.len(), k, centered, |j, c| v[(j, c)])
 }
 
 /// Per-sample index into `pops` (its fine population), or `None` if unmapped.

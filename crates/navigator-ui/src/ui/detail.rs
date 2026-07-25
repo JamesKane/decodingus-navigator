@@ -535,6 +535,8 @@ impl NavigatorApp {
             "Y variants",
             "y_variant_profile",
             &self.y_snp_names,
+            self.data_epoch,
+            &mut self.y_profile_rows,
         );
         self.y_profile_filter = filter;
         self.y_profile_query = query;
@@ -574,6 +576,8 @@ impl NavigatorApp {
             "mtDNA mutations",
             "mt_variant_profile",
             &std::collections::HashMap::new(),
+            self.data_epoch,
+            &mut self.mt_profile_rows,
         );
         self.mt_profile_filter = filter;
         self.mt_profile_query = query;
@@ -621,7 +625,7 @@ impl NavigatorApp {
         };
         let mut filter = self.auto_profile_filter;
         let mut query = std::mem::take(&mut self.auto_profile_query);
-        draw_diploid_profile(ui, profile, &mut filter, &mut query);
+        draw_diploid_profile(ui, profile, &mut filter, &mut query, self.data_epoch, &mut self.auto_profile_rows);
         self.auto_profile_filter = filter;
         self.auto_profile_query = query;
     }
@@ -1976,57 +1980,9 @@ impl NavigatorApp {
         const ACTIONS_COL: usize = 14;
         let labels: [&str; 15] = REPORT_COLS.map(|(k, _)| self.tr(k));
 
-        // Display text per cell — the basis for inline filtering and natural sort (the body below
-        // renders from the live report rows so the lite badge + action buttons stay rich).
-        let cell_text = |r: &navigator_app::ProjectSampleReport| -> [String; 15] {
-            [
-                r.biosample.donor_identifier.clone(),
-                r.alignment_count.to_string(),
-                fmt_depth(r.mean_coverage),
-                fmt_depth(r.median_coverage),
-                fmt_pct(r.pct_10x),
-                fmt_pct(r.pct_20x),
-                r.callable_bases.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
-                r.y_haplogroup.clone().unwrap_or_else(|| "—".into()),
-                r.mt_haplogroup.clone().unwrap_or_else(|| "—".into()),
-                r.sex.clone().unwrap_or_else(|| "—".into()),
-                fmt_depth(r.mean_read_length),
-                fmt_pct(r.pct_aligned),
-                fmt_depth(r.median_insert_size),
-                r.sv_count.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
-                String::new(),
-            ]
-        };
-        let texts: Vec<[String; 15]> = self.project_report.iter().map(cell_text).collect();
-
-        // Filter (AND across columns) then natural-sort the row order.
-        let mut order: Vec<usize> = (0..self.project_report.len()).collect();
-        let active_filters: Vec<(usize, String)> = (0..ACTIONS_COL)
-            .filter_map(|c| {
-                let f = self.report_table_ctl.filter_norm(c);
-                (!f.is_empty()).then_some((c, f))
-            })
-            .collect();
-        if !active_filters.is_empty() {
-            order.retain(|&i| {
-                active_filters
-                    .iter()
-                    .all(|(c, f)| texts[i][*c].to_lowercase().contains(f))
-            });
-        }
-        if let Some(c) = self.report_table_ctl.sort_col() {
-            if c < ACTIONS_COL {
-                let asc = self.report_table_ctl.ascending();
-                order.sort_by(|&a, &b| {
-                    let o = natural_cmp(&texts[a][c], &texts[b][c]);
-                    if asc {
-                        o
-                    } else {
-                        o.reverse()
-                    }
-                });
-            }
-        }
+        // 15 `String`s per member plus a natural sort — cached, since this fn runs every frame.
+        self.refresh_report_rows(ACTIONS_COL);
+        let order = &self.report_rows.order;
         let shown = order.len();
 
         let cov_label = self.tr("btn.cov");
@@ -2685,11 +2641,7 @@ impl NavigatorApp {
             // clicks; treat a button as hit when it was clicked OR the row swallowed the click
             // while the pointer was over it.
             let row_clicked = inner.response.interact(egui::Sense::click()).clicked();
-            let hit = |b: &Option<egui::Response>| {
-                b.as_ref()
-                    .is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
-            };
-            if hit(&edit_btn) {
+            if button_hit(&edit_btn, row_clicked) {
                 want_edit_run = Some(EditRun {
                     id: r.id,
                     guid,
@@ -2699,13 +2651,13 @@ impl NavigatorApp {
                     library_layout: r.library_layout.clone().unwrap_or_default(),
                     sequencing_facility: r.sequencing_facility.clone().unwrap_or_default(),
                 });
-            } else if hit(&del_btn) {
+            } else if button_hit(&del_btn, row_clicked) {
                 want_delete = Some(DataDelete::Run {
                     id: r.id,
                     guid,
                     label: format!("run “{}”", testtype::display_name(&r.test_type)),
                 });
-            } else if hit(&merge_btn) {
+            } else if button_hit(&merge_btn, row_clicked) {
                 want_merge = Some(r.id);
             } else if row_clicked {
                 pick_run = Some(r.id);
@@ -2754,11 +2706,7 @@ impl NavigatorApp {
                             });
                         let (edit_btn, del_btn) = row.inner;
                         let row_clicked = row.response.interact(egui::Sense::click()).clicked();
-                        let hit = |b: &Option<egui::Response>| {
-                            b.as_ref()
-                                .is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
-                        };
-                        if hit(&edit_btn) {
+                        if button_hit(&edit_btn, row_clicked) {
                             want_edit_aln = Some(EditAlignment {
                                 id: a.id,
                                 run_id: r.id,
@@ -2766,7 +2714,7 @@ impl NavigatorApp {
                                 aligner: a.aligner.clone(),
                                 variant_caller: a.variant_caller.clone().unwrap_or_default(),
                             });
-                        } else if hit(&del_btn) {
+                        } else if button_hit(&del_btn, row_clicked) {
                             want_delete = Some(DataDelete::Alignment {
                                 id: a.id,
                                 run_id: r.id,

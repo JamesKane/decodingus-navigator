@@ -11,7 +11,7 @@ use navigator_domain::ancestry::{population_color, population_name, population_s
 
 /// Sort key for chromosome names: autosomes 1–22, then X, Y, M, then anything else.
 fn chrom_sort_key(chr: &str) -> (u8, i64) {
-    let bare = chr.trim_start_matches("chr").to_ascii_uppercase();
+    let bare = navigator_domain::contig::bare_upper(chr);
     if let Ok(n) = bare.parse::<i64>() {
         (0, n)
     } else {
@@ -230,7 +230,7 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
     // are skipped — this is autosomal local ancestry.
     let mut by_chr: BTreeMap<i64, [Vec<&AncestrySegment>; 2]> = BTreeMap::new();
     for s in segments {
-        let Ok(n) = s.contig.trim_start_matches("chr").parse::<i64>() else {
+        let Ok(n) = navigator_domain::contig::bare(&s.contig).parse::<i64>() else {
             continue;
         };
         if !(1..=22).contains(&n) {

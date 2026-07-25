@@ -420,7 +420,7 @@ impl ReferenceGateway {
         use std::io::{BufRead, BufReader, Write};
 
         let lo = self.load_liftover(from, to)?;
-        let strip = |s: &str| s.strip_prefix("chr").unwrap_or(s).to_ascii_uppercase();
+        let strip = navigator_domain::contig::bare_upper;
         let want = only_contig.map(strip);
 
         // Lift one 1-based position on a chr-prefixed source contig → (target contig, 1-based pos).

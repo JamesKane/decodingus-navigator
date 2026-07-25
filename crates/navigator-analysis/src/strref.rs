@@ -42,8 +42,7 @@ impl StrLocus {
     /// Whether `name`/the BED contig matches `query` after stripping an optional `chr` prefix on
     /// either side (the BAM may be `chrY`, the BED `Y`; see the contig-naming convention).
     pub fn contig_matches(&self, query: &str) -> bool {
-        let strip = |s: &str| s.strip_prefix("chr").unwrap_or(s).to_string();
-        strip(&self.contig).eq_ignore_ascii_case(&strip(query))
+        crate::contig::bare(&self.contig).eq_ignore_ascii_case(crate::contig::bare(query))
     }
 }
 

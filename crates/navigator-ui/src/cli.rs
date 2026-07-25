@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use navigator_app::{App, DnaType};
+use navigator_app::{AnalysisStep, App, DnaType};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::workspace::NewProject;
 
@@ -244,6 +244,10 @@ pub struct AnalyzeArgs {
     /// Alignment id to analyze (from `show --json`).
     #[arg(long, short)]
     alignment: i64,
+    /// Also build the autosomal consensus profile and estimate ancestry from it — the two heaviest
+    /// steps, which the GUI folds in only for the one-click Simple flow.
+    #[arg(long)]
+    ancestry: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
@@ -430,18 +434,9 @@ async fn backfill_accessions(args: AccessionArgs) -> i32 {
         Ok(a) => a,
         Err(c) => return c,
     };
-    let project_id = match &args.project {
-        Some(name) => {
-            let overview = app.project_overview().await.unwrap_or_default();
-            match overview.iter().find(|o| o.project.name == *name) {
-                Some(o) => Some(o.project.id),
-                None => {
-                    eprintln!("error: no project named \"{name}\"");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
+        Ok(v) => v,
+        Err(c) => return c,
     };
     let r = match app.backfill_accessions(project_id, args.apply, args.all, args.limit).await {
         Ok(r) => r,
@@ -476,18 +471,9 @@ async fn backfill_catalog_ids(args: CatalogArgs) -> i32 {
         Ok(a) => a,
         Err(c) => return c,
     };
-    let project_id = match &args.project {
-        Some(name) => {
-            let overview = app.project_overview().await.unwrap_or_default();
-            match overview.iter().find(|o| o.project.name == *name) {
-                Some(o) => Some(o.project.id),
-                None => {
-                    eprintln!("error: no project named \"{name}\"");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
+        Ok(v) => v,
+        Err(c) => return c,
     };
     let r = match app.backfill_catalog_ids(project_id, args.apply).await {
         Ok(r) => r,
@@ -569,18 +555,9 @@ async fn backfill_profiles(args: BackfillArgs) -> i32 {
         Ok(a) => a,
         Err(c) => return c,
     };
-    let project_id = match &args.project {
-        Some(name) => {
-            let overview = app.project_overview().await.unwrap_or_default();
-            match overview.iter().find(|o| o.project.name == *name) {
-                Some(o) => Some(o.project.id),
-                None => {
-                    eprintln!("error: no project named \"{name}\"");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
+        Ok(v) => v,
+        Err(c) => return c,
     };
 
     let r = match app.backfill_read_profiles(project_id, args.rescan).await {
@@ -621,19 +598,9 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
         Err(c) => return c,
     };
 
-    // Resolve the optional project filter to an id.
-    let project_id = match &args.project {
-        Some(name) => {
-            let overview = app.project_overview().await.unwrap_or_default();
-            match overview.iter().find(|o| o.project.name == *name) {
-                Some(o) => Some(o.project.id),
-                None => {
-                    eprintln!("error: no project named \"{name}\"");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
+        Ok(v) => v,
+        Err(c) => return c,
     };
 
     let bios = match app.list_all_biosamples().await {
@@ -695,19 +662,9 @@ async fn reingest_external(args: ReingestArgs) -> i32 {
         Err(c) => return c,
     };
 
-    // Resolve the optional project filter to an id.
-    let project_id = match &args.project {
-        Some(name) => {
-            let overview = app.project_overview().await.unwrap_or_default();
-            match overview.iter().find(|o| o.project.name == *name) {
-                Some(o) => Some(o.project.id),
-                None => {
-                    eprintln!("error: no project named \"{name}\"");
-                    return 1;
-                }
-            }
-        }
-        None => None,
+    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
+        Ok(v) => v,
+        Err(c) => return c,
     };
 
     let bios = match app.list_all_biosamples().await {
@@ -812,54 +769,110 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
         Err(c) => return c,
     };
     let id = args.alignment;
-    eprintln!("analyzing alignment #{id} (cold — run_* recompute, exercising localize + scoping)…");
 
-    let t = Instant::now();
-    match app.run_unified_metrics(id).await {
-        Ok(r) => {
-            eprintln!(
-                "  [{:>8.1?}]  Step 1: unified metrics (coverage + sex + read-metrics, incl. localize copy) — coverage mean {:.2}x",
-                t.elapsed(),
-                r.coverage.mean_coverage
-            );
-            // Mirror the batch path: clear any stale failure marker now that the walk succeeded.
-            app.clear_analysis_error(id).await;
-        }
+    // The step list comes from `App::plan_full_analysis` — the same one the GUI's Full Analysis
+    // uses, so the two cannot drift again. In particular this is what stops a `navigator analyze`
+    // from re-genotyping Y over a trusted external call the user asked to prefer.
+    let mut steps = match app.plan_full_analysis(id, args.ancestry, None).await {
+        Ok(s) => s,
         Err(e) => {
-            eprintln!("  Step 1 (unified metrics) FAILED: {e}");
-            // Persist the failure (corrupt/undecodable file) so the project report surfaces it.
-            app.record_analysis_error(id, "metrics", &e.to_string()).await;
+            eprintln!("error: could not plan the analysis: {e}");
             return 1;
         }
-    }
+    };
+    eprintln!(
+        "analyzing alignment #{id} — {} step(s) (cold: run_* recompute, exercising localize + scoping)…",
+        steps.len()
+    );
 
-    let t = Instant::now();
-    match app.assign_y_haplogroup(id).await {
-        Ok(a) => eprintln!(
-            "  [{:>8.1?}]  Step 3: Y haplogroup placement — {}",
-            t.elapsed(),
-            a.ranked.first().map(|h| h.name.as_str()).unwrap_or("(none)")
-        ),
-        Err(e) => eprintln!("  Step 3 (Y placement) FAILED: {e}"),
-    }
-
-    // Step 4: build the genome-consensus Y signature (deep placement + variant profile → descent
-    // report), mirroring batch analysis so the descent report is ready without an explicit click.
-    if let Ok(bio) = app.biosample_of_alignment(id).await {
+    let cancel = navigator_app::CancelToken::none();
+    let mut step_no = 0;
+    let mut failures = 0;
+    while step_no < steps.len() {
+        let step = steps[step_no].clone();
+        step_no += 1;
+        let n = step_no;
+        let total = steps.len();
         let t = Instant::now();
-        match app.build_y_profile(bio).await {
-            Ok(p) => eprintln!(
-                "  [{:>8.1?}]  Step 4: Y signature — terminal {} · {} variants",
-                t.elapsed(),
-                p.terminal.as_deref().unwrap_or("(none)"),
-                p.variants.len()
-            ),
-            Err(e) => eprintln!("  Step 4 (Y signature) FAILED: {e}"),
+        // Each arm renders its own one-line summary; `Err` is reported and the run continues, since
+        // a failed step (e.g. SV below the depth threshold) doesn't invalidate the rest.
+        let outcome: Result<String, navigator_app::AppError> = match &step {
+            AnalysisStep::QualityMetrics => match app.run_unified_metrics(id).await {
+                Ok(r) => {
+                    // Mirror the batch path: clear any stale failure marker now that the walk succeeded.
+                    app.clear_analysis_error(id).await;
+                    // The mitochondrial steps depend on whether this coverage found chrM reads, so
+                    // re-plan now that it exists (the pre-flight plan had to guess).
+                    if let Ok(replanned) = app.plan_full_analysis(id, args.ancestry, Some(&r.coverage)).await {
+                        steps = replanned;
+                    }
+                    Ok(format!("coverage mean {:.2}x", r.coverage.mean_coverage))
+                }
+                Err(e) => {
+                    // Persist the failure (corrupt/undecodable file) so the project report surfaces it.
+                    app.record_analysis_error(id, "metrics", &e.to_string()).await;
+                    eprintln!("  [{:>8.1?}]  {n}/{total} {} FAILED: {e}", t.elapsed(), step.label());
+                    return 1; // nothing downstream can succeed without the alignment being readable
+                }
+            },
+            AnalysisStep::StructuralVariants => app
+                .run_sv(id, cancel.clone())
+                .await
+                .map(|r| format!("{} call(s)", r.sv_calls.len())),
+            AnalysisStep::MitoDenovo { contig } => app
+                .run_denovo_for_alignment(id, contig.clone())
+                .await
+                .map(|calls| format!("{} {contig} variant(s)", calls.len())),
+            AnalysisStep::YHaplogroup => app.assign_y_haplogroup(id).await.map(|a| {
+                a.ranked
+                    .first()
+                    .map(|h| h.name.clone())
+                    .unwrap_or_else(|| "(none)".into())
+            }),
+            AnalysisStep::MtHaplogroup => app.assign_mtdna_haplogroup_from_alignment(id).await.map(|a| {
+                a.ranked
+                    .first()
+                    .map(|h| h.name.clone())
+                    .unwrap_or_else(|| "(none)".into())
+            }),
+            AnalysisStep::YSignature { biosample_guid } => app.build_y_profile(*biosample_guid).await.map(|p| {
+                format!(
+                    "terminal {} · {} variants",
+                    p.terminal.as_deref().unwrap_or("(none)"),
+                    p.variants.len()
+                )
+            }),
+            AnalysisStep::AutosomalProfile { biosample_guid } => app
+                .build_autosomal_profile(*biosample_guid)
+                .await
+                .map(|p| format!("{} site(s)", p.variants.len())),
+            AnalysisStep::Ancestry { biosample_guid } => app
+                .estimate_ancestry_from_consensus(*biosample_guid)
+                .await
+                .map(|r| {
+                    // The top super-population is the headline the brief shows.
+                    r.super_population_summary
+                        .first()
+                        .map(|p| format!("{} {:.0}%", p.super_population, p.percentage))
+                        .unwrap_or_else(|| "(none)".into())
+                }),
+        };
+        match outcome {
+            Ok(summary) => eprintln!("  [{:>8.1?}]  {n}/{total} {} — {summary}", t.elapsed(), step.label()),
+            Err(e) => {
+                failures += 1;
+                eprintln!("  [{:>8.1?}]  {n}/{total} {} FAILED: {e}", t.elapsed(), step.label());
+            }
         }
+    }
+    if failures > 0 {
+        eprintln!("done with {failures} failed step(s).");
+        return 1;
     }
     eprintln!("done.");
     0
 }
+
 
 fn db_path(over: Option<PathBuf>) -> PathBuf {
     over.unwrap_or_else(crate::default_db_path)
@@ -871,6 +884,21 @@ async fn open(db: Option<PathBuf>) -> Result<App, i32> {
         eprintln!("error: could not open workspace {}: {e}", path.display());
         1
     })
+}
+
+/// Resolve an optional `--project NAME` filter to its id. `Ok(None)` means "no filter"; `Err(code)`
+/// means the name matched nothing — the message is already printed, so the caller just returns the
+/// code as its exit status.
+async fn resolve_project_filter(app: &App, name: Option<&String>) -> Result<Option<i64>, i32> {
+    let Some(name) = name else { return Ok(None) };
+    let overview = app.project_overview().await.unwrap_or_default();
+    match overview.iter().find(|o| o.project.name == *name) {
+        Some(o) => Ok(Some(o.project.id)),
+        None => {
+            eprintln!("error: no project named \"{name}\"");
+            Err(1)
+        }
+    }
 }
 
 /// Find a subject by exact donor identifier, returning its guid if present.

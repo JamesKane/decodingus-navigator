@@ -95,7 +95,7 @@ fn is_snv_allele(a: &str) -> bool {
 /// Candidate names for a lifted (chain-query) contig in the **target** FASTA's naming style, in
 /// preference order — covers `chr` prefix presence and `chrM`/`MT`.
 fn target_contig_name(q_name: &str, target_names: &HashSet<String>) -> Option<String> {
-    let bare = q_name.strip_prefix("chr").unwrap_or(q_name);
+    let bare = navigator_domain::contig::bare(q_name);
     let mut cands = vec![q_name.to_string(), bare.to_string(), format!("chr{bare}")];
     if bare.eq_ignore_ascii_case("M") || bare.eq_ignore_ascii_case("MT") {
         cands.extend(["chrM".into(), "MT".into(), "chrMT".into(), "M".into()]);

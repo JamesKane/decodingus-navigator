@@ -779,6 +779,9 @@ impl NavigatorApp {
 
         if save {
             let appview = form.appview_url.trim().to_string();
+            // The fields this dialog doesn't own are carried over from disk; read once rather than
+            // re-reading and re-parsing settings.json for each of them.
+            let kept = AppSettings::load();
             let settings = AppSettings {
                 y_tree_provider: Some(form.y_tree_provider.clone()),
                 prefer_external_calls: Some(form.prefer_external_calls),
@@ -792,7 +795,7 @@ impl NavigatorApp {
                 prompt_before_download: Some(form.prompt_before_download),
                 ui_scale: Some(form.ui_scale),
                 // Interface mode is toggled from the app bar, not this dialog — preserve it.
-                ui_mode: AppSettings::load().ui_mode,
+                ui_mode: kept.ui_mode,
                 llm_enabled: Some(form.llm_enabled),
                 llm_base_url: {
                     let u = form.llm_base_url.trim().to_string();
@@ -804,15 +807,15 @@ impl NavigatorApp {
                 },
                 llm_max_tokens: form.llm_max_tokens.trim().parse::<u32>().ok().filter(|n| *n > 0),
                 // Update-check preferences are managed from the update dialog, not this one — preserve.
-                check_for_updates: AppSettings::load().check_for_updates,
-                skip_update_version: AppSettings::load().skip_update_version,
+                check_for_updates: kept.check_for_updates,
+                skip_update_version: kept.skip_update_version,
                 // The window size is remembered automatically as the window is resized — preserve it.
-                window_size: AppSettings::load().window_size,
+                window_size: kept.window_size,
                 // Navigation state (view / focused subject / detail tab) is remembered as the user
                 // navigates — preserve it across a settings save.
-                last_nav: AppSettings::load().last_nav,
-                last_subject: AppSettings::load().last_subject,
-                last_detail_tab: AppSettings::load().last_detail_tab,
+                last_nav: kept.last_nav,
+                last_subject: kept.last_subject,
+                last_detail_tab: kept.last_detail_tab,
                 // Chromosome-painter calibration knobs.
                 lai_recomb_per_cm: Some(form.lai_recomb_per_cm),
                 lai_max_ref_haps: Some(form.lai_max_ref_haps),
@@ -882,13 +885,7 @@ impl NavigatorApp {
     /// layer refuses (surfaced via the status bar) when the subject still has dependent data.
     pub(crate) fn delete_subject_modal(&mut self, ctx: &egui::Context) {
         let Some(guid) = self.confirm_delete else { return };
-        let name = self
-            .all_biosamples
-            .iter()
-            .chain(self.samples.iter())
-            .find(|b| b.guid == guid)
-            .map(|b| b.donor_identifier.clone())
-            .unwrap_or_else(|| guid.0.to_string());
+        let name = self.subject_label(guid);
 
         let mut close = false;
         modal_frame(ctx, "delete_subject_modal", 400.0, |ui| {
@@ -928,13 +925,7 @@ impl NavigatorApp {
     /// subject itself — the recovery tool for a botched import.
     pub(crate) fn clear_subject_modal(&mut self, ctx: &egui::Context) {
         let Some(guid) = self.confirm_clear else { return };
-        let name = self
-            .all_biosamples
-            .iter()
-            .chain(self.samples.iter())
-            .find(|b| b.guid == guid)
-            .map(|b| b.donor_identifier.clone())
-            .unwrap_or_else(|| guid.0.to_string());
+        let name = self.subject_label(guid);
 
         let mut close = false;
         modal_frame(ctx, "clear_subject_modal", 420.0, |ui| {
@@ -970,13 +961,7 @@ impl NavigatorApp {
     /// coverage/ancestry/imported data; the placement re-derives on the next full analysis / re-import.
     pub(crate) fn reset_haplo_modal(&mut self, ctx: &egui::Context) {
         let Some(guid) = self.confirm_reset_haplo else { return };
-        let name = self
-            .all_biosamples
-            .iter()
-            .chain(self.samples.iter())
-            .find(|b| b.guid == guid)
-            .map(|b| b.donor_identifier.clone())
-            .unwrap_or_else(|| guid.0.to_string());
+        let name = self.subject_label(guid);
 
         let mut close = false;
         modal_frame(ctx, "reset_haplo_modal", 440.0, |ui| {

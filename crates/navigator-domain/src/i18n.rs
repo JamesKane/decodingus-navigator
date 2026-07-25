@@ -1,0 +1,210 @@
+//! Lightweight i18n: Play-style `key=value` catalogs embedded at compile time, mirroring the
+//! AppView's (`decodingus/rust` du-web) approach so both Rust front-ends share one catalog format.
+//! Dependency-free (no fluent).
+//!
+//! This lives in `navigator-domain`, the bottom of the crate stack, because user-facing text is not
+//! produced only by the UI. The Simple-mode Subject Brief ([`crate::brief`]) writes whole sentences
+//! about someone's results, and those same sentences are also consumed by the HTML report export
+//! (`navigator-app`) and the local-LLM prompt — none of which can reach a catalog that only the UI
+//! crate owns. Keeping the catalog here is what lets every layer that writes for a person localize;
+//! `navigator-ui` re-exports it, so `self.tr(...)` in the UI is unchanged.
+//!
+//! Lookup falls back from the active language → English → the key itself, so a partial
+//! translation degrades to English rather than showing raw keys. Catalog values are
+//! `&'static str`, so `tr()` returns `&'static str` and never borrows app state — convenient
+//! inside egui closures.
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// A supported UI language.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lang {
+    En,
+    Es,
+}
+
+impl Lang {
+    /// Language code (used to persist the chosen locale; see [`save_lang`]).
+    pub fn code(self) -> &'static str {
+        match self {
+            Lang::En => "en",
+            Lang::Es => "es",
+        }
+    }
+
+    /// Native display name (for the language switcher).
+    pub fn label(self) -> &'static str {
+        match self {
+            Lang::En => "English",
+            Lang::Es => "Español",
+        }
+    }
+
+    /// Resolve from a code (e.g. an env var or saved setting); `None` if unsupported.
+    pub fn parse(s: &str) -> Option<Lang> {
+        match s.get(0..2).map(str::to_ascii_lowercase).as_deref() {
+            Some("en") => Some(Lang::En),
+            Some("es") => Some(Lang::Es),
+            _ => None,
+        }
+    }
+
+    /// All languages, for rendering the switcher.
+    pub fn all() -> &'static [Lang] {
+        &[Lang::En, Lang::Es]
+    }
+}
+
+/// Path of the persisted-language file (`~/.decodingus/navigator-lang`), matching the
+/// `~/.decodingus` convention used for the workspace DB.
+fn lang_file() -> std::path::PathBuf {
+    crate::paths::decodingus_dir().join("navigator-lang")
+}
+
+/// The previously chosen UI language, if one was saved.
+pub fn load_lang() -> Option<Lang> {
+    std::fs::read_to_string(lang_file())
+        .ok()
+        .and_then(|s| Lang::parse(s.trim()))
+}
+
+/// Persist the chosen UI language so it survives a restart (best-effort; I/O errors ignored).
+pub fn save_lang(lang: Lang) {
+    let path = lang_file();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, lang.code());
+}
+
+const EN_SRC: &str = include_str!("../locales/en.txt");
+const ES_SRC: &str = include_str!("../locales/es.txt");
+
+fn parse_catalog(src: &'static str) -> HashMap<&'static str, &'static str> {
+    src.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            line.split_once('=').map(|(k, v)| (k.trim(), v.trim()))
+        })
+        .collect()
+}
+
+fn catalog(lang: Lang) -> &'static HashMap<&'static str, &'static str> {
+    static EN: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    static ES: OnceLock<HashMap<&str, &str>> = OnceLock::new();
+    match lang {
+        Lang::En => EN.get_or_init(|| parse_catalog(EN_SRC)),
+        Lang::Es => ES.get_or_init(|| parse_catalog(ES_SRC)),
+    }
+}
+
+/// Translate `key` and substitute positional arguments: `{0}` is replaced by `args[0]`, and so on.
+///
+/// Positional rather than named because word order differs between languages — a translator has to
+/// be able to move `{0}` after `{1}` without the code caring. An index with no argument is left in
+/// place rather than blanked, so a miscounted template is visible instead of silently dropping a
+/// number from a sentence about someone's results.
+pub fn tr_fmt(lang: Lang, key: &'static str, args: &[&str]) -> String {
+    let mut out = tr(lang, key).to_string();
+    for (i, a) in args.iter().enumerate() {
+        out = out.replace(&format!("{{{i}}}"), a);
+    }
+    out
+}
+
+/// Translate `key` for `lang`, falling back to English then the key itself.
+pub fn tr(lang: Lang, key: &'static str) -> &'static str {
+    if let Some(v) = catalog(lang).get(key).copied() {
+        return v;
+    }
+    if lang != Lang::En {
+        if let Some(v) = catalog(Lang::En).get(key).copied() {
+            return v;
+        }
+    }
+    key
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translates_and_falls_back() {
+        assert_eq!(tr(Lang::En, "nav.subjects"), "Subjects");
+        assert_eq!(tr(Lang::Es, "nav.subjects"), "Sujetos");
+        // Missing in Es → English fallback (assuming this key isn't translated).
+        assert_eq!(tr(Lang::Es, "status.label"), tr(Lang::Es, "status.label"));
+        // Unknown key → the key itself.
+        assert_eq!(tr(Lang::En, "totally.unknown.key"), "totally.unknown.key");
+    }
+
+    /// The diagnosis modal exists to be read and pasted by someone filing a bug report, so a
+    /// missing key there renders a raw `diagnosis.title` into the exact artifact that is supposed
+    /// to be legible. `tr` falls back to the key itself, which fails silently — assert instead.
+    #[test]
+    fn diagnosis_strings_are_translated_in_every_language() {
+        for key in [
+            "diagnosis.title",
+            "diagnosis.subtitle",
+            "diagnosis.copy",
+            "diagnosis.copyHint",
+            "diagnosis.copied",
+            "diagnosis.copyFailed",
+            "status.details",
+            "analysis.cancelling",
+            "analysis.cancellingHint",
+            "analysis.cancelled",
+        ] {
+            for lang in [Lang::En, Lang::Es] {
+                assert_ne!(tr(lang, key), key, "{key} is untranslated for {lang:?}");
+            }
+        }
+    }
+
+    /// The Subject Brief's sentences are the reason this catalog lives in `navigator-domain`. An
+    /// English-only `brief.*` key would silently reinstate exactly the defect that move fixed — the
+    /// reader gets English prose regardless of locale — and `tr`'s fallback makes that invisible.
+    #[test]
+    fn brief_prose_is_translated_in_every_language() {
+        let en = catalog(Lang::En);
+        let brief_keys: Vec<&&str> = en.keys().filter(|k| k.starts_with("brief.")).collect();
+        assert!(brief_keys.len() > 20, "expected the brief catalog, found {}", brief_keys.len());
+        for lang in Lang::all() {
+            for key in &brief_keys {
+                assert!(
+                    catalog(*lang).contains_key(**key),
+                    "{key} is untranslated for {lang:?} — the brief would fall back to English"
+                );
+            }
+        }
+    }
+
+    /// A template and its translations must take the same arguments: a `{1}` that only exists in one
+    /// language either drops a number from a sentence or leaves a literal `{1}` in the text.
+    #[test]
+    fn placeholders_match_across_languages() {
+        let en = catalog(Lang::En);
+        for (key, en_val) in en.iter().filter(|(k, _)| k.starts_with("brief.")) {
+            let count = |s: &str| (0..4).filter(|i| s.contains(&format!("{{{i}}}"))).count();
+            for lang in Lang::all().iter().filter(|l| **l != Lang::En) {
+                if let Some(v) = catalog(*lang).get(key) {
+                    assert_eq!(count(en_val), count(v), "{key}: placeholder mismatch for {lang:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_es_key_exists_in_en() {
+        // Catch typos: a translated key with no English source would never be reachable.
+        let en = catalog(Lang::En);
+        for k in catalog(Lang::Es).keys() {
+            assert!(en.contains_key(k), "es.txt key not in en.txt: {k}");
+        }
+    }
+}

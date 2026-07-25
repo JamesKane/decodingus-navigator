@@ -2,6 +2,69 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
+/// Every analysis artifact of a set of alignments, pre-loaded and indexed for the report builders.
+///
+/// Reading one cached result through [`App::load_analysis`] costs two queries — the artifact, then
+/// the `alignment` row it needs in order to stat the BAM for staleness — plus that stat. A project
+/// report reads five kinds per alignment for every member, so the per-cell form meant thousands of
+/// round-trips to open one tab. This loads them all in a single `IN` query and stats each BAM once.
+///
+/// The staleness rule is the same one [`App::load_analysis`] applies: a cached payload is a miss
+/// when the source file's `mtime:size` has changed since it was computed.
+struct AlignmentArtifacts {
+    /// `(alignment id, kind, algorithm version)` → the stored artifact.
+    by_key: HashMap<(i64, String, String), AnalysisArtifact>,
+    /// Current source signature per alignment (`None` when the file is gone or unstattable, which
+    /// means "trust the cache" — there is nothing to recompute against).
+    sigs: HashMap<i64, Option<String>>,
+}
+
+impl AlignmentArtifacts {
+    async fn load(store: &Store, alignments: &[&Alignment]) -> Result<Self, AppError> {
+        let ids: Vec<i64> = alignments.iter().map(|a| a.id).collect();
+        let by_key = artifact::list_for_alignments(store.pool(), &ids)
+            .await?
+            .into_iter()
+            .map(|a| ((a.alignment_id, a.kind.clone(), a.algorithm_version.clone()), a))
+            .collect();
+        // One stat per alignment, from the row we already hold — not one per artifact read.
+        let sigs = alignments
+            .iter()
+            .map(|a| {
+                let sig = a.bam_path.as_deref().and_then(|p| file_signature(Path::new(p)));
+                (a.id, sig)
+            })
+            .collect();
+        Ok(Self { by_key, sigs })
+    }
+
+    /// The stored artifact, with no staleness check — the equivalent of a bare `artifact::get`.
+    fn raw(&self, alignment_id: i64, kind: &str, version: &str) -> Option<&AnalysisArtifact> {
+        self.by_key.get(&(alignment_id, kind.to_string(), version.to_string()))
+    }
+
+    /// The decoded payload, or `None` when absent, stale, or undecodable — matching
+    /// [`App::load_analysis`].
+    fn fresh<T: DeserializeOwned>(&self, alignment_id: i64, kind: &str, version: &str) -> Option<T> {
+        let a = self.raw(alignment_id, kind, version)?;
+        let current = self.sigs.get(&alignment_id).and_then(|s| s.as_deref());
+        if !artifact_is_fresh(a.source_sig.as_deref(), current) {
+            return None;
+        }
+        serde_json::from_str(&a.payload).ok()
+    }
+
+    /// `(source, completeness)` with the same legacy-row defaults as [`App::analysis_provenance`].
+    fn provenance(&self, alignment_id: i64, kind: &str, version: &str) -> Option<(String, String)> {
+        self.raw(alignment_id, kind, version).map(|a| {
+            (
+                a.source.clone().unwrap_or_else(|| "navigator-walk".into()),
+                a.completeness.clone().unwrap_or_else(|| "full".into()),
+            )
+        })
+    }
+}
+
 impl App {
     // ---- queries -----------------------------------------------------------
 
@@ -303,12 +366,18 @@ impl App {
 
     /// Projects with their sample counts, for a dashboard/list view.
     pub async fn project_overview(&self) -> Result<Vec<ProjectOverview>, AppError> {
-        let mut out = Vec::new();
-        for project in project::list(self.store.pool()).await? {
-            let sample_count = biosample::count_members_for_project(self.store.pool(), project.id).await?;
-            out.push(ProjectOverview { project, sample_count });
-        }
-        Ok(out)
+        // One grouped count for the whole workspace rather than a COUNT per project — this runs on
+        // every projects-list load and on every CLI `--project` name lookup.
+        let counts: HashMap<i64, i64> = biosample::member_counts(self.store.pool()).await?.into_iter().collect();
+        Ok(project::list(self.store.pool())
+            .await?
+            .into_iter()
+            .map(|project| {
+                // Absent from the grouped result means no members.
+                let sample_count = counts.get(&project.id).copied().unwrap_or(0);
+                ProjectOverview { project, sample_count }
+            })
+            .collect())
     }
 
     /// Per-sample report for a project: each biosample's alignment count, coverage roll-up
@@ -316,13 +385,27 @@ impl App {
     /// Composes existing per-subject queries (no new join) — coverage/haplogroup cells are
     /// `None` until those analyses have run.
     pub async fn project_report(&self, project_id: i64) -> Result<Vec<ProjectSampleReport>, AppError> {
+        let members = biosample::list_members_for_project(self.store.pool(), project_id).await?;
+        // Everything this report needs, in four queries rather than a per-cell round-trip: the
+        // members, their alignments, every artifact of those alignments, and the haplogroup
+        // reconciliation. Each cell below is then a lookup, not a query.
+        let guids: Vec<SampleGuid> = members.iter().map(|b| b.guid).collect();
+        let mut by_subject: HashMap<SampleGuid, Vec<Alignment>> = HashMap::new();
+        for (guid, aln) in alignment::list_for_biosamples(self.store.pool(), &guids).await? {
+            by_subject.entry(guid).or_default().push(aln);
+        }
+        let all_alignments: Vec<&Alignment> = by_subject.values().flatten().collect();
+        let artifacts = AlignmentArtifacts::load(&self.store, &all_alignments).await?;
+        // Same precedence (per-run vote → placed label → manual override) as `haplogroup_consensus`.
+        let terminals = self.haplogroup_terminals().await?;
+
         let mut out = Vec::new();
-        for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
-            let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
-            let mut coverage = None;
+        for biosample in members {
+            let alignments = by_subject.remove(&biosample.guid).unwrap_or_default();
+            let mut coverage: Option<CoverageResult> = None;
             let mut coverage_aln = None;
             for a in &alignments {
-                if let Some(c) = self.cached_coverage(a.id).await? {
+                if let Some(c) = artifacts.fresh(a.id, "coverage", coverage::COVERAGE_VERSION) {
                     coverage = Some(c);
                     coverage_aln = Some(a.id);
                     break;
@@ -331,34 +414,27 @@ impl App {
             // A lite (sidecar) coverage is flagged so the UI can badge it and offer a deep walk.
             let coverage_partial = match coverage_aln {
                 Some(id) => matches!(
-                    self.analysis_provenance(id, "coverage", coverage::COVERAGE_VERSION).await?,
+                    artifacts.provenance(id, "coverage", coverage::COVERAGE_VERSION),
                     Some((_, ref c)) if c == "partial"
                 ),
                 None => false,
             };
             // Prefer the coverage-bearing alignment; else fall back to the first.
             let primary_alignment_id = coverage_aln.or_else(|| alignments.first().map(|a| a.id));
-            let y_haplogroup = self
-                .haplogroup_consensus(biosample.guid, DnaType::Y)
-                .await?
-                .map(|c| c.haplogroup);
-            let mt_haplogroup = self
-                .haplogroup_consensus(biosample.guid, DnaType::Mt)
-                .await?
-                .map(|c| c.haplogroup);
+            let (y_haplogroup, mt_haplogroup) = terminals.get(&biosample.guid).cloned().unwrap_or_default();
             // Sex + read-metrics from whichever alignment has them cached.
             let mut sex = None;
-            let mut metrics = None;
+            let mut metrics: Option<ReadMetrics> = None;
             let mut sv_count = None;
             for a in &alignments {
                 if sex.is_none() {
-                    sex = self.cached_sex(a.id).await?;
+                    sex = artifacts.fresh::<navigator_analysis::sex::SexInferenceResult>(a.id, "sex", "1");
                 }
                 if metrics.is_none() {
-                    metrics = self.cached_read_metrics(a.id).await?;
+                    metrics = artifacts.fresh(a.id, "read_metrics", "1");
                 }
                 if sv_count.is_none() {
-                    sv_count = self.cached_sv(a.id).await?.map(|s| s.sv_calls.len());
+                    sv_count = artifacts.fresh::<navigator_analysis::sv::types::SvAnalysisResult>(a.id, "sv", "1").map(|s| s.sv_calls.len());
                 }
             }
             let sex = sex.map(|s| match s.inferred_sex {
@@ -383,9 +459,13 @@ impl App {
                 sv_count,
                 coverage_partial,
                 // Surface a persisted failure (corrupt/undecodable file) only when there's no
-                // coverage to show — a successful re-walk clears the marker anyway.
+                // coverage to show — a successful re-walk clears the marker anyway. Read without a
+                // freshness check, as `analysis_error` does: the marker stands until a success clears it.
                 decode_error: match (coverage.is_none(), primary_alignment_id) {
-                    (true, Some(id)) => self.analysis_error(id).await?.map(|e| e.message),
+                    (true, Some(id)) => artifacts
+                        .raw(id, ERROR_KIND, ERROR_VERSION)
+                        .and_then(|a| serde_json::from_str::<AnalysisError>(&a.payload).ok())
+                        .map(|e| e.message),
                     _ => None,
                 },
                 biosample,
@@ -401,6 +481,8 @@ impl App {
     pub async fn project_str_overview(&self, project_id: i64) -> Result<Vec<ProjectStrMember>, AppError> {
         use navigator_domain::{strpanel, strprofile};
         let mut out = Vec::new();
+        // One bulk reconciliation for the whole workspace rather than two queries per member.
+        let terminals = self.haplogroup_terminals().await?;
         for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
             let profiles = self.list_str_profiles(biosample.guid).await?;
             if profiles.is_empty() {
@@ -423,9 +505,8 @@ impl App {
                 .unwrap_or("FTDNA");
             let test = strpanel::classify_panel(&normed, Some(provider)).panel_name;
 
-            let consensus = self.haplogroup_consensus(biosample.guid, DnaType::Y).await?;
-            let y_confirmed = consensus.is_some();
-            let y_haplogroup = consensus.map(|c| c.haplogroup);
+            let y_haplogroup = terminals.get(&biosample.guid).and_then(|(y, _)| y.clone());
+            let y_confirmed = y_haplogroup.is_some();
 
             out.push(ProjectStrMember {
                 guid: biosample.guid,

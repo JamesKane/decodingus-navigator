@@ -146,7 +146,7 @@ impl IbdPanel {
     /// site (multiallelic mismatch) is dropped, not mis-called hom-ref. Palindromic (A/T, C/G) sites
     /// are skipped — strand-ambiguous across builds, exactly as [`resolve_chip`].
     pub fn resolve_whole_genome(&self, build: &str, variant_calls: &[(String, i64, char, char)]) -> Vec<SiteGenotype> {
-        let norm = |c: &str| c.strip_prefix("chr").unwrap_or(c).to_ascii_uppercase();
+        let norm = crate::contig::bare_upper;
         let variants: HashMap<(String, i64), (char, char)> = variant_calls
             .iter()
             .map(|(c, p, a1, a2)| ((norm(c), *p), (*a1, *a2)))
@@ -183,7 +183,7 @@ impl IbdPanel {
     /// GRCh37/GRCh38 WGS reach the CHM13-coordinate ancestry panel without a runtime liftover (the
     /// panel already carries every build's coordinates).
     pub fn resolve_alignment(&self, build: &str, genotypes: &[SiteGenotype]) -> Vec<SiteGenotype> {
-        let norm = |c: &str| c.strip_prefix("chr").unwrap_or(c).to_ascii_uppercase();
+        let norm = crate::contig::bare_upper;
         let mut index: HashMap<(String, i64), &IbdPanelSite> = HashMap::new();
         for s in &self.sites {
             if let Some(l) = s.locus(build) {

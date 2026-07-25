@@ -437,6 +437,41 @@ pub struct IbdSuggestion {
     pub signals: Vec<String>,
 }
 
+/// How much a federated-IBD candidate's composite score is worth believing, as the Simple-mode
+/// "Genetic relatives" card frames it.
+///
+/// This is a reading of the evidence, not a rendering of it: where the line falls between "strong"
+/// and "merely possible" decides which of three claims the app makes about a stranger's relatedness
+/// to the user. It lives beside [`IbdSuggestion`] rather than in the card that draws it so the rule
+/// has one home — and so tuning it later is a change to the interpretation, not to a widget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchStrength {
+    /// The signals agree strongly; presented as a likely relative.
+    Strong,
+    /// Enough agreement to be worth pursuing.
+    Likely,
+    /// Weak or single-signal evidence; presented as a possibility only.
+    Possible,
+}
+
+impl IbdSuggestion {
+    /// Classify this candidate's composite `score` into the tier the UI names.
+    ///
+    /// The AppView's score is a 0–1 composite over the contributing `signals`, so the cutoffs are
+    /// deliberately conservative: a candidate is only called strong when the evidence is well clear
+    /// of the middle of the range, because overstating a match invites someone to contact a stranger
+    /// on the strength of it.
+    pub fn strength(&self) -> MatchStrength {
+        if self.score >= 0.8 {
+            MatchStrength::Strong
+        } else if self.score >= 0.5 {
+            MatchStrength::Likely
+        } else {
+            MatchStrength::Possible
+        }
+    }
+}
+
 /// Result of requesting an introduction to a candidate: the AppView's request URI and its
 /// status (initially `PENDING`, awaiting the consent round-trip).
 #[derive(Debug, Clone, PartialEq)]
@@ -706,13 +741,7 @@ fn tree_cache_is_fresh(path: &Path) -> bool {
         .and_then(|v| v.trim().parse::<u64>().ok())
         .or_else(|| AppSettings::load().tree_ttl_days)
         .unwrap_or(TREE_CACHE_TTL_DAYS_DEFAULT);
-    let ttl = std::time::Duration::from_secs(days * 24 * 3600);
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|mtime| std::time::SystemTime::now().duration_since(mtime).ok())
-        .map(|age| age < ttl)
-        .unwrap_or(false)
+    brief::cache_is_fresh(path, days)
 }
 
 /// Score a tree against the sample calls and attach the terminal's child-branch evidence.
@@ -1256,6 +1285,45 @@ pub fn seed_bundled_str() -> SeedSummary {
     seed_assets_from(&src, &dest).unwrap_or_default()
 }
 
+/// Every bundled asset directory — ancestry panels, chrY masks, STR references — seeded into the
+/// cache. Idempotent: a destination that already exists is skipped, so only a first run copies.
+pub fn seed_bundled_all() -> SeedSummary {
+    let mut total = SeedSummary::default();
+    for s in [seed_bundled_assets(), seed_bundled_masks(), seed_bundled_str()] {
+        total.copied += s.copied;
+        total.skipped += s.skipped;
+    }
+    total
+}
+
+/// The in-flight background seed started by [`spawn_bundled_seed`], if any.
+static BUNDLED_SEED: std::sync::Mutex<Option<std::thread::JoinHandle<SeedSummary>>> = std::sync::Mutex::new(None);
+
+/// Run [`seed_bundled_all`] on a background thread so a first-run copy does not sit in front of the
+/// GUI's first frame — the GRCh38 HipSTR BED alone is ~20 MB, and that delay lands exactly when a
+/// new user is watching for the window. Anything that reads the assets must call
+/// [`await_bundled_assets`] first; [`App::open`] does, which covers every data path.
+///
+/// Headless runs seed synchronously instead (the analysis starts immediately, with no window to
+/// show meanwhile), so they never call this and the await below is a no-op for them.
+pub fn spawn_bundled_seed() {
+    let mut slot = BUNDLED_SEED.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(std::thread::spawn(seed_bundled_all));
+    }
+}
+
+/// Block until a [`spawn_bundled_seed`] has finished. Returns immediately when none was started or
+/// it has already been awaited. Holding the lock across the join is deliberate: a second caller
+/// waits for the first to finish rather than racing past a half-copied asset directory.
+pub fn await_bundled_assets() -> SeedSummary {
+    let mut slot = BUNDLED_SEED.lock().unwrap_or_else(|e| e.into_inner());
+    match slot.take() {
+        Some(h) => h.join().unwrap_or_default(),
+        None => SeedSummary::default(),
+    }
+}
+
 /// The asset integrity manifest path for a build (`<base>/ancestry/ancestry_manifest_<build>.json`).
 fn ancestry_manifest_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("", "ancestry_manifest", build, "json")
@@ -1587,21 +1655,6 @@ fn contributing_subdirs(root: &std::path::Path, files: &[PathBuf]) -> std::colle
         }
     }
     set
-}
-
-/// Whether `name` is a primary chromosome (1–22, X, Y, M/MT), with or without a `chr` prefix —
-/// the contigs the whole-genome caller considers (skipping alts / decoys / unplaced).
-fn is_primary_contig(name: &str) -> bool {
-    let s = name.strip_prefix("chr").unwrap_or(name).to_ascii_uppercase();
-    matches!(s.as_str(), "X" | "Y" | "M" | "MT") || s.parse::<u32>().map(|n| (1..=22).contains(&n)).unwrap_or(false)
-}
-
-/// Whether `name` is a **haploid** contig — chrY and chrM/MT carry a single allele, so the diploid
-/// (het 0/1 + hom-alt 1/1) model doesn't apply; the haploid caller + Y/mt haplogroup placement own
-/// them. (chrX is haploid only in a male — left to the sex-aware refinement, not treated here.)
-fn is_haploid_contig(name: &str) -> bool {
-    let s = name.strip_prefix("chr").unwrap_or(name).to_ascii_uppercase();
-    matches!(s.as_str(), "Y" | "M" | "MT")
 }
 
 /// The result of one [`App::drain_outbox`] pass — what the UI reports / shows in its indicator.
@@ -2422,6 +2475,7 @@ pub struct RefBuildStatus {
 }
 
 mod analysis;
+pub use analysis::AnalysisStep;
 mod auth;
 mod brief;
 mod commands;
@@ -3154,6 +3208,10 @@ impl App {
 
     /// Open/create the workspace database and build the app.
     pub async fn open(path: &std::path::Path) -> Result<Self, AppError> {
+        // The GUI seeds bundled assets on a background thread so the window paints first; wait for
+        // it here, on the worker thread, so no analysis can read a half-seeded cache. A no-op for
+        // headless runs (they seed synchronously up front) and for tests (they never spawn it).
+        await_bundled_assets();
         Ok(App::new(Store::open(path).await?))
     }
 }
@@ -3940,28 +3998,35 @@ mod ibd_federated_tests {
         assert!(parse_ibd_suggestions(&serde_json::json!({})).is_empty());
         assert!(parse_ibd_suggestions(&serde_json::json!({ "items": "nope" })).is_empty());
     }
+
+    /// The tier boundaries decide which of three claims the app makes about a stranger's
+    /// relatedness, so they are pinned here rather than left implicit in whatever draws the card.
+    #[test]
+    fn match_strength_tiers_are_conservative() {
+        let at = |score: f64| {
+            IbdSuggestion {
+                suggested_sample_guid: "h".into(),
+                suggestion_type: "SHARED_MATCH".into(),
+                score,
+                signals: Vec::new(),
+            }
+            .strength()
+        };
+        // Boundaries are inclusive at the bottom of each tier.
+        assert_eq!(at(1.0), MatchStrength::Strong);
+        assert_eq!(at(0.8), MatchStrength::Strong);
+        assert_eq!(at(0.79), MatchStrength::Likely);
+        assert_eq!(at(0.5), MatchStrength::Likely);
+        assert_eq!(at(0.49), MatchStrength::Possible);
+        assert_eq!(at(0.0), MatchStrength::Possible);
+        // A missing score parses as 0.0, which must read as the weakest claim, never the strongest.
+        assert_eq!(at(f64::NAN), MatchStrength::Possible, "an unusable score must not overstate");
+    }
 }
 
 #[cfg(test)]
 mod export_tests {
     use super::*;
-
-    #[test]
-    fn primary_contig_filter() {
-        for ok in ["chr1", "1", "chr22", "22", "chrX", "X", "chrY", "Y", "chrM", "MT"] {
-            assert!(is_primary_contig(ok), "{ok} should be primary");
-        }
-        for no in [
-            "chr23",
-            "chrUn_KI270302v1",
-            "chr1_KI270706v1_random",
-            "HLA-A",
-            "GL000220.1",
-            "",
-        ] {
-            assert!(!is_primary_contig(no), "{no} should not be primary");
-        }
-    }
 
     #[test]
     fn diploid_vcf_export_metadata() {

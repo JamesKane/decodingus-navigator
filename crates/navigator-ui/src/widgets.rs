@@ -35,6 +35,12 @@ impl TableControls {
         &mut self.filters[col]
     }
 
+    /// The raw per-column filter text, for change-detection by the row caches (comparing this is
+    /// allocation-free, unlike calling [`Self::filter_norm`] per column every frame).
+    pub(crate) fn filters_raw(&self) -> &[String] {
+        &self.filters
+    }
+
     /// Trimmed, lower-cased filter text for `col` (empty when unset) — ready for `contains`.
     pub(crate) fn filter_norm(&self, col: usize) -> String {
         self.filters
@@ -184,6 +190,15 @@ pub(crate) fn chip(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::C
     ui.painter().rect_filled(rect, 6.0, bg);
     ui.painter().galley(rect.min + pad, galley, egui::Color32::PLACEHOLDER);
     response
+}
+
+/// Whether a button embedded in a clickable row was activated: either it was clicked directly, or
+/// the row swallowed the press while the pointer was over the button. Both selectable-row lists (runs
+/// and their alignments) need the same rule, so it has one definition.
+pub(crate) fn button_hit(button: &Option<egui::Response>, row_clicked: bool) -> bool {
+    button
+        .as_ref()
+        .is_some_and(|r| r.clicked() || (row_clicked && r.contains_pointer()))
 }
 
 /// 3-letter provider abbreviation for the run chip (PACBIO → PAC).

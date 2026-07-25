@@ -296,6 +296,30 @@ pub async fn count_for_project(pool: &SqlitePool, project_id: i64) -> Result<i64
     Ok(n)
 }
 
+/// Member counts for **every** project at once, as `(project_id, count)` — the same membership rule
+/// as [`count_members_for_project`] (M:N ∪ legacy home column, deduped by guid, and only counting
+/// guids that still exist in `biosample`), in one `GROUP BY` instead of a query per project.
+/// Projects with no members are absent from the result rather than reported as zero.
+pub async fn member_counts(pool: &SqlitePool) -> Result<Vec<(i64, i64)>, StoreError> {
+    // The inner UNION (not UNION ALL) dedupes `(project, guid)` pairs, so a subject that is both a
+    // M:N member and has the project as its legacy home is counted once — matching the `IN (...)`
+    // semantics of the single-project query. The join to `biosample` drops membership rows whose
+    // subject has been deleted, which the `SELECT COUNT(*) FROM biosample WHERE guid IN (...)` form
+    // also excluded.
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT m.project_id, COUNT(*) FROM ( \
+             SELECT project_id, biosample_guid AS guid FROM biosample_project \
+             UNION \
+             SELECT project_id, guid FROM biosample WHERE project_id IS NOT NULL \
+           ) m \
+           JOIN biosample b ON b.guid = m.guid \
+         GROUP BY m.project_id",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 /// Count of all project members (M:N membership ∪ legacy home column), deduped by guid — matches
 /// [`list_members_for_project`]. Used for the projects-list sample badge.
 pub async fn count_members_for_project(pool: &SqlitePool, project_id: i64) -> Result<i64, StoreError> {

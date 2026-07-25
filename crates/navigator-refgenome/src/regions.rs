@@ -165,10 +165,12 @@ impl GenomeRegions {
         if let Some(c) = self.chromosomes.get(contig) {
             return Some(c);
         }
-        let alt = contig
-            .strip_prefix("chr")
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("chr{contig}"));
+        let bare = navigator_domain::contig::bare(contig);
+        let alt = if bare.len() < contig.len() {
+            bare.to_string()
+        } else {
+            format!("chr{bare}")
+        };
         self.chromosomes.get(&alt)
     }
 

@@ -46,8 +46,7 @@ fn geno_to_pair(g: u8, a1: char, a2: char) -> Option<(char, char)> {
 /// Bare autosomal contig (`"1".."22"`) for an EIGENSTRAT `Chr` field, or `None` for a sex/mt/unknown
 /// contig (EIGENSTRAT uses `23`=X, `24`=Y, `90`/`91`=mt, plus `0`). Accepts an optional `chr` prefix.
 fn autosome_contig(chr: &str) -> Option<String> {
-    let bare = chr.strip_prefix("chr").or_else(|| chr.strip_prefix("Chr")).unwrap_or(chr);
-    match bare.parse::<u8>() {
+    match crate::contig::bare(chr).parse::<u8>() {
         Ok(n @ 1..=22) => Some(n.to_string()),
         _ => None,
     }

@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::CancelToken;
 use navigator_app::{
+    AnalysisStep,
     AlignmentProbe, AncestryResult, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
     ChatTurn, Consensus, Coverage, DenovoCall, DescentReport, DmConversationSummary, DmMessage, DnaType,
     ExchangeSessionInfo,
@@ -1291,32 +1292,38 @@ async fn settle_alignment_command(app: &App, alignment_id: i64, event: Event) ->
 /// [`Event::Genealogy`] — the refresh emitted after any genealogy mutation so the detail card
 /// reflects the new state without a separate "changed" round-trip.
 async fn reload_genealogy(app: &App, guid: SampleGuid) -> Event {
-    match app.subject_genealogy(guid).await {
-        Ok(data) => Event::Genealogy { guid, data },
+    ev(app.subject_genealogy(guid).await, |data| Event::Genealogy { guid, data })
+}
+
+/// Map a fallible app call to an [`Event`]: `ok` names the success event, and **any** error becomes
+/// `Event::Error` carrying the error's `Display` text — the one place that policy is written down.
+///
+/// Nearly every arm of [`handle`] has this shape, so spelling it here keeps ~120 call sites from each
+/// restating it. `ok` is usually just the event constructor (`ev(app.refresh_trees().await,
+/// Event::TreesRefreshed)`); a closure covers the struct-variant and extra-field cases. Generic over
+/// the error type so store/analysis/io errors all route the same way; `FnOnce` so the closure may move
+/// captured values into the event.
+///
+/// Arms that need more than this — a three-way `Ok(Some)`/`Ok(None)` split, an `.await` on the success
+/// path, or a non-`Display` message — keep their explicit `match`.
+fn ev<T, E: std::fmt::Display>(result: Result<T, E>, ok: impl FnOnce(T) -> Event) -> Event {
+    match result {
+        Ok(value) => ok(value),
         Err(e) => Event::Error(e.to_string()),
     }
 }
 
 pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
     match cmd {
-        Command::LoadOverview => match app.project_overview().await {
-            Ok(v) => Event::Overview(v),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::LoadOverview => ev(app.project_overview().await, Event::Overview),
         Command::LoadAssetStatus => Event::AssetStatus(navigator_app::ancestry_asset_status()),
         Command::CheckForUpdate => match app.check_for_update().await {
             Ok(Some(info)) => Event::UpdateAvailable(Box::new(info)),
             Ok(None) => Event::UpToDate,
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::RefreshTrees => match app.refresh_trees().await {
-            Ok(n) => Event::TreesRefreshed(n),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::CreateProject(new) => match app.create_project(new).await {
-            Ok(p) => Event::ProjectCreated(p),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::RefreshTrees => ev(app.refresh_trees().await, Event::TreesRefreshed),
+        Command::CreateProject(new) => ev(app.create_project(new).await, Event::ProjectCreated),
         // ImportProjectDir streams ImportProgress from the spawn loop; reaching here is a bug.
         Command::ImportProjectDir { .. } => {
             Event::Error("internal: unrouted ImportProjectDir".into())
@@ -1328,8 +1335,8 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             paternal,
             maternal,
             ystr,
-        } => match app
-            .plan_ftdna_import(
+        } => ev(
+            app.plan_ftdna_import(
                 project_id,
                 project_name,
                 member,
@@ -1338,45 +1345,36 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 ystr,
                 FtdnaImportOptions::default(),
             )
-            .await
-        {
-            Ok(plan) => Event::FtdnaPlan(plan),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::CommitFtdnaImport { plan, resolutions } => match app.commit_ftdna_import(&plan, &resolutions).await {
-            Ok(summary) => Event::FtdnaImported(summary),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadGenealogy(guid) => match app.subject_genealogy(guid).await {
-            Ok(data) => Event::Genealogy { guid, data },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::ClusterProject(project_id) => match app.cluster_project_ystr(project_id).await {
-            Ok(clustering) => Event::ProjectClustering { project_id, clustering },
-            Err(e) => Event::Error(e.to_string()),
-        },
+            .await,
+            Event::FtdnaPlan,
+        ),
+        Command::CommitFtdnaImport { plan, resolutions } => {
+            ev(app.commit_ftdna_import(&plan, &resolutions).await, Event::FtdnaImported)
+        }
+        Command::LoadGenealogy(guid) => ev(app.subject_genealogy(guid).await, |data| Event::Genealogy { guid, data }),
+        Command::ClusterProject(project_id) => ev(
+            app.cluster_project_ystr(project_id).await,
+            |clustering| Event::ProjectClustering { project_id, clustering },
+        ),
         // ResolveReference is handled in the spawn loop (it streams progress events); reaching
         // here would mean a routing bug.
         Command::ResolveReference { build } => Event::Error(format!("internal: unrouted ResolveReference {build}")),
-        Command::LoadSamples(project_id) => match app.list_biosamples(project_id).await {
-            Ok(samples) => Event::Samples { project_id, samples },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadProjectReport(project_id) => match app.project_report(project_id).await {
-            Ok(rows) => Event::ProjectReport { project_id, rows },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadProjectStrChart(project_id) => match app.project_str_chart(project_id).await {
-            Ok(chart) => Event::ProjectStrChart { project_id, chart },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadSubjectBrief(guid) => match app.subject_brief(guid).await {
-            Ok(brief) => Event::SubjectBrief {
+        Command::LoadSamples(project_id) => {
+            ev(app.list_biosamples(project_id).await, |samples| Event::Samples { project_id, samples })
+        }
+        Command::LoadProjectReport(project_id) => {
+            ev(app.project_report(project_id).await, |rows| Event::ProjectReport { project_id, rows })
+        }
+        Command::LoadProjectStrChart(project_id) => {
+            ev(app.project_str_chart(project_id).await, |chart| Event::ProjectStrChart { project_id, chart })
+        }
+        Command::LoadSubjectBrief(guid) => ev(
+            app.subject_brief(guid).await,
+            |brief| Event::SubjectBrief {
                 guid,
                 brief: Box::new(brief),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::LoadDescentReport { guid, dna } => Event::DescentReportLoaded {
             guid,
             dna,
@@ -1398,26 +1396,15 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::DeepAnalyzeProject(project_id) => {
             Event::Error(format!("internal: unrouted DeepAnalyzeProject {project_id}"))
         }
-        Command::LoadSubjectStatus => match app.subject_analysis_status().await {
-            Ok(map) => Event::SubjectStatus(map),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadHaploSummary => match app.haplogroup_terminals().await {
-            Ok(map) => Event::HaploSummary(map),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadAllBiosamples => match app.list_all_biosamples().await {
-            Ok(samples) => Event::AllBiosamples(samples),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::LoadSubjectStatus => ev(app.subject_analysis_status().await, Event::SubjectStatus),
+        Command::LoadHaploSummary => ev(app.haplogroup_terminals().await, Event::HaploSummary),
+        Command::LoadAllBiosamples => ev(app.list_all_biosamples().await, Event::AllBiosamples),
         Command::AddBiosample(b) => {
-            match app
-                .add_biosample(b.project_id, b.donor_identifier, b.sample_accession, b.sex)
-                .await
-            {
-                Ok(_) => Event::BiosamplesChanged,
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(
+                app.add_biosample(b.project_id, b.donor_identifier, b.sample_accession, b.sex)
+                    .await,
+                |_| Event::BiosamplesChanged,
+            )
         }
         Command::UpdateBiosample {
             guid,
@@ -1427,13 +1414,11 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             center_name,
             sex,
         } => {
-            match app
-                .update_biosample(guid, donor_identifier, sample_accession, description, center_name, sex)
-                .await
-            {
-                Ok(_) => Event::BiosamplesChanged,
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(
+                app.update_biosample(guid, donor_identifier, sample_accession, description, center_name, sex)
+                    .await,
+                |_| Event::BiosamplesChanged,
+            )
         }
         Command::AddExternalId { guid, source, external_id } => {
             match app.add_external_id(guid, &source, &external_id).await {
@@ -1453,48 +1438,40 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             Ok(()) => reload_genealogy(app, guid).await,
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::DeleteBiosample(guid) => match app.delete_biosample(guid).await {
-            Ok(()) => Event::BiosamplesChanged,
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::ClearBiosampleData(guid) => match app.clear_biosample_data(guid).await {
-            Ok(()) => Event::BiosampleDataCleared(guid),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::ClearHaplogroupData(guid) => match app.clear_haplogroup_data(guid).await {
-            Ok(()) => Event::HaplogroupDataReset(guid),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::DeleteSequenceRun { id, biosample_guid } => match app.delete_sequence_run(id).await {
-            Ok(()) => Event::RunsChanged(biosample_guid),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::DeleteBiosample(guid) => ev(app.delete_biosample(guid).await, |_| Event::BiosamplesChanged),
+        Command::ClearBiosampleData(guid) => {
+            ev(app.clear_biosample_data(guid).await, |_| Event::BiosampleDataCleared(guid))
+        }
+        Command::ClearHaplogroupData(guid) => {
+            ev(app.clear_haplogroup_data(guid).await, |_| Event::HaplogroupDataReset(guid))
+        }
+        Command::DeleteSequenceRun { id, biosample_guid } => {
+            ev(app.delete_sequence_run(id).await, |_| Event::RunsChanged(biosample_guid))
+        }
         Command::MergeSequenceRuns {
             biosample_guid,
             primary,
             secondary,
-        } => match app.merge_sequence_runs(biosample_guid, primary, secondary).await {
-            Ok(_) => Event::RunsChanged(biosample_guid),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::DeleteAlignment { id, sequence_run_id } => match app.delete_alignment(id).await {
-            Ok(()) => Event::AlignmentsChanged(sequence_run_id),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::DeleteStrProfile { id, biosample_guid } => match app.delete_str_profile(id).await {
-            Ok(()) => Event::StrProfilesChanged(biosample_guid),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        } => ev(
+            app.merge_sequence_runs(biosample_guid, primary, secondary).await,
+            |_| Event::RunsChanged(biosample_guid),
+        ),
+        Command::DeleteAlignment { id, sequence_run_id } => {
+            ev(app.delete_alignment(id).await, |_| Event::AlignmentsChanged(sequence_run_id))
+        }
+        Command::DeleteStrProfile { id, biosample_guid } => {
+            ev(app.delete_str_profile(id).await, |_| Event::StrProfilesChanged(biosample_guid))
+        }
         Command::LoadReferenceSettings => Event::ReferenceSettings(app.reference_settings()),
         Command::TestLlmConnection { base_url } => {
             Event::LlmConnection(app.llm_models_at(&base_url).await.map_err(|e| e.to_string()))
         }
-        Command::SetReferenceOverrides(rows) => match app.set_reference_overrides(&rows) {
-            Ok(()) => Event::ReferenceSettingsChanged,
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::VerifyReference { build } => match app.verify_reference(&build).await {
-            Ok(outcome) => {
+        Command::SetReferenceOverrides(rows) => {
+            ev(app.set_reference_overrides(&rows), |_| Event::ReferenceSettingsChanged)
+        }
+        Command::VerifyReference { build } => ev(
+            app.verify_reference(&build).await,
+            |outcome| {
                 let status = match outcome {
                     navigator_app::VerifyOutcome::Verified => "✓ verified".to_string(),
                     navigator_app::VerifyOutcome::Mismatch { .. } => "✗ mismatch (corrupted?)".to_string(),
@@ -1502,9 +1479,8 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                     navigator_app::VerifyOutcome::NotCached => "not cached".to_string(),
                 };
                 Event::ReferenceVerified { build, status }
-            }
-            Err(e) => Event::Error(e.to_string()),
-        },
+            },
+        ),
         Command::LiftVcf {
             source,
             target,
@@ -1520,11 +1496,10 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 )),
                 Some(src) => {
                     let opts = navigator_app::VcfLiftOpts { filter_par };
-                    match app
-                        .lift_vcf(&src, &target, in_vcf, out_vcf.clone(), opts, &mut |_, _| {})
-                        .await
-                    {
-                        Ok(s) => Event::VcfLifted {
+                    ev(
+                        app.lift_vcf(&src, &target, in_vcf, out_vcf.clone(), opts, &mut |_, _| {})
+                            .await,
+                        |s| Event::VcfLifted {
                             summary: format!(
                                 "Lifted {}/{} variants ({} unmapped, {} ref-mismatch) → {}",
                                 s.lifted,
@@ -1534,42 +1509,29 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                                 out_vcf.display()
                             ),
                         },
-                        Err(e) => Event::Error(e.to_string()),
-                    }
+                    )
                 }
             }
         }
-        Command::DeleteVariantSet { id, biosample_guid } => match app.delete_variant_set(id).await {
-            Ok(()) => Event::VariantSetsChanged(biosample_guid),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::DeleteChipProfile { id, biosample_guid } => match app.delete_chip_profile(id).await {
-            Ok(()) => Event::ChipProfilesChanged(biosample_guid),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::DeleteMtdnaSequence { id, biosample_guid } => match app.delete_mtdna_sequence(id).await {
-            Ok(()) => Event::MtdnaChanged(biosample_guid),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::DeleteVariantSet { id, biosample_guid } => {
+            ev(app.delete_variant_set(id).await, |_| Event::VariantSetsChanged(biosample_guid))
+        }
+        Command::DeleteChipProfile { id, biosample_guid } => {
+            ev(app.delete_chip_profile(id).await, |_| Event::ChipProfilesChanged(biosample_guid))
+        }
+        Command::DeleteMtdnaSequence { id, biosample_guid } => {
+            ev(app.delete_mtdna_sequence(id).await, |_| Event::MtdnaChanged(biosample_guid))
+        }
         Command::AssignBiosampleProject { guid, project_id } => {
-            match app.add_biosample_to_project(guid, project_id).await {
-                Ok(()) => Event::BiosamplesChanged,
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(app.add_biosample_to_project(guid, project_id).await, |_| Event::BiosamplesChanged)
         }
         Command::UpdateProject {
             id,
             name,
             description,
             administrator,
-        } => match app.update_project(id, name, description, administrator).await {
-            Ok(_) => Event::ProjectsChanged,
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::DeleteProject(id) => match app.delete_project(id).await {
-            Ok(()) => Event::ProjectsChanged,
-            Err(e) => Event::Error(e.to_string()),
-        },
+        } => ev(app.update_project(id, name, description, administrator).await, |_| Event::ProjectsChanged),
+        Command::DeleteProject(id) => ev(app.delete_project(id).await, |_| Event::ProjectsChanged),
         Command::UpdateSequenceRun {
             id,
             biosample_guid,
@@ -1579,8 +1541,8 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             library_layout,
             sequencing_facility,
         } => {
-            match app
-                .update_sequence_run(
+            ev(
+                app.update_sequence_run(
                     id,
                     platform_name,
                     instrument_model,
@@ -1588,11 +1550,9 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                     library_layout,
                     sequencing_facility,
                 )
-                .await
-            {
-                Ok(_) => Event::RunsChanged(biosample_guid),
-                Err(e) => Event::Error(e.to_string()),
-            }
+                .await,
+                |_| Event::RunsChanged(biosample_guid),
+            )
         }
         Command::UpdateAlignment {
             id,
@@ -1600,18 +1560,14 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             reference_build,
             aligner,
             variant_caller,
-        } => match app.update_alignment(id, reference_build, aligner, variant_caller).await {
-            Ok(_) => Event::AlignmentsChanged(sequence_run_id),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadRuns(biosample_guid) => match app.list_sequence_runs(biosample_guid).await {
-            Ok(runs) => Event::Runs { biosample_guid, runs },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::AddRun(new) => match app.record_sequence_run(new).await {
-            Ok(run) => Event::RunsChanged(run.biosample_guid),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        } => ev(
+            app.update_alignment(id, reference_build, aligner, variant_caller).await,
+            |_| Event::AlignmentsChanged(sequence_run_id),
+        ),
+        Command::LoadRuns(biosample_guid) => {
+            ev(app.list_sequence_runs(biosample_guid).await, |runs| Event::Runs { biosample_guid, runs })
+        }
+        Command::AddRun(new) => ev(app.record_sequence_run(new).await, |run| Event::RunsChanged(run.biosample_guid)),
         Command::LoadConsensus(guid) => {
             let y = app.haplogroup_consensus(guid, DnaType::Y).await.unwrap_or(None);
             let mt = app.haplogroup_consensus(guid, DnaType::Mt).await.unwrap_or(None);
@@ -1621,31 +1577,31 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 mt,
             }
         }
-        Command::StrConcordance { biosample_guid } => match app.str_concordance_for_subject(biosample_guid).await {
-            Ok((alignment_id, rows)) => Event::StrConcordance {
+        Command::StrConcordance { biosample_guid } => ev(
+            app.str_concordance_for_subject(biosample_guid).await,
+            |(alignment_id, rows)| Event::StrConcordance {
                 biosample_guid,
                 alignment_id,
                 rows,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::YMatches {
             biosample_guid,
             project_id,
-        } => match app.y_matches(biosample_guid, project_id).await {
-            Ok(matches) => Event::YMatches {
+        } => ev(
+            app.y_matches(biosample_guid, project_id).await,
+            |matches| Event::YMatches {
                 biosample_guid,
                 matches,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadStrProfiles(guid) => match app.list_str_profiles(guid).await {
-            Ok(profiles) => Event::StrProfiles {
+        ),
+        Command::LoadStrProfiles(guid) => ev(
+            app.list_str_profiles(guid).await,
+            |profiles| Event::StrProfiles {
                 biosample_guid: guid,
                 profiles,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::ImportStrProfile {
             biosample_guid,
             panel_name,
@@ -1653,170 +1609,159 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             source,
             path,
         } => {
-            match app
-                .import_str_profile_from_csv(biosample_guid, &panel_name, provider, source, &path)
-                .await
-            {
-                Ok(_) => Event::StrProfilesChanged(biosample_guid),
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(
+                app.import_str_profile_from_csv(biosample_guid, &panel_name, provider, source, &path)
+                    .await,
+                |_| Event::StrProfilesChanged(biosample_guid),
+            )
         }
-        Command::LoadVariantSets(guid) => match app.list_variant_sets(guid).await {
-            Ok(sets) => Event::VariantSets {
+        Command::LoadVariantSets(guid) => ev(
+            app.list_variant_sets(guid).await,
+            |sets| Event::VariantSets {
                 biosample_guid: guid,
                 sets,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::ImportVariants {
             biosample_guid,
             path,
             source_type,
-        } => match app.import_variants_from_file(biosample_guid, &path, source_type).await {
-            Ok(_) => Event::VariantSetsChanged(biosample_guid),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        } => ev(
+            app.import_variants_from_file(biosample_guid, &path, source_type).await,
+            |_| Event::VariantSetsChanged(biosample_guid),
+        ),
         Command::AddVariants {
             biosample_guid,
             source_label,
             source_type,
             text,
         } => {
-            match app
-                .add_variants(biosample_guid, &source_label, source_type, &text)
-                .await
-            {
-                Ok(_) => Event::VariantSetsChanged(biosample_guid),
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(
+                app.add_variants(biosample_guid, &source_label, source_type, &text)
+                    .await,
+                |_| Event::VariantSetsChanged(biosample_guid),
+            )
         }
-        Command::LoadChipProfiles(guid) => match app.list_chip_profiles(guid).await {
-            Ok(profiles) => Event::ChipProfiles {
+        Command::LoadChipProfiles(guid) => ev(
+            app.list_chip_profiles(guid).await,
+            |profiles| Event::ChipProfiles {
                 biosample_guid: guid,
                 profiles,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::ImportChipProfile {
             biosample_guid,
             provider,
             path,
         } => {
-            match app
-                .import_chip_profile_from_csv(biosample_guid, provider, None, &path)
-                .await
-            {
-                Ok(_) => Event::ChipProfilesChanged(biosample_guid),
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(
+                app.import_chip_profile_from_csv(biosample_guid, provider, None, &path)
+                    .await,
+                |_| Event::ChipProfilesChanged(biosample_guid),
+            )
         }
-        Command::LoadMtdna(guid) => match app.list_mtdna_sequences(guid).await {
-            Ok(sequences) => Event::MtdnaSequences {
+        Command::LoadMtdna(guid) => ev(
+            app.list_mtdna_sequences(guid).await,
+            |sequences| Event::MtdnaSequences {
                 biosample_guid: guid,
                 sequences,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::ImportMtdna { biosample_guid, path } => {
-            match app.import_mtdna_from_fasta(biosample_guid, &path).await {
-                Ok(_) => Event::MtdnaChanged(biosample_guid),
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(app.import_mtdna_from_fasta(biosample_guid, &path).await, |_| Event::MtdnaChanged(biosample_guid))
         }
-        Command::LoadMtdnaVariants { mtdna_id } => match app.mtdna_variants(mtdna_id).await {
-            Ok(variants) => Event::MtdnaVariants { mtdna_id, variants },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::AssignMtdnaHaplogroup { mtdna_id } => match app.assign_mtdna_haplogroup(mtdna_id).await {
-            Ok(assignment) => Event::Haplogroup { mtdna_id, assignment },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::AssignYBisdna { biosample_guid } => match app.assign_y_bisdna(biosample_guid, None).await {
-            Ok(assignment) => Event::YBisdnaHaplogroup {
+        Command::LoadMtdnaVariants { mtdna_id } => {
+            ev(app.mtdna_variants(mtdna_id).await, |variants| Event::MtdnaVariants { mtdna_id, variants })
+        }
+        Command::AssignMtdnaHaplogroup { mtdna_id } => {
+            ev(app.assign_mtdna_haplogroup(mtdna_id).await, |assignment| Event::Haplogroup { mtdna_id, assignment })
+        }
+        Command::AssignYBisdna { biosample_guid } => ev(
+            app.assign_y_bisdna(biosample_guid, None).await,
+            |assignment| Event::YBisdnaHaplogroup {
                 biosample_guid,
                 assignment,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::YHaploReport { alignment_id } => match app.y_haplogroup_report(alignment_id).await {
-            Ok((assignment, lineage)) => Event::YHaploReport {
+        ),
+        Command::YHaploReport { alignment_id } => ev(
+            app.y_haplogroup_report(alignment_id).await,
+            |(assignment, lineage)| Event::YHaploReport {
                 alignment_id,
                 assignment,
                 lineage,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::AssignYHaplogroup { alignment_id } => match app.assign_y_haplogroup(alignment_id).await {
-            Ok(assignment) => Event::YHaplogroup {
+        ),
+        Command::AssignYHaplogroup { alignment_id } => ev(
+            app.assign_y_haplogroup(alignment_id).await,
+            |assignment| Event::YHaplogroup {
                 alignment_id,
                 assignment,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::AssignMtdnaHaplogroupFromAlignment { alignment_id } => {
-            match app.assign_mtdna_haplogroup_from_alignment(alignment_id).await {
-                Ok(assignment) => Event::MtHaplogroup {
+            ev(
+                app.assign_mtdna_haplogroup_from_alignment(alignment_id).await,
+                |assignment| Event::MtHaplogroup {
                     alignment_id,
                     assignment,
                 },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            )
         }
         Command::EstimateAncestryFromConsensus { biosample_guid } => {
             // Estimate from the pooled consensus, then surface it as the donor-level result.
-            match app.estimate_ancestry_from_consensus(biosample_guid).await {
-                Ok(result) => Event::DonorAncestry {
+            ev(
+                app.estimate_ancestry_from_consensus(biosample_guid).await,
+                |result| Event::DonorAncestry {
                     alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
                     result,
                 },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            )
         }
         Command::EstimateDeepAncestry { biosample_guid } => {
             // Heavy: genotypes the best CHM13 alignment at ~1.15M sites, then fits qpAdm f4. Persists
             // the ANCIENT_ADMIXTURE result (or nothing, when the model doesn't apply).
-            match app.estimate_deep_ancestry(biosample_guid).await {
-                Ok(result) => Event::DeepAncestryEstimated {
+            ev(
+                app.estimate_deep_ancestry(biosample_guid).await,
+                |result| Event::DeepAncestryEstimated {
                     biosample_guid,
                     result: result.map(Box::new),
                 },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            )
         }
         Command::PaintAncestryFromConsensus { biosample_guid } => {
             // Painting from the consensus needs no genotyping pass — fast, no progress stream.
-            match app.paint_local_ancestry_from_consensus(biosample_guid).await {
-                Ok(result) => Event::AncestryPainting {
+            ev(
+                app.paint_local_ancestry_from_consensus(biosample_guid).await,
+                |result| Event::AncestryPainting {
                     alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
                     result,
                 },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            )
         }
-        Command::LoadPainting { biosample_guid } => match app.cached_painting(biosample_guid).await {
-            Ok(result) => Event::AncestryPainting {
+        Command::LoadPainting { biosample_guid } => ev(
+            app.cached_painting(biosample_guid).await,
+            |result| Event::AncestryPainting {
                 alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
                 result: result.unwrap_or_default(),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::ComputeRohFromConsensus { biosample_guid } => {
             // ROH from the consensus needs no genotyping pass — fast, no progress stream.
-            match app.compute_roh_from_consensus(biosample_guid).await {
-                Ok(result) => Event::RohResultReady {
+            ev(
+                app.compute_roh_from_consensus(biosample_guid).await,
+                |result| Event::RohResultReady {
                     biosample_guid,
                     result: Some(Box::new(result)),
                 },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            )
         }
-        Command::LoadRoh { biosample_guid } => match app.cached_roh(biosample_guid).await {
-            Ok(result) => Event::RohResultReady {
+        Command::LoadRoh { biosample_guid } => ev(
+            app.cached_roh(biosample_guid).await,
+            |result| Event::RohResultReady {
                 biosample_guid,
                 result: result.map(Box::new),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::LoadConsensusAncestryDetail { biosample_guid } => {
             let fine = app
                 .consensus_ancestry(biosample_guid, "FINE_ADMIXTURE")
@@ -1854,10 +1799,7 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 YMask::Bed(p) => app.private_y_variants(alignment_id, Some(&p)).await,
                 YMask::None => app.private_y_variants(alignment_id, None).await,
             };
-            match result {
-                Ok(bucket) => Event::PrivateY { alignment_id, bucket },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(result, |bucket| Event::PrivateY { alignment_id, bucket })
         }
         Command::LoadPrivateY { alignment_id } => match app.cached_private_y(alignment_id).await {
             Ok(Some(bucket)) => Event::PrivateY { alignment_id, bucket },
@@ -1865,43 +1807,39 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             Err(e) => Event::Error(e.to_string()),
         },
         Command::AddDataBatch { biosample_guid, paths } => {
-            match app.add_data_batch(biosample_guid, paths, |_, _| {}).await {
-                Ok(summary) => Event::DataBatchImported {
+            ev(
+                app.add_data_batch(biosample_guid, paths, |_, _| {}).await,
+                |summary| Event::DataBatchImported {
                     biosample_guid,
                     summary,
                 },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            )
         }
         Command::CreateSubjectAndImport {
             donor_identifier,
             sex,
             paths,
         } => match app.add_biosample(None, donor_identifier, None, sex).await {
-            Ok(bio) => match app.add_data_batch(bio.guid, paths, |_, _| {}).await {
-                Ok(summary) => Event::SubjectCreatedAndImported {
+            Ok(bio) => ev(
+                app.add_data_batch(bio.guid, paths, |_, _| {}).await,
+                |summary| Event::SubjectCreatedAndImported {
                     biosample_guid: bio.guid,
                     summary,
                 },
-                Err(e) => Event::Error(e.to_string()),
-            },
+            ),
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::LoadAlignments(sequence_run_id) => match app.list_alignments(sequence_run_id).await {
-            Ok(alignments) => Event::Alignments {
+        Command::LoadAlignments(sequence_run_id) => ev(
+            app.list_alignments(sequence_run_id).await,
+            |alignments| Event::Alignments {
                 sequence_run_id,
                 alignments,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::AddAlignment(new) => match app.record_alignment(new).await {
-            Ok(a) => Event::AlignmentsChanged(a.sequence_run_id),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::ProbeAlignment { path } => match app.probe_alignment(path).await {
-            Ok(probe) => Event::AlignmentProbe(probe),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
+        Command::AddAlignment(new) => {
+            ev(app.record_alignment(new).await, |a| Event::AlignmentsChanged(a.sequence_run_id))
+        }
+        Command::ProbeAlignment { path } => ev(app.probe_alignment(path).await, Event::AlignmentProbe),
         Command::DefaultAlignment { biosample_guid } => match app.default_alignment_for_subject(biosample_guid).await {
             Ok(Some((run_id, alignment_id))) => Event::DefaultAlignment { run_id, alignment_id },
             Ok(None) => Event::Noop,
@@ -1917,267 +1855,207 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             Ok(None) => Event::Noop,
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::LoadYProfile { biosample_guid } => match app.cached_y_profile(biosample_guid).await {
-            Ok(profile) => Event::YProfile {
+        Command::LoadYProfile { biosample_guid } => ev(
+            app.cached_y_profile(biosample_guid).await,
+            |profile| Event::YProfile {
                 biosample_guid,
                 profile,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::BuildYProfile { biosample_guid } => match app.build_y_profile(biosample_guid).await {
-            Ok(profile) => Event::YProfile {
+        ),
+        Command::BuildYProfile { biosample_guid } => ev(
+            app.build_y_profile(biosample_guid).await,
+            |profile| Event::YProfile {
                 biosample_guid,
                 profile: Some(profile),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::LoadYSnpNames {
             biosample_guid,
             positions,
-        } => match app.y_snp_names_at(biosample_guid, &positions).await {
-            Ok(names) => Event::YSnpNames { names },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadMtProfile { biosample_guid } => match app.cached_mt_profile(biosample_guid).await {
-            Ok(profile) => Event::MtProfile {
+        } => ev(app.y_snp_names_at(biosample_guid, &positions).await, |names| Event::YSnpNames { names }),
+        Command::LoadMtProfile { biosample_guid } => ev(
+            app.cached_mt_profile(biosample_guid).await,
+            |profile| Event::MtProfile {
                 biosample_guid,
                 profile,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::BuildMtProfile { biosample_guid } => match app.build_mt_profile(biosample_guid).await {
-            Ok(profile) => Event::MtProfile {
+        ),
+        Command::BuildMtProfile { biosample_guid } => ev(
+            app.build_mt_profile(biosample_guid).await,
+            |profile| Event::MtProfile {
                 biosample_guid,
                 profile: Some(profile),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadAutosomalProfile { biosample_guid } => match app.cached_autosomal_profile(biosample_guid).await {
-            Ok(profile) => Event::AutosomalProfile {
+        ),
+        Command::LoadAutosomalProfile { biosample_guid } => ev(
+            app.cached_autosomal_profile(biosample_guid).await,
+            |profile| Event::AutosomalProfile {
                 biosample_guid,
                 profile,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::BuildAutosomalProfile { biosample_guid } => match app.build_autosomal_profile(biosample_guid).await {
-            Ok(profile) => Event::AutosomalProfile {
+        ),
+        Command::BuildAutosomalProfile { biosample_guid } => ev(
+            app.build_autosomal_profile(biosample_guid).await,
+            |profile| Event::AutosomalProfile {
                 biosample_guid,
                 profile: Some(profile),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadCoverage(alignment_id) => match app.cached_coverage(alignment_id).await {
-            Ok(result) => Event::Coverage { alignment_id, result },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadCoverageBulk(ids) => match app.cached_coverage_bulk(&ids).await {
-            Ok(results) => Event::CoverageBulk(results),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadGenomeRegions { alignment_id, build } => match app.genome_regions(&build).await {
-            Ok(regions) => Event::GenomeRegions {
+        ),
+        Command::LoadCoverage(alignment_id) => {
+            ev(app.cached_coverage(alignment_id).await, |result| Event::Coverage { alignment_id, result })
+        }
+        Command::LoadCoverageBulk(ids) => ev(app.cached_coverage_bulk(&ids).await, Event::CoverageBulk),
+        Command::LoadGenomeRegions { alignment_id, build } => ev(
+            app.genome_regions(&build).await,
+            |regions| Event::GenomeRegions {
                 alignment_id,
                 regions: Some(regions),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::RunCoverage(alignment_id) => match app.run_coverage_for_alignment(alignment_id).await {
-            Ok(result) => Event::Coverage {
+        ),
+        Command::RunCoverage(alignment_id) => ev(
+            app.run_coverage_for_alignment(alignment_id).await,
+            |result| Event::Coverage {
                 alignment_id,
                 result: Some(result),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadSex(alignment_id) => match app.cached_sex(alignment_id).await {
-            Ok(result) => Event::Sex { alignment_id, result },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::RunSex(alignment_id) => match app.run_sex(alignment_id).await {
-            Ok(result) => Event::Sex {
+        ),
+        Command::LoadSex(alignment_id) => {
+            ev(app.cached_sex(alignment_id).await, |result| Event::Sex { alignment_id, result })
+        }
+        Command::RunSex(alignment_id) => ev(
+            app.run_sex(alignment_id).await,
+            |result| Event::Sex {
                 alignment_id,
                 result: Some(result),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadReadMetrics(alignment_id) => match app.cached_read_metrics(alignment_id).await {
-            Ok(result) => Event::ReadMetrics { alignment_id, result },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::RunReadMetrics(alignment_id) => match app.run_read_metrics(alignment_id).await {
-            Ok(result) => Event::ReadMetrics {
+        ),
+        Command::LoadReadMetrics(alignment_id) => {
+            ev(app.cached_read_metrics(alignment_id).await, |result| Event::ReadMetrics { alignment_id, result })
+        }
+        Command::RunReadMetrics(alignment_id) => ev(
+            app.run_read_metrics(alignment_id).await,
+            |result| Event::ReadMetrics {
                 alignment_id,
                 result: Some(result),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadSv(alignment_id) => match app.cached_sv(alignment_id).await {
-            Ok(result) => Event::Sv { alignment_id, result },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::RunSv(alignment_id) => match app.run_sv(alignment_id, cancel.clone()).await {
-            Ok(result) => Event::Sv {
+        ),
+        Command::LoadSv(alignment_id) => {
+            ev(app.cached_sv(alignment_id).await, |result| Event::Sv { alignment_id, result })
+        }
+        Command::RunSv(alignment_id) => ev(
+            app.run_sv(alignment_id, cancel.clone()).await,
+            |result| Event::Sv {
                 alignment_id,
                 result: Some(result),
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadDenovo { alignment_id, contig } => match app.cached_denovo(alignment_id, &contig).await {
-            Ok(result) => Event::Denovo {
+        ),
+        Command::LoadDenovo { alignment_id, contig } => ev(
+            app.cached_denovo(alignment_id, &contig).await,
+            |result| Event::Denovo {
                 alignment_id,
                 contig,
                 result,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::RunDenovo { alignment_id, contig } => {
-            match app.run_denovo_for_alignment(alignment_id, contig.clone()).await {
-                Ok(result) => Event::Denovo {
+            ev(
+                app.run_denovo_for_alignment(alignment_id, contig.clone()).await,
+                |result| Event::Denovo {
                     alignment_id,
                     contig,
                     result: Some(result),
                 },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            )
         }
-        Command::LoadAllAlignments => match app.list_all_alignments().await {
-            Ok(alns) => Event::AllAlignments(alns),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::LoadAllAlignments => ev(app.list_all_alignments().await, Event::AllAlignments),
         Command::CompareIbdConsensus { a, b } => {
-            match app.compare_ibd_consensus(a, b, IbdDetectorConfig::default()).await {
-                Ok(cmp) => Event::Ibd(cmp),
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(app.compare_ibd_consensus(a, b, IbdDetectorConfig::default()).await, Event::Ibd)
         }
         Command::CompareIbdSources { a, b } => {
-            match app.compare_ibd_sources(a, b, IbdDetectorConfig::default()).await {
-                Ok(cmp) => Event::Ibd(cmp),
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(app.compare_ibd_sources(a, b, IbdDetectorConfig::default()).await, Event::Ibd)
         }
-        Command::VerifyIdentityConsensus { a, b } => match app.verify_identity_consensus(a, b).await {
-            Ok(v) => Event::Identity(v),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadIbdSuggestions => match app.ibd_suggestions().await {
-            Ok(items) => Event::IbdSuggestions(items),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::IbdIntroduce { suggested_sample_guid } => match app.ibd_introduce(&suggested_sample_guid).await {
-            Ok(r) => Event::IbdIntroduced {
+        Command::VerifyIdentityConsensus { a, b } => ev(app.verify_identity_consensus(a, b).await, Event::Identity),
+        Command::LoadIbdSuggestions => ev(app.ibd_suggestions().await, Event::IbdSuggestions),
+        Command::IbdIntroduce { suggested_sample_guid } => ev(
+            app.ibd_introduce(&suggested_sample_guid).await,
+            |r| Event::IbdIntroduced {
                 suggested_sample_guid,
                 request_uri: r.request_uri,
                 status: r.status,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::UseLocalIdentity => match app.use_local_identity() {
-            Ok(did) => Event::Authenticated(Some(did)),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
+        Command::UseLocalIdentity => ev(app.use_local_identity(), |did| Event::Authenticated(Some(did))),
         Command::ExchangeInbox => match (app.exchange_incoming().await, app.exchange_pending().await) {
             (Ok(incoming), Ok(ready)) => Event::ExchangeInbox { incoming, ready },
             (Err(e), _) | (_, Err(e)) => Event::Error(e.to_string()),
         },
-        Command::ExchangeConsent { request_uri, given } => match app.exchange_consent(&request_uri, given).await {
-            Ok(_) => Event::ExchangeConsented,
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::ExchangeConsent { request_uri, given } => {
+            ev(app.exchange_consent(&request_uri, given).await, |_| Event::ExchangeConsented)
+        }
         Command::RunIbdExchange { info, biosample_guid } => {
             let cfg = IbdDetectorConfig::default();
             match app.open_exchange_session(&info).await {
-                Ok(session) => match app
-                    .exchange_ibd_for_subject(&session, biosample_guid, &info.request_uri, None, cfg)
-                    .await
-                {
-                    Ok(r) => Event::IbdExchangeDone {
+                Ok(session) => ev(
+                    app.exchange_ibd_for_subject(&session, biosample_guid, &info.request_uri, None, cfg)
+                        .await,
+                    |r| Event::IbdExchangeDone {
                         biosample_guid,
                         total_shared_cm: r.summary.total_shared_cm,
                         segment_count: r.summary.segment_count,
                         relationship: format!("{:?}", r.summary.relationship),
                         agreed: r.agreed,
                     },
-                    Err(e) => Event::Error(e.to_string()),
-                },
+                ),
                 Err(e) => Event::Error(e.to_string()),
             }
         }
         Command::LoadIbdExchanges { biosample_guid } => {
-            match app.list_ibd_exchanges_for_subject(biosample_guid).await {
-                Ok(rows) => Event::IbdExchanges { biosample_guid, rows },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(
+                app.list_ibd_exchanges_for_subject(biosample_guid).await,
+                |rows| Event::IbdExchanges { biosample_guid, rows },
+            )
         }
-        Command::DmInitiate { partner_did } => match app.dm_initiate(&partner_did).await {
-            Ok(_) => Event::DmInitiated,
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::DmInitiate { partner_did } => ev(app.dm_initiate(&partner_did).await, |_| Event::DmInitiated),
         Command::LoadDmInbox => match (app.dm_incoming().await, app.dm_ready().await) {
             (Ok(incoming), Ok(ready)) => Event::DmInbox { incoming, ready },
             (Err(e), _) | (_, Err(e)) => Event::Error(e.to_string()),
         },
-        Command::DmConsent { request_uri, given } => match app.dm_consent(&request_uri, given).await {
-            Ok(_) => Event::DmConsented,
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::DmConnect { info } => match app.dm_connect(&info).await {
-            Ok(()) => Event::DmConnected,
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadDmConversations => match app.dm_conversations().await {
-            Ok(rows) => Event::DmConversations(rows),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadDmMessages { session_id } => match app.dm_messages(&session_id).await {
-            Ok(rows) => Event::DmMessages { session_id, rows },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::DmSend { session_id, text } => match app.dm_send(&session_id, &text).await {
-            Ok(_) => Event::DmSent { session_id },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::DmSync { session_id } => match app.dm_sync(&session_id).await {
-            Ok(new_count) => Event::DmSynced { session_id, new_count },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadRecruitmentInvitations => match app.recruitment_invitations().await {
-            Ok(items) => Event::RecruitmentInvitations(items),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::RespondRecruitment { campaign_id, accept } => {
-            match app.recruitment_respond(campaign_id, accept).await {
-                Ok(_) => Event::RecruitmentResponded,
-                Err(e) => Event::Error(e.to_string()),
-            }
+        Command::DmConsent { request_uri, given } => {
+            ev(app.dm_consent(&request_uri, given).await, |_| Event::DmConsented)
         }
-        Command::BackfillLabs => match app.backfill_run_labs().await {
-            Ok(count) => Event::LabsResolved(count),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::DmConnect { info } => ev(app.dm_connect(&info).await, |_| Event::DmConnected),
+        Command::LoadDmConversations => ev(app.dm_conversations().await, Event::DmConversations),
+        Command::LoadDmMessages { session_id } => {
+            ev(app.dm_messages(&session_id).await, |rows| Event::DmMessages { session_id, rows })
+        }
+        Command::DmSend { session_id, text } => {
+            ev(app.dm_send(&session_id, &text).await, |_| Event::DmSent { session_id })
+        }
+        Command::DmSync { session_id } => {
+            ev(app.dm_sync(&session_id).await, |new_count| Event::DmSynced { session_id, new_count })
+        }
+        Command::LoadRecruitmentInvitations => ev(app.recruitment_invitations().await, Event::RecruitmentInvitations),
+        Command::RespondRecruitment { campaign_id, accept } => {
+            ev(app.recruitment_respond(campaign_id, accept).await, |_| Event::RecruitmentResponded)
+        }
+        Command::BackfillLabs => ev(app.backfill_run_labs().await, Event::LabsResolved),
         Command::AuthStatus => Event::Authenticated(app.current_account()),
         Command::SyncStatus => Event::SyncOnline(app.is_online()),
-        Command::PullSync => match app.pull_sync().await {
-            Ok(o) => Event::PullDone {
+        Command::PullSync => ev(
+            app.pull_sync().await,
+            |o| Event::PullDone {
                 in_sync: o.in_sync,
                 applied: o.applied,
                 adopted: o.adopted,
                 repushed: o.repushed,
                 conflicts: o.conflicts,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::VerifySourceFiles => match app.verify_source_files().await {
-            Ok(missing) => Event::SourceFilesVerified { missing },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::Login { handle } => match app.login(&handle).await {
-            Ok(did) => Event::Authenticated(Some(did)),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::Logout => match app.logout().await {
-            Ok(()) => Event::Authenticated(None),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
+        Command::VerifySourceFiles => {
+            ev(app.verify_source_files().await, |missing| Event::SourceFilesVerified { missing })
+        }
+        Command::Login { handle } => ev(app.login(&handle).await, |did| Event::Authenticated(Some(did))),
+        Command::Logout => ev(app.logout().await, |_| Event::Authenticated(None)),
         // Publishes enqueue to the durable outbox then drain — handled in the spawn loop (they emit
         // multiple events: Queued + per-row Published + SyncPending). Reaching here is a routing bug.
         Command::PublishCoverage(id) => Event::Error(format!("internal: unrouted PublishCoverage {id}")),
@@ -2210,84 +2088,75 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 Err(e) => Event::Error(format!("write {}: {e}", path.display())),
             }
         }
-        Command::LoadPcaReference => match app.ancestry_pca_reference().await {
-            Ok(points) => Event::PcaReference {
+        Command::LoadPcaReference => ev(
+            app.ancestry_pca_reference().await,
+            |points| Event::PcaReference {
                 alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
                 points,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::SetHaploOverride {
             biosample_guid,
             dna_type,
             haplogroup,
             reason,
         } => {
-            match app
-                .set_manual_override(biosample_guid, dna_type, &haplogroup, reason.as_deref())
-                .await
-            {
-                Ok(()) => Event::ReconciliationChanged {
+            ev(
+                app.set_manual_override(biosample_guid, dna_type, &haplogroup, reason.as_deref())
+                    .await,
+                |_| Event::ReconciliationChanged {
                     biosample_guid,
                     dna_type,
                 },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            )
         }
         Command::ClearHaploOverride {
             biosample_guid,
             dna_type,
-        } => match app.clear_manual_override(biosample_guid, dna_type).await {
-            Ok(()) => Event::ReconciliationChanged {
+        } => ev(
+            app.clear_manual_override(biosample_guid, dna_type).await,
+            |_| Event::ReconciliationChanged {
                 biosample_guid,
                 dna_type,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
         Command::LoadAudit {
             biosample_guid,
             dna_type,
-        } => match app.reconciliation_audit(biosample_guid, dna_type).await {
-            Ok(entries) => Event::Audit {
+        } => ev(
+            app.reconciliation_audit(biosample_guid, dna_type).await,
+            |entries| Event::Audit {
                 biosample_guid,
                 dna_type,
                 entries,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadHeteroplasmy { alignment_id } => match app.mtdna_heteroplasmy(alignment_id).await {
-            Ok(sites) => Event::Heteroplasmy { alignment_id, sites },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
+        Command::LoadHeteroplasmy { alignment_id } => {
+            ev(app.mtdna_heteroplasmy(alignment_id).await, |sites| Event::Heteroplasmy { alignment_id, sites })
+        }
         Command::PublishReconciliation { biosample_guid, .. } => {
             Event::Error(format!("internal: unrouted PublishReconciliation {biosample_guid:?}"))
         }
         // ---- social (Community tab) ----------------------------------------
-        Command::LoadSupportThreads => match app.support_threads().await {
-            Ok(items) => Event::SupportThreads(items),
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::LoadSupportThread { conversation_id } => match app.support_thread(&conversation_id).await {
-            Ok(messages) => Event::SupportThread {
+        Command::LoadSupportThreads => ev(app.support_threads().await, Event::SupportThreads),
+        Command::LoadSupportThread { conversation_id } => ev(
+            app.support_thread(&conversation_id).await,
+            |messages| Event::SupportThread {
                 conversation_id,
                 messages,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::OpenSupportThread { subject, body } => match app.open_support_thread(&subject, &body).await {
-            Ok(conversation_id) => Event::SupportThreadPosted { conversation_id },
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
+        Command::OpenSupportThread { subject, body } => ev(
+            app.open_support_thread(&subject, &body).await,
+            |conversation_id| Event::SupportThreadPosted { conversation_id },
+        ),
         Command::ReplySupportThread { conversation_id, body } => {
-            match app.reply_support_thread(&conversation_id, &body).await {
-                Ok(conversation_id) => Event::SupportThreadPosted { conversation_id },
-                Err(e) => Event::Error(e.to_string()),
-            }
+            ev(
+                app.reply_support_thread(&conversation_id, &body).await,
+                |conversation_id| Event::SupportThreadPosted { conversation_id },
+            )
         }
-        Command::LoadCommunityFeed => match app.community_feed().await {
-            Ok(feed) => Event::CommunityFeed(feed),
-            Err(e) => Event::Error(e.to_string()),
-        },
+        Command::LoadCommunityFeed => ev(app.community_feed().await, Event::CommunityFeed),
         Command::PostCommunity {
             content,
             topic,
@@ -2297,27 +2166,23 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             // `feed.post` record; a publish failure is surfaced but the post itself is not lost.
             Ok(_) => {
                 if publish_pds {
-                    match app.publish_feed_post(&content, topic.as_deref()).await {
-                        Ok(()) => Event::CommunityPosted,
-                        Err(e) => Event::Error(e.to_string()),
-                    }
+                    ev(app.publish_feed_post(&content, topic.as_deref()).await, |_| Event::CommunityPosted)
                 } else {
                     Event::CommunityPosted
                 }
             }
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::LoadNotifications => match app.notifications().await {
-            Ok(n) => Event::Notifications {
+        Command::LoadNotifications => ev(
+            app.notifications().await,
+            |n| Event::Notifications {
                 items: n.items,
                 unread: n.unread,
             },
-            Err(e) => Event::Error(e.to_string()),
-        },
-        Command::MarkNotificationRead { id } => match app.mark_notification_read(id.as_deref()).await {
-            Ok(_) => Event::NotificationsMarked,
-            Err(e) => Event::Error(e.to_string()),
-        },
+        ),
+        Command::MarkNotificationRead { id } => {
+            ev(app.mark_notification_read(id.as_deref()).await, |_| Event::NotificationsMarked)
+        }
     }
 }
 
@@ -2346,10 +2211,7 @@ async fn resolve_reference_streaming(
             wake();
         }
     };
-    let event = match app.resolve_reference(&build, &mut progress).await {
-        Ok(path) => Event::ReferenceReady { build, path },
-        Err(e) => Event::Error(e.to_string()),
-    };
+    let event = ev(app.resolve_reference(&build, &mut progress).await, |path| Event::ReferenceReady { build, path });
     let _ = evt_tx.send(event);
     wake();
 }
@@ -2442,36 +2304,15 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     evt_tx: &Sender<Event>,
     wake: Arc<W>,
 ) {
-    // Simple ("My DNA") is one-click: fold the autosomal ancestry estimate into the pipeline as a
-    // final step. Advanced runs it as a separate deliberate action, so it passes `false`. Ancestry is
-    // subject-level, so resolve the subject once; skip it if the alignment isn't attached to one.
-    let ancestry_guid = if include_ancestry {
-        app.biosample_of_alignment(alignment_id).await.ok()
-    } else {
-        None
-    };
-    // Ancestry is two ordered commands: build the autosomal consensus (panel-genotype), then estimate
-    // admixture/PCA *from* it (`estimate_ancestry_from_consensus` requires the profile to exist).
-    let ancestry_steps = if ancestry_guid.is_some() { 2 } else { 0 };
-    // Skip the mtDNA steps (chrM de-novo + mt-tree placement) when the alignment has no
-    // mitochondrial reads (e.g. an FTDNA Big Y) — scoring zero chrM data just records a meaningless
-    // RSRS root. Unknown coverage (never run) → keep them rather than silently skipping.
-    let chrm_has_reads = |c: &navigator_app::Coverage| {
-        c.contig_coverage_stats
-            .iter()
-            .any(|s| matches!(s.contig.as_str(), "chrM" | "chrMT" | "M" | "MT") && s.num_reads > 0)
-    };
-    // Best-effort pre-flight from any cached coverage (empty on a first analysis → assume present,
-    // so the progress total is right for a WGS). Re-checked authoritatively after step 1 below.
-    let mut has_mtdna = app
-        .cached_coverage(alignment_id)
+    // Which steps run — and which are skipped because a trusted external caller already placed this
+    // alignment, or because it has no chrM reads — is decided by `App::plan_full_analysis`, the one
+    // definition shared with the CLI. This fn only turns those steps into progress + result events.
+    // Planned twice: the mitochondrial decision is a guess until step 1 has produced coverage.
+    let mut steps = app
+        .plan_full_analysis(alignment_id, include_ancestry, None)
         .await
-        .ok()
-        .flatten()
-        .map(|c| chrm_has_reads(&c))
-        .unwrap_or(true);
-    // step 1 + SV + Y (+ chrM de-novo + mt when present) (+ ancestry in the one-click Simple flow)
-    let mut total = (if has_mtdna { 5 } else { 3 }) + ancestry_steps;
+        .unwrap_or_else(|_| vec![AnalysisStep::QualityMetrics]);
+    let mut total = steps.len();
 
     // Step 1: unified quality metrics — coverage + callable, read-level QC, and sex inference in
     // ONE pass over the alignment (was three separate steps reading the file 2–3×). The slow
@@ -2525,11 +2366,14 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         // Emit the same per-result events the old separate steps did, so the UI updates identically.
         match outcome {
             Ok((cov, rm, sex)) => {
-                // Authoritative mtDNA decision from the just-computed coverage: a Big Y with zero
-                // chrM reads now correctly skips the chrM de-novo + mt-placement steps (the pre-flight
-                // check above ran before this coverage existed). Adjusts the remaining-step total.
-                has_mtdna = chrm_has_reads(&cov);
-                total = (if has_mtdna { 5 } else { 3 }) + ancestry_steps;
+                // Re-plan from the just-computed coverage: a Big Y with zero chrM reads now
+                // correctly drops the chrM de-novo + mt-placement steps (the pre-flight plan above
+                // ran before this coverage existed). Adjusts the remaining-step total.
+                steps = app
+                    .plan_full_analysis(alignment_id, include_ancestry, Some(&cov))
+                    .await
+                    .unwrap_or_else(|_| std::mem::take(&mut steps));
+                total = steps.len();
                 // Pin a generic FTDNA Targeted-Y to Big Y-500 vs -700 from its callable-chrY
                 // footprint. Done here (not only inside the metrics walker) so it also fires on the
                 // cached fast-path above, where the walker — and its in-method refine — is skipped.
@@ -2553,77 +2397,49 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                 });
             }
             Err(e) => {
+                // Persist the failure (corrupt/undecodable file) so the project report shows
+                // "Failed" rather than a silent blank, matching the CLI and batch paths.
+                app.record_analysis_error(alignment_id, "metrics", &e.to_string()).await;
                 let _ = evt_tx.send(Event::Error(e.to_string()));
             }
         }
         wake();
     }
 
-    // Steps 2–5: the cheaper command-driven steps (run via `handle`, which forwards their events).
-    // Y variant discovery is the callable-masked "private Y" pass, NOT a raw whole-chrY de-novo
-    // (which is enormous + mostly artifacts); chrM de-novo is fine (small, fully callable).
-    let mut steps: Vec<(&str, &str, Command)> = vec![(
-        "Structural variants",
-        "CNV + discordant pairs (needs ≥10×)",
-        Command::RunSv(alignment_id),
-    )];
-    if has_mtdna {
-        steps.push((
-            "Variant calling",
-            "chrM de-novo (haploid)",
-            Command::RunDenovo {
-                alignment_id,
-                contig: "chrM".into(),
-            },
-        ));
-    }
-    // Skip the internal Y/mt genotyping when a trusted external caller (GATK4 GVCF, sidecar fast
-    // path) already placed this alignment and the user prefers it — re-walking would only produce a
-    // secondary call that loses the vote (and, on ancient DNA, a wrong one). The assign_* commands
-    // guard this too; skipping the enqueue just avoids the wasted decode. See external-caller-precedence.
-    if !app
-        .has_preferred_external_call(alignment_id, navigator_app::DnaType::Y)
-        .await
-        .unwrap_or(false)
-    {
-        steps.push((
-            "Y haplogroup",
-            "placing on the Y tree",
-            Command::AssignYHaplogroup { alignment_id },
-        ));
-    }
-    if has_mtdna
-        && !app
-            .has_preferred_external_call(alignment_id, navigator_app::DnaType::Mt)
-            .await
-            .unwrap_or(false)
-    {
-        steps.push((
-            "mtDNA haplogroup",
-            "placing on the mt tree",
-            Command::AssignMtdnaHaplogroupFromAlignment { alignment_id },
-        ));
-    }
-    // Final steps for the one-click Simple flow: the autosomal ancestry that drives the "Your
-    // ancestry" section. Two ordered commands (profile → estimate), run last (heaviest) and before
-    // AnalysisDone, so the brief reload on completion picks up the persisted consensus estimate.
-    if let Some(guid) = ancestry_guid {
-        steps.push((
-            "Autosomal profile",
-            "genotyping ancestry markers",
-            Command::BuildAutosomalProfile { biosample_guid: guid },
-        ));
-        steps.push((
-            "Ancestry",
-            "estimating admixture + ancient components",
-            Command::EstimateAncestryFromConsensus { biosample_guid: guid },
-        ));
-    }
-    for (i, (label, detail, cmd)) in steps.into_iter().enumerate() {
+    // The remaining steps run via `handle`, which forwards each one's own result events. Y variant
+    // discovery is the callable-masked "private Y" pass, NOT a raw whole-chrY de-novo (which is
+    // enormous + mostly artifacts); chrM de-novo is fine (small, fully callable).
+    let command_for = |step: &AnalysisStep| match step {
+        // Step 1 ran above, with sub-progress; it is never dispatched as a command.
+        AnalysisStep::QualityMetrics => None,
+        AnalysisStep::StructuralVariants => Some(Command::RunSv(alignment_id)),
+        AnalysisStep::MitoDenovo { contig } => Some(Command::RunDenovo {
+            alignment_id,
+            contig: contig.clone(),
+        }),
+        AnalysisStep::YHaplogroup => Some(Command::AssignYHaplogroup { alignment_id }),
+        AnalysisStep::MtHaplogroup => Some(Command::AssignMtdnaHaplogroupFromAlignment { alignment_id }),
+        AnalysisStep::YSignature { biosample_guid } => Some(Command::BuildYProfile {
+            biosample_guid: *biosample_guid,
+        }),
+        AnalysisStep::AutosomalProfile { biosample_guid } => Some(Command::BuildAutosomalProfile {
+            biosample_guid: *biosample_guid,
+        }),
+        AnalysisStep::Ancestry { biosample_guid } => Some(Command::EstimateAncestryFromConsensus {
+            biosample_guid: *biosample_guid,
+        }),
+    };
+    // Carry each step's 1-based position in the plan, so the progress numbering stays right no
+    // matter which steps the plan included or which are dispatched here rather than above.
+    let steps: Vec<(usize, String, String, Command)> = steps
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| command_for(s).map(|c| (i + 1, s.label().to_string(), s.detail().to_string(), c)))
+        .collect();
+    for (step, label, detail, cmd) in steps {
         if cancel.is_cancelled() {
             break;
         }
-        let step = i + 2; // steps 2..=total
         let _ = evt_tx.send(Event::AnalysisProgress {
             step,
             total,
@@ -2739,6 +2555,7 @@ async fn import_project_dir_streaming(
             wake();
         }
     };
+    // Not `ev`: a missing reference is not an error but its own event, so this needs three arms.
     let event = match app
         .import_project_dir_with_progress(&dir, reference, "unknown".into(), true, progress)
         .await

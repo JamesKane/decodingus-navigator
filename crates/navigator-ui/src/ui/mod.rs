@@ -11,8 +11,8 @@ use crate::charts::{
     draw_variant_track, parse_hex_color, top_populations_for_side, TrackRegion, VariantMark,
 };
 use crate::widgets::{
-    capitalize_first, card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt, provider_abbrev,
-    show_assignment, sortable_header, stat_card, variant_change, TableControls,
+    button_hit, capitalize_first, card, chip, combo, empty_state, fmt_depth, fmt_pct, fmt_reads, natural_cmp, opt,
+    provider_abbrev, show_assignment, sortable_header, stat_card, variant_change, TableControls,
 };
 use eframe::egui;
 use navigator_app::{
@@ -20,7 +20,7 @@ use navigator_app::{
     CompatibilityLevel, Consensus, Coverage, DenovoCall, DescentReport, DnaType, FtdnaGenealogy, FtdnaImportPlan,
     FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
-    MatchKind, MtRegion, MtVariant, NarratedBrief, PackStatus, PaintingResult, PrivateBucket, PrivateClass,
+    MatchKind, MatchStrength, MtRegion, MtVariant, NarratedBrief, PackStatus, PaintingResult, PrivateBucket, PrivateClass,
     ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
     SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult,
     UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
@@ -36,6 +36,7 @@ use navigator_domain::workspace::{Alignment, Biosample, NewAlignment, NewProject
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::worker::{self, Command, Event, NewBiosample, YMask};
+use rowcache::{ReportRowCache, SubjectRowCache, VariantRows};
 
 #[derive(Default)]
 struct Forms {
@@ -662,6 +663,20 @@ pub struct NavigatorApp {
     llm_test_msg: Option<String>,
     /// Sort + inline per-column filter state for the subjects table.
     subjects_table_ctl: TableControls,
+    /// Bumped once per worker [`Event`] applied — the invalidation signal for the per-frame view
+    /// caches below. Every field they derive from is written in [`Self::drain_events`], so a change
+    /// of epoch is the one thing they all have to watch. Bumping on *every* event over-invalidates
+    /// (a progress tick rebuilds a table it did not affect) rather than risk showing stale rows: an
+    /// extra rebuild costs one frame, a missed one shows wrong data until the user clicks something.
+    data_epoch: u64,
+    /// Derived display rows for the subjects table (see [`Self::subject_rows`]).
+    subject_rows: SubjectRowCache,
+    /// Derived cell text + row order for the project Report table (see [`Self::report_rows`]).
+    report_rows: ReportRowCache,
+    /// Matching-row indices for the Y / mtDNA / autosomal variant tables.
+    y_profile_rows: VariantRows,
+    mt_profile_rows: VariantRows,
+    auto_profile_rows: VariantRows,
     /// Collapse the subjects side panel to a thin strip so the detail panel (charts/tables)
     /// gets the full width.
     subjects_collapsed: bool,
@@ -948,8 +963,7 @@ const AUTO_DETECT: &str = "(auto-detect)";
 
 /// The workbench accent (primary buttons, selection, active tabs).
 pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(45, 125, 246);
-/// Destructive-action red (Delete) — used by the subject header in Phase 2.
-#[allow(dead_code)]
+/// Destructive-action red (Delete buttons, the confirm modals, unconfirmed rows).
 const DANGER: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
 
 /// Rows shown before the heavy variant/site tables (Y/mt/autosomal consensus profiles, private-Y,
@@ -1043,6 +1057,7 @@ mod detail;
 mod events;
 mod ibd;
 mod modals;
+mod rowcache;
 mod sources;
 
 impl NavigatorApp {
@@ -1059,11 +1074,13 @@ impl NavigatorApp {
         let _ = tx.send(Command::LoadAssetStatus); // ancestry/IBD "data sources" line
         // Check for a newer installer at startup (unless the user opted out). Non-fatal — a failed
         // check just logs to the status line; the app never auto-updates.
-        if AppSettings::load().check_for_updates != Some(false) {
+        // One read of settings.json for the whole constructor — it was loaded six separate times.
+        let settings = AppSettings::load();
+        if settings.check_for_updates != Some(false) {
             let _ = tx.send(Command::CheckForUpdate);
         }
                                                    // Persisted theme wins; default dark. (Must match `dark_mode` below.)
-        let dark = !matches!(AppSettings::load().theme.as_deref(), Some("light"));
+        let dark = !matches!(settings.theme.as_deref(), Some("light"));
         apply_theme(&cc.egui_ctx, dark);
         // Persisted UI scale (egui zoom) — fixes tiny text on a native-4K display the OS reports at
         // scale factor 1.0. egui's keyboard zoom (Cmd +/-/0) also works but isn't persisted.
@@ -1072,7 +1089,7 @@ impl NavigatorApp {
         // applied once the list loads (see the `AllBiosamples` handler); nav/tab apply immediately
         // (nav is then reconciled to the interface mode by `normalize_for_mode`). Seed `saved_ui_sig`
         // with the restored intent so a matching restore doesn't trigger a redundant re-save.
-        let restore = AppSettings::load();
+        let restore = &settings;
         let restored_nav = restore.last_nav.as_deref().and_then(Nav::from_key).unwrap_or(Nav::Subjects);
         let restored_tab = restore
             .last_detail_tab
@@ -1115,7 +1132,7 @@ impl NavigatorApp {
             frame_time: 0.0,
             window_size: None,
             // The remembered size (if any) — seeded so an unchanged window never re-writes settings.
-            saved_window_size: AppSettings::load().window_size,
+            saved_window_size: settings.window_size,
             window_size_changed_at: 0.0,
             window_restored: false,
             startup_frames: 0,
@@ -1147,15 +1164,21 @@ impl NavigatorApp {
                 .or_else(|| std::env::var("LANG").ok().and_then(|l| crate::i18n::Lang::parse(&l)))
                 .unwrap_or(crate::i18n::Lang::En),
             // Persisted theme wins; default dark.
-            dark_mode: !matches!(AppSettings::load().theme.as_deref(), Some("light")),
+            dark_mode: dark,
             // A persisted manual scale takes precedence; otherwise probe the monitor on frame 1.
-            scale_probed: AppSettings::load().ui_scale.is_some(),
+            scale_probed: settings.ui_scale.is_some(),
             show_settings: false,
             settings_form: SettingsForm::from_settings(),
             llm_models: Vec::new(),
             llm_testing: false,
             llm_test_msg: None,
             subjects_table_ctl: TableControls::sorted_by(0),
+            data_epoch: 0,
+            subject_rows: SubjectRowCache::default(),
+            report_rows: ReportRowCache::default(),
+            y_profile_rows: VariantRows::default(),
+            mt_profile_rows: VariantRows::default(),
+            auto_profile_rows: VariantRows::default(),
             subjects_collapsed: false,
             projects_collapsed: false,
             overview: Vec::new(),
@@ -1690,6 +1713,8 @@ fn draw_consensus_profile(
     kind: &str,
     id_salt: &str,
     snp_names: &std::collections::HashMap<i64, String>,
+    epoch: u64,
+    rows: &mut VariantRows,
 ) {
     if profile.variants.is_empty() {
         ui.label(egui::RichText::new(format!("No {kind} across sources.")).weak());
@@ -1746,7 +1771,29 @@ fn draw_consensus_profile(
     // otherwise force endless page scrolling. Status/text filters narrow the list; a cap bounds a
     // pathological profile. The header/filter row above stays fixed; only the grid scrolls.
     const CAP: usize = 2000;
-    let (mut shown, mut total_match) = (0usize, 0usize);
+    // A catalogued Y-SNP name at this site (for a position-only / novel row).
+    let cataloged_at = |v: &navigator_domain::consensus::ConsensusVariant| {
+        if v.name.is_empty() {
+            snp_names.get(&v.position).map(String::as_str)
+        } else {
+            None
+        }
+    };
+    // Which variants match is cached — only `CAP` rows are ever rendered, but the total needs the
+    // whole profile scanned, and this fn runs every frame. (`snp_names` feeds the search, and it is
+    // loaded by an event, so `epoch` covers it too.)
+    let status = *filter;
+    let matching = rows.get(epoch, status, &q, &profile.variants, |v| {
+        if status.is_some_and(|f| v.status != f) {
+            return false;
+        }
+        q.is_empty()
+            || v.name.to_ascii_lowercase().contains(&q)
+            || v.position.to_string().contains(&q)
+            || cataloged_at(v).is_some_and(|n| n.to_ascii_lowercase().contains(&q))
+    });
+    let total_match = matching.len();
+    let shown = total_match.min(CAP);
     let pane_h = profile_pane_height(ui, profile.variants.len());
     egui::ScrollArea::vertical()
         .id_salt(format!("{id_salt}_scroll"))
@@ -1761,28 +1808,9 @@ fn draw_consensus_profile(
                         ui.strong(h);
                     }
                     ui.end_row();
-                    for v in &profile.variants {
-                        if filter.is_some_and(|f| v.status != f) {
-                            continue;
-                        }
-                        // A catalogued Y-SNP name at this site (for a position-only / novel row).
-                        let cataloged = if v.name.is_empty() {
-                            snp_names.get(&v.position).map(String::as_str)
-                        } else {
-                            None
-                        };
-                        if !q.is_empty()
-                            && !v.name.to_ascii_lowercase().contains(&q)
-                            && !v.position.to_string().contains(&q)
-                            && !cataloged.is_some_and(|n| n.to_ascii_lowercase().contains(&q))
-                        {
-                            continue;
-                        }
-                        total_match += 1;
-                        if shown >= CAP {
-                            continue;
-                        }
-                        shown += 1;
+                    for &i in &matching[..shown] {
+                        let v = &profile.variants[i as usize];
+                        let cataloged = cataloged_at(v);
                         {
                             let conflict = v.status == YVariantStatus::Conflict;
                             // Prefer the consensus name; else the catalogued Y-SNP at this site (teal,
@@ -1835,13 +1863,9 @@ fn draw_consensus_profile(
                 });
         });
     ui.label(
-        egui::RichText::new(format!(
-            "{} of {} matching variants",
-            shown.min(total_match),
-            total_match
-        ))
-        .weak()
-        .small(),
+        egui::RichText::new(format!("{shown} of {total_match} matching variants"))
+            .weak()
+            .small(),
     );
     if total_match > CAP {
         ui.label(egui::RichText::new(format!("…and {} more — filter to narrow", total_match - CAP)).weak());
@@ -1856,6 +1880,8 @@ fn draw_diploid_profile(
     profile: &navigator_app::DiploidProfile,
     filter: &mut Option<YVariantStatus>,
     query: &mut String,
+    epoch: u64,
+    rows: &mut VariantRows,
 ) {
     if profile.variants.is_empty() {
         ui.label(egui::RichText::new("No autosomal sites across sources.").weak());
@@ -1957,28 +1983,27 @@ fn draw_diploid_profile(
     };
     // Bound the rows to a fixed-height scroll pane (the panel is ~1.2M sites). A hard cap keeps only
     // `shown` widgets built per frame, never the full panel; the status/text filters narrow further.
+    // Which sites match is cached (`rows`) — the count needs the whole panel scanned, and this fn
+    // runs every frame.
     const CAP: usize = 2000;
-    let (mut shown, mut total_match) = (0usize, 0usize);
+    let status = *filter;
+    let matching = rows.get(epoch, status, &q, &profile.variants, |v| {
+        status.map_or(true, |f| v.status == f) && matches(v)
+    });
+    let total_match = matching.len();
+    let shown = total_match.min(CAP);
     let pane_h = profile_pane_height(ui, profile.variants.len());
     egui::ScrollArea::vertical()
         .id_salt("diploid_profile_scroll")
         .max_height(pane_h)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for v in &profile.variants {
-                if !(filter.map_or(true, |f| v.status == f) && matches(v)) {
-                    continue;
-                }
-                total_match += 1;
-                if shown >= CAP {
-                    continue;
-                }
-                shown += 1;
-                render_row(ui, v);
+            for &i in &matching[..shown] {
+                render_row(ui, &profile.variants[i as usize]);
             }
         });
     ui.label(
-        egui::RichText::new(format!("{} of {} matching sites", shown.min(total_match), total_match))
+        egui::RichText::new(format!("{shown} of {total_match} matching sites"))
             .weak()
             .small(),
     );

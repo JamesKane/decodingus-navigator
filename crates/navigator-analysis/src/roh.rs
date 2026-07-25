@@ -107,17 +107,9 @@ impl RohClass {
 }
 
 /// Coarse pattern read from the ROH length distribution. Heuristic — for narration, not diagnosis.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum RohPattern {
-    /// Little total ROH — outbred.
-    Outbred,
-    /// ROH mass dominated by short segments — background relatedness / endogamous population.
-    Endogamy,
-    /// ROH mass dominated by long segments — recent consanguinity in the pedigree.
-    RecentConsanguinity,
-    /// Substantial ROH across all classes.
-    Mixed,
-}
+/// Defined in `navigator-domain` so the Simple-mode brief can consume the verdict [`classify`]
+/// reaches here rather than re-deriving one from the raw numbers.
+pub use navigator_domain::roh::RohPattern;
 
 /// Genome-wide rollup. Lengths are **physical Mb** — the canonical (McQuillan) F_ROH is a physical
 /// ratio, and it stays consistent with the physical `min_length_mb` run filter (a genetic/cM F_ROH
