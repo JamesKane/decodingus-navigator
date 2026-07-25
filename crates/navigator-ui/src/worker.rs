@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::CancelToken;
 use navigator_app::{
+    AnalysisStep,
     AlignmentProbe, AncestryResult, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
     ChatTurn, Consensus, Coverage, DenovoCall, DescentReport, DmConversationSummary, DmMessage, DnaType,
     ExchangeSessionInfo,
@@ -2303,36 +2304,15 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     evt_tx: &Sender<Event>,
     wake: Arc<W>,
 ) {
-    // Simple ("My DNA") is one-click: fold the autosomal ancestry estimate into the pipeline as a
-    // final step. Advanced runs it as a separate deliberate action, so it passes `false`. Ancestry is
-    // subject-level, so resolve the subject once; skip it if the alignment isn't attached to one.
-    let ancestry_guid = if include_ancestry {
-        app.biosample_of_alignment(alignment_id).await.ok()
-    } else {
-        None
-    };
-    // Ancestry is two ordered commands: build the autosomal consensus (panel-genotype), then estimate
-    // admixture/PCA *from* it (`estimate_ancestry_from_consensus` requires the profile to exist).
-    let ancestry_steps = if ancestry_guid.is_some() { 2 } else { 0 };
-    // Skip the mtDNA steps (chrM de-novo + mt-tree placement) when the alignment has no
-    // mitochondrial reads (e.g. an FTDNA Big Y) — scoring zero chrM data just records a meaningless
-    // RSRS root. Unknown coverage (never run) → keep them rather than silently skipping.
-    let chrm_has_reads = |c: &navigator_app::Coverage| {
-        c.contig_coverage_stats
-            .iter()
-            .any(|s| matches!(s.contig.as_str(), "chrM" | "chrMT" | "M" | "MT") && s.num_reads > 0)
-    };
-    // Best-effort pre-flight from any cached coverage (empty on a first analysis → assume present,
-    // so the progress total is right for a WGS). Re-checked authoritatively after step 1 below.
-    let mut has_mtdna = app
-        .cached_coverage(alignment_id)
+    // Which steps run — and which are skipped because a trusted external caller already placed this
+    // alignment, or because it has no chrM reads — is decided by `App::plan_full_analysis`, the one
+    // definition shared with the CLI. This fn only turns those steps into progress + result events.
+    // Planned twice: the mitochondrial decision is a guess until step 1 has produced coverage.
+    let mut steps = app
+        .plan_full_analysis(alignment_id, include_ancestry, None)
         .await
-        .ok()
-        .flatten()
-        .map(|c| chrm_has_reads(&c))
-        .unwrap_or(true);
-    // step 1 + SV + Y (+ chrM de-novo + mt when present) (+ ancestry in the one-click Simple flow)
-    let mut total = (if has_mtdna { 5 } else { 3 }) + ancestry_steps;
+        .unwrap_or_else(|_| vec![AnalysisStep::QualityMetrics]);
+    let mut total = steps.len();
 
     // Step 1: unified quality metrics — coverage + callable, read-level QC, and sex inference in
     // ONE pass over the alignment (was three separate steps reading the file 2–3×). The slow
@@ -2386,11 +2366,14 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         // Emit the same per-result events the old separate steps did, so the UI updates identically.
         match outcome {
             Ok((cov, rm, sex)) => {
-                // Authoritative mtDNA decision from the just-computed coverage: a Big Y with zero
-                // chrM reads now correctly skips the chrM de-novo + mt-placement steps (the pre-flight
-                // check above ran before this coverage existed). Adjusts the remaining-step total.
-                has_mtdna = chrm_has_reads(&cov);
-                total = (if has_mtdna { 5 } else { 3 }) + ancestry_steps;
+                // Re-plan from the just-computed coverage: a Big Y with zero chrM reads now
+                // correctly drops the chrM de-novo + mt-placement steps (the pre-flight plan above
+                // ran before this coverage existed). Adjusts the remaining-step total.
+                steps = app
+                    .plan_full_analysis(alignment_id, include_ancestry, Some(&cov))
+                    .await
+                    .unwrap_or_else(|_| std::mem::take(&mut steps));
+                total = steps.len();
                 // Pin a generic FTDNA Targeted-Y to Big Y-500 vs -700 from its callable-chrY
                 // footprint. Done here (not only inside the metrics walker) so it also fires on the
                 // cached fast-path above, where the walker — and its in-method refine — is skipped.
@@ -2414,77 +2397,49 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                 });
             }
             Err(e) => {
+                // Persist the failure (corrupt/undecodable file) so the project report shows
+                // "Failed" rather than a silent blank, matching the CLI and batch paths.
+                app.record_analysis_error(alignment_id, "metrics", &e.to_string()).await;
                 let _ = evt_tx.send(Event::Error(e.to_string()));
             }
         }
         wake();
     }
 
-    // Steps 2–5: the cheaper command-driven steps (run via `handle`, which forwards their events).
-    // Y variant discovery is the callable-masked "private Y" pass, NOT a raw whole-chrY de-novo
-    // (which is enormous + mostly artifacts); chrM de-novo is fine (small, fully callable).
-    let mut steps: Vec<(&str, &str, Command)> = vec![(
-        "Structural variants",
-        "CNV + discordant pairs (needs ≥10×)",
-        Command::RunSv(alignment_id),
-    )];
-    if has_mtdna {
-        steps.push((
-            "Variant calling",
-            "chrM de-novo (haploid)",
-            Command::RunDenovo {
-                alignment_id,
-                contig: "chrM".into(),
-            },
-        ));
-    }
-    // Skip the internal Y/mt genotyping when a trusted external caller (GATK4 GVCF, sidecar fast
-    // path) already placed this alignment and the user prefers it — re-walking would only produce a
-    // secondary call that loses the vote (and, on ancient DNA, a wrong one). The assign_* commands
-    // guard this too; skipping the enqueue just avoids the wasted decode. See external-caller-precedence.
-    if !app
-        .has_preferred_external_call(alignment_id, navigator_app::DnaType::Y)
-        .await
-        .unwrap_or(false)
-    {
-        steps.push((
-            "Y haplogroup",
-            "placing on the Y tree",
-            Command::AssignYHaplogroup { alignment_id },
-        ));
-    }
-    if has_mtdna
-        && !app
-            .has_preferred_external_call(alignment_id, navigator_app::DnaType::Mt)
-            .await
-            .unwrap_or(false)
-    {
-        steps.push((
-            "mtDNA haplogroup",
-            "placing on the mt tree",
-            Command::AssignMtdnaHaplogroupFromAlignment { alignment_id },
-        ));
-    }
-    // Final steps for the one-click Simple flow: the autosomal ancestry that drives the "Your
-    // ancestry" section. Two ordered commands (profile → estimate), run last (heaviest) and before
-    // AnalysisDone, so the brief reload on completion picks up the persisted consensus estimate.
-    if let Some(guid) = ancestry_guid {
-        steps.push((
-            "Autosomal profile",
-            "genotyping ancestry markers",
-            Command::BuildAutosomalProfile { biosample_guid: guid },
-        ));
-        steps.push((
-            "Ancestry",
-            "estimating admixture + ancient components",
-            Command::EstimateAncestryFromConsensus { biosample_guid: guid },
-        ));
-    }
-    for (i, (label, detail, cmd)) in steps.into_iter().enumerate() {
+    // The remaining steps run via `handle`, which forwards each one's own result events. Y variant
+    // discovery is the callable-masked "private Y" pass, NOT a raw whole-chrY de-novo (which is
+    // enormous + mostly artifacts); chrM de-novo is fine (small, fully callable).
+    let command_for = |step: &AnalysisStep| match step {
+        // Step 1 ran above, with sub-progress; it is never dispatched as a command.
+        AnalysisStep::QualityMetrics => None,
+        AnalysisStep::StructuralVariants => Some(Command::RunSv(alignment_id)),
+        AnalysisStep::MitoDenovo { contig } => Some(Command::RunDenovo {
+            alignment_id,
+            contig: contig.clone(),
+        }),
+        AnalysisStep::YHaplogroup => Some(Command::AssignYHaplogroup { alignment_id }),
+        AnalysisStep::MtHaplogroup => Some(Command::AssignMtdnaHaplogroupFromAlignment { alignment_id }),
+        AnalysisStep::YSignature { biosample_guid } => Some(Command::BuildYProfile {
+            biosample_guid: *biosample_guid,
+        }),
+        AnalysisStep::AutosomalProfile { biosample_guid } => Some(Command::BuildAutosomalProfile {
+            biosample_guid: *biosample_guid,
+        }),
+        AnalysisStep::Ancestry { biosample_guid } => Some(Command::EstimateAncestryFromConsensus {
+            biosample_guid: *biosample_guid,
+        }),
+    };
+    // Carry each step's 1-based position in the plan, so the progress numbering stays right no
+    // matter which steps the plan included or which are dispatched here rather than above.
+    let steps: Vec<(usize, String, String, Command)> = steps
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| command_for(s).map(|c| (i + 1, s.label().to_string(), s.detail().to_string(), c)))
+        .collect();
+    for (step, label, detail, cmd) in steps {
         if cancel.is_cancelled() {
             break;
         }
-        let step = i + 2; // steps 2..=total
         let _ = evt_tx.send(Event::AnalysisProgress {
             step,
             total,

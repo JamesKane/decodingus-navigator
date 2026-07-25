@@ -2440,6 +2440,7 @@ pub struct RefBuildStatus {
 }
 
 mod analysis;
+pub use analysis::AnalysisStep;
 mod auth;
 mod brief;
 mod commands;

@@ -1058,3 +1058,139 @@ fn copy_with_index(remote: &Path, local: &Path) -> std::io::Result<()> {
     std::fs::rename(&tmp, local)?;
     Ok(())
 }
+
+/// One step of a full analysis of a single alignment, in the order [`App::plan_full_analysis`]
+/// returns them. The variants carry whatever the step needs, so a caller's dispatch is total and it
+/// cannot silently run a step the plan excluded.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnalysisStep {
+    /// Coverage + callable, read-level QC, and sex inference in one pass over the alignment.
+    QualityMetrics,
+    /// CNV + discordant pairs. Needs ≥10× — the step itself reports when the depth is too low.
+    StructuralVariants,
+    /// De-novo calling on the mitochondrial contig (small and fully callable, unlike whole chrY).
+    MitoDenovo { contig: String },
+    /// Place the alignment on the Y tree.
+    YHaplogroup,
+    /// Place the alignment on the mtDNA tree.
+    MtHaplogroup,
+    /// Genome-consensus Y signature (deep placement + variant profile → descent report).
+    YSignature { biosample_guid: SampleGuid },
+    /// Genotype the ancestry markers into the autosomal consensus profile.
+    AutosomalProfile { biosample_guid: SampleGuid },
+    /// Estimate admixture/PCA *from* the autosomal profile — must follow [`Self::AutosomalProfile`].
+    Ancestry { biosample_guid: SampleGuid },
+}
+
+impl AnalysisStep {
+    /// Short name for a progress indicator.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::QualityMetrics => "Quality metrics",
+            Self::StructuralVariants => "Structural variants",
+            Self::MitoDenovo { .. } => "Variant calling",
+            Self::YHaplogroup => "Y haplogroup",
+            Self::MtHaplogroup => "mtDNA haplogroup",
+            Self::YSignature { .. } => "Y signature",
+            Self::AutosomalProfile { .. } => "Autosomal profile",
+            Self::Ancestry { .. } => "Ancestry",
+        }
+    }
+
+    /// One line of detail under the label.
+    pub fn detail(&self) -> &'static str {
+        match self {
+            Self::QualityMetrics => "scanning contigs…",
+            Self::StructuralVariants => "CNV + discordant pairs (needs ≥10×)",
+            Self::MitoDenovo { .. } => "chrM de-novo (haploid)",
+            Self::YHaplogroup => "placing on the Y tree",
+            Self::MtHaplogroup => "placing on the mt tree",
+            Self::YSignature { .. } => "building the descent report",
+            Self::AutosomalProfile { .. } => "genotyping ancestry markers",
+            Self::Ancestry { .. } => "estimating admixture + ancient components",
+        }
+    }
+}
+
+impl App {
+    /// The ordered steps a full analysis of `alignment_id` should run.
+    ///
+    /// This is the **one** definition of that pipeline. The GUI streams progress events and the CLI
+    /// prints a log, so how a step is reported differs — but which steps run, and the conditions
+    /// under which one is skipped, must not: the two had drifted, and the CLI's copy re-genotyped Y
+    /// unconditionally, overwriting a trusted external call (on ancient DNA, with a worse one).
+    ///
+    /// `coverage` is the just-computed result when [`AnalysisStep::QualityMetrics`] has already run,
+    /// which makes the mitochondrial decision authoritative; pass `None` before that and the cached
+    /// coverage (or, with none, the assumption that chrM is present) is used instead. Callers that
+    /// show a step count should re-plan after the metrics step, as the count can drop.
+    pub async fn plan_full_analysis(
+        &self,
+        alignment_id: i64,
+        include_ancestry: bool,
+        coverage: Option<&CoverageResult>,
+    ) -> Result<Vec<AnalysisStep>, AppError> {
+        // Skip the mitochondrial steps when the alignment has no chrM reads (e.g. an FTDNA Big Y):
+        // scoring zero chrM data just records a meaningless RSRS root. Unknown coverage (never run)
+        // keeps them rather than silently skipping.
+        let has_mtdna = match coverage {
+            Some(c) => chrm_has_reads(c),
+            None => self
+                .cached_coverage(alignment_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|c| chrm_has_reads(&c))
+                .unwrap_or(true),
+        };
+        // Subject-level steps need the owning subject; an unattached alignment simply skips them.
+        let guid = self.biosample_of_alignment(alignment_id).await.ok();
+
+        let mut steps = vec![AnalysisStep::QualityMetrics, AnalysisStep::StructuralVariants];
+        if has_mtdna {
+            steps.push(AnalysisStep::MitoDenovo { contig: "chrM".into() });
+        }
+        // Skip the internal Y/mt genotyping when a trusted external caller (GATK4 GVCF, sidecar fast
+        // path) already placed this alignment and the user prefers it — re-walking would only produce
+        // a secondary call that loses the vote, and on ancient DNA a wrong one. The assign_* commands
+        // guard this too; planning around it also avoids the wasted decode. See external-caller-precedence.
+        if !self
+            .has_preferred_external_call(alignment_id, DnaType::Y)
+            .await
+            .unwrap_or(false)
+        {
+            steps.push(AnalysisStep::YHaplogroup);
+        }
+        if has_mtdna
+            && !self
+                .has_preferred_external_call(alignment_id, DnaType::Mt)
+                .await
+                .unwrap_or(false)
+        {
+            steps.push(AnalysisStep::MtHaplogroup);
+        }
+        // The Y signature makes the descent report ready without an explicit click (the button stays
+        // for an on-demand rebuild). Built once — an existing profile is left alone — and it needs no
+        // extra read of the file, since the Y assignment above just cached the chrY genotypes.
+        if let Some(guid) = guid {
+            if self.cached_y_profile(guid).await?.is_none() {
+                steps.push(AnalysisStep::YSignature { biosample_guid: guid });
+            }
+        }
+        // The one-click Simple flow folds in the autosomal ancestry that drives "Your ancestry".
+        // Two ordered steps (profile → estimate), last because they are the heaviest. Advanced runs
+        // ancestry as a separate deliberate action and passes `include_ancestry = false`.
+        if let (true, Some(guid)) = (include_ancestry, guid) {
+            steps.push(AnalysisStep::AutosomalProfile { biosample_guid: guid });
+            steps.push(AnalysisStep::Ancestry { biosample_guid: guid });
+        }
+        Ok(steps)
+    }
+}
+
+/// Whether a coverage result shows any reads on the mitochondrial contig, under either naming.
+fn chrm_has_reads(c: &CoverageResult) -> bool {
+    c.contig_coverage_stats
+        .iter()
+        .any(|s| contig::is_chr_m(&s.contig) && s.num_reads > 0)
+}
