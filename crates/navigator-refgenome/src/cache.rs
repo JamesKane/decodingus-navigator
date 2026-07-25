@@ -29,12 +29,55 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?; // durability: don't expose an empty/partial file after a crash
-        std::fs::rename(&tmp, path)
+        drop(f); // close before renaming — Windows will not move a handle it still owns
+        retry_while_replacing(|| std::fs::rename(&tmp, path))
     })();
     if res.is_err() {
         let _ = std::fs::remove_file(&tmp); // best-effort cleanup of our own temp on failure
     }
     res
+}
+
+/// Read a file that [`atomic_write`] may be replacing concurrently.
+///
+/// POSIX `rename` swaps a directory entry, so a reader opens either the old inode or the new one and
+/// **always succeeds**. Windows offers no such guarantee: while `MoveFileEx` replaces the target the
+/// name is briefly *delete-pending*, and opening a delete-pending file fails with
+/// `ERROR_ACCESS_DENIED`. A plain `fs::read` therefore fails spuriously whenever a writer happens to
+/// be mid-replace — and every caller here treats an unreadable config as "no config", so the user's
+/// reference overrides or settings would silently revert to defaults. Retry through that window; it
+/// lasts microseconds.
+///
+/// A genuinely **missing** file still returns `NotFound` immediately: that is the ordinary
+/// no-config-yet case and must stay fast.
+pub fn read_atomic(path: &Path) -> std::io::Result<Vec<u8>> {
+    retry_while_replacing(|| std::fs::read(path))
+}
+
+/// Whether an error is Windows' transient "this path is being replaced right now" family:
+/// `ERROR_ACCESS_DENIED` (5, delete-pending) and the sharing violations (32/33). Unix produces none
+/// of these for renaming over, or opening, a file being replaced — so the retries are inert there.
+fn is_replace_race(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(5) | Some(32) | Some(33)) || e.kind() == std::io::ErrorKind::PermissionDenied
+}
+
+/// Run `op`, retrying briefly while it fails with a [`is_replace_race`] error. Capped at ~0.4 s
+/// total: long enough to outlast any replace window, short enough that a genuine permission problem
+/// still surfaces promptly.
+fn retry_while_replacing<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    const ATTEMPTS: u32 = 25;
+    let mut delay = std::time::Duration::from_micros(200);
+    for attempt in 1..=ATTEMPTS {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < ATTEMPTS && is_replace_race(&e) => {
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(std::time::Duration::from_millis(20));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the final attempt returns")
 }
 
 /// Cache root: `$NAVIGATOR_REFGENOME_DIR`, else `~/.decodingus`, else the current dir.
@@ -124,7 +167,11 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 for p in payloads.iter() {
                     atomic_write(&path, p.as_bytes()).unwrap();
-                    let got = std::fs::read_to_string(&*path).unwrap();
+                    // `read_atomic`, not `fs::read`: on Windows the target is briefly delete-pending
+                    // mid-replace and a plain open fails with "Access is denied" (this test caught
+                    // exactly that on windows-msvc). The invariant under test is the *content* one —
+                    // whatever we read is one whole payload, never a splice of two.
+                    let got = String::from_utf8(read_atomic(&path).unwrap()).unwrap();
                     assert!(payloads.contains(&got), "torn read: {got:?}");
                 }
             }));
@@ -132,6 +179,22 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The retry must not turn the ordinary "no config yet" case into a stall: a missing file
+    /// reports `NotFound` on the first attempt, and a present one reads straight through.
+    #[test]
+    fn read_atomic_is_immediate_for_missing_and_present_files() {
+        let dir = std::env::temp_dir().join(format!("atomicr_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("cfg.json");
+        let started = std::time::Instant::now();
+        let err = read_atomic(&path).expect_err("missing file must error");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(started.elapsed() < std::time::Duration::from_millis(100), "missing file was retried");
+        atomic_write(&path, b"{\"x\":1}").unwrap();
+        assert_eq!(read_atomic(&path).unwrap(), b"{\"x\":1}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

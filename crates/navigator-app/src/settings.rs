@@ -115,9 +115,15 @@ impl AppSettings {
     }
 
     /// Load settings; a missing or unreadable/invalid file yields the empty default.
+    ///
+    /// Reads through [`navigator_refgenome::cache::read_atomic`] so a concurrent [`Self::save`]
+    /// can't make the load fail: on Windows the file is briefly unopenable mid-replace, and this
+    /// returning the default would quietly discard the user's settings — including, since
+    /// `copying_lai_params()` reads them at paint time, their painter calibration.
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path())
+        navigator_refgenome::cache::read_atomic(&Self::path())
             .ok()
+            .and_then(|b| String::from_utf8(b).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default()
     }
