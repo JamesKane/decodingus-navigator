@@ -379,10 +379,12 @@ impl NavigatorApp {
         }
     }
 
-    /// The Settings / Preferences modal: connection (AppView URL, Y-tree provider), appearance
-    /// (theme, language, tree-cache TTL), reference genomes (local FASTA + auto-download per build),
-    /// and a read-only advanced section. Self-mutation/dispatch is deferred until after the closure
-    /// so only `self.tr` (immutable) is used inside it.
+    /// The Settings / Preferences modal, split into sub-tabs by locality of concern: General
+    /// (theme/scale/language/mode), Connection (AppView URL, Y-tree provider, tree-cache TTL),
+    /// Ancestry (chromosome-painter calibration), AI assistant (local LLM), References (local
+    /// FASTA + auto-download per build), Tools (VCF liftover), and a read-only Advanced tab.
+    /// Self-mutation/dispatch is deferred until after the closure so only `self.tr` (immutable)
+    /// is used inside it.
     pub(crate) fn settings_modal(&mut self, ctx: &egui::Context) {
         if !self.show_settings {
             return;
@@ -393,6 +395,7 @@ impl NavigatorApp {
         let mut lang = self.lang;
         let prev_lang = self.lang;
         let mut ui_mode = self.ui_mode;
+        let mut settings_tab = self.settings_tab;
         let (mut close, mut save) = (false, false);
         // Deferred actions (dispatched after the closure, since only `self.tr` is used inside it).
         let mut verify_build: Option<String> = None;
@@ -407,9 +410,46 @@ impl NavigatorApp {
         modal_frame(ctx, "settings_modal", 580.0, |ui| {
             ui.label(egui::RichText::new(self.tr("settings.title")).strong().size(16.0));
             ui.separator();
+            settings_tab = self.sub_bar(ui, settings_tab, &SettingsTab::ALL);
             egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
-                // --- Connection ---
-                ui.label(egui::RichText::new(self.tr("settings.connection")).strong());
+                match settings_tab {
+                SettingsTab::General => {
+                // --- Appearance ---
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.theme"));
+                    ui.selectable_value(&mut theme_dark, true, self.tr("settings.dark"));
+                    ui.selectable_value(&mut theme_dark, false, self.tr("settings.light"));
+                });
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.uiScale"));
+                    let scale_resp = ui.add(
+                        egui::Slider::new(&mut form.ui_scale, 0.8..=2.5)
+                            .step_by(0.05)
+                            .fixed_decimals(2),
+                    );
+                    scale_dragging = scale_resp.dragged();
+                    if ui.small_button("100%").clicked() {
+                        form.ui_scale = 1.0;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.language"));
+                    egui::ComboBox::from_id_salt("settings_lang")
+                        .selected_text(lang.label())
+                        .show_ui(ui, |ui| {
+                            for &l in crate::i18n::Lang::all() {
+                                ui.selectable_value(&mut lang, l, l.label());
+                            }
+                        });
+                });
+                ui.horizontal(|ui| {
+                    ui.label(self.tr("settings.interfaceMode"));
+                    ui.selectable_value(&mut ui_mode, UiMode::Simple, self.tr("settings.modeSimple"));
+                    ui.selectable_value(&mut ui_mode, UiMode::Advanced, self.tr("settings.modeAdvanced"));
+                });
+                }
+
+                SettingsTab::Connection => {
                 ui.horizontal(|ui| {
                     ui.label(self.tr("settings.appviewUrl"));
                     ui.add(
@@ -443,58 +483,16 @@ impl NavigatorApp {
                     }
                     ui.label(egui::RichText::new(self.tr("settings.refreshTreesHint")).weak().small());
                 });
-                ui.checkbox(&mut form.prefer_external_calls, self.tr("settings.preferExternalCalls"));
-                ui.label(
-                    egui::RichText::new(self.tr("settings.preferExternalCallsHint"))
-                        .weak()
-                        .small(),
-                );
-                ui.add_space(8.0);
-
-                // --- Appearance ---
-                ui.label(egui::RichText::new(self.tr("settings.appearance")).strong());
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.theme"));
-                    ui.selectable_value(&mut theme_dark, true, self.tr("settings.dark"));
-                    ui.selectable_value(&mut theme_dark, false, self.tr("settings.light"));
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.uiScale"));
-                    let scale_resp = ui.add(
-                        egui::Slider::new(&mut form.ui_scale, 0.8..=2.5)
-                            .step_by(0.05)
-                            .fixed_decimals(2),
-                    );
-                    scale_dragging = scale_resp.dragged();
-                    if ui.small_button("100%").clicked() {
-                        form.ui_scale = 1.0;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.language"));
-                    egui::ComboBox::from_id_salt("settings_lang")
-                        .selected_text(lang.label())
-                        .show_ui(ui, |ui| {
-                            for &l in crate::i18n::Lang::all() {
-                                ui.selectable_value(&mut lang, l, l.label());
-                            }
-                        });
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.interfaceMode"));
-                    ui.selectable_value(&mut ui_mode, UiMode::Simple, self.tr("settings.modeSimple"));
-                    ui.selectable_value(&mut ui_mode, UiMode::Advanced, self.tr("settings.modeAdvanced"));
-                });
                 ui.horizontal(|ui| {
                     ui.label(self.tr("settings.treeTtl"));
                     ui.add(egui::TextEdit::singleline(&mut form.tree_ttl_days).desired_width(60.0));
                 });
-                ui.add_space(8.0);
+                }
 
+                SettingsTab::Ancestry => {
                 // --- Chromosome painter (copying-LAI) calibration ---
                 // Reset buttons restore the painter's calibrated defaults (see `lai_knob_defaults`).
                 let lai = navigator_app::lai_knob_defaults();
-                ui.label(egui::RichText::new(self.tr("settings.painter")).strong());
                 ui.label(egui::RichText::new(self.tr("settings.painterHint")).small().weak());
                 ui.horizontal(|ui| {
                     ui.label(self.tr("settings.painter.recomb"));
@@ -546,10 +544,10 @@ impl NavigatorApp {
                     }
                 });
                 ui.label(egui::RichText::new(self.tr("settings.painterApply")).small().weak());
-                ui.add_space(8.0);
+                }
 
+                SettingsTab::Ai => {
                 // --- AI assistant (local LLM) ---
-                ui.label(egui::RichText::new(self.tr("settings.ai")).strong());
                 ui.checkbox(&mut form.llm_enabled, self.tr("settings.ai.enable"));
                 ui.add_enabled_ui(form.llm_enabled, |ui| {
                     ui.horizontal(|ui| {
@@ -624,10 +622,10 @@ impl NavigatorApp {
                         );
                     }
                 });
-                ui.add_space(8.0);
+                }
 
+                SettingsTab::References => {
                 // --- Reference genomes ---
-                ui.label(egui::RichText::new(self.tr("settings.references")).strong());
                 ui.checkbox(&mut form.prompt_before_download, self.tr("settings.promptDownload"));
                 egui::Grid::new("settings_refs")
                     .striped(true)
@@ -676,8 +674,9 @@ impl NavigatorApp {
                 if form.references.is_empty() {
                     ui.label(egui::RichText::new(self.tr("settings.loadingRefs")).weak());
                 }
-                ui.add_space(8.0);
+                }
 
+                SettingsTab::Tools => {
                 // --- Tools: VCF liftover ---
                 ui.label(egui::RichText::new(self.tr("liftvcf.title")).strong());
                 ui.label(egui::RichText::new(self.tr("liftvcf.hint")).weak().small());
@@ -729,10 +728,15 @@ impl NavigatorApp {
                 {
                     lift_request = true;
                 }
-                ui.add_space(8.0);
+                }
 
-                // --- Advanced (read-only) ---
-                ui.label(egui::RichText::new(self.tr("settings.advanced")).strong());
+                SettingsTab::Advanced => {
+                    ui.checkbox(&mut form.prefer_external_calls, self.tr("settings.preferExternalCalls"));
+                    ui.label(
+                        egui::RichText::new(self.tr("settings.preferExternalCallsHint"))
+                            .weak()
+                            .small(),
+                    );
                 ui.label(
                     egui::RichText::new(format!(
                         "{}: {}",
@@ -742,6 +746,8 @@ impl NavigatorApp {
                     .weak(),
                 );
                 ui.label(egui::RichText::new(self.tr("settings.advancedEnv")).weak());
+                }
+                }
             });
             ui.separator();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -757,6 +763,8 @@ impl NavigatorApp {
                 }
             });
         });
+
+        self.settings_tab = settings_tab;
 
         // Live-apply theme + UI scale + language (immediate feedback).
         if theme_dark != self.dark_mode {

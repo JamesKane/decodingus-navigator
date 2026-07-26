@@ -131,6 +131,32 @@ impl ProjectTab {
     ];
 }
 
+/// Sub-tabs of the Settings dialog, grouping preferences by locality of concern (general appearance
+/// vs. server connection vs. ancestry-painter calibration vs. AI vs. reference genomes vs. one-off
+/// tools vs. read-only advanced info).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum SettingsTab {
+    #[default]
+    General,
+    Connection,
+    Ancestry,
+    Ai,
+    References,
+    Tools,
+    Advanced,
+}
+impl SettingsTab {
+    const ALL: [(SettingsTab, &'static str); 7] = [
+        (SettingsTab::General, "settings.tab.general"),
+        (SettingsTab::Connection, "settings.tab.connection"),
+        (SettingsTab::Ancestry, "settings.tab.ancestry"),
+        (SettingsTab::Ai, "settings.tab.ai"),
+        (SettingsTab::References, "settings.tab.references"),
+        (SettingsTab::Tools, "settings.tab.tools"),
+        (SettingsTab::Advanced, "settings.tab.advanced"),
+    ];
+}
+
 /// Sub-tabs of the subject detail panel.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DetailTab {
@@ -656,6 +682,8 @@ pub struct NavigatorApp {
     /// Settings dialog open + its editable form.
     show_settings: bool,
     settings_form: SettingsForm,
+    /// Active Settings dialog sub-tab.
+    settings_tab: SettingsTab,
     /// Local-LLM "Test connection" state (Settings → AI assistant): discovered models, an in-flight
     /// flag, and the last plain-language status/error line.
     llm_models: Vec<String>,
@@ -1169,6 +1197,7 @@ impl NavigatorApp {
             scale_probed: settings.ui_scale.is_some(),
             show_settings: false,
             settings_form: SettingsForm::from_settings(),
+            settings_tab: SettingsTab::default(),
             llm_models: Vec::new(),
             llm_testing: false,
             llm_test_msg: None,
