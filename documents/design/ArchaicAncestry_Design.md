@@ -348,10 +348,34 @@ must fetch to the pipeline's raw/ area, like the AADR handling in [[germanic-pan
 - **UI:** an "Archaic Ancestry" card in `DetailTab::Ancestry`. Headline is a **count + percentile**,
   never a "% Neanderthal" (§1, §7).
 
-**Validation gate:** the marker count for GFX0457637 must be checkable against that person's real
-23andMe Neanderthal count, and the chip-derived and WGS-derived counts must agree within the call-rate
-limit measured at checkpoint B. *This requires the actual 23andMe report figure as an external
-oracle — without it M2 verifies internal consistency only, not correctness.*
+**Validation gate — the external oracle (obtained 2026-07-26).** For GFX0457637 (= James), the real
+23andMe v5 report reads **191 Neanderthal variants out of 7,462**.
+
+Two things follow directly:
+
+- **The denominator is *copies*, not sites.** 7,462 = 2 × 3,731, and 3,731 is exactly the v5 assayed
+  site count in §1 — so 23andMe reports archaic-allele *copies* carried out of copies assayed. This
+  confirms the §6 domain shape: `total_copies` = 191, `possible_copies` = 7,462. The observed rate is
+  **2.56 % of assayed copies** (0.051 archaic copies per assayed site).
+- **Do NOT treat 191 as a number our panel must reproduce.** We compute our own marker panel (§3a)
+  from different inputs, so it will have a different size and different membership; the raw count is
+  panel-relative and a direct equality check is meaningless. Tuning M1's thresholds until our count
+  hits 191 would be fitting the panel to one sample — precisely the kind of circular validation that
+  §3.2 of the ancient-ancestry investigation already burned us on (the A′ "pass" that turned out to
+  be a circular ∩chip comparison).
+
+**The comparison that is actually valid** is the per-site archaic rate **on the intersection of our
+panel with the v5 chip content** — i.e. restrict both to shared sites and compare copies-per-site
+(expect ≈ 0.051 on the 23andMe side). Checkpoint B already computes that intersection, so this costs
+nothing extra. Secondary, weaker checks: our whole-panel rate should land in the same neighbourhood,
+and Tier B's independent % -of-genome estimate should be consistent with a ~1.5–2 % European
+Neanderthal fraction (§7) — two different methods agreeing is worth more than either matching a
+vendor's count.
+
+Also required at M2: the chip-derived and WGS-derived counts for the same person must agree within
+the call-rate limit measured at checkpoint B. That is the cross-source stability gate that ancient
+ancestry failed for a long time ([[ancient-ancestry-broken]]), and it is a genuinely independent
+check because it needs no vendor number at all.
 
 ### M3 — Tier B segment HMM (WGS/VCF)
 
