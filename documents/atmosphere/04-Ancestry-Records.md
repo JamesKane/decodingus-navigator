@@ -152,4 +152,4 @@ Population breakdown data enables:
 
 * **`PopulationBreakdown` (New Entity):** Maps to existing `ancestry_analysis` with enhanced population components.
 
-See [ibd-matching-system.md](../ibd-matching-system.md) and [AncestryAnalysis.md](../AncestryAnalysis.md) for implementation planning.
+See `decodingus/documents/planning/ibd-matching-system.md` and [AncestryAnalysis.md](../design/AncestryAnalysis.md) for implementation planning.

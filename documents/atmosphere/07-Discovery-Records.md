@@ -108,4 +108,4 @@ This record allows citizens to contribute instrument-lab observations from their
 
 * **`InstrumentObservation`:** Maps to `instrument_observation` table for lab inference consensus.
 
-See [sequencer-lab-inference-system.md](../sequencer-lab-inference-system.md) for implementation planning.
+See `decodingus/documents/planning/sequencer-lab-inference-system.md` for implementation planning.

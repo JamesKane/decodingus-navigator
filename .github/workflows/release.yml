@@ -1,6 +1,6 @@
 # Release pipeline for the Rust `navigator` desktop app (replaces the legacy Scala jpackage
 # workflow). Builds OS-native installer images with cargo-packager on a tag push and attaches
-# them — plus a SHA256SUMS — to a GitHub release. See docs/design/packaging-and-release.md.
+# them — plus a SHA256SUMS — to a GitHub release. See documents/design/packaging-and-release.md.
 #
 # The Ivy Bridge CPU floor for the x86-64 slices comes from .cargo/config.toml (per-target
 # rustflags), so no per-job RUSTFLAGS are needed; ARM slices stay at the NEON baseline.

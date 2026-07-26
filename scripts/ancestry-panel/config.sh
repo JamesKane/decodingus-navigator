@@ -162,7 +162,7 @@ ANCIENT_OUTGROUP_MIN_CALLED="${ANCIENT_OUTGROUP_MIN_CALLED:-2}"
 # plain or .gz). The deep panel is restricted to the array-assayed sites (mapped to CHM13 via the
 # 1240k liftover). Allele-frequency admixture is only valid when sample and reference share
 # ascertainment; without this the deep estimate is unstable across data sources (WGS ~90% vs the same
-# person's chip ~58% Steppe). REQUIRED for a shippable deep panel — docs/design/ancient-ancestry-rebuild.md §4.
+# person's chip ~58% Steppe). REQUIRED for a shippable deep panel — documents/design/ancient-ancestry-rebuild.md §4.
 # Defaults to the committed consumer-array manifest (manifests/README.md); set to "" to build the
 # full (unascertained) panel, which does NOT pass the §3.4 stability gate.
 CHIP_MANIFEST="${CHIP_MANIFEST-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/manifests/consumer_array_1240k_rsids.txt.gz}"
@@ -172,7 +172,7 @@ ASCERTAIN_SITES="$TMP/ascertain_sites.${BUILD}.tsv"        # generated: CHM13 co
 # ancient samples onto a modern PCA collapses them onto the modern cloud (WHG landed on top of
 # English, ANF on top of Sardinian), so the centroids carried no ancient signal and every model over
 # them was fabrication. Deep ancestry is now a frequency mixture over $ANCIENT_OUT.
-# See docs/design/ancient-ancestry-rebuild.md.
+# See documents/design/ancient-ancestry-rebuild.md.
 GMAP_OUT="$ASSETS/genetic_map_${BUILD}.bin"               # IBD recombination map (bp->cM)
 IBD_PANEL_OUT="$ASSETS/ibd_panel_${BUILD}.bin"            # chip-compatible multi-build IBD SNP panel
 MANIFEST="$ASSETS/ancestry_manifest_${BUILD}.json"         # provenance + checksums

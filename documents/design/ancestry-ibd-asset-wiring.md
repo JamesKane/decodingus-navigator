@@ -1,9 +1,14 @@
 # Ancestry fine-population wiring + IBD reference artifacts — design
 
-Status: **design / specification only** (no code). Branch: `rust-rewrite`.
-Scope if built: `navigator-panelbuild` (new asset products), `navigator-analysis`
-(fine-admixture + genetic-map loader), `navigator-app` (asset loading + IBD wiring),
-`navigator-ui` (fine-pop display + asset transparency).
+Status: **IMPLEMENTED** (verified against the tree 2026-07-26). Drafted on `rust-rewrite` as a
+spec; both parts shipped. **Part A** — fine-population consumption is live
+(`ancestry::resolve_fine_populations`, the two-tier super→fine step with a runner-up margin gate,
+plus `fine_population_codes`/`subset`); fine + PCA panels were later rebuilt at 200k depth with
+continental-European populations (`memory/fine-panel-continental-depth.md`). **Part B** — the real
+genetic map (`ibd::GeneticMap::from_markers`) and the multi-build, allele-aware consumer-chip panel
+(`IbdPanel::resolve_chip`, re-keying GRCh37/38 and self-orienting against CHM13) both ship; the
+cross-cutting manifest verification is `read_verified_asset` + the asset manifest
+(`memory/asset-manifest-verification.md`).
 
 ## Problem
 

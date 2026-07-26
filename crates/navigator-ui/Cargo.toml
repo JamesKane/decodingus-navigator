@@ -15,7 +15,7 @@ name = "navigator"
 path = "src/main.rs"
 
 # cargo-packager (CrabNebula) config — produces the OS-native installer images. See
-# docs/design/packaging-and-release.md. The ancestry/IBD assets are staged into
+# documents/design/packaging-and-release.md. The ancestry/IBD assets are staged into
 # packaging/staging/ancestry by packaging/stage-assets.sh (run via before-packaging-command) and
 # bundled as image resources under `ancestry/`; the app seeds them to ~/.decodingus/ancestry/ on
 # first run (navigator_app::seed_bundled_assets).

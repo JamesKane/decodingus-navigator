@@ -1,5 +1,19 @@
 # Multi-Run Reconciliation Design
 
+**Status: IMPLEMENTED, and partly superseded** (header added 2026-07-26 — this Scala-era doc had
+none). The problem statement below still describes what the app does; the *mechanism* is now the
+DNA-type-agnostic consensus engine, `navigator-domain::consensus` (`reconcile` /
+`reconcile_diploid` / `ConsensusStatus`), plus `IdentityVerification` for the sample-mix-up case.
+For the current design read [`MultiSource_Reconciliation.md`](MultiSource_Reconciliation.md)
+(status: built, all 6 phases) — this file is the precursor.
+
+One deliberate removal to note: **variant-level** reconciliation (`reconcile_variants` /
+`VariantStatus` / `ReconciledVariant` + the "Cross-source concordance" card) was deleted at merge
+`c471ede` because it predated the consensus engine. The known functional gap left behind is
+position-level concordance of ≥2 imported **autosomal VCF** variant sets at their own positions; the
+intended fix is an autosomal consensus adapter feeding the consensus engine, not reviving the old
+path.
+
 ## Problem Statement
 
 A single subject (person) may have multiple sequencing runs from different sources:

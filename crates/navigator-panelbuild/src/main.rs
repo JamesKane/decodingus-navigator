@@ -8,7 +8,7 @@
 //! `min-fst`) as a [`navigator_analysis::ancestry::AncestryPanel`] (bincode), plus a TSV for
 //! inspection.
 //!
-//! Fetch the VCFs to a local mirror first (multi-GB; see docs/chm13-reference-resources.md):
+//! Fetch the VCFs to a local mirror first (multi-GB; see documents/chm13-reference-resources.md):
 //!   aws s3 cp --no-sign-request --recursive \
 //!     s3://human-pangenomics/T2T/CHM13/assemblies/variants/1000_Genomes_Project/chm13v2.0/unrelated_samples_2504/allele_freq/ <dir>
 

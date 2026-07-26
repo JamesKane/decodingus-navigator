@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stage the ancestry/IBD reference assets that the installer bundles (the full offline installer —
-# see docs/design/packaging-and-release.md, decision A). cargo-packager's `resources` points at
+# see documents/design/packaging-and-release.md, decision A). cargo-packager's `resources` points at
 # packaging/staging/ancestry; this populates it before packaging (via before-packaging-command).
 #
 #   Local builds:  copy from the developer's ~/.decodingus/ancestry/ (already built/downloaded).

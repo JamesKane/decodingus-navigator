@@ -1,4 +1,4 @@
-//! qpAdm control (docs/design/ancient-ancestry-rebuild.md §7): can the *real* panel + outgroups
+//! qpAdm control (documents/design/ancient-ancestry-rebuild.md §7): can the *real* panel + outgroups
 //! recover a KNOWN European mixture drawn from the panel's own source frequencies? This isolates the
 //! estimator/outgroup adequacy from any target-side data batch effect — no BAM is genotyped.
 //!

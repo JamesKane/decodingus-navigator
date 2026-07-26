@@ -1,7 +1,11 @@
 # FTDNA Project Import — Backlog Design
 
-**Status:** Design only (no implementation). Drafted 2026-06-06.
-**Branch context:** `rust-rewrite`. Targets the Rust crates (`navigator-domain`, `navigator-store`, `navigator-app`, `navigator-ui`).
+**Status: IMPLEMENTED** (PR #6, merged; verified against the tree 2026-07-26). Drafted 2026-06-06 as a
+backlog design. Built out in `navigator-app/src/ftdna_import.rs` (roster/ancestry/Y-STR CSV import,
+match/dedup, review→commit plan, Y-STR autoclustering), with `import_ftdna_csv_variants`
+(`import_profiles.rs:220`) for the variant path and the `ftdna_project_import_plans_and_commits_merge_new_and_orphan`
+integration test (`navigator-app/tests/app.rs:2376`). See `memory/ftdna-import-platform.md`.
+**Branch context:** drafted on `rust-rewrite`; now on `main`.
 
 ## 1. Goal
 
@@ -718,7 +722,7 @@ FTDNA constraint).
 > (memory `project-import`). The academic profile is mostly *constraining* the
 > existing importer (no-PII guarantee, provenance/citation metadata) rather than
 > new ingest. Its IRB-/publishing-facing specifics live in a companion doc:
-> **`docs/design/academic-ena-import.md`**.
+> **`documents/design/academic-ena-import.md`**.
 
 ## 10. Phasing (delivery slices)
 
@@ -811,7 +815,7 @@ proceed in parallel once the identity model (Phase 0) lands.
 2. **Unblock collaboration:** spin up a companion **AppView research-layer design
    doc** (assertion store, `ResearchSubject` registry, ACL/audit, sync API) so
    Phases 6–8 have a target. The Navigator-side contract here is the input to it.
-3. **Academic profile:** see companion **`docs/design/academic-ena-import.md`**
+3. **Academic profile:** see companion **`documents/design/academic-ena-import.md`**
    (IRB-/publishing-facing); the shared engine (§9) is the same.
 ```
 

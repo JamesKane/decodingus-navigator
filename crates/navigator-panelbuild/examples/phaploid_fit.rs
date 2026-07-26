@@ -1,4 +1,4 @@
-//! Lever-1 prototype (docs/design/ancient-ancestry-rebuild.md §5.1): does harmonizing the WGS target
+//! Lever-1 prototype (documents/design/ancient-ancestry-rebuild.md §5.1): does harmonizing the WGS target
 //! to the pseudo-haploid ancient references collapse the WGS-vs-chip stability split?
 //!
 //! Genotypes one CHM13-native alignment at the ancient-panel sites (with allele depths), then fits

@@ -194,4 +194,4 @@ The reconciliation system categorizes multi-run results into four compatibility 
 
 * **`HaplogroupReconciliation`:** Maps to new `haplogroup_reconciliation` table with related conflict/audit tables.
 
-See [MultiRunReconciliation.md](../MultiRunReconciliation.md) for implementation planning.
+See [MultiRunReconciliation.md](../design/MultiRunReconciliation.md) for implementation planning.

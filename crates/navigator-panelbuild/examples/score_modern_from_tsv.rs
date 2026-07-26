@@ -1,6 +1,6 @@
 //! Score a candidate MODERN ancestry asset (fine-admixture + optional PCA) against a subject's
 //! CHM13-oriented dosages — the offline validation harness for the panel-depth sweep
-//! (docs/design/ancient-ancestry-rebuild.md; sibling of `qpadm_from_tsv`). Reads a dosage TSV
+//! (documents/design/ancient-ancestry-rebuild.md; sibling of `qpadm_from_tsv`). Reads a dosage TSV
 //! (`[rsid\t]contig\tpos\tdosage`, dosage 0/1/2, -1 = no-call — e.g. from the `genotype_bed`
 //! example or a chip resolver), matches it to each candidate asset by (contig,pos), runs
 //! `estimate_fine_admixture`, and prints the breakdown + the number of sites actually used (the

@@ -1,7 +1,7 @@
 //! Local-LLM client (OpenAI-compatible): configuration + resolvers, health/model discovery (M0),
 //! and brief narration via chat completions (M1).
 //!
-//! The entire feature is **local-only** by design (see `docs/design/local-llm-integration.md`):
+//! The entire feature is **local-only** by design (see `documents/design/local-llm-integration.md`):
 //! Navigator is a *client* of a model server the user runs (LM Studio / Ollama / llama.cpp). There is
 //! no hosted-provider path and no API key. The transport is the OpenAI Chat Completions wire format,
 //! the common denominator across local runtimes, spoken over the app's existing `reqwest` client.

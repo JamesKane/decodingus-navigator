@@ -1,6 +1,14 @@
 # Private-Y Variant Filtering Plan
 
-**Status:** design / not yet implemented
+**Status: IMPLEMENTED** (verified against the tree 2026-07-26). The §4.1 layered filter and §4.2
+bundled assets are live — `load_y_position_bed` + the cohort callable mask / recurrent blocklist in
+`navigator-app/src/fastpath.rs` (env-overridable via `NAVIGATOR_Y_CALLABLE_MASK`), applied on both the
+in-app and the publish path, with §5 validation measured 2026-07-07. **Option A** (source chrY calls
+from a per-sample GVCF sidecar, §5a) shipped. **Option B** (SNV local reassembly for BAM-only samples)
+has since *also* landed — `navigator-analysis/src/reassembly.rs`, driven from `caller.rs` and
+**default-on** (`HaploidCallerParams::reassembly = true`); see
+[`haploid-reassembly-caller.md`](haploid-reassembly-caller.md). The §4.3/§5a "still open — Option B"
+notes below are therefore historical.
 **Trigger:** `huF98AFD` (= `WGS229`, my own genome) reports far too many "Private Y" variants. We are
 surfacing SNPs that should be pre-filtered — sending users on a wild goose chase and threatening to
 flood AppView curators with non-viable novel-SNP claims.

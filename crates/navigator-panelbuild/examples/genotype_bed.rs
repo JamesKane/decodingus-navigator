@@ -1,6 +1,6 @@
 //! Genotype an alignment at every site in a 1240k-style BED (col4 = `rsid|ref|alt`) and dump
 //! `rsid<TAB>contig<TAB>pos<TAB>dosage` (dosage 0/1/2, -1 = no-call). Used to genotype a target at
-//! the full 1240k for the qpAdm rebuild (docs/design/ancient-ancestry-rebuild.md §7.11).
+//! the full 1240k for the qpAdm rebuild (documents/design/ancient-ancestry-rebuild.md §7.11).
 //!   genotype_bed <sites.bed> <bam_or_cram> <out.tsv> [reference.fa]
 use navigator_analysis::caller::{genotype_sites_all_contigs, HaploidCallerParams, Site};
 use std::io::{BufWriter, Write};

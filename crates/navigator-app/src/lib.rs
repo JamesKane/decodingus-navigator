@@ -1094,7 +1094,7 @@ fn ancestry_freq_ancient_path(build: ReferenceBuild) -> PathBuf {
 
 /// The qpAdm deep-ancestry panel asset path (`$NAVIGATOR_ANCESTRY_QPADM` override, else
 /// `<base>/ancestry/ancestry_qpadm_<build>.bin`). The full-1240k Patterson-2022 config (WHG/EEF/Steppe
-/// sources + sister outgroups) — see docs/design/ancient-ancestry-rebuild.md §7.14.
+/// sources + sister outgroups) — see documents/design/ancient-ancestry-rebuild.md §7.14.
 fn ancestry_qpadm_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ANCESTRY_QPADM", "ancestry_qpadm", build, "bin")
 }
@@ -2401,7 +2401,7 @@ pub struct AncientFitRow {
 /// nothing) for any sample outside the model's scope or with a rejected fit, so an inapplicable
 /// breakdown never reaches the UI or the PDS.
 ///
-/// See `docs/design/ancient-ancestry-rebuild.md` (start at §7.14).
+/// See `documents/design/ancient-ancestry-rebuild.md` (start at §7.14).
 pub const ANCIENT_ANCESTRY_ENABLED: bool = true;
 
 /// The persisted method name of the deep-ancestry breakdown — re-exported so the UI reads the

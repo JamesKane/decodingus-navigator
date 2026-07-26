@@ -161,5 +161,5 @@ When a SequenceRun or ChipProfile is deleted:
 ## Related Documents
 
 - [MultiRunReconciliation.md](design/MultiRunReconciliation.md) - Original design document
-- [Atmosphere_Lexicon.md](Atmosphere_Lexicon.md) - Edge App schema reference
+- [the Atmosphere Lexicon](atmosphere/00-Overview.md) - Edge App schema reference
 - Global schema: `/decodingus/documents/atmosphere/09-Reconciliation-Records.md`

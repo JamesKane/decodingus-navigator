@@ -3,7 +3,7 @@
 //! no_call/back-mutated) — preceded by a multi-line prose preamble. Crucially it carries
 //! **no positions or alleles**: a SNP name plus a derived/ancestral verdict. Turning those
 //! into placeable variant calls needs an external name→locus dictionary (see the design
-//! `docs/design/bisdna-import.md`); this module is only the faithful, IO-free file parse.
+//! `documents/design/bisdna-import.md`); this module is only the faithful, IO-free file parse.
 //!
 //! Strand note: the genotype is on the Illumina TOP strand, which need not match the
 //! reference + strand, so it is kept verbatim and is *not* the source of truth for

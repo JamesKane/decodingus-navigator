@@ -1124,7 +1124,7 @@ const ANCIENT_MAX_DISPERSION: f64 = 4.0;
 const ANCIENT_MIN_WEST_EURASIAN: f64 = 50.0;
 
 /// qpAdm model-fit acceptance: report the deep breakdown only when the model is **not rejected** at
-/// this tail probability (docs/design/ancient-ancestry-rebuild.md §7.14). The garbage fits the gate
+/// this tail probability (documents/design/ancient-ancestry-rebuild.md §7.14). The garbage fits the gate
 /// exists to suppress reject at p ≈ 1e-13; a real British WGS/chip accepts at p ≈ 0.15–0.21.
 const QPADM_MIN_P: f64 = 0.05;
 /// Tolerance for the "weights are valid proportions" check — a fit that needs a source weight outside
@@ -1219,7 +1219,7 @@ pub fn ancient_admixture_fit(
     Some(result)
 }
 
-/// The **app-facing deep-ancestry estimator** (docs/design/ancient-ancestry-rebuild.md §7.14): fit
+/// The **app-facing deep-ancestry estimator** (documents/design/ancient-ancestry-rebuild.md §7.14): fit
 /// `target = Σ wᵢ · sourcesᵢ` by qpAdm f4 and return it as an [`AncestryResult`] over the source
 /// components (WHG / EEF / Steppe), or `None` when the deep model does not apply.
 ///
@@ -1309,7 +1309,7 @@ fn ancient_dispersion(genotypes: &[SiteGenotype], panel: &AncestryPanel, q: &[f6
 // ── f-statistics core (Lever 2 / qpAdm) ─────────────────────────────────────────────────────────
 //
 // `f4(A,B;C,D) = mean_site (a−b)(c−d)` over per-population alt-allele frequencies. It is the
-// ascertainment-robust primitive qpAdm is built on (docs/design/ancient-ancestry-rebuild.md §7): a
+// ascertainment-robust primitive qpAdm is built on (documents/design/ancient-ancestry-rebuild.md §7): a
 // difference-of-differences against outgroups that cancels drift shared across the whole set, and is
 // **unbiased from *pooled* frequencies** — the estimation noise in each of the four slots is
 // independent, so the cross-terms vanish in expectation (no per-sample hzcorr, unlike f2/f3). The
@@ -1486,7 +1486,7 @@ pub fn f4_vector(
 }
 
 /// Result of a qpAdm-style f4 fit: the source weights, their standard errors, and the model-fit
-/// test. See [`qpadm_fit`] and docs/design/ancient-ancestry-rebuild.md §7.2.
+/// test. See [`qpadm_fit`] and documents/design/ancient-ancestry-rebuild.md §7.2.
 #[derive(Clone, Debug)]
 pub struct QpAdmFit {
     /// Weights over the sources, **in the order they were passed** (sums to 1). `weights[0]` is the

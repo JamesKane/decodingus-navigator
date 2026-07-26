@@ -10,7 +10,7 @@ AADR 1240k universe. Fed to `panelbuild ancient-panel --ascertain-sites` (via `$
 ascertainment. The AADR/1240k universe includes ancient-capture sites consumer arrays don't assay, and
 on those the deep estimate is unstable across data sources — the *same* subject reads ~90% Steppe from
 WGS but ~58% from his own chip. Intersecting the panel with the sites arrays actually assay removes
-that split. See `docs/design/ancient-ancestry-rebuild.md` §4.
+that split. See `documents/design/ancient-ancestry-rebuild.md` §4.
 
 **Provenance.** The union of the probe rsIDs of two GSA-based consumer arrays — 23andMe v5 and
 AncestryDNA v2 (the two most common consumer tests) — intersected with the AADR 1240k `.snp` (v66.p1).

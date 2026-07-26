@@ -19,7 +19,7 @@ CHM13 alignment effort — it runs entirely off published call sets.
 | 3 | `03_select_panel.sh` | restrict 1000G-CHM13 AF to 1240k∩CHM13, Fst-select AIMs → `ancestry_panel_<build>.bin` |
 | 4 | `04_build_matrices.sh` | per source: get genotypes (slice 1000G BCF / slice gnomAD remotely / convert AADR+SGDP), liftover, align to CHM13 ref, cut to panel sites → matrices + pop map |
 | 5 | `05_build_assets.sh` | build all asset `.bin`s: `pca` **modern** + **ancient** (projection), `fine-panel`, `genetic-map` (GRCh38→CHM13 recombination map), `ibd-panel` (chip-compatible multi-build), then the `manifest` |
-| 6 | `06_build_qpadm_panel.sh` | the **shipping deep-ancestry asset**: subset the full-1240k AADR PLINK (stage 04) to the Patterson-2022 sources + sister outgroups (`pops/qpadm_component_map.tsv`), lift hg19→CHM13 by rsID, build the per-pop AF panel → `ancestry_qpadm_<build>.bin`, refresh the manifest. Full 1240k (not the 20k AIMs) — the precision the qpAdm f4 model needs. See `docs/design/ancient-ancestry-rebuild.md` §7.14 |
+| 6 | `06_build_qpadm_panel.sh` | the **shipping deep-ancestry asset**: subset the full-1240k AADR PLINK (stage 04) to the Patterson-2022 sources + sister outgroups (`pops/qpadm_component_map.tsv`), lift hg19→CHM13 by rsID, build the per-pop AF panel → `ancestry_qpadm_<build>.bin`, refresh the manifest. Full 1240k (not the 20k AIMs) — the precision the qpAdm f4 model needs. See `documents/design/ancient-ancestry-rebuild.md` §7.14 |
 | 7 | `07_publish_cdn.sh` | sha256 + upload assets + manifest to the CDN (`--apply` to actually upload) |
 
 Run in order: `for s in 01 02 03 04 05 06; do ./"$s"_*.sh; done` then `./07_publish_cdn.sh --apply`.

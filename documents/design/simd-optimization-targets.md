@@ -1,7 +1,14 @@
 # SIMD Optimization Targets — `navigator-analysis`
 
-**Status:** Analysis only. No code changes. Report scoped to the `rust-rewrite` branch.
-**Date:** 2026-06-15
+**Status:** Analysis only, **partly acted on**. Re-checked against the tree 2026-07-26.
+**TL;DR #1 is DONE** — `.cargo/config.toml` now exists and pins `target-cpu=ivybridge` for all three
+x86-64 triples (landed via the packaging work; the file carries a "NEVER raise to x86-64-v3" note).
+**TL;DR #3 is still open** — `IbdPairwiseDetector::find_candidate_segments`
+(`navigator-analysis/src/ibd.rs:326`) still recomputes the full window at every position (the inner
+`for &s in &ibs[look_back..=look_forward]` loop), i.e. still O(n·w); the rolling update remains the
+largest available win here. TL;DR #2 and #4 are unchanged and unmeasured. No hand-vectorization has
+been written.
+**Date:** 2026-06-15 (report) · 2026-07-26 (status re-check)
 **Scope:** Hot numeric / per-base loops in `crates/navigator-analysis/`, plus the build
 configuration that gates autovectorization.
 
