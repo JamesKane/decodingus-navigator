@@ -23,6 +23,7 @@ use clap::{Parser, Subcommand};
 use flate2::read::MultiGzDecoder;
 use navigator_analysis::ancestry::{AncestryPanel, PanelSite};
 
+mod archaic;
 mod genetic_map;
 mod hap_panel;
 mod ibd_panel;
@@ -64,6 +65,12 @@ enum Cmd {
     ValidateLai(lai_validate::LaiValidateArgs),
     /// Build the IBD genetic-map asset from a CHM13-lifted recombination map.
     GeneticMap(genetic_map::GeneticMapArgs),
+    /// Stage 1 of the archaic panel (GRCh37): polarize the archaic genotype tables against the EPO
+    /// ancestral sequence and emit candidates + a BED to lift. Run before the CrossMap step.
+    ArchaicCandidates(archaic::ArchaicCandidatesArgs),
+    /// Stage 3 of the archaic panel (CHM13): re-join the lifted coordinates, orient against the
+    /// CHM13 reference, apply the African-outgroup filter, and write `archaic_markers_<build>.bin`.
+    ArchaicPanel(archaic::ArchaicPanelArgs),
     /// Build the chip-compatible IBD panel (multi-build, palindrome-free) from a sites table.
     IbdPanel(ibd_panel::IbdPanelArgs),
     /// Build the asset integrity manifest (sha256 of every `*_<build>.bin`). Run last.
@@ -131,6 +138,8 @@ fn main() -> Result<()> {
         Cmd::ValidateAncient(args) => validate_ancient::validate_ancient(args),
         Cmd::ValidateLai(args) => lai_validate::validate_lai(args),
         Cmd::GeneticMap(args) => genetic_map::build_genetic_map(args),
+        Cmd::ArchaicCandidates(args) => archaic::build_archaic_candidates(args),
+        Cmd::ArchaicPanel(args) => archaic::build_archaic_panel(args),
         Cmd::IbdPanel(args) => ibd_panel::build_ibd_panel(args),
         Cmd::Manifest(args) => manifest::build_manifest(args),
     }
