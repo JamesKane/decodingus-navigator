@@ -1,6 +1,8 @@
 # Archaic Ancestry Report (Neanderthal / Denisovan) — Design
 
-**Status:** Design draft (no code). 2026-07-23.
+**Status:** Design + **implementation plan (§10)**. No code yet. Drafted 2026-07-23; plan added
+2026-07-26 on branch `feat/archaic-ancestry`. Two of the three §9 open questions are now settled;
+the third is a gating checkpoint inside M1.
 **Goal:** Reconstruct a 23andMe-style Neanderthal report — and go beyond it with a Denisovan
 estimate and a true whole-genome introgression map — from public archaic reference genomes and
 recent methods, using the app's existing ancestry/panel/HMM machinery.
@@ -261,10 +263,124 @@ non-African frequency) by calibrating against that cross-validation set.
 
 ### Still open before Phase 1
 
-1. **Chip overlap.** How many informative sites actually overlap 23andMe/AncestryDNA v5 chip content
-   after lift to CHM13? This sets the realistic chip call rate and the honest ceiling on the count.
-2. **Tier B inputs.** Confirm the diploid caller's genome-wide VCF is a suitable private-variant source,
-   and pick the bundled AFR outgroup panel + callability mask (reuse the 1kGP-on-CHM13 assets).
-3. **Percentile cohort.** Decide the reference cohort for the percentile (1kGP super-pop vs the user's
-   own inferred fine-ancestry group) — the latter is more meaningful but couples this to the ancestry
-   result.
+*(Reviewed 2026-07-26 when the implementation plan below was written; two of the three are now settled.)*
+
+1. **Chip overlap — MEASUREMENT SCHEDULED (M1 checkpoint B).** How many informative sites actually
+   overlap 23andMe/AncestryDNA v5 chip content after lift to CHM13? Unanswerable until candidate
+   sites exist, so it becomes a gating checkpoint *inside* M1 rather than a blocker before it. It
+   sets the realistic chip call rate and the honest ceiling on the count.
+2. **Tier B inputs — RESOLVED.** The AFR outgroup needs no new data source: stage 1 of the panel
+   pipeline (`01_fetch.sh`) already fetches the 1000G-on-CHM13 VCFs carrying **per-super-pop INFO
+   AC/AN** (this is what `03_select_panel.sh` Fst-ranks AIMs from), which is exactly what Asset 1
+   step 3 (AFR freq < 1%) and Asset 2 require. The callability mask reuses the existing
+   1kGP-on-CHM13 assets, and the private-variant source is the diploid caller's genome-wide VCF
+   ([[diploid-snv-caller]]).
+3. **Percentile cohort — DECIDED for v1: 1kGP super-population.** Not the user's own inferred
+   fine-ancestry group. Rationale: keying the percentile to the inferred ancestry couples this report
+   to the ancestry estimate, so an ancestry error would silently shift the archaic percentile — and
+   an unexplained shift in a headline number is the failure mode §7 exists to prevent. A fixed
+   super-pop cohort is falsifiable and independently checkable. A fine-pop percentile is a
+   worthwhile **Phase 3** refinement once Tier A is trusted; Asset 4 should therefore store the
+   distribution per population, not a pre-reduced summary, so the cohort can be re-keyed later
+   without an asset rebuild.
+
+---
+
+## 10. Implementation plan
+
+Written 2026-07-26 on branch `feat/archaic-ancestry`. Milestones map onto the §8 phases: **M1–M2 =
+Phase 1 (MVP)**, **M3 = Phase 2**, **M4 = Phase 3**. Each milestone's touchpoints were verified
+against the tree before this plan was written.
+
+### M0 — Decisions (no code) — DONE
+
+The §9 review above: Q2 resolved, Q3 decided, Q1 converted into an M1 checkpoint.
+
+### M1 — Offline assets (the bulk of the work)
+
+New offline stage `scripts/ancestry-panel/08_build_archaic.sh` plus a `navigator-panelbuild` module
+and `Cmd::ArchaicPanel`, mirroring `pca::build_ancient_panel` (`main.rs:130`).
+
+**Asset 1 — `archaic_markers_<build>.bin`**, per §4:
+1. Intersect the four EVA archaic VCFs at biallelic SNP sites passing their `FilterBed/` masks.
+2. Assign ancestral/derived from the Ensembl release-75 EPO ancestral sequence — both inputs are
+   GRCh37, so **polarity is assigned pre-lift with no liftover**. Keep sites where an archaic genome
+   is homozygous-derived.
+3. Require the derived allele rare in the AFR outgroup (freq < 1 %) and present in non-Africans,
+   using the per-super-pop INFO AC/AN established in §9 Q2.
+4. Lift GRCh37→CHM13 through the existing `02_liftover_panel_sites.sh`; drop palindromic sites
+   (`is_palindromic`).
+5. Emit per site: `contig, pos, ref, alt, archaic_derived_allele`, the four per-archaic genotypes,
+   and a `diagnostic_class` (Neanderthal-diagnostic / Denisovan-diagnostic / shared-archaic).
+
+**Asset 4 — `archaic_marker_dist_<build>.bin`**: Tier-A counts across 1kGP samples, stored **per
+population** (see §9 Q3) and reduced to a super-pop percentile at read time.
+
+Both assets follow the established pattern: bincode `.bin`, `(contig, pos)` CHM13 keys, an entry in
+the SHA-256 manifest (`AssetManifest::verify`), a path helper beside `ancestry_qpadm_path`
+(`navigator-app/src/lib.rs:1098`), and download-on-first-use via `ensure_ancestry_asset`
+(`import_unified.rs:916`). Asset 1 is small enough to bundle; check its size against the
+`ON_DEMAND_PREFIXES` policy in `packaging/stage-assets.sh` before deciding.
+
+**Two gating checkpoints inside M1:**
+
+- **Checkpoint A — threshold calibration.** Fix the AFR cutoff and the min-non-African frequency by
+  cross-validating against the hmmix Zenodo set (CC BY 4.0, §3a). This is the scientific core of the
+  milestone: the site list *is* the product, and every downstream number inherits its errors. Do not
+  treat the §4 example thresholds as final.
+- **Checkpoint B — chip overlap (§9 Q1).** Intersect the final site list with a real 23andMe v5 raw
+  file to measure the actual chip call rate. This number goes into the UI copy as the honest ceiling.
+
+**Licensing guard rail (§2):** the raw EVA archaic VCFs and the 766 MB Ensembl ancestral tarball are
+**fetch-at-build-time only, never redistributed**. Only our derived sites ship. `08_build_archaic.sh`
+must fetch to the pipeline's raw/ area, like the AADR handling in [[germanic-panel-sources]].
+
+### M2 — Tier A runtime + UI (the shippable MVP)
+
+- **Analysis:** new `crates/navigator-analysis/src/archaic.rs` with
+  `count_archaic_markers(&[SiteGenotype], &ArchaicMarkerPanel) -> ArchaicMarkerResult` — pure dosage
+  arithmetic over `consensus_genotypes` (`lib.rs:2415`), so chip and WGS both work with no decode.
+- **Domain:** `ArchaicMarkerResult` in `navigator-domain/src/ancestry.rs` per §6.
+- **Store:** migration `0039_consensus_archaic` (0038 is the current head), keyed by
+  `biosample_guid` + `consensus_sig`, modelled on `consensus_roh` / `consensus_painting`.
+- **App/worker:** `estimate_archaic_from_consensus(guid)` persisted under `CONSENSUS_SOURCE_ID`, with
+  an `EstimateArchaicFromConsensus` command.
+- **UI:** an "Archaic Ancestry" card in `DetailTab::Ancestry`. Headline is a **count + percentile**,
+  never a "% Neanderthal" (§1, §7).
+
+**Validation gate:** the marker count for GFX0457637 must be checkable against that person's real
+23andMe Neanderthal count, and the chip-derived and WGS-derived counts must agree within the call-rate
+limit measured at checkpoint B. *This requires the actual 23andMe report figure as an external
+oracle — without it M2 verifies internal consistency only, not correctness.*
+
+### M3 — Tier B segment HMM (WGS/VCF)
+
+Assets 2 + 3, then `call_archaic_segments` per §5: strip AFR-shared variants → windowed Poisson HMM
+over private-variant density (two states, cM-scaled transitions via `GeneticMap`) → Viterbi MAP path
++ forward/backward posteriors in log space, following the `roh.rs` / `paint_local_ancestry` idiom →
+classify each segment against the Nea vs Den diagnostic sets → aggregate to Mb, % of callable genome,
+and a Nea/Den/unknown split. UI adds the % line and a chromosome painting via `draw_roh` /
+`draw_chromosome_painting` (`navigator-ui/src/charts.rs:117`, `:227`).
+
+**Ship Tier B behind a feature gate until validated on real data.** The precedent is
+[[ancient-ancestry-broken]]: a plausible-looking but fabricated breakdown shipped and had to be
+disabled. Tier B has more moving parts than Tier A and the same blast radius, so it gets the same
+discipline — a constant gate that also covers the read *and* publish paths, flipped only once the
+validation targets below pass.
+
+**Validation targets:** ~1.5–2 % Neanderthal and **no** Denisovan for the European ground-truth
+sample (§7); the overall Nea/Den/unknown split should be in the neighbourhood of Skov 2020's
+84.5 / 3.3 / 12.2 on Icelanders. The Denisovan confidence floor must be exercised by a test that
+asserts "none reliably detected" rather than a small number.
+
+### M4 — Phase 3 (optional)
+
+Trait associations (each needs a curated GWAS-backed table — curatorial work, not engineering),
+export + PDS records, fine-pop percentile re-keying, and a possible DAIseg-style joint Nea/Den
+upgrade if that method matures past preprint.
+
+### Sequencing note
+
+M1 is the long pole and everything else depends on Asset 1, but M2 is where the user-visible feature
+lands. M3 is separable — if effort runs short, **M1 + M2 is a complete, honest, shippable report**
+(it is exactly what 23andMe ships), and Tier B can follow later without rework.
