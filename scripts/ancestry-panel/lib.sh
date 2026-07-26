@@ -18,8 +18,13 @@ ensure_dirs() {
 
 # Resumable download to $RAW/<name> (skips if present and non-empty).
 # Returns non-zero (instead of die) on failure so callers can make a source optional.
+# fetch <url> [name] [destdir]
+# destdir defaults to $RAW; pass it to place bulk downloads on other storage (stage 08 points the
+# ~197 GB of archaic all-sites VCFs at $ARCHAIC_RAW, which may be an external volume).
 fetch() {
-  local url="$1" name="${2:-$(basename "$1")}" dest="$RAW/${2:-$(basename "$1")}"
+  local url="$1" name="${2:-$(basename "$1")}" destdir="${3:-$RAW}"
+  local dest="$destdir/$name"
+  mkdir -p "$(dirname "$dest")"
   if [[ -s "$dest" ]]; then log "have $name (skip)"; return 0; fi
   log "fetch $name <- $url"
   # reichdata.hms.harvard.edu serves a broken TLS chain — allow insecure for that host only.

@@ -31,7 +31,6 @@ require_tool CrossMap "pip install CrossMap"
 require_tool tar
 ensure_dirs
 
-ARCHAIC_RAW="$RAW/archaic"
 ANC_DIR="$RAW/ancestral_GRCh37"
 mkdir -p "$ARCHAIC_RAW" "$ANC_DIR" "$TMP"
 
@@ -90,8 +89,9 @@ for name in "${ARCHAIC_NAMES[@]}"; do
   for c in $CHROMS; do
     vcf="$ARCHAIC_RAW/${name}.chr${c}.vcf.gz"
     mask="$ARCHAIC_RAW/${name}.chr${c}.mask.bed.gz"
-    [[ -s "$vcf"  ]] || fetch "$(archaic_vcf_url "$name" "$c")"  "archaic/${name}.chr${c}.vcf.gz"      || log "WARN: no VCF for $name chr$c"
-    [[ -s "$mask" ]] || fetch "$(archaic_mask_url "$name" "$c")" "archaic/${name}.chr${c}.mask.bed.gz" || log "WARN: no mask for $name chr$c (unfiltered)"
+    [[ -s "$vcf"  ]] || fetch "$(archaic_vcf_url "$name" "$c")"  "${name}.chr${c}.vcf.gz"      "$ARCHAIC_RAW" || log "WARN: no VCF for $name chr$c"
+    [[ -s "$vcf.tbi" ]] || fetch "$(archaic_vcf_url "$name" "$c").tbi" "${name}.chr${c}.vcf.gz.tbi" "$ARCHAIC_RAW" || true
+    [[ -s "$mask" ]] || fetch "$(archaic_mask_url "$name" "$c")" "${name}.chr${c}.mask.bed.gz" "$ARCHAIC_RAW" || log "WARN: no mask for $name chr$c (unfiltered)"
     [[ -s "$vcf" && ( -s "$vcf.tbi" || -s "$vcf.csi" ) ]] || { [[ -s "$vcf" ]] && bcftools index -f -t "$vcf" 2>/dev/null; } || true
   done
 done

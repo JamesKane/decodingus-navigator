@@ -202,6 +202,13 @@ DENISOVA_MASK_PATTERN="${DENISOVA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Deni
 # Site-selection thresholds. THESE ARE PROVISIONAL — design §10 M1 checkpoint A fixes them by
 # calibrating against the hmmix Zenodo cross-validation set. The site list IS the product, so every
 # downstream count inherits these; do not treat the defaults as validated.
+# Where the bulk archaic VCFs land. These are ALL-SITES files — one record per genome position,
+# not per variant — so the four genomes total ~197 GB (measured: Altai chr1 alone is 5.65 GB, and
+# the BAM for the same chromosome is 12.65 GB, so the VCFs are NOT the large end of this dataset).
+# Split out from $RAW precisely so it can point at external storage; the derived per-genome genotype
+# tables that stage 08 produces are small and stay under $TMP.
+ARCHAIC_RAW="${ARCHAIC_RAW:-$RAW/archaic}"
+
 ARCHAIC_MAX_AFR_FREQ="${ARCHAIC_MAX_AFR_FREQ:-0.01}"        # derived allele rare/absent in Africans
 ARCHAIC_MIN_NON_AFR_FREQ="${ARCHAIC_MIN_NON_AFR_FREQ:-0.05}" # ...but present outside Africa
 ARCHAIC_MIN_CALLED="${ARCHAIC_MIN_CALLED:-1}"               # archaic genomes required to have a call
