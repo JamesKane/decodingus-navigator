@@ -72,28 +72,63 @@ archaic_mask_url() {  # <name> <chrom>
   esac
 }
 
-# ── 1. per-genome genotype tables (GRCh37) ──────────────────────────────────────
-# One table per archaic genome: CHROM POS REF ALT GT, restricted to biallelic SNVs inside that
-# genome's own quality mask. Keeping the mask per genome (rather than intersecting up front) is
-# deliberate — the four masks differ a lot, and archaic-candidates unions the sites and records a
-# per-genome NoCall where a genome is masked out.
+# ── 1. fetch, then genotype in TWO passes ───────────────────────────────────────
+# The EVA archaic VCFs are ALL-SITES files: where a genome matches hg19 it emits a
+# reference-confident record (ALT=".", GT=0/0) rather than nothing. That makes a single
+# variants-only extraction wrong in a way that is silent and one-sided:
+#
+#   * `HomAncestral` would be indistinguishable from "masked out", and
+#   * where the EPO ancestral sequence says the REFERENCE allele is the derived one, a hom-ref
+#     archaic genome IS homozygous-derived — the donor state this panel selects on. Keeping only
+#     ALT-bearing records would drop every such site, biasing the panel against exactly the sites
+#     where hg19 itself carries the archaic allele.
+#
+# So: pass A discovers the candidate universe from variant records (cheap, small), and pass B
+# re-genotypes every genome at that universe WITHOUT the variants-only filter, so reference-confident
+# calls come through. Each genome is still masked by its own FilterBed.
+for name in "${ARCHAIC_NAMES[@]}"; do
+  for c in $CHROMS; do
+    vcf="$ARCHAIC_RAW/${name}.chr${c}.vcf.gz"
+    mask="$ARCHAIC_RAW/${name}.chr${c}.mask.bed.gz"
+    [[ -s "$vcf"  ]] || fetch "$(archaic_vcf_url "$name" "$c")"  "archaic/${name}.chr${c}.vcf.gz"      || log "WARN: no VCF for $name chr$c"
+    [[ -s "$mask" ]] || fetch "$(archaic_mask_url "$name" "$c")" "archaic/${name}.chr${c}.mask.bed.gz" || log "WARN: no mask for $name chr$c (unfiltered)"
+    [[ -s "$vcf" && ( -s "$vcf.tbi" || -s "$vcf.csi" ) ]] || { [[ -s "$vcf" ]] && bcftools index -f -t "$vcf" 2>/dev/null; } || true
+  done
+done
+
+# Pass A — the candidate universe: positions where ANY archaic genome carries a biallelic SNV.
+UNIVERSE="$TMP/archaic_universe.grch37.tsv"
+if [[ ! -s "$UNIVERSE" ]]; then
+  log "pass A: discovering the candidate universe (variant records only)"
+  : > "$UNIVERSE.part"
+  for name in "${ARCHAIC_NAMES[@]}"; do
+    for c in $CHROMS; do
+      vcf="$ARCHAIC_RAW/${name}.chr${c}.vcf.gz"; mask="$ARCHAIC_RAW/${name}.chr${c}.mask.bed.gz"
+      [[ -s "$vcf" ]] || continue
+      region_args=(); [[ -s "$mask" ]] && region_args=(-T "$mask")
+      bcftools view -m2 -M2 -v snps ${region_args[@]+"${region_args[@]}"} -Ou "$vcf" \
+        | bcftools query -f '%CHROM\t%POS\n' >> "$UNIVERSE.part" || log "WARN: pass A failed for $name chr$c"
+    done
+  done
+  sort -k1,1 -k2,2n -u "$UNIVERSE.part" > "$UNIVERSE" && rm -f "$UNIVERSE.part"
+  log "candidate universe: $(wc -l < "$UNIVERSE") positions"
+fi
+
+# Pass B — every genome's state at the universe, reference-confident records included.
 for name in "${ARCHAIC_NAMES[@]}"; do
   out="$TMP/archaic.${name}.tsv.gz"
   [[ -s "$out" ]] && { log "have $(basename "$out") (skip)"; continue; }
-  log "building genotype table for $name"
+  log "pass B: genotyping $name at the universe"
   : > "$TMP/.archaic.$name.part"
   for c in $CHROMS; do
-    vcf_url="$(archaic_vcf_url "$name" "$c")"
-    mask_url="$(archaic_mask_url "$name" "$c")"
-    vcf="$ARCHAIC_RAW/${name}.chr${c}.vcf.gz"
-    mask="$ARCHAIC_RAW/${name}.chr${c}.mask.bed.gz"
-    [[ -s "$vcf"  ]] || fetch "$vcf_url"  "archaic/${name}.chr${c}.vcf.gz"     || { log "WARN: no VCF for $name chr$c"; continue; }
-    [[ -s "$mask" ]] || fetch "$mask_url" "archaic/${name}.chr${c}.mask.bed.gz" || log "WARN: no mask for $name chr$c (unfiltered)"
-    [[ -s "$vcf.tbi" || -s "$vcf.csi" ]] || bcftools index -f -t "$vcf" 2>/dev/null || true
-    region_args=(); [[ -s "$mask" ]] && region_args=(-R "$mask")
-    bcftools view -m2 -M2 -v snps ${region_args[@]+"${region_args[@]}"} -Ou "$vcf" \
+    vcf="$ARCHAIC_RAW/${name}.chr${c}.vcf.gz"; mask="$ARCHAIC_RAW/${name}.chr${c}.mask.bed.gz"
+    [[ -s "$vcf" ]] || continue
+    # -R jumps via the index to the universe positions; -T additionally intersects this genome's
+    # own quality mask (bcftools accepts both, and they compose).
+    mask_args=(); [[ -s "$mask" ]] && mask_args=(-T "$mask")
+    bcftools view -R "$UNIVERSE" ${mask_args[@]+"${mask_args[@]}"} -Ou "$vcf" \
       | bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%GT]\n' \
-      >> "$TMP/.archaic.$name.part" || log "WARN: query failed for $name chr$c"
+      >> "$TMP/.archaic.$name.part" || log "WARN: pass B failed for $name chr$c"
   done
   [[ -s "$TMP/.archaic.$name.part" ]] || die "no calls extracted for $name"
   gzip -c "$TMP/.archaic.$name.part" > "$out" && rm -f "$TMP/.archaic.$name.part"
@@ -154,6 +189,10 @@ fi
 # ── 5. the asset (CHM13): orient, filter, classify ──────────────────────────────
 REF_FA="${CHM13_FASTA:-$RAW/chm13v2.0.fa}"
 [[ -s "$REF_FA" ]] || die "CHM13 FASTA not found at $REF_FA (set CHM13_FASTA); orientation cannot be skipped"
+# The orientation step uses an INDEXED FASTA reader, and a missing .fai surfaces as a confusing
+# "No such file or directory" naming the .fa itself — so check for it explicitly.
+[[ -s "$REF_FA.fai" ]] || { command -v samtools >/dev/null 2>&1 && samtools faidx "$REF_FA"; } \
+  || die "no index at $REF_FA.fai (run: samtools faidx $REF_FA)"
 OUT="$ASSETS/archaic_markers_${BUILD}.bin"
 log "building $OUT"
 cargo run --release -q -p navigator-panelbuild -- archaic-panel \

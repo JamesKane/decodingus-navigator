@@ -181,21 +181,23 @@ MANIFEST="$ASSETS/ancestry_manifest_${BUILD}.json"         # provenance + checks
 # Design: documents/design/ArchaicAncestry_Design.md §2 (sources) / §4 (assets).
 # LICENSING: the EVA archaic genomes carry no explicit open licence (Ft. Lauderdale principles
 # only). They are fetched at build time and NEVER redistributed — only our derived sites ship.
-# URLs marked `# VERIFY` are the documented landing paths; confirm the exact per-chromosome
-# filenames before a production run.
-ANCESTRAL_GRCH37_URL="${ANCESTRAL_GRCH37_URL:-ftp://ftp.ensembl.org/pub/release-75/fasta/ancestral_alleles/homo_sapiens_ancestor_GRCh37_e71.tar.bz2}"  # VERIFY
+# All URLs below were VERIFIED against the live servers on 2026-07-26 (directory listings +
+# range-request header inspection); the `# VERIFY` markers are removed accordingly.
+ANCESTRAL_GRCH37_URL="${ANCESTRAL_GRCH37_URL:-https://ftp.ensembl.org/pub/release-75/fasta/ancestral_alleles/homo_sapiens_ancestor_GRCh37_e71.tar.bz2}"
 EVA_BASE="${EVA_BASE:-http://cdna.eva.mpg.de/neandertal}"
 EVA_FTP_BASE="${EVA_FTP_BASE:-http://ftp.eva.mpg.de/neandertal}"
-# %s = chromosome. All four genomes are hg19/GRCh37 — which is why polarity is assigned pre-lift.
-ALTAI_VCF_PATTERN="${ALTAI_VCF_PATTERN:-$EVA_BASE/altai/AltaiNeandertal/VCF/AltaiNea.hg19_1000g.%s.mod.vcf.gz}"          # VERIFY
-VINDIJA_VCF_PATTERN="${VINDIJA_VCF_PATTERN:-$EVA_BASE/Vindija/VCF/Vindija33.19/chr%s_mq25_mapab100.vcf.gz}"               # VERIFY
-CHAGYRSKAYA_VCF_PATTERN="${CHAGYRSKAYA_VCF_PATTERN:-$EVA_FTP_BASE/Chagyrskaya/VCF/chr%s.noRB.vcf.gz}"                     # VERIFY
-DENISOVA_VCF_PATTERN="${DENISOVA_VCF_PATTERN:-$EVA_BASE/Vindija/VCF/Denisova/chr%s_mq25_mapab100.vcf.gz}"                 # VERIFY
-# Per-genome quality masks (FilterBed/). A genome without a mask is used unfiltered, with a warning.
-ALTAI_MASK_PATTERN="${ALTAI_MASK_PATTERN:-$EVA_BASE/altai/AltaiNeandertal/FilterBed/chr%s_mask.bed.gz}"                   # VERIFY
-VINDIJA_MASK_PATTERN="${VINDIJA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Vindija33.19/chr%s_mask.bed.gz}"                # VERIFY
-CHAGYRSKAYA_MASK_PATTERN="${CHAGYRSKAYA_MASK_PATTERN:-$EVA_FTP_BASE/Chagyrskaya/FilterBed/chr%s_mask.bed.gz}"             # VERIFY
-DENISOVA_MASK_PATTERN="${DENISOVA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Denisova/chr%s_mask.bed.gz}"                  # VERIFY
+# %s = chromosome, BARE (1..22) — the archaic VCFs use unprefixed contig names. All four genomes are
+# hg19/GRCh37, which is why polarity is assigned pre-lift.
+ALTAI_VCF_PATTERN="${ALTAI_VCF_PATTERN:-$EVA_BASE/altai/AltaiNeandertal/VCF/AltaiNea.hg19_1000g.%s.mod.vcf.gz}"
+VINDIJA_VCF_PATTERN="${VINDIJA_VCF_PATTERN:-$EVA_BASE/Vindija/VCF/Vindija33.19/chr%s_mq25_mapab100.vcf.gz}"
+CHAGYRSKAYA_VCF_PATTERN="${CHAGYRSKAYA_VCF_PATTERN:-$EVA_FTP_BASE/Chagyrskaya/VCF/chr%s.noRB.vcf.gz}"
+DENISOVA_VCF_PATTERN="${DENISOVA_VCF_PATTERN:-$EVA_BASE/Vindija/VCF/Denisova/chr%s_mq25_mapab100.vcf.gz}"
+# Quality masks. NOTE: there is NO FilterBed under altai/AltaiNeandertal/ — the Vindija release
+# bundles masks for the earlier genomes, so Altai's and Denisova's both live under Vindija/FilterBed/.
+ALTAI_MASK_PATTERN="${ALTAI_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Altai/chr%s_mask.bed.gz}"
+VINDIJA_MASK_PATTERN="${VINDIJA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Vindija33.19/chr%s_mask.bed.gz}"
+CHAGYRSKAYA_MASK_PATTERN="${CHAGYRSKAYA_MASK_PATTERN:-$EVA_FTP_BASE/Chagyrskaya/FilterBed/chr%s_mask.bed.gz}"
+DENISOVA_MASK_PATTERN="${DENISOVA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Denisova/chr%s_mask.bed.gz}"
 
 # Site-selection thresholds. THESE ARE PROVISIONAL — design §10 M1 checkpoint A fixes them by
 # calibrating against the hmmix Zenodo cross-validation set. The site list IS the product, so every

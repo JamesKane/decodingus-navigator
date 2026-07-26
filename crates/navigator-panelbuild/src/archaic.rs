@@ -145,9 +145,19 @@ fn call_state(alleles: (Option<char>, Option<char>), derived: char) -> ArchaicCa
     }
 }
 
-/// `(contig, pos)` → `(ref, alt, gt)` for one archaic genome.
-type GenomeSites = HashMap<(String, i64), (char, char, String)>;
+/// `(contig, pos)` → `(ref, alt, gt)` for one archaic genome. `alt` is `None` for a
+/// **reference-confident** record (`ALT=.`), which the EVA all-sites VCFs emit wherever the genome
+/// matches hg19.
+type GenomeSites = HashMap<(String, i64), (char, Option<char>, String)>;
 
+/// Read one genome's genotype table.
+///
+/// The EVA archaic VCFs are **all-sites** files, so a record with `ALT=.` is not junk: it is a
+/// positive statement that the genome is homozygous for the hg19 reference base. Keeping those is
+/// load-bearing in two ways — it is the only way `HomAncestral` can ever be distinguished from
+/// "masked out", and, where the EPO sequence says the *reference* allele is the derived one, a
+/// hom-ref archaic genome IS homozygous-derived, i.e. exactly the donor state this panel selects on.
+/// Dropping them would silently bias the panel against sites where hg19 carries the archaic allele.
 fn load_archaic_table(path: &Path) -> Result<GenomeSites> {
     let rdr = open_maybe_gz(path).with_context(|| format!("opening {}", path.display()))?;
     let mut out = GenomeSites::new();
@@ -160,14 +170,20 @@ fn load_archaic_table(path: &Path) -> Result<GenomeSites> {
         if f.len() < 5 {
             continue;
         }
-        let (Ok(pos), Some(r), Some(a)) = (f[1].parse::<i64>(), f[2].chars().next(), f[3].chars().next()) else {
+        let (Ok(pos), Some(r)) = (f[1].parse::<i64>(), f[2].chars().next()) else {
             continue;
         };
-        // Multi-character REF/ALT means an indel slipped past the caller's SNV filter.
-        if f[2].len() != 1 || f[3].len() != 1 {
+        // A multi-character REF means an indel slipped past the SNV filter.
+        if f[2].len() != 1 {
             continue;
         }
-        out.insert((normalize_contig(f[0]), pos), (r, a, f[4].to_string()));
+        let alt = match f[3] {
+            "." => None,
+            a if a.len() == 1 => Some(a.chars().next().unwrap_or('N')),
+            // Multi-character or multi-allelic ALT: not a biallelic SNV.
+            _ => continue,
+        };
+        out.insert((normalize_contig(f[0]), pos), (r, alt, f[4].to_string()));
     }
     Ok(out)
 }
@@ -230,18 +246,27 @@ pub fn build_archaic_candidates(args: ArchaicCandidatesArgs) -> Result<()> {
             ancestral_seq = read_ancestral(&args.ancestral, &contig)?;
             cur_chrom = contig.clone();
         }
-        let present: Vec<&(char, char, String)> = genomes
+        let present: Vec<&(char, Option<char>, String)> = genomes
             .iter()
             .filter_map(|g| g.get(&(contig.clone(), position)))
             .collect();
         if present.len() < args.min_archaic_called {
             continue;
         }
-        // Every genome must agree on the allele pair, else the site is ambiguous.
-        let (reference_allele, alternate_allele) = (present[0].0, present[0].1);
+        // The site's allele pair comes from the genomes that actually carry a variant; a
+        // reference-confident record states only the REF base and cannot define the pair. At least
+        // one genome must vary, otherwise the site is invariant across all four and carries no
+        // information regardless of polarity.
+        let Some((reference_allele, alternate_allele)) = present
+            .iter()
+            .find_map(|(r, a, _)| a.map(|alt| (*r, alt)))
+        else {
+            continue;
+        };
+        // The varying genomes must agree on that pair, and no genome may contradict the REF base.
         if present
             .iter()
-            .any(|(r, a, _)| *r != reference_allele || *a != alternate_allele)
+            .any(|(r, a, _)| *r != reference_allele || a.is_some_and(|alt| alt != alternate_allele))
         {
             allele_conflict += 1;
             continue;
@@ -258,7 +283,9 @@ pub fn build_archaic_candidates(args: ArchaicCandidatesArgs) -> Result<()> {
         let mut calls = [ArchaicCall::NoCall; 4];
         for (i, g) in genomes.iter().enumerate() {
             if let Some((r, a, gt)) = g.get(&(contig.clone(), position)) {
-                calls[i] = call_state(parse_gt(gt, *r, *a), derived);
+                // A reference-confident record (`ALT=.`) means both alleles are the REF base — which
+                // is `HomDerived` when the reference itself carries the derived allele.
+                calls[i] = call_state(parse_gt(gt, *r, a.unwrap_or(*r)), derived);
             }
         }
         // The donor state: at least one archaic genome homozygous for the derived allele (design §4).
@@ -667,6 +694,28 @@ mod tests {
         assert_eq!(derived_freq('A', 'A', 'G', 0.02), Some(0.98));
         // Disagreeing allele pairs are not silently filtered on.
         assert_eq!(derived_freq('C', 'A', 'G', 0.02), None);
+    }
+
+    #[test]
+    fn reference_confident_record_is_hom_derived_when_the_reference_carries_the_derived_allele() {
+        // The EVA VCFs are all-sites: a genome matching hg19 emits `ALT=.` / `GT=0/0`. When the EPO
+        // ancestral base says the REFERENCE is derived, that genome is homozygous-DERIVED — the
+        // donor state. Reading such a record as "no call" (or discarding it as non-variant) drops
+        // every site where hg19 itself carries the archaic allele, a systematic, one-sided loss.
+        let (reference_allele, alternate_allele) = ('A', 'G');
+        // Ancestral is G, so the derived allele is the reference base A.
+        let derived = derived_allele('G', reference_allele, alternate_allele).expect("polarizable");
+        assert_eq!(derived, 'A');
+
+        // A reference-confident record: alt is absent, so both alleles are the REF base.
+        let alleles = parse_gt("0/0", reference_allele, alternate_allele);
+        assert_eq!(call_state(alleles, derived), ArchaicCall::HomDerived);
+
+        // And the mirror case: ancestral is the REF, so the ALT is derived and a hom-ref genome is
+        // homozygous ANCESTRAL — which must be distinguishable from a masked-out NoCall.
+        let derived2 = derived_allele('A', reference_allele, alternate_allele).expect("polarizable");
+        assert_eq!(derived2, 'G');
+        assert_eq!(call_state(alleles, derived2), ArchaicCall::HomAncestral);
     }
 
     #[test]
