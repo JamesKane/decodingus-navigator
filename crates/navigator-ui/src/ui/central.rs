@@ -166,6 +166,24 @@ impl NavigatorApp {
                 ui.add_space(8.0);
                 self.add_subject_form(ui);
             }
+
+            // Reference genomes: a BAM/CRAM import needs one, and a multi-GB download is the slowest
+            // part of a first run. Users who already keep a FASTA on disk (a prior pipeline, another
+            // tool) can point us at it instead — deep-link them straight to Settings → References.
+            ui.add_space(24.0);
+            ui.separator();
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new(self.tr("firstRun.referencesTitle")).strong());
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(self.tr("firstRun.referencesHint")).weak().small());
+            ui.add_space(8.0);
+            if ui
+                .button(self.tr("firstRun.referencesAction"))
+                .on_hover_text(self.tr("firstRun.referencesActionHint"))
+                .clicked()
+            {
+                self.open_settings(ui.ctx(), SettingsTab::References);
+            }
         });
     }
 

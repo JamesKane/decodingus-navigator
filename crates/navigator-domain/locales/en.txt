@@ -323,6 +323,10 @@ firstRun.hint=Import a DNA file to get started, or add a subject to fill in late
 firstRun.importDna=📥  Import DNA
 firstRun.importDnaHint=Pick a BAM/CRAM, VCF, or raw-data file — we'll create a subject and import it.
 firstRun.defaultName=My DNA
+firstRun.referencesTitle=Already have reference genomes on this computer?
+firstRun.referencesHint=Analysis needs a reference genome FASTA (GRCh37, GRCh38, or CHM13). We can download one for you, but if you already have them — from another tool or pipeline — point us at those files instead and skip a multi-gigabyte download.
+firstRun.referencesAction=🗂  Set reference genome locations…
+firstRun.referencesActionHint=Opens Settings → References, where you can browse to a local FASTA per build.
 
 # Primary analysis actions
 btn.assignY=Assign Y haplogroup

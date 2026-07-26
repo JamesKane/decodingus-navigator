@@ -115,6 +115,20 @@ impl NavigatorApp {
         }
     }
 
+    /// Open the Settings dialog on a given sub-tab, seeding the form from the persisted settings and
+    /// asking the worker for the reference-genome rows. Shared by the app bar's ⚙ button and any
+    /// in-app shortcut that deep-links into a specific tab (e.g. the first-run References prompt).
+    pub(crate) fn open_settings(&mut self, ctx: &egui::Context, tab: SettingsTab) {
+        self.settings_form = SettingsForm::from_settings();
+        // Seed the scale slider from the *applied* zoom, not the (often unpersisted) setting: the
+        // HiDPI auto-probe applies a zoom it never persists, so from_settings would otherwise snap
+        // the slider — and thus the live scale — back to 1.0 the instant Settings opens.
+        self.settings_form.ui_scale = ctx.zoom_factor();
+        self.settings_tab = tab;
+        self.show_settings = true;
+        let _ = self.tx.send(Command::LoadReferenceSettings);
+    }
+
     /// The top app bar: product title (left), settings + language + account controls (right).
     pub(crate) fn app_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("appbar").show(ctx, |ui| {
@@ -123,14 +137,8 @@ impl NavigatorApp {
                 ui.heading(self.tr("app.name"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("⚙").on_hover_text(self.tr("settings.title")).clicked() {
-                        self.settings_form = SettingsForm::from_settings();
-                        // Seed the scale slider from the *applied* zoom, not the (often unpersisted)
-                        // setting: the HiDPI auto-probe applies a zoom it never persists, so
-                        // from_settings would otherwise snap the slider — and thus the live scale —
-                        // back to 1.0 the instant Settings opens.
-                        self.settings_form.ui_scale = ui.ctx().zoom_factor();
-                        self.show_settings = true;
-                        let _ = self.tx.send(Command::LoadReferenceSettings);
+                        // Reopen on whichever tab was last used (open_settings takes the tab).
+                        self.open_settings(ui.ctx(), self.settings_tab);
                     }
                     ui.separator();
                     // Interface mode, language, and theme all live in Settings (⚙) → Appearance now,

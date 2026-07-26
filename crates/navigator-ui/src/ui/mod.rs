@@ -134,8 +134,10 @@ impl ProjectTab {
 /// Sub-tabs of the Settings dialog, grouping preferences by locality of concern (general appearance
 /// vs. server connection vs. ancestry-painter calibration vs. AI vs. reference genomes vs. one-off
 /// tools vs. read-only advanced info).
+// `pub(crate)` (unlike its sibling tab enums): `open_settings` deep-links into a specific tab, so
+// the type appears in a `pub(crate)` signature.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-enum SettingsTab {
+pub(crate) enum SettingsTab {
     #[default]
     General,
     Connection,
