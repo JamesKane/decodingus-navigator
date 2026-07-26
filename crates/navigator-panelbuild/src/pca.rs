@@ -75,7 +75,7 @@ pub struct AncientPanelArgs {
     /// allele-sharing *against* these; they carry no weight but must be differentially related to the
     /// sources. They get their own, lower call floor (`--outgroup-min-called`) because good outgroups
     /// are often single high-quality genomes (Onge n≈2 is standard). Empty → a sources-only panel
-    /// (the old frequency-EM asset). See docs/design/ancient-ancestry-rebuild.md §7.4.
+    /// (the old frequency-EM asset). See documents/design/ancient-ancestry-rebuild.md §7.4.
     #[arg(long, default_value = "")]
     outgroups: String,
     /// Output AncestryPanel (bincode).
@@ -97,7 +97,7 @@ pub struct AncientPanelArgs {
     /// sample and the reference share ascertainment; the AADR/1240k universe includes capture sites
     /// consumer chips don't assay, and on those the deep estimate is unstable (a WGS sample reads
     /// ~90% Steppe where its own chip reads ~58%). Intersecting with the sites arrays actually assay
-    /// makes the estimate agree across data sources. See `docs/design/ancient-ancestry-rebuild.md` §4.
+    /// makes the estimate agree across data sources. See `documents/design/ancient-ancestry-rebuild.md` §4.
     /// Optional: omit to build the full (unascertained) panel.
     #[arg(long)]
     ascertain_sites: Option<PathBuf>,

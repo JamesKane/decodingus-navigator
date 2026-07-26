@@ -1,8 +1,11 @@
 # BISDNA Chromo2 Y-SNP Import — Design
 
-**Status:** Design only (no implementation). Drafted 2026-06-10.
-**Branch context:** `rust-rewrite`. Targets `navigator-domain`, `navigator-store`,
-`navigator-app`, `navigator-ui`, plus a new asset-build script under `scripts/`.
+**Status: IMPLEMENTED** (verified against the tree 2026-07-26). Drafted 2026-06-10.
+`App::import_bisdna_from_file` (`navigator-app/src/import_profiles.rs:363`) parses the chromo2
+export, resolves SNP names → loci against the Y-SNP dictionary for the subject's target build
+(`bisdna_target_build`), and feeds Y-SNP placement via `assign_y_bisdna` — i.e. real variant calls
+driving haplogroup placement and reconciliation, as designed (not a QC summary).
+**Branch context:** drafted on `rust-rewrite`; now on `main`.
 
 ## 1. Goal
 

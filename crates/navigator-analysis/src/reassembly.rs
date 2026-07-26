@@ -1,7 +1,7 @@
 //! Haploid **local reassembly** resolver (private-Y Option B, phase 1) — pure Rust, no external
 //! tools, Windows/MSVC-clean.
 //!
-//! Design: `docs/design/haploid-reassembly-caller.md`. This module owns **Stages B–E** over a single
+//! Design: `documents/design/haploid-reassembly-caller.md`. This module owns **Stages B–E** over a single
 //! active window: read selection (mapping-quality gate + fragment dedup), candidate haplotypes
 //! (per-SNV in v1: reference vs reference-with-one-substitution), read↔haplotype likelihood via a
 //! **base-quality-aware PairHMM** (`bio::stats::pairhmm`), and haploid genotyping by the aggregate

@@ -1,5 +1,5 @@
 //! Pure prompt construction + grounding for the local-LLM narration (see
-//! `docs/design/local-llm-integration.md`). No I/O — given a [`SubjectBrief`], produce the exact
+//! `documents/design/local-llm-integration.md`). No I/O — given a [`SubjectBrief`], produce the exact
 //! `system`/`user` message text we send, so the guardrails are reviewable and unit-tested (the same
 //! discipline as the deterministic brief templating). The model is a **rewriter, not a source of
 //! facts**: it only restates the already-curated, already-rounded strings in the fact sheet.

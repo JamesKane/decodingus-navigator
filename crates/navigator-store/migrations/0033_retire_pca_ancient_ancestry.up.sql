@@ -11,5 +11,5 @@
 -- generically. Delete them. Nothing is lost that can't be recomputed correctly: re-running the
 -- consensus ancestry estimate repopulates deep ancestry with the rebuilt method.
 --
--- See docs/design/ancient-ancestry-rebuild.md.
+-- See documents/design/ancient-ancestry-rebuild.md.
 DELETE FROM ancestry_result WHERE method IN ('PCA_PROJECTION_GMM', 'G25_NMONTE');

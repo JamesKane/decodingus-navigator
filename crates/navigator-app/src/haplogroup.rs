@@ -383,7 +383,7 @@ impl App {
     /// when the "prefer external caller" policy is on **and** such a call exists. When present,
     /// Navigator's internal caller must not re-walk the CRAM: returning this call instead is what
     /// protects an external GATK4/1240K placement from being diluted or overwritten (the
-    /// PRJEB37976 ancient-DNA fix). See `docs/design/external-caller-precedence.md`.
+    /// PRJEB37976 ancient-DNA fix). See `documents/design/external-caller-precedence.md`.
     pub(crate) async fn preferred_external_call(
         &self,
         biosample_guid: SampleGuid,
@@ -2837,7 +2837,7 @@ impl App {
             // path. NB it is *not* a heavier genotyping pass: it reads the SAME cached autosomal
             // consensus these modern/fine estimators use (the consensus is the full ~1.15M-site 1240k
             // IBD-panel union, not a 20k subset), and just intersects the larger qpAdm f4 panel against
-            // it (docs/design/ancient-ancestry-rebuild.md §7.14). Kept out of this hot path because the
+            // it (documents/design/ancient-ancestry-rebuild.md §7.14). Kept out of this hot path because the
             // qpAdm fit is a distinct, on-demand model.
             let ancient: Option<AncestryResult> = None;
             let _ = &ancient_bytes;
@@ -2859,7 +2859,7 @@ impl App {
         Ok(result)
     }
 
-    /// **Deep (ancient) ancestry via qpAdm** (docs/design/ancient-ancestry-rebuild.md §7.14, §7.16) —
+    /// **Deep (ancient) ancestry via qpAdm** (documents/design/ancient-ancestry-rebuild.md §7.14, §7.16) —
     /// the validated WHG / EEF / Steppe breakdown.
     ///
     /// Consumes the subject's **autosomal consensus** ([`Self::build_autosomal_profile`]) — the same
@@ -4043,7 +4043,7 @@ impl App {
     /// on and the GVCF is present; otherwise the cached CRAM walk ([`base_calls`]). A drop-in for the
     /// per-alignment genotype in `place_{y,mt}_consensus`, so a preferred-external (e.g. ancient-DNA)
     /// subject's damaged CRAM is not re-walked and cannot dilute the pooled placement (Phase 2 of
-    /// `docs/design/external-caller-precedence.md` §4.5). `tree_source_build` matches what `base_calls`
+    /// `documents/design/external-caller-precedence.md` §4.5). `tree_source_build` matches what `base_calls`
     /// receives — `None` for a native-build tree (DecodingUs Y, rCRS mt), the tree's build for a lift.
     pub(crate) async fn consensus_base_calls(
         &self,

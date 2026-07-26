@@ -1,6 +1,11 @@
 # Subject Brief & Simple Mode — design
 
-Status: **design** (2026-06-22). Implementation not started.
+Status: **IMPLEMENTED** (verified against the tree 2026-07-26). Drafted 2026-06-22 as design.
+Simple mode ships as a vertical scroll of `simple_*` sections in `navigator-ui/src/ui/central.rs`
+(`simple_first_run`, `simple_analyze_prompt`, `simple_dna_sides_section`, …), with the plain-language
+Subject Brief in `navigator-app/src/brief.rs` and LLM narration layered on top (see
+[`local-llm-integration.md`](local-llm-integration.md)). Alpha feedback fixes are recorded in
+`memory/simple-mode-alpha-fixes.md`.
 
 ## Goal
 

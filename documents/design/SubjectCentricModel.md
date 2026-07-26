@@ -1,8 +1,14 @@
 # Subject-centric analysis model (design)
 
-Status: **P1–P3 implemented** (commits ba6ffc2 / 9259f7a / d928af8). The remaining open item is
-true genotype-level pooling for ancestry (see Phasing/Open decisions). Captures the shift from
-run-centric tabs to donor-level aggregate reports.
+Status: **P1–P3 implemented** (commits ba6ffc2 / 9259f7a / d928af8); the once-open item —
+**true genotype-level pooling for ancestry** — is now **closed** (re-checked 2026-07-26).
+`domain::consensus::reconcile_diploid` (`navigator-domain/src/consensus.rs:739`) pools per-source
+diploid observations by site, and `App::build_autosomal_profile` / `refresh_autosomal_consensus`
+(`navigator-app/src/haplogroup.rs:1926`, `:1938`) make that `DiploidProfile` the single input every
+downstream estimate reads — modern, fine, deep (qpAdm) ancestry, painting, and IBD. The pooling is
+also progressive: imports contribute incrementally rather than triggering a from-scratch build (see
+`documents/design/ancient-ancestry-rebuild.md` §7.18). Captures the shift from run-centric tabs to
+donor-level aggregate reports.
 
 ## Problem
 

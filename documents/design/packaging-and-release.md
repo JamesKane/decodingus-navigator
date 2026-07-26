@@ -1,7 +1,15 @@
 # Packaging & Release — Alpha distribution plan
 
-**Status:** Foundation IMPLEMENTED (2026-06-18). Local macOS `.dmg` built + validated; CI authored.
-**Date:** 2026-06-16 (design) · 2026-06-18 (implementation)
+**Status:** IMPLEMENTED and **shipping** (re-checked 2026-07-26). Alphas release through
+`.github/workflows/release.yml` on a `v*` tag, building all four installers. Assets do **not** ship
+over a CDN as this doc originally sketched: they are published to the GitHub release
+`assets-chm13v2.0` by `packaging/publish-assets.sh`, and the app resolves them via
+`asset_release_base_url` (`navigator-app/src/lib.rs:1375`), downloading on demand.
+**Still open:** code signing + notarization (Apple Developer ID $99/yr; Windows cert) — deferred for
+alpha with a documented Gatekeeper work-around; the Linux glibc-2.28 container CI is authored but
+has never been run; and `default_reference_sha` is still `None` for all four builds
+(`navigator-refgenome/src/registry.rs:172`), awaiting confirmed publisher checksums.
+**Date:** 2026-06-16 (design) · 2026-06-18 (implementation) · 2026-07-26 (status re-check)
 **Scope:** How to ship the Rust `navigator` binary as installable images for macOS
 (Apple Silicon + Intel), Linux (x86-64 + ARM), and Windows (x86-64 + ARM), and how to
 handle the bundled ancestry assets.
@@ -16,8 +24,12 @@ handle the bundled ancestry assets.
 - `[package.metadata.packager]` in `crates/navigator-ui/Cargo.toml` (product `DUNavigator`,
   id `com.decodingus.navigator`, macOS min 11.0, icons, `before-packaging-command` → staging,
   `resources` → bundled `ancestry/`). Placeholder icon at `crates/navigator-ui/icons/`.
-- `packaging/stage-assets.sh` stages the full Option-A bundle (copies from `~/.decodingus/ancestry`
-  locally; CDN path is a TODO). `packaging/staging/` is git-ignored.
+- `packaging/stage-assets.sh` stages the bundle (copies from `~/.decodingus/ancestry` locally).
+  `packaging/staging/` is git-ignored. **Superseding the "CDN path is a TODO" note:** large assets
+  are now *deliberately not bundled* — release mode skips `ON_DEMAND_PREFIXES="ancestry_haps_"`
+  (matching local-dir mode's `PATTERNS` list; keep the two in step when adding assets) and the app
+  fetches them from the GitHub asset release at first use. This kept the alpha.13 installer delta to
+  +65–172 KB despite a 133 MB haplotype panel.
 - First-run **asset seeding**: `navigator_app::seed_bundled_assets` / `seed_assets_from` (copies
   missing bundled assets → `~/.decodingus/ancestry/`, never overwriting a CDN-refreshed file),
   called at `main()` startup (both GUI + headless). Unit-tested.
@@ -315,7 +327,7 @@ manifest, not committed to git) into each image's resource dir before packaging.
 
 ## References
 
-- `docs/design/simd-optimization-targets.md` — the Ivy Bridge ISA constraint.
+- `documents/design/simd-optimization-targets.md` — the Ivy Bridge ISA constraint.
 - `cargo-packager` — https://docs.rs/cargo-packager / CrabNebula.
 - `cargo-dist` — https://axodotdev.github.io/cargo-dist/ (v0.31, maintained 2026).
 - `cargo-zigbuild` — old-glibc / cross targeting via zig as linker.

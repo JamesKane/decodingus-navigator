@@ -42,7 +42,7 @@ cargo run --release -q -p navigator-panelbuild -- pca \
 #     instead of ancestry. Here a site survives only if EVERY source has >= $ANCIENT_MIN_CALLED real
 #     calls and EVERY outgroup >= $ANCIENT_OUTGROUP_MIN_CALLED.
 #
-#     Deep ancestry is estimated by **qpAdm f4** (docs/design/ancient-ancestry-rebuild.md §7): the
+#     Deep ancestry is estimated by **qpAdm f4** (documents/design/ancient-ancestry-rebuild.md §7): the
 #     target's allele-sharing is measured *against the outgroups*, which cancels drift and SNP
 #     ascertainment. So — unlike the retired Option A′ (§3.2) — the panel is NOT restricted to
 #     consumer-array sites: qpAdm is ascertainment-robust, and the array floor only threw away power.

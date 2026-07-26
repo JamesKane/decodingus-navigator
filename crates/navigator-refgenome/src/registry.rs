@@ -1,6 +1,6 @@
 //! The known-build registry: canonical build names + their source URLs (reference FASTAs
 //! and liftover chains), with an optional user JSON override. Defaults come from
-//! `docs/chm13-reference-resources.md` (CHM13 assets on the public human-pangenomics bucket)
+//! `documents/chm13-reference-resources.md` (CHM13 assets on the public human-pangenomics bucket)
 //! plus the Broad public GRCh38/GRCh37 references.
 
 use std::collections::HashMap;

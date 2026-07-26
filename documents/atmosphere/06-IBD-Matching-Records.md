@@ -264,4 +264,4 @@ This record represents a request to initiate contact with a match.
 * **`MatchList`:** Maps to `match_results` table with match entries as JSON array or normalized child table.
 * **`MatchRequest`:** Maps to `match_requests` table for contact workflow.
 
-See [ibd-matching-system.md](../ibd-matching-system.md) for implementation planning.
+See `decodingus/documents/planning/ibd-matching-system.md` for implementation planning.

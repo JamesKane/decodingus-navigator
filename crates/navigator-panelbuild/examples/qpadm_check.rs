@@ -1,4 +1,4 @@
-//! Lever-2 viability probe (docs/design/ancient-ancestry-rebuild.md §7): does the qpAdm f4 estimator
+//! Lever-2 viability probe (documents/design/ancient-ancestry-rebuild.md §7): does the qpAdm f4 estimator
 //! pull a WGS sample out of the fabricated ~80% Steppe band into the sane NW-European range
 //! (Steppe 40–55 / ANF 25–40 / WHG 10–25), and does the model-fit p-value behave?
 //!

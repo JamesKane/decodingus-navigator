@@ -1,7 +1,13 @@
 # DUNavigator → Rust Rewrite Plan
 
-**Status:** Planning
-**Date:** 2026-06-01
+**Status: EXECUTED — the rewrite is trunk.** (Header corrected 2026-07-26; the body below is the
+original plan, kept as the architectural rationale.) The legacy ScalaFX app was removed at cutover
+(commit `0dee32c`, 2026-06-19) and lives in git history only; the Rust workspace is `main` and ships
+signed installers. Per-phase status is **not** tracked here — the authoritative sources are
+`documents/design/HANDOFF.md` (orientation), `documents/design/scala-rust-gap-analysis.md` (what the
+Scala app had that Rust did not), and agent memory. §4e (self-referential callable loci) is still
+flagged "not yet built" in place.
+**Date:** 2026-06-01 (plan)
 **Decisions locked:** egui/eframe GUI · purpose-built pure-Rust haploid caller (no GATK/JVM) · shared crates extracted, Navigator in its own Cargo workspace
 
 ---
@@ -232,7 +238,7 @@ miss via streaming reqwest + `flate2` decompress. `ReferenceGateway` exposes
 `reference_status`/`cached_reference`/`resolve_reference` (+ `resolve_chain`/`load_liftover`
 over `du-bio`). `App` holds it; `import_project_dir`'s reference is now optional — on a cache
 miss it returns `AppError::ReferenceNeeded`, and the UI prompts → downloads with a progress
-bar → auto-retries. Registry defaults from `docs/chm13-reference-resources.md` (+ a
+bar → auto-retries. Registry defaults from `documents/chm13-reference-resources.md` (+ a
 `reference_sources.json` override); cache under `~/.decodingus` (`$NAVIGATOR_REFGENOME_DIR`).
 
 **Applying liftover — BUILT + validated for Y *and* mtDNA (2026-06-04):**
@@ -247,7 +253,7 @@ queries the lifted coords, maps observed bases back to tree positions (scoring u
 Validated live on GFX0457637 (CHM13 HiFi): **Y = R-FGC29071** (1092/1919) and
 **mtDNA = U5a1b1g** (53/55), both matching the GRCh38 truth. Related caches if/when ancestry
 lands: `AncestryReferenceGateway`/`Cache`, `TreeCache`, `AnalysisCache`.
-- **Resource catalog:** `docs/chm13-reference-resources.md` lists the concrete CHM13v2.0 URLs —
+- **Resource catalog:** `documents/chm13-reference-resources.md` lists the concrete CHM13v2.0 URLs —
   reference FASTAs (incl. **`chm13v2.0_maskedY_rCRS.fa.gz`**, the most relevant for this app),
   GRCh38↔CHM13 and hg19↔CHM13 **1:1 liftover chains** + `unique_to_*` BEDs (unliftable regions),
   lifted variant catalogs (dbSNP155, ClinVar, gnomAD, 1000G/SGDP on CHM13), and accessibility/

@@ -1,4 +1,4 @@
-//! qpAdm from an external caller's genotypes (docs/design/ancient-ancestry-rebuild.md §7): is the
+//! qpAdm from an external caller's genotypes (documents/design/ancient-ancestry-rebuild.md §7): is the
 //! WGS batch effect our native caller, or the method? Reads a `contig<TAB>pos<TAB>dosage` TSV
 //! (dosage 0/1/2, -1 = no-call) — e.g. from a GATK4 VCF via
 //! `bcftools query -f '%CHROM\t%POS\t[%GT]\n'` mapped to dosages — matches it to the panel by

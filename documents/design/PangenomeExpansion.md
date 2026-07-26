@@ -208,7 +208,7 @@ SV output is still unvalidated per HANDOFF; when validated, note the
 
 ### `navigator-refgenome`
 
-- **Canonical analysis reference.** Per `docs/chm13-reference-resources.md`, prefer
+- **Canonical analysis reference.** Per `documents/chm13-reference-resources.md`, prefer
   the **Y-PAR-masked + rCRS** analysis-set FASTA (`chm13v2.0_maskedY_rCRS.fa.gz`)
   for short-read calling. PAR-masking avoids the X/Y multi-mapping that produced
   some of our artifacts; the rCRS mito matches the mtDNA/haplogroup work.

@@ -1,5 +1,5 @@
 //! The grounding context for the M4 "ask my results" chat (see
-//! `docs/design/local-llm-expansion.md`). Narration (M1) stays grounded in the lean
+//! `documents/design/local-llm-expansion.md`). Narration (M1) stays grounded in the lean
 //! [`SubjectBrief`](crate::brief::SubjectBrief) fact sheet; the chat needs to answer about *more*
 //! signals (Y-STR panels, private-Y variants, mtDNA mutations, IBD matches, genetic sex), so it
 //! grounds in a [`ResultsContext`] = the brief plus curated, summary-level facts for those signals.

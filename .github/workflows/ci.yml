@@ -1,7 +1,7 @@
 # Pre-merge CI: build + test + lint on every branch push and PR. The load-bearing job is
 # `windows-msvc` — it enforces the project's hard constraint that the whole workspace (notably the
 # rust-bio `bio` dependency behind the haploid reassembly caller) compiles and tests clean under the
-# MSVC toolchain, since Windows is ~90% of the user base. See docs/design/haploid-reassembly-caller.md.
+# MSVC toolchain, since Windows is ~90% of the user base. See documents/design/haploid-reassembly-caller.md.
 #
 # The workspace has path dependencies on the sibling `decodingus-shared` repo (du-domain / du-atproto
 # / du-bio at ../decodingus-shared), so every job checks out BOTH repos as siblings and runs cargo

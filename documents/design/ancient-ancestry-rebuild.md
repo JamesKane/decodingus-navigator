@@ -1,16 +1,24 @@
-# Ancient ancestry — why it's disabled, and what a correct rebuild takes
+# Ancient ancestry — why it was disabled, and what the correct rebuild took
 
-**Status:** feature still gated off (`navigator_app::ANCIENT_ANCESTRY_ENABLED = false`), but the method
-is now **validated end to end** (§7.14) — the long investigation in §3–7 is largely superseded by that
-result, kept for the record. The original PCA implementation was disabled 2026-07-13 for fabricating
-numbers (§1–§2); several rebuild attempts then appeared to fail (§3–§7.12), but those "walls" were an
-outgroup-sourcing mistake (§7.10), 16 k-SNP imprecision (§7.11), and finally a genotype-labelling bug
-in a diagnostic example (§7.13). With the bug fixed, the full 1240k SNP set, and the **Patterson 2022
-sister-outgroup qpAdm config**, `huF98AFD`'s real WGS resolves to **WHG 15 / EEF 45 / Steppe 41,
-±1–2 %, model accepted** — a literature-grade British breakdown, reproduced identically by both
-`admixtools2` and our own `qpadm_fit` (§7.14). What remains before enabling: the WGS-vs-chip stability
-gate on this config, and wiring the full-1240k genotyping + `qpadm_fit` into the app path (tasks 4–5).
+**Status: SHIPPED and ENABLED** (verified against the tree 2026-07-26).
+`navigator_app::ANCIENT_ANCESTRY_ENABLED = true` (`crates/navigator-app/src/lib.rs:2405`) and
+`App::estimate_deep_ancestry` (`haplogroup.rs:2881`) is wired end to end: UI button + worker + events,
+CLI `deep-ancestry` (`cli.rs:1562`), the subject brief, and the publish path (which keeps the flag a
+true kill switch). Tasks 4–5 — the stability gate (§7.15, passed at 0.3 %) and wiring full-1240k
+genotyping + `qpadm_fit` into the app path — are **done**.
+
+The long investigation in §3–7 is kept for the record. The original PCA implementation was disabled
+2026-07-13 for fabricating numbers (§1–§2); several rebuild attempts then appeared to fail
+(§3–§7.12), but those "walls" were an outgroup-sourcing mistake (§7.10), 16 k-SNP imprecision
+(§7.11), and finally a genotype-labelling bug in a diagnostic example (§7.13). With the bug fixed,
+the full 1240k SNP set, and the **Patterson 2022 sister-outgroup qpAdm config**, `huF98AFD`'s real
+WGS resolves to **WHG 15 / EEF 45 / Steppe 41, ±1–2 %, model accepted** — a literature-grade British
+breakdown, reproduced identically by both `admixtools2` and our own `qpadm_fit` (§7.14).
 The estimator design is §5; the implementation + the working config are §7 (start at §7.14).
+
+**Still outstanding** (§7.18, deferred — plumbing, not the feature): a **GUI trigger** for panel
+genotyping (`genotype_panel_for_subject` is CLI-only, `cli.rs:1620`), and folding panel batch mode
+into the project-wide analyze/deep-analyze streaming flow with progress.
 
 **Scope:** the evidence that the original is unsound (§1–2), what the rebuild attempts established and
 why they fail (§3–4), and the design for a correct rebuild (§5–6).
@@ -301,6 +309,11 @@ on his own chips (§3.2).
 ---
 
 ## 6. Current status
+
+> **Superseded — see the header.** `ANCIENT_ANCESTRY_ENABLED = true` and the feature ships. The
+> paragraph below records the state as of §7.13 (mid-investigation) and is kept for the narrative;
+> the "remaining before enabling" list at its end was completed in §7.14–7.16 (shipping config,
+> stability gate) plus the app wiring. The only open residue is the §7.18 GUI/streaming plumbing.
 
 `ANCIENT_ANCESTRY_ENABLED = false`. The shipped `ancestry_freq_ancient_<build>.bin` is the full,
 unascertained panel (the A′ publish was rolled back). Modern/fine admixture stays enabled and is

@@ -1,5 +1,5 @@
 # CPU baseline for the shipped x86-64 slices: Ivy Bridge (= x86-64-v2 + AVX), the documented
-# reference floor (Mac Pro 2013 / Xeon E5 v2). See docs/design/simd-optimization-targets.md and
+# reference floor (Mac Pro 2013 / Xeon E5 v2). See documents/design/simd-optimization-targets.md and
 # packaging-and-release.md. NEVER raise to x86-64-v3 — AVX2/FMA SIGILL on the baseline. ARM /
 # Apple-Silicon slices are untouched (NEON is always present), so a native aarch64 dev build here
 # is unaffected by these blocks. Any future hand-vectorized AVX2 path must use runtime feature

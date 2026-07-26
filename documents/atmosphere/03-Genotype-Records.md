@@ -238,4 +238,4 @@ This record represents imputed genotype data derived from array data.
 * **`Genotype` (New Entity):** Maps to new `genotype_data` table for chip/array results.
 * **`Imputation` (New Entity):** Maps to new `imputation_result` table.
 
-See [multi-test-type-roadmap.md](../multi-test-type-roadmap.md) for implementation planning.
+See `decodingus/documents/planning/multi-test-type-roadmap.md` for implementation planning.

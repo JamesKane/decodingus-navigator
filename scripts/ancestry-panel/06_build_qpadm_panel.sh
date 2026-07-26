@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stage 6 — build the SHIPPING deep-ancestry asset: the full-1240k qpAdm panel (Patterson et al. 2022
-# config, docs/design/ancient-ancestry-rebuild.md §7.14). Unlike the 20k AIM assets (stages 03-05),
+# config, documents/design/ancient-ancestry-rebuild.md §7.14). Unlike the 20k AIM assets (stages 03-05),
 # this is built over the WHOLE 1240k SNP set — the precision the qpAdm f4 model needs (±1-2% vs ±40%
 # at 20k). It reads the full-1240k AADR PLINK from stage 04 (convertf → PACKEDPED), NOT the 20k
 # matrices, so its own pipeline: subset the AADR to the source+outgroup individuals, lift hg19→CHM13

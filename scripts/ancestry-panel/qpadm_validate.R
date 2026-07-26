@@ -1,4 +1,4 @@
-# Decisive test (docs/design/ancient-ancestry-rebuild.md §7.10): REAL admixtools2 qpAdm on the same
+# Decisive test (documents/design/ancient-ancestry-rebuild.md §7.10): REAL admixtools2 qpAdm on the same
 # EIGENSTRAT (AADR sources + outgroups + huF98AFD target, CHM13, ~20k sites). If WHG resolves to
 # ~±2-3%, our pooled-frequency approximation is the bottleneck; if WHG SE is also huge, it's a data
 # limit (sparse WHG source).

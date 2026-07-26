@@ -4,7 +4,7 @@ Builds the **SNP-name → locus** asset that gives a BISDNA (or any name-only Y 
 export its missing coordinates. A name like `CTS10003` resolves to a position plus
 ancestral/derived alleles, **per reference build** — so the codebase stays
 build-agnostic. Consumed by `navigator-domain::ysnp_dict` (the loader) and the BISDNA
-importer. See `docs/design/bisdna-import.md`.
+importer. See `documents/design/bisdna-import.md`.
 
 ## Source
 
@@ -61,4 +61,4 @@ couldn't resolve (these can never be placed — investigate before shipping the 
 ## Licensing
 
 Confirm YBrowse redistribution terms before committing a derived `chromo2-panel.tsv`
-into the repo (see `docs/design/bisdna-import.md` §8).
+into the repo (see `documents/design/bisdna-import.md` §8).

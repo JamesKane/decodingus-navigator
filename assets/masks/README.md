@@ -1,7 +1,7 @@
 # chrY private-Y filtering masks (CHM13v2 / hs1)
 
 Bundled reference data for the private-Y variant filter (see
-`docs/design/private-y-variant-filtering.md`). Small enough to live in the repo (gzipped BEDs, ~1.8 MB
+`documents/design/private-y-variant-filtering.md`). Small enough to live in the repo (gzipped BEDs, ~1.8 MB
 total), unlike the ancestry `.bin` panels. They are staged into the installer by
 `packaging/stage-assets.sh` (resource target `masks`) and seeded to `~/.decodingus/masks/` on first run
 by `navigator_app::seed_bundled_masks()`. `RegionMask::from_bed` reads the `.gz` transparently.

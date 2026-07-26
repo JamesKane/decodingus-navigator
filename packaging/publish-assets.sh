@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Publish the bundled ancestry/IBD reference assets to the GitHub release that the installer staging
-# pulls from (see packaging/stage-assets.sh + docs/design/packaging-and-release.md). Run this once
+# pulls from (see packaging/stage-assets.sh + documents/design/packaging-and-release.md). Run this once
 # (and again whenever the assets are regenerated) from a machine with the built assets in
 # ~/.decodingus/ancestry and an authenticated `gh`.
 #

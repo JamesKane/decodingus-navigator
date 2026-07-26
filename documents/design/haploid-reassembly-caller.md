@@ -1,9 +1,15 @@
 # Haploid reassembly caller — design & specification
 
-Status: **design / specification** (prove-out done, no production code). Branch context:
-`feat/reassembly-caller` (POC commits `64f8721`, `6e59b12`).
-Scope if built: `navigator-analysis` (`caller.rs` de-novo path, new `reassembly.rs`), with the
-existing private-Y pipeline (`navigator-app::fastpath`) and downstream filters unchanged.
+Status: **IMPLEMENTED and default-on** (verified against the tree 2026-07-26). Drafted as a design
+after the prove-out on `feat/reassembly-caller` (POC commits `64f8721`, `6e59b12`).
+`navigator-analysis/src/reassembly.rs` is on `main` and driven from `caller.rs` — positions the
+paralog gate would drop are escalated to the local-reassembly resolver, with
+`HaploidCallerParams::reassembly = true` and `reassembly_window = 40` by default (`caller.rs:86`,
+`:106`). The private-Y pipeline (`navigator-app::fastpath`) and downstream filters are unchanged, as
+scoped. Measured results are in "Measured phase-2 result" / "Measured v2 result" below.
+**Still open:** the calibration questions in [Open questions](#open-questions) — active-region window
+size & merge tolerance, genotype threshold τ / GQ calibration, the fragment-dedup-on-disagreement
+rule, whether to unify with `realign.rs`, and mtDNA heteroplasmy (phase 5).
 
 This is **Option B** from [`private-y-variant-filtering.md`](private-y-variant-filtering.md) §5a/§6 —
 the general fix for the single-sample recall gap. Option A (source calls from a GATK gVCF sidecar)

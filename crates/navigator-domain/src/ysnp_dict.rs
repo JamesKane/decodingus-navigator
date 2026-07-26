@@ -9,7 +9,7 @@
 //! `scripts/ysnp-dictionary/`); a small checked-in chromo2 panel manifest uses the same
 //! format. This module is pure over already-loaded text — [`YsnpDictionary::from_text`] — with
 //! a thin [`YsnpDictionary::load`] IO boundary that reads the asset files. See
-//! `docs/design/bisdna-import.md`.
+//! `documents/design/bisdna-import.md`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

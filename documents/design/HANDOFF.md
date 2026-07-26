@@ -1,7 +1,16 @@
 # Rust rewrite — handoff / resume notes
 
-Last updated: 2026-06-20. The rewrite is now **trunk on `main`** (the legacy ScalaFX app was
-removed at cutover and lives in git history only). Pick up here next session.
+Last updated: 2026-07-26 (status re-check; the build log below is still as of 2026-06-20). The
+rewrite is now **trunk on `main`** (the legacy ScalaFX app was removed at cutover and lives in git
+history only). Pick up here next session.
+
+> **Landed since the 06-20 body was written** (not reflected in the sections below, which are kept
+> as a build log): ROH / F_ROH endogamy detection · external-caller precedence + autosomal external
+> ingest (EIGENSTRAT 1240K + GATK4 gVCF) · **deep/ancient ancestry shipped and ENABLED** (qpAdm) ·
+> fine/PCA panels rebuilt at 200k depth with continental-European populations · chromosome painter
+> v2 (parent-split phasing + haplotype-copying LAI) · progressive autosomal consensus · window/session
+> state persistence · packaging through GitHub-release on-demand assets, shipping as
+> `v0.1.0-alpha.13`.
 
 > The detailed running record is **agent memory** (`~/.claude/projects/.../memory/`, indexed by
 > `MEMORY.md`) — it is more current and granular than this file. This doc is the orientation +
@@ -158,29 +167,6 @@ The **next-gen** asset path is the global pipeline in `scripts/ancestry-panel/` 
 deep components over a 1240k-restricted panel, projection-mode PCA, CDN publish) — needs the
 datasets fetched (verify `# VERIFY` URLs; slice panel sites to avoid the multi-TB pull).
 
-## EC2 (genotype extraction)
-
-`admin@ec2-3-132-31-28.us-east-2.compute.amazonaws.com`, key `~/Decoding-Us.pem` (chmod 600),
-Debian, bcftools. Used to tabix-fetch panel-site genotypes from the ~1 TB 1000G/SGDP VCFs (in-AWS
-S3 is fast). Recipe + region files archived in `1kgp_chm13_pca_build/ancestry_build.tar.gz`. The
-matrices are already pulled; re-extraction only needed to add reference samples.
-
-## Key gotchas (also in agent memory)
-
-- CHM13 `chrM` is a circular permutation of rCRS → rotation-aware self-generated map; CHM13 Y has
-  inverted tracts → liftover reverse-complements minus-strand lifts.
-- **Raw chrY de-novo is unmasked** — calls ~13k mostly-artifact variants. The validated Y discovery
-  is **"Find private Y variants"** (callable-mask + backbone-classified). chrM de-novo is fine (small,
-  fully callable). Don't re-add a raw chrY de-novo button.
-- Full Analysis **reuses cached** coverage + ancestry (the slow whole-genome steps); coverage is a
-  single-threaded full-genome pileup (minutes on WGS — slow, not hung; per-contig progress shows it).
-- PCA projection of a low-coverage sample is rescaled by `total/used` sites (else it shrinks toward
-  origin). SV needs ≥10× — won't run on 4× GFX. AIMs were super-pop-Fst selected → fine resolution noisy.
-- **i18n borrow gotcha**: `TextEdit::singleline(&mut self.x).hint_text(self.tr(k))` fails — bind
-  `let hint = self.tr(k);` first. `tr()` returns `&'static`.
-- **AppView pins the shared crate by git rev** — bump it (or `[patch]`) for new `du-domain::fed`
-  fields; additive optional fields keep the old rev compiling.
-
 ## Architecture / design pointers
 
 - `documents/design/SubjectCentricModel.md` — donor-centric tab model (P1–P3 implemented).
@@ -188,7 +174,7 @@ matrices are already pulled; re-extraction only needed to add reference samples.
 - `documents/atmosphere/` — the lexicon spec; `du-domain::fed` is the implemented write subset.
 - `decodingus/documents/planning/social-layer-roadmap.md` — the social-layer build plan (AppView
   side built; Navigator/Edge side is the active work, communication core done).
-- `docs/design/` — the design backlog (FTDNA import, BISDNA, realignment, packaging, SIMD,
+- `documents/design/` — the design backlog (FTDNA import, BISDNA, realignment, packaging, SIMD,
   pangenome-GAM, scala-rust-gap-analysis, …).
 - `documents/BACKLOG.md` — **Scala-era** feature inventory (March 2026, pre-rewrite); use as the
   master feature list, not current status.
@@ -202,29 +188,45 @@ caller, settings UI, Y-STR reporting, report exports, genome-region/ideogram, fe
 1–2 + the encrypted exchange channel, sync durability, FTDNA project import). Per-feature status
 lives in agent memory (`MEMORY.md` index) — treat that as authoritative, not this file.
 
-Still open, broadly:
-- **Social layer (Edge)** — communication core done (this branch); 3b publish-`feed.post` / 3a peer-DM
-  UI / 3c recruitment still to build (AppView side ready).
+Still open, broadly (corrected 2026-07-26 against the tree):
+- **Social layer (Edge)** — 3a/3b/3c are all **DONE and merged to `main`** (see the section above;
+  the earlier "still to build" line here was stale). What remains are the *deferred slices*:
+  Navigator-native campaign **creation** (blocked on the groupProject-PDS bridge), feed
+  voting/report/block, threaded federated replies, and the DM follow-ups (truly-async handshake,
+  background auto-poll, typing/read receipts, in-DM block).
 - **IBD network matching** — detection, identity math, and the encrypted exchange channel are built;
   the consent/discovery/chromosome-browser UX is the remaining surface.
-- **Design backlog** in `docs/design/` — realignment module, packaging/release, SIMD targets,
-  pangenome-GAM, academic-ENA import (all design-only).
-- **Smaller** — i18n `self.status`/`format!` tails; Compare multi-select; ancestry genotype-level
-  pooling; the unified-walker perf plateau (~5×: serial unmapped-tail sweep + the single largest
-  contig floor wall time — split big contigs / parallelize the sweep to push further).
-- **AppView side** — `fitDistance` ingest (needs a shared rev bump); IBD-matching backlog.
+- **Design backlog** in `documents/design/` — still genuinely design-only: **realignment module**
+  (revert + realign to CHM13 — note `analysis/realign.rs` is *indel* local realignment, a different
+  thing), **distributed-compute-grid**, **academic-ENA import**, **pangenome-GAM**, and local-LLM
+  **M6** (project-level summary). Packaging and SIMD have both since been partly acted on — see
+  their headers. **Archaic ancestry** (`documents/design/ArchaicAncestry_Design.md`) is the newest
+  design-only item and the shortest path to a visible feature.
+- **Smaller** — i18n `self.status`/`format!` tails; Compare multi-select; the unified-walker perf
+  plateau (~5×: serial unmapped-tail sweep + the single largest contig floor wall time — split big
+  contigs / parallelize the sweep to push further); the IBD sliding-window rolling update
+  (`ibd.rs:326`, still O(n·w)). *Ancestry genotype-level pooling is now **done*** — `reconcile_diploid`
+  + the shared `DiploidProfile` consensus.
+- **AppView side** — `fitDistance` ingest (needs a shared rev bump); IBD-matching backlog; IBD
+  attestation indexing.
+- **Live-PDS validation** — §4/§5 are protocol-confirmed by curl only; the over-the-wire run of the
+  App code is environment-blocked, not code-blocked.
 
 ## Recommended next steps (pick one)
 
-1. **Social layer — push + PR `feat/social-community-tab`**, then continue the deferred slices in
-   roadmap order: **3b publish `feed.post`** (smallest, completes the federated feed loop — pairs
-   with the Feed UI already built), then **3a peer DMs** (DM UI over the existing `exchange` crypto),
-   then **3c recruitment** signed-Edge. All AppView-side pieces already exist.
-2. **IBD network matching** — detection + identity math + the encrypted exchange channel are built;
-   the consent/discovery/chromosome-browser UX is the remaining user-facing surface (overlaps 3a).
-3. **Drain the design backlog** in `docs/design/` — realignment module, packaging/release, SIMD
-   targets, pangenome-GAM, academic-ENA import.
-4. **i18n tail** — `self.status` transient strings + `format!` dynamics are still English (the
+*(Rewritten 2026-07-26 — the previous list was completed.)*
+
+1. **Archaic ancestry (Neanderthal/Denisovan)** — `documents/design/ArchaicAncestry_Design.md`.
+   The only design-only item that is a *new user-visible feature*, and Phase 1 reuses the ancestry
+   panel machinery almost verbatim. Three open questions gate it (chip overlap after lift to CHM13,
+   Tier B inputs, percentile cohort).
+2. **Finish the deep-ancestry plumbing** — a GUI trigger for panel genotyping (CLI-only today) and
+   folding panel batch mode into the project-wide analyze flow with progress (§7.18).
+3. **IBD network matching** — the consent/discovery/chromosome-browser UX is the remaining
+   user-facing surface.
+4. **Reassembly-caller calibration** — the caller ships default-on; its Open Questions (window size,
+   τ/GQ, fragment dedup) are unresolved tuning on the full truth set.
+5. **i18n tail** — `self.status` transient strings + `format!` dynamics are still English (the
    key-based UI is at en/es parity).
 
 For the broader unported-from-Scala inventory and per-feature status, the authoritative source is

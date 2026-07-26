@@ -91,7 +91,7 @@ Iran_HajjiFiruz_N	Iran_N
 #   new component code added to navigator-domain::ancestry before mapping here.
 
 # ════════════════════════════════════════════════════════════════════════════════
-# qpAdm RIGHT populations (outgroups) — docs/design/ancient-ancestry-rebuild.md §7.4, §7.10.
+# qpAdm RIGHT populations (outgroups) — documents/design/ancient-ancestry-rebuild.md §7.4, §7.10.
 # These MUST come from the AADR callset (same pipeline as the sources above); do NOT source outgroups
 # from a separate modern panel (1000G/SGDP) — that runs a capture-vs-shotgun batch line through the f4
 # matrix (§7.10). Present-day continental references + POOLED deep anchors (single genomes bias a
