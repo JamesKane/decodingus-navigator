@@ -3448,6 +3448,77 @@ impl App {
         Ok(result)
     }
 
+    /// The cached archaic (Tier A) marker count for a subject, if one was computed from the
+    /// **current** autosomal consensus. `None` if absent or stale. Cheap — a cache read.
+    pub async fn cached_archaic(&self, biosample_guid: SampleGuid) -> Result<Option<ArchaicMarkerResult>, AppError> {
+        let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
+            return Ok(None);
+        };
+        let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? else {
+            return Ok(None);
+        };
+        if r.consensus_sig == row.last_reconciled_at {
+            Ok(Some(serde_json::from_str(&r.archaic)?))
+        } else {
+            Ok(None) // computed from an older consensus — stale
+        }
+    }
+
+    /// Count the subject's archaic (Neanderthal / Denisovan) marker copies from the **consensus** —
+    /// no BAM walk. Returns the cached result when it matches the current consensus signature.
+    ///
+    /// The headline is a count over what was actually assayed (copies carried of copies possible),
+    /// so chip and WGS input both yield an honest figure without comparing across data types.
+    ///
+    /// The **percentile is deliberately left unset for sparse input**. A consumer chip covers only a
+    /// few percent of the panel, and those sites are its common tail, so ranking such a count against
+    /// the WGS-scored reference cohort would produce a confidently wrong number (design §10). Until
+    /// per-site frequencies land in the distribution asset, the percentile is only filled when the
+    /// subject's call rate is comparable to the cohort's.
+    pub async fn estimate_archaic_from_consensus(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<ArchaicMarkerResult, AppError> {
+        let row = consensus_profile::get(self.store.pool(), biosample_guid, "Auto")
+            .await?
+            .ok_or_else(|| {
+                AppError::Import(
+                    "build the autosomal consensus first (Autosomal tab) before the archaic report".into(),
+                )
+            })?;
+        let sig = row.last_reconciled_at.clone();
+
+        if let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? {
+            if r.consensus_sig == sig {
+                return Ok(serde_json::from_str(&r.archaic)?);
+            }
+        }
+
+        let build = ReferenceBuild::Chm13v2;
+        self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build)).await?;
+        let panel_path = crate::archaic_markers_path(build);
+        let bytes = crate::read_verified_asset(build, &panel_path)?
+            .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
+
+        let profile: DiploidProfile = serde_json::from_str(&row.payload)?;
+        let genotypes = consensus_genotypes(&profile);
+        let result = tokio::task::spawn_blocking(move || {
+            navigator_analysis::archaic::count_archaic_markers(&genotypes, &panel)
+        })
+        .await?;
+
+        consensus_archaic::upsert(
+            self.store.pool(),
+            biosample_guid,
+            &sig,
+            &serde_json::to_string(&result)?,
+            &Utc::now().to_rfc3339(),
+        )
+        .await?;
+        Ok(result)
+    }
+
     /// An alignment's content SHA-256, computed once at import. Read from the record if present,
     /// else computed now (hashing the file) and stored — so batch-imported alignments are hashed
     /// lazily on first analysis, then cached on the row.

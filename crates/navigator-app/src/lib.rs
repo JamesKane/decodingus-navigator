@@ -44,6 +44,9 @@ pub fn diagnose_alignment_file(
 }
 pub use navigator_analysis::probe::AlignmentProbe;
 pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
+pub use navigator_analysis::archaic::{
+    ArchaicCountDistribution, ArchaicMarkerPanel, ArchaicMarkerResult, DiagnosticClass,
+};
 pub use navigator_analysis::roh::{RohConfig, RohPattern, RohResult, RohSegment, RohSummary};
 pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
 pub use navigator_analysis::sv::types::{SvAnalysisResult, SvCall, SvType};
@@ -676,7 +679,7 @@ pub use navigator_store::ibd_exchange::StoredIbdExchange;
 pub use navigator_store::source_file::SourceFile;
 use navigator_store::{
     alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_painting,
-    consensus_profile, consensus_roh, haplogroup_call, mtdna as mtdna_store, project, reconciliation as recon_store,
+    consensus_archaic, consensus_profile, consensus_roh, haplogroup_call, mtdna as mtdna_store, project, reconciliation as recon_store,
     sequence_run,
     source_file, str_profile, sync_history, sync_outbox, sync_state, variant_set, Store, StoreError,
 };
@@ -1099,6 +1102,19 @@ fn ancestry_qpadm_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ANCESTRY_QPADM", "ancestry_qpadm", build, "bin")
 }
 
+/// The archaic (Neanderthal / Denisovan) marker panel asset path
+/// (`$NAVIGATOR_ARCHAIC_MARKERS` override, else `<base>/ancestry/archaic_markers_<build>.bin`).
+/// Built by `panelbuild archaic-panel` — see documents/design/ArchaicAncestry_Design.md §4.
+fn archaic_markers_path(build: ReferenceBuild) -> PathBuf {
+    ancestry_asset_path("NAVIGATOR_ARCHAIC_MARKERS", "archaic_markers", build, "bin")
+}
+
+/// The archaic percentile reference asset path (`$NAVIGATOR_ARCHAIC_DIST` override, else
+/// `<base>/ancestry/archaic_marker_dist_<build>.bin`).
+fn archaic_marker_dist_path(build: ReferenceBuild) -> PathBuf {
+    ancestry_asset_path("NAVIGATOR_ARCHAIC_DIST", "archaic_marker_dist", build, "bin")
+}
+
 /// The chip-compatible IBD panel asset path (`$NAVIGATOR_IBD_PANEL` override, else
 /// `<base>/ancestry/ibd_panel_<build>.bin`).
 fn ibd_panel_path(build: ReferenceBuild) -> PathBuf {
@@ -1117,6 +1133,8 @@ pub fn ancestry_asset_status() -> Vec<AssetStatus> {
         ("ancient frequencies", ancestry_freq_ancient_path(build)),
         ("genetic map", genetic_map_path(build)),
         ("IBD panel", ibd_panel_path(build)),
+        ("archaic markers", archaic_markers_path(build)),
+        ("archaic percentiles", archaic_marker_dist_path(build)),
     ]
     .into_iter()
     .map(|(name, path)| {

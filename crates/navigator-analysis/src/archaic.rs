@@ -16,6 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::caller::SiteGenotype;
 use crate::error::AnalysisError;
 
 /// The four openly-downloadable archaic reference genomes, in the fixed order every
@@ -167,6 +168,117 @@ impl ArchaicMarkerPanel {
     }
 }
 
+/// The Tier-A result: archaic-derived allele copies carried, over copies assayed.
+///
+/// Deliberately a **count over what was actually called**, not a "percent Neanderthal" — the same
+/// shape a consumer report uses ("191 of 7,462" = copies of 2 × 3,731 assayed sites, design §1).
+/// Because the denominator is whatever subset of the panel the subject's data covered, chip and WGS
+/// each get an honest headline with no cross-data-type comparison involved.
+///
+/// [`percentile`](Self::percentile) is the one field that *does* require comparability, so it is an
+/// `Option` the caller fills only when the subject's coverage is comparable to the reference cohort
+/// (design §10). A chip covers ~3–4 % of the panel and is biased toward its common tail, so ranking
+/// a chip count against a WGS-scored cohort is meaningless — it stays `None` there rather than
+/// rendering a number that looks authoritative and is not.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchaicMarkerResult {
+    /// Archaic-derived allele copies carried across called panel sites.
+    pub total_copies: u32,
+    /// 2 × called sites — the denominator the count is reported against.
+    pub possible_copies: u32,
+    /// Panel sites with a usable genotype for this subject.
+    pub called_sites: usize,
+    /// Sites in the panel overall (so the UI can state the coverage honestly).
+    pub panel_sites: usize,
+    /// `called_sites / panel_sites`.
+    pub call_rate: f32,
+    /// Copies at Neanderthal-diagnostic sites.
+    pub neanderthal_copies: u32,
+    /// Copies at Denisovan-diagnostic sites. For a European this should be near the noise floor;
+    /// §7 forbids presenting a small value here as a positive Denisovan finding.
+    pub denisovan_copies: u32,
+    /// Copies at sites derived in both lineages — archaic, but not attributable.
+    pub shared_copies: u32,
+    /// Percentile within `cohort`, when the comparison is valid (see the type docs).
+    pub percentile: Option<f32>,
+    /// The cohort `percentile` was computed against (e.g. "EUR").
+    pub cohort: Option<String>,
+}
+
+impl ArchaicMarkerResult {
+    /// Copies carried as a fraction of copies assayed — the rate that is comparable *within* one
+    /// data type. Returns 0.0 when nothing was called.
+    pub fn rate(&self) -> f32 {
+        if self.possible_copies == 0 {
+            0.0
+        } else {
+            self.total_copies as f32 / self.possible_copies as f32
+        }
+    }
+}
+
+/// Count a subject's archaic-derived allele copies across the panel.
+///
+/// Pure dosage arithmetic over the consensus genotypes, so it works identically for chip and WGS
+/// input. The one subtlety: `SiteGenotype::dosage` counts the **alternate** allele, while the
+/// panel's derived allele may sit on either side, so the dosage is re-expressed against the derived
+/// *base*. Reading dosage directly as "archaic copies" would invert every site where CHM13
+/// orientation left the derived allele on REF — 3 % of the panel.
+pub fn count_archaic_markers(genotypes: &[SiteGenotype], panel: &ArchaicMarkerPanel) -> ArchaicMarkerResult {
+    let by_pos: std::collections::HashMap<(&str, i64), &SiteGenotype> = genotypes
+        .iter()
+        .map(|g| ((g.contig.as_str(), g.position), g))
+        .collect();
+
+    let (mut total, mut nea, mut den, mut shared) = (0u32, 0u32, 0u32, 0u32);
+    let mut called = 0usize;
+
+    for site in &panel.sites {
+        let Some(g) = by_pos.get(&(site.contig.as_str(), site.position)) else {
+            continue;
+        };
+        // A negative dosage is an explicit no-call; ploidy 0 would make the denominator a lie.
+        if g.dosage < 0 || g.ploidy == 0 {
+            continue;
+        }
+        let d = site.archaic_derived_allele.to_ascii_uppercase();
+        let matches = |s: &str| s.len() == 1 && s.as_bytes()[0].to_ascii_uppercase() as char == d;
+        let copies = if matches(&g.alternate_allele) {
+            g.dosage as u32
+        } else if matches(&g.reference_allele) {
+            (g.ploidy as i32 - g.dosage).max(0) as u32
+        } else {
+            // The subject's alleles at this position disagree with the panel's — skip rather than
+            // guess, and do not count it toward the denominator either.
+            continue;
+        };
+        called += 1;
+        total += copies;
+        match site.diagnostic_class {
+            DiagnosticClass::Neanderthal => nea += copies,
+            DiagnosticClass::Denisovan => den += copies,
+            DiagnosticClass::SharedArchaic => shared += copies,
+        }
+    }
+
+    ArchaicMarkerResult {
+        total_copies: total,
+        possible_copies: (called as u32).saturating_mul(2),
+        called_sites: called,
+        panel_sites: panel.len(),
+        call_rate: if panel.is_empty() {
+            0.0
+        } else {
+            called as f32 / panel.len() as f32
+        },
+        neanderthal_copies: nea,
+        denisovan_copies: den,
+        shared_copies: shared,
+        percentile: None,
+        cohort: None,
+    }
+}
+
 /// Tier-A count distribution for one reference population (`archaic_marker_dist_<build>.bin`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CohortCounts {
@@ -291,6 +403,95 @@ mod tests {
         let bytes = panel.to_bytes().expect("encode");
         assert_eq!(ArchaicMarkerPanel::from_bytes(&bytes).expect("decode"), panel);
         assert_eq!(panel.possible_copies(), 2);
+    }
+
+    fn gt(contig: &str, position: i64, reference_allele: &str, alternate_allele: &str, dosage: i32) -> SiteGenotype {
+        SiteGenotype {
+            name: String::new(),
+            contig: contig.into(),
+            position,
+            reference_allele: reference_allele.into(),
+            alternate_allele: alternate_allele.into(),
+            ploidy: 2,
+            dosage,
+            gq: 0,
+            depth: 0,
+            ref_depth: 0,
+            alt_depth: 0,
+            pls: Vec::new(),
+            gt: None,
+            allele_depths: None,
+        }
+    }
+
+    fn site(position: i64, reference_allele: char, alternate_allele: char, derived: char, class: DiagnosticClass) -> ArchaicSite {
+        ArchaicSite {
+            contig: "chr1".into(),
+            position,
+            reference_allele,
+            alternate_allele,
+            archaic_derived_allele: derived,
+            calls: [ArchaicCall::HomDerived; 4],
+            diagnostic_class: class,
+            afr_freq: 0.001,
+        }
+    }
+
+    #[test]
+    fn counting_re_expresses_dosage_against_the_derived_base() {
+        // Site 1: derived is the ALT, so dosage counts it directly.
+        // Site 2: derived is the REF, so the archaic copies are ploidy - dosage. Reading dosage
+        // straight through here would invert the site — the failure this test exists to catch.
+        let panel = ArchaicMarkerPanel {
+            build: "chm13v2.0".into(),
+            thresholds: ArchaicPanelThresholds {
+                max_afr_freq: 0.01,
+                min_non_afr_freq: 0.0005,
+            },
+            sites: vec![
+                site(100, 'A', 'G', 'G', DiagnosticClass::Neanderthal),
+                site(200, 'A', 'G', 'A', DiagnosticClass::Denisovan),
+            ],
+        };
+        let genotypes = vec![gt("chr1", 100, "A", "G", 1), gt("chr1", 200, "A", "G", 1)];
+        let r = count_archaic_markers(&genotypes, &panel);
+        assert_eq!(r.called_sites, 2);
+        assert_eq!(r.possible_copies, 4);
+        assert_eq!(r.neanderthal_copies, 1, "derived on ALT: dosage passes through");
+        assert_eq!(r.denisovan_copies, 1, "derived on REF: 2 - dosage");
+        assert_eq!(r.total_copies, 2);
+        assert!((r.rate() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn uncalled_and_disagreeing_sites_leave_the_denominator_alone() {
+        let panel = ArchaicMarkerPanel {
+            build: "chm13v2.0".into(),
+            thresholds: ArchaicPanelThresholds {
+                max_afr_freq: 0.01,
+                min_non_afr_freq: 0.0005,
+            },
+            sites: vec![
+                site(100, 'A', 'G', 'G', DiagnosticClass::Neanderthal),
+                site(200, 'A', 'G', 'G', DiagnosticClass::Neanderthal),
+                site(300, 'A', 'G', 'G', DiagnosticClass::Neanderthal),
+                site(400, 'A', 'G', 'G', DiagnosticClass::Neanderthal),
+            ],
+        };
+        let genotypes = vec![
+            gt("chr1", 100, "A", "G", 2),   // counted
+            gt("chr1", 200, "A", "G", -1),  // explicit no-call
+            gt("chr1", 300, "C", "T", 2),   // alleles disagree with the panel
+            // 400 absent entirely
+        ];
+        let r = count_archaic_markers(&genotypes, &panel);
+        assert_eq!(r.called_sites, 1, "only the usable site counts");
+        assert_eq!(r.possible_copies, 2);
+        assert_eq!(r.total_copies, 2);
+        assert_eq!(r.panel_sites, 4);
+        assert!((r.call_rate - 0.25).abs() < 1e-6);
+        // Never fabricated by the counter — the caller fills it only when comparable.
+        assert_eq!(r.percentile, None);
     }
 
     #[test]

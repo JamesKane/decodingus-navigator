@@ -21,7 +21,8 @@ use navigator_app::{
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
     HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
     NarratedBrief, PaintingResult, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
-    ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, RohResult, SexInferenceResult, SignalKind,
+    ArchaicMarkerResult, ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, RohResult, SexInferenceResult,
+    SignalKind,
     SourceType, StoredIbdExchange, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult, YMatch,
     YstrClustering,
 };
@@ -231,6 +232,14 @@ pub enum Command {
     },
     /// Load the cached ROH result (if current for the consensus signature) — cheap.
     LoadRoh {
+        biosample_guid: SampleGuid,
+    },
+    /// Count archaic (Neanderthal / Denisovan) marker copies from the subject's CONSENSUS.
+    ComputeArchaicFromConsensus {
+        biosample_guid: SampleGuid,
+    },
+    /// Load the cached archaic marker count (if current for the consensus signature) — cheap.
+    LoadArchaic {
         biosample_guid: SampleGuid,
     },
     /// Load the cached detailed consensus ancestry reports (modern fine + ancient components).
@@ -931,6 +940,11 @@ pub enum Event {
     RohResultReady {
         biosample_guid: SampleGuid,
         result: Option<Box<RohResult>>,
+    },
+    /// Archaic (Tier A) marker count for a subject. `None` on a cache-miss load.
+    ArchaicResultReady {
+        biosample_guid: SampleGuid,
+        result: Option<Box<ArchaicMarkerResult>>,
     },
     /// Private Y variants (off-backbone de-novo calls) for an alignment.
     PrivateY {
@@ -1758,6 +1772,23 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::LoadRoh { biosample_guid } => ev(
             app.cached_roh(biosample_guid).await,
             |result| Event::RohResultReady {
+                biosample_guid,
+                result: result.map(Box::new),
+            },
+        ),
+        Command::ComputeArchaicFromConsensus { biosample_guid } => {
+            // A pure read over the cached consensus + the marker panel — no genotyping pass.
+            ev(
+                app.estimate_archaic_from_consensus(biosample_guid).await,
+                |result| Event::ArchaicResultReady {
+                    biosample_guid,
+                    result: Some(Box::new(result)),
+                },
+            )
+        }
+        Command::LoadArchaic { biosample_guid } => ev(
+            app.cached_archaic(biosample_guid).await,
+            |result| Event::ArchaicResultReady {
                 biosample_guid,
                 result: result.map(Box::new),
             },

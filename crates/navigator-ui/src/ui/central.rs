@@ -567,6 +567,84 @@ impl NavigatorApp {
                             draw_roh(ui, result, regions);
                         }
                     });
+                    // Archaic (Neanderthal / Denisovan) marker count — Tier A, from the consensus.
+                    ui.add_space(10.0);
+                    card(ui, self.tr("card.archaic"), |ui| {
+                        ui.horizontal(|ui| {
+                            let have = self.archaic.is_some();
+                            let label = if have {
+                                self.tr("common.refresh")
+                            } else {
+                                self.tr("archaic.compute")
+                            };
+                            if ui
+                                .add_enabled(!self.archaic_running, egui::Button::new(label))
+                                .clicked()
+                            {
+                                self.archaic_running = true;
+                                self.status = "Counting archaic markers from consensus…".into();
+                                let _ = self
+                                    .tx
+                                    .send(Command::ComputeArchaicFromConsensus { biosample_guid: guid });
+                            }
+                            if self.archaic_running {
+                                ui.spinner();
+                            }
+                            ui.label(egui::RichText::new(self.tr("hint.archaic")).weak().small());
+                        });
+                        if let Some(r) = &self.archaic {
+                            ui.add_space(8.0);
+                            // Headline is a COUNT over what was actually assayed — never a
+                            // "% Neanderthal" (design §1/§7).
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} of {}",
+                                    r.total_copies, r.possible_copies
+                                ))
+                                .heading(),
+                            );
+                            ui.label(format!(
+                                "{} archaic-allele copies across {} marker sites your data covered ({:.1}% of the {} in the panel).",
+                                r.total_copies,
+                                r.called_sites,
+                                r.call_rate * 100.0,
+                                r.panel_sites
+                            ));
+                            ui.add_space(4.0);
+                            ui.label(format!(
+                                "Neanderthal-diagnostic {} · shared-archaic {}",
+                                r.neanderthal_copies, r.shared_copies
+                            ));
+                            // §7: never present a small Denisovan number as a positive finding.
+                            // It sits at the noise floor for most non-Oceanian ancestries.
+                            ui.label(
+                                egui::RichText::new(self.tr("archaic.denisovanNote"))
+                                    .weak()
+                                    .small(),
+                            );
+                            match (r.percentile, &r.cohort) {
+                                (Some(p), Some(c)) => {
+                                    ui.add_space(4.0);
+                                    ui.label(format!("More than {p:.0}% of {c} reference samples."));
+                                }
+                                _ => {
+                                    // Sparse input (a chip covers a few % of the panel, biased to its
+                                    // common tail) cannot be ranked against the WGS-scored cohort.
+                                    ui.label(
+                                        egui::RichText::new(self.tr("archaic.noPercentile"))
+                                            .weak()
+                                            .small(),
+                                    );
+                                }
+                            }
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(self.tr("archaic.notComparable"))
+                                    .weak()
+                                    .small(),
+                            );
+                        }
+                    });
                     // Per-tab AI explanation of the ROH result (M5) — only once it's been computed.
                     if self.roh.is_some() {
                         ui.add_space(8.0);
