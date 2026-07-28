@@ -586,6 +586,59 @@ the derived assets go to the GitHub asset release via `packaging/publish-assets.
 explicit step. Note `archaic_markers_*.bin` is 14 MB — small enough to bundle, unlike the 133 MB
 haplotype panel, so it does not need an `ON_DEMAND_PREFIXES` entry in `packaging/stage-assets.sh`.
 
+### M2 — as built, and the coverage gap the real-data run exposed (2026-07-28)
+
+Built end to end: `count_archaic_markers` → `consensus_archaic` (migration 0039) →
+`estimate_archaic_from_consensus` → worker command/event → an Ancestry-tab card, plus a headless
+`navigator archaic --subject <id>` mirroring `deep-ancestry`.
+
+Running it on the ground-truth subject produced a working result and a **design gap that unit tests
+could not have caught**:
+
+```
+Archaic markers (Tier A): 914 of 15354 copies
+  7677 of 299958 panel sites called (2.6%)
+```
+
+**The autosomal consensus is 1240k-restricted.** §5 assumed the consensus dosages span the genome;
+they do not — `DiploidProfile` carries genotypes only at the ~1.23 M 1240k/IBD panel loci. Our
+archaic panel intersects that set at **7,679 sites**, and the app called 7,677 of them. So Tier A
+sees 2.6 % of the panel *regardless of whether the subject has WGS*, and 97 % of the calibrated
+panel is unreachable through this path.
+
+Options, none yet taken:
+
+1. **Genotype the archaic panel directly from the alignment**, as `genotype_panel_for_alignment`
+   already does for 1240k. Correct and gives WGS subjects the full panel, at the cost of a decode
+   pass.
+2. **Add the archaic loci to the consensus's genotyping target set**, so one pass covers both. Most
+   efficient long-term, but it changes the consensus contract and needs everyone re-genotyped.
+3. **Restrict the shipped panel to the 1240k intersection** (~7.7 k sites). Cheap and consistent,
+   but discards the calibration work and caps chip *and* WGS at the same low resolution.
+
+### Validation — the percentile problem is solvable, and the numbers are sane
+
+Scoring the 1kGP cohort on **exactly the 7,679 sites the subject was scored on**:
+
+| super-pop | n | mean copies |
+|---|---|---|
+| AFR | 661 | 80.2 |
+| SAS | 489 | 940.9 |
+| EUR | 503 | 1003.4 |
+| AMR | 347 | 1036.2 |
+| EAS | 504 | 1322.7 |
+
+The population ordering survives on this subset (AFR ~12× lower; EAS above EUR), and the subject
+lands at **914 copies — the 10th percentile within EUR** (mean 1003, range 819–1234): low-normal,
+well inside the distribution.
+
+That is the **percentile fix demonstrated**: comparing subject and cohort on the *same* called-site
+subset is valid, whatever that subset is. It confirms option 1 of the earlier list — store per-site
+per-population derived frequencies in Asset 4 and compute the expected distribution over whatever
+the subject actually called, rather than shipping pre-reduced per-sample totals. The current
+`ArchaicCountDistribution` (per-sample totals over all panel sites) cannot support this and should
+be replaced or supplemented.
+
 ### M4 — Phase 3 (optional)
 
 Trait associations (each needs a curated GWAS-backed table — curatorial work, not engineering),
