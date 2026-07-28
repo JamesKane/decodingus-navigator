@@ -678,10 +678,43 @@ is worse than a coarse one, and no ancestry estimate means no percentile rather 
 The ground-truth subject reports **12,126 of 599,864 copies at 100 % coverage, "more than 7 % of
 EUR"** — consistent with the 5th–10th percentile the two independent hand calculations gave.
 
-Storing per-site per-population frequencies in Asset 4 remains the better long-term shape: it would
-let a *chip* subject get an honest percentile too, by computing the cohort's expected distribution
-over just the sites that subject called. The call-rate gate is the correct interim behaviour, not a
-substitute for it.
+### Chip percentiles — solved (2026-07-28)
+
+Asset 4 now stores **per-site per-population derived frequencies** in panel order, so the cohort's
+expected count and variance can be computed over exactly the sites a subject called. The call-rate
+gate is gone: `percentile_for_called` is valid at any coverage, and a chip is compared against what
+the cohort would have scored on those same ~3 % of sites.
+
+The count is modelled as a sum of per-site binomials under Hardy-Weinberg, normal-approximated, with
+the variance scaled by a **measured LD inflation** — archaic alleles travel in linked blocks, so the
+independent-sites variance badly understates the spread.
+
+Two things had to be got right, both found by measuring rather than assuming:
+
+1. **The inflation is not a constant.** It is 52.4× on the full panel but 5.3× on a 2.6 % subset of
+   the same panel, because a sparse subset samples fewer sites per linked block. Applying one
+   full-panel factor to a chip would over-widen the deviation ~3× and squash every percentile toward
+   50. No simple block model fits both measurements (solving for a common block size gives a
+   negative size), so the inflation is measured at a ladder of densities and log-interpolated.
+2. **Random subsets are not chips.** A random 3 % subset gives EUR 2.0× while the *real* 1240k
+   intersection at 2.6 % gives 5.3× — array and capture content is spatially clustered and retains
+   far more linkage. Mixing random and real rungs also made the ladder non-monotonic, which would
+   have *lowered* the inflation as density rose. Real site sets (`--subset-sites`) therefore
+   **displace** the synthetic rungs; only the full-panel rung, real by construction, is kept
+   alongside them.
+
+Validated against empirical rank on the same subsets:
+
+| input | coverage | model | empirical rank |
+|---|---|---|---|
+| chip (23andMe v5) | 3.58 % | 7 % | 1 % |
+| WGS, direct genotyping | 100 % | 12 % | ~5–7 % |
+
+The model runs **conservative** — it reports closer to the middle than the truth — which is the
+right direction to err for a consumer-facing number, but it should not be presented as a precise
+rank. Exactness would need the cohort's per-sample genotypes at runtime (~188 MB bit-packed, the
+shape `HaplotypeReference` already uses); that is the upgrade path if the approximation ever proves
+insufficient.
 
 ### M4 — Phase 3 (optional)
 

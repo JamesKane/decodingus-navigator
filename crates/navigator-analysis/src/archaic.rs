@@ -256,6 +256,13 @@ pub struct ArchaicMarkerResult {
     pub percentile: Option<f32>,
     /// The cohort `percentile` was computed against (e.g. "EUR").
     pub cohort: Option<String>,
+    /// Indices (panel order) of the sites that were actually called for this subject.
+    ///
+    /// Needed to score the reference cohort over the *same* sites — the whole basis of an honest
+    /// percentile for sparse input. Deliberately **not serialized**: it is ~300 k integers on a WGS
+    /// subject, and the cached result is stored as JSON.
+    #[serde(skip)]
+    pub called_indices: Vec<u32>,
 }
 
 impl ArchaicMarkerResult {
@@ -285,8 +292,9 @@ pub fn count_archaic_markers(genotypes: &[SiteGenotype], panel: &ArchaicMarkerPa
 
     let (mut total, mut nea, mut den, mut shared) = (0u32, 0u32, 0u32, 0u32);
     let mut called = 0usize;
+    let mut called_indices: Vec<u32> = Vec::new();
 
-    for site in &panel.sites {
+    for (idx, site) in panel.sites.iter().enumerate() {
         let Some(g) = by_pos.get(&(site.contig.as_str(), site.position)) else {
             continue;
         };
@@ -306,6 +314,7 @@ pub fn count_archaic_markers(genotypes: &[SiteGenotype], panel: &ArchaicMarkerPa
             continue;
         };
         called += 1;
+        called_indices.push(idx as u32);
         total += copies;
         match site.diagnostic_class {
             DiagnosticClass::Neanderthal => nea += copies,
@@ -329,6 +338,7 @@ pub fn count_archaic_markers(genotypes: &[SiteGenotype], panel: &ArchaicMarkerPa
         shared_copies: shared,
         percentile: None,
         cohort: None,
+        called_indices,
     }
 }
 
@@ -356,6 +366,52 @@ pub struct ArchaicCountDistribution {
     /// site list, so a mismatch must be detected rather than silently rendered.
     pub panel_sites: usize,
     pub cohorts: Vec<CohortCounts>,
+    /// Super-population codes indexing [`site_freqs`](Self::site_freqs) and
+    /// [`variance_inflation`](Self::variance_inflation).
+    #[serde(default)]
+    pub populations: Vec<String>,
+    /// Per-population derived-allele frequency at each panel site, in **panel order**:
+    /// `site_freqs[pop][site_index]`.
+    ///
+    /// This is what lets a *sparse* subject get an honest percentile. Per-sample totals can only
+    /// rank someone scored on the whole panel; frequencies let the cohort's expected count and
+    /// variance be computed over exactly the sites a given subject called, whatever those are —
+    /// which is the only valid comparison when a chip covers ~3 % of the panel and those sites are
+    /// its common tail.
+    #[serde(default)]
+    pub site_freqs: Vec<Vec<f32>>,
+    /// Per-population variance inflation measured at a **ladder of site densities**:
+    /// `variance_inflation[pop] = [(density, inflation), …]`, densest first.
+    ///
+    /// Archaic alleles travel in linked haplotype blocks, so sites are not independent and the
+    /// binomial sum understates the spread — but crucially the inflation is **not a constant**. It
+    /// was measured at 52.4× on the full panel and 5.3× on a 2.6 % subset of the same panel, because
+    /// a sparse subset samples fewer sites per linked block. Applying a single full-panel factor to
+    /// a chip would over-widen the deviation ~3× and squash every percentile toward 50.
+    ///
+    /// No simple block model fits the two measurements (solving for a common block size gives a
+    /// negative size), so this is measured empirically at several densities and interpolated in log
+    /// space at runtime rather than modelled.
+    #[serde(default)]
+    pub variance_inflation: Vec<Vec<(f32, f32)>>,
+    /// SHA-256 of the panel asset these frequencies were computed against. A percentile is only
+    /// rendered when this matches the loaded panel — site_freqs is indexed by panel position, so a
+    /// mismatched panel would silently score against the wrong sites.
+    #[serde(default)]
+    pub panel_fingerprint: String,
+}
+
+/// Standard-normal CDF via the Abramowitz & Stegun 7.1.26 error-function approximation
+/// (|error| < 1.5e-7) — enough for a percentile rendered to whole numbers.
+fn normal_cdf(z: f64) -> f64 {
+    let sign = if z < 0.0 { -1.0 } else { 1.0 };
+    let x = z.abs() / std::f64::consts::SQRT_2;
+    let t = 1.0 / (1.0 + 0.3275911 * x);
+    let y = 1.0
+        - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592)
+            * t
+            * (-x * x).exp();
+    0.5 * (1.0 + sign * y)
 }
 
 impl ArchaicCountDistribution {
@@ -378,7 +434,88 @@ impl ArchaicCountDistribution {
         }
         (total > 0).then(|| below as f32 * 100.0 / total as f32)
     }
+
+    /// Percentile of `observed_copies` for a subject who called exactly `called_sites` (indices into
+    /// the panel, in panel order), against `super_population`.
+    ///
+    /// Works at any coverage — a chip calling 3 % of the panel is compared against the cohort's
+    /// expected count *over those same sites*, so the call-rate artefact that would otherwise pin
+    /// every chip user near the 0th percentile disappears.
+    ///
+    /// Modelled as a sum of independent per-site binomials under Hardy-Weinberg (mean `2f`, variance
+    /// `2f(1-f)`), normal-approximated — with thousands of sites the CLT is comfortable — then the
+    /// variance scaled by the measured LD inflation. Returns `None` when the asset predates the
+    /// frequency data, the panel fingerprint disagrees, the population is unknown, or too few sites
+    /// were called for the approximation to mean anything.
+    pub fn percentile_for_called(
+        &self,
+        super_population: &str,
+        called_sites: &[u32],
+        observed_copies: u32,
+        panel_fingerprint: &str,
+    ) -> Option<f32> {
+        if self.site_freqs.is_empty() || self.panel_fingerprint != panel_fingerprint {
+            return None;
+        }
+        if called_sites.len() < MIN_SITES_FOR_PERCENTILE {
+            return None;
+        }
+        let pop = self.populations.iter().position(|p| p == super_population)?;
+        let freqs = self.site_freqs.get(pop)?;
+        let (mut mean, mut var) = (0.0f64, 0.0f64);
+        for &i in called_sites {
+            let Some(&f) = freqs.get(i as usize) else { continue };
+            let f = f as f64;
+            mean += 2.0 * f;
+            var += 2.0 * f * (1.0 - f);
+        }
+        let density = called_sites.len() as f32 / self.panel_sites.max(1) as f32;
+        var *= self.inflation_at(pop, density) as f64;
+        if var <= 0.0 {
+            return None;
+        }
+        let z = (observed_copies as f64 - mean) / var.sqrt();
+        Some((normal_cdf(z) * 100.0).clamp(0.0, 100.0) as f32)
+    }
 }
+
+impl ArchaicCountDistribution {
+    /// Variance inflation for a population at a given site density, log-interpolated between the
+    /// measured rungs and clamped to the ends (never extrapolated — an extrapolated inflation is
+    /// exactly the kind of confident-but-unfounded number this whole feature avoids).
+    fn inflation_at(&self, pop: usize, density: f32) -> f32 {
+        let Some(ladder) = self.variance_inflation.get(pop) else {
+            return 1.0;
+        };
+        if ladder.is_empty() {
+            return 1.0;
+        }
+        let mut rungs = ladder.clone();
+        rungs.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if density <= rungs[0].0 {
+            return rungs[0].1.max(1.0);
+        }
+        if density >= rungs[rungs.len() - 1].0 {
+            return rungs[rungs.len() - 1].1.max(1.0);
+        }
+        for w in rungs.windows(2) {
+            let ((d0, i0), (d1, i1)) = (w[0], w[1]);
+            if density >= d0 && density <= d1 {
+                let (l0, l1, l) = (d0.max(1e-6).ln(), d1.max(1e-6).ln(), density.max(1e-6).ln());
+                let t = if (l1 - l0).abs() < f32::EPSILON {
+                    0.0
+                } else {
+                    (l - l0) / (l1 - l0)
+                };
+                return (i0 + t * (i1 - i0)).max(1.0);
+            }
+        }
+        1.0
+    }
+}
+
+/// Below this many called sites the normal approximation is not worth rendering as a percentile.
+pub const MIN_SITES_FOR_PERCENTILE: usize = 200;
 
 #[cfg(test)]
 mod tests {
@@ -587,6 +724,41 @@ mod tests {
     }
 
     #[test]
+    fn subset_percentile_compares_against_the_same_sites() {
+        // Two populations. At every site the "high" cohort carries the derived allele at 50% and the
+        // "low" cohort at 5%. A subject calling only 1000 sites is scored against the cohort's
+        // expectation OVER THOSE SITES, so sparse coverage no longer drags them to the bottom.
+        let n = 2000usize;
+        let dist = ArchaicCountDistribution {
+            build: "chm13v2.0".into(),
+            panel_sites: n,
+            cohorts: Vec::new(),
+            populations: vec!["HIGH".into(), "LOW".into()],
+            site_freqs: vec![vec![0.5; n], vec![0.05; n]],
+            variance_inflation: vec![vec![(1.0, 1.0)], vec![(1.0, 1.0)]],
+            panel_fingerprint: "fp".into(),
+        };
+        let called: Vec<u32> = (0..1000).collect();
+
+        // Expected copies over 1000 sites at f=0.5 is 1000; landing exactly there is the median.
+        let p = dist.percentile_for_called("HIGH", &called, 1000, "fp").expect("percentile");
+        assert!((p - 50.0).abs() < 2.0, "expected ~50th percentile, got {p}");
+
+        // Well above expectation ranks high, well below ranks low.
+        assert!(dist.percentile_for_called("HIGH", &called, 1200, "fp").unwrap() > 95.0);
+        assert!(dist.percentile_for_called("HIGH", &called, 800, "fp").unwrap() < 5.0);
+
+        // The SAME raw count is unremarkable for HIGH but extraordinary for LOW — which is the whole
+        // point of scoring against the right cohort rather than a single pooled distribution.
+        assert!(dist.percentile_for_called("LOW", &called, 1000, "fp").unwrap() > 99.0);
+
+        // Guards: wrong panel, unknown population, too few sites -> no number rather than a wrong one.
+        assert_eq!(dist.percentile_for_called("HIGH", &called, 1000, "other-panel"), None);
+        assert_eq!(dist.percentile_for_called("NOPE", &called, 1000, "fp"), None);
+        assert_eq!(dist.percentile_for_called("HIGH", &called[..10], 5, "fp"), None);
+    }
+
+    #[test]
     fn percentile_is_share_of_cohort_scoring_below() {
         let dist = ArchaicCountDistribution {
             build: "chm13v2.0".into(),
@@ -603,6 +775,10 @@ mod tests {
                     counts: vec![0, 1],
                 },
             ],
+            populations: Vec::new(),
+            site_freqs: Vec::new(),
+            variance_inflation: Vec::new(),
+            panel_fingerprint: String::new(),
         };
         // 2 of 4 EUR samples score below 30.
         assert_eq!(dist.percentile_in_super("EUR", 30), Some(50.0));

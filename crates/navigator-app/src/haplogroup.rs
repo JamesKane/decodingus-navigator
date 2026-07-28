@@ -3457,7 +3457,8 @@ impl App {
     async fn archaic_percentile(
         &self,
         biosample_guid: SampleGuid,
-        copies: u32,
+        result: &ArchaicMarkerResult,
+        panel_fingerprint: &str,
     ) -> Result<Option<(f32, String)>, AppError> {
         let build = ReferenceBuild::Chm13v2;
         let _ = self.ensure_ancestry_asset(build, &crate::archaic_marker_dist_path(build)).await;
@@ -3481,7 +3482,9 @@ impl App {
         let sup = navigator_domain::ancestry::population_super(&top.population_code)
             .unwrap_or(top.population_code.as_str())
             .to_string();
-        Ok(dist.percentile_in_super(&sup, copies).map(|p| (p, sup)))
+        Ok(dist
+            .percentile_for_called(&sup, &result.called_indices, result.total_copies, panel_fingerprint)
+            .map(|p| (p, sup)))
     }
 
     /// Genotype the archaic marker panel directly from one alignment.
@@ -3694,6 +3697,7 @@ impl App {
         let panel_path = crate::archaic_markers_path(build);
         let bytes = crate::read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel_fingerprint = navigator_analysis::manifest::sha256_hex(&bytes);
         let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
 
         // Start from the consensus — it covers chips and every non-alignment source, but only where
@@ -3726,16 +3730,16 @@ impl App {
         })
         .await?;
 
-        // Percentile — only when the subject was scored on a comparable basis to the reference
-        // cohort. The cohort is scored over the whole panel, so a sparse subject (a chip reaches
-        // ~3%, and those sites are the panel's common tail) cannot be ranked against it without
-        // producing a confidently wrong number. Below the floor the field simply stays None and the
-        // UI says why (design §10).
-        if result.call_rate >= ARCHAIC_PERCENTILE_MIN_CALL_RATE {
-            if let Some((pct, cohort)) = self.archaic_percentile(biosample_guid, result.total_copies).await? {
-                result.percentile = Some(pct);
-                result.cohort = Some(cohort);
-            }
+        // Percentile — valid at ANY coverage now, because the cohort is scored over exactly the
+        // sites this subject called rather than over the whole panel. A chip reaching ~3% of the
+        // panel is compared against what the cohort would score on those same 3%, so the call-rate
+        // artefact that used to pin every chip user near the 0th percentile is gone (design §10).
+        if let Some((pct, cohort)) = self
+            .archaic_percentile(biosample_guid, &result, &panel_fingerprint)
+            .await?
+        {
+            result.percentile = Some(pct);
+            result.cohort = Some(cohort);
         }
 
         consensus_archaic::upsert(

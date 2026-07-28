@@ -2696,13 +2696,6 @@ fn ibd_panel_cache_kind() -> String {
 /// Cache kind for per-alignment archaic-panel genotypes.
 const ARCHAIC_PANEL_KIND: &str = "archaic_panel_genotypes";
 
-/// Minimum panel call rate before an archaic count may be ranked against the reference cohort.
-///
-/// The cohort is scored over the whole panel. A consumer chip reaches ~3 % of it, and those sites
-/// are the panel's common tail, so ranking such a count would put every chip user near the 0th
-/// percentile for reasons that have nothing to do with their ancestry. A directly-genotyped WGS
-/// reaches ~100 %, which is comparable.
-pub const ARCHAIC_PERCENTILE_MIN_CALL_RATE: f32 = 0.90;
 
 /// The archaic-panel genotype cache kind, salted with the panel asset's manifest sha256 exactly as
 /// [`ibd_panel_cache_kind`] is — the archaic panel's site list changes whenever its thresholds are
