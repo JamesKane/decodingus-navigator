@@ -24,6 +24,7 @@ use flate2::read::MultiGzDecoder;
 use navigator_analysis::ancestry::{AncestryPanel, PanelSite};
 
 mod archaic;
+mod archaic_dist;
 mod genetic_map;
 mod hap_panel;
 mod ibd_panel;
@@ -71,6 +72,9 @@ enum Cmd {
     /// Stage 3 of the archaic panel (CHM13): re-join the lifted coordinates, orient against the
     /// CHM13 reference, apply the African-outgroup filter, and write `archaic_markers_<build>.bin`.
     ArchaicPanel(archaic::ArchaicPanelArgs),
+    /// Build the archaic percentile reference: score every 1kGP sample through the same marker
+    /// count the app runs, grouped per population, so a subject's count has a cohort to sit in.
+    ArchaicDist(archaic_dist::ArchaicDistArgs),
     /// Build the chip-compatible IBD panel (multi-build, palindrome-free) from a sites table.
     IbdPanel(ibd_panel::IbdPanelArgs),
     /// Build the asset integrity manifest (sha256 of every `*_<build>.bin`). Run last.
@@ -140,6 +144,7 @@ fn main() -> Result<()> {
         Cmd::GeneticMap(args) => genetic_map::build_genetic_map(args),
         Cmd::ArchaicCandidates(args) => archaic::build_archaic_candidates(args),
         Cmd::ArchaicPanel(args) => archaic::build_archaic_panel(args),
+        Cmd::ArchaicDist(args) => archaic_dist::build_archaic_dist(args),
         Cmd::IbdPanel(args) => ibd_panel::build_ibd_panel(args),
         Cmd::Manifest(args) => manifest::build_manifest(args),
     }

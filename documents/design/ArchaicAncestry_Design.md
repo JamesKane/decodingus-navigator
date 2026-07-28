@@ -495,8 +495,56 @@ suppressing the very rarest noise.
 
 **Shipped panel: 299,958 sites** (202,097 Neanderthal / 36,268 Denisovan / 61,593 shared).
 
-**Still outstanding for M1:** Asset 4, the percentile distribution, is not built; and neither asset
-is in the SHA-256 manifest, so the app would load them through the unverified path.
+### Asset 4 — percentile reference (built 2026-07-28)
+
+`archaic_marker_dist_chm13v2.0.bin`, built by `panelbuild archaic-dist`: every 1kGP sample scored
+through the same marker arithmetic the app runs, from the 3202-sample CHM13 BCF (native build, no
+liftover), grouped per fine population. 2,504 labelled samples over 26 populations; the 698
+unlabelled (related) samples are dropped.
+
+**This is an independent biological validation of the whole panel**, on data nothing was tuned to:
+
+| super-pop | n | mean archaic copies |
+|---|---|---|
+| AFR | 661 | 1,223 |
+| EUR | 503 | 13,234 |
+| AMR | 347 | 13,748 |
+| SAS | 489 | 15,639 |
+| EAS | 504 | 18,201 |
+
+Africans carry ~10× fewer archaic alleles, and East Asians exceed Europeans by ~38 % — both are the
+textbook result (EAS ~2.3–2.6 % vs EUR ~1.8–2.0 % Neanderthal). The non-zero AFR floor is expected:
+the AFR ceiling is 1 %, not 0.
+
+### The percentile is NOT comparable across data types — unresolved, blocks M2
+
+Measured, not anticipated. A 23andMe v5 chip covers **3.6 %** of the calibrated panel (10,739 of
+299,958 sites), so the ground-truth sample's raw chip count is 1,005 against a EUR WGS mean of
+13,234. Rendering that against the cohort distribution puts **every chip user at the 0th
+percentile**, purely as a call-rate artifact.
+
+Naive rate-scaling does not fix it either, and this is the part that would be easy to miss: the
+subject's chip *rate* is 0.0936 copies/site against a EUR WGS mean rate of 0.0441 — **2.1× too
+high**, because array content is deliberately biased toward common variants while the calibrated
+panel is mostly rare ones. The chip-overlapping sites are the panel's common tail, so scaling a rate
+measured there across the whole panel over-estimates by roughly 2×.
+
+So neither the raw count nor a scaled rate can be compared to this cohort. Options for M2, in
+rough order of preference:
+
+1. **Per-site, per-population derived-allele frequencies** in Asset 4 instead of (or alongside)
+   per-sample totals. Compact, and it lets the expected count and variance be computed analytically
+   for *any* subset of called sites — so chip, WGS and partial data all get an honest percentile.
+2. **Two cohorts** — one scored over all panel sites (WGS) and one over the chip-overlap subset,
+   picking whichever matches the subject's data. Pragmatic, mirrors how a vendor's chip-vs-chip
+   percentile works, but needs a cohort per chip build.
+3. Report the percentile **only** for WGS and suppress it for chip data, showing the bare count.
+   Honest but weak, given chip is the common case.
+
+Until one is implemented, the Tier A card must not render a percentile for chip input.
+
+**Still outstanding for M1:** neither asset is in the SHA-256 manifest, so the app would load them
+through the unverified path.
 
 ### M4 — Phase 3 (optional)
 
