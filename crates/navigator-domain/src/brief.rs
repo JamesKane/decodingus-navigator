@@ -266,6 +266,9 @@ pub struct SubjectBrief {
     /// Relatedness / endogamy read from runs of homozygosity. Absent until ROH is computed.
     #[serde(default)]
     pub roh: Option<RohBrief>,
+    /// Archaic (Neanderthal) marker count. Absent until the archaic count is computed.
+    #[serde(default)]
+    pub archaic: Option<ArchaicBrief>,
     pub test: TestBrief,
     /// True when the subject has a sequencing alignment that hasn't been analyzed yet (data present,
     /// no coverage computed) — the signal for the Simple-mode one-click "Analyze" prompt. False for
@@ -424,6 +427,62 @@ pub fn ancestry_summary(lang: Lang, super_pops: &[SuperPopulationSummary]) -> St
 /// re-derived here, so the Simple brief and the Advanced ROH chart can never disagree about whether
 /// a subject reads as outbred, endogamous, or recently consanguineous. Framed strictly as *shared
 /// ancestry between the parents' lines* — a genealogical read, never a clinical one.
+/// The casual-mode read of the archaic (Neanderthal) marker count.
+///
+/// Deliberately mirrors how the Advanced card frames it: a **count over what the subject's test
+/// actually covered**, never a "percent Neanderthal", and no Denisovan figure — outside Oceania that
+/// signal sits at the noise floor and reporting it would be inventing a finding (design §7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchaicBrief {
+    /// Archaic-derived allele copies carried.
+    pub total_copies: u32,
+    /// Copies assayed — twice the number of marker sites the subject's data covered.
+    pub possible_copies: u32,
+    /// Marker sites covered, and how many exist in the panel.
+    pub called_sites: usize,
+    pub panel_sites: usize,
+    /// Percentile within `cohort`, when the comparison is sound.
+    pub percentile: Option<f32>,
+    pub cohort: Option<String>,
+    /// Plain-language pattern label, e.g. "Typical amount".
+    pub pattern: String,
+    /// One-sentence casual explanation.
+    pub summary_phrase: String,
+}
+
+/// Build the casual archaic read.
+///
+/// The pattern comes from the **percentile** where one is available, because a raw count means
+/// nothing on its own — it scales with how many sites the test covered. With no percentile the
+/// label stays neutral ("Neanderthal markers found") rather than implying a comparison that was not
+/// made.
+pub fn archaic_brief(
+    lang: Lang,
+    total_copies: u32,
+    possible_copies: u32,
+    called_sites: usize,
+    panel_sites: usize,
+    percentile: Option<f32>,
+    cohort: Option<String>,
+) -> ArchaicBrief {
+    let (pattern_key, summary_key) = match percentile {
+        Some(p) if p < 25.0 => ("brief.archaicFewer", "brief.archaicFewerSummary"),
+        Some(p) if p > 75.0 => ("brief.archaicMore", "brief.archaicMoreSummary"),
+        Some(_) => ("brief.archaicTypical", "brief.archaicTypicalSummary"),
+        None => ("brief.archaicFound", "brief.archaicFoundSummary"),
+    };
+    ArchaicBrief {
+        total_copies,
+        possible_copies,
+        called_sites,
+        panel_sites,
+        percentile,
+        cohort,
+        pattern: tr(lang, pattern_key).to_string(),
+        summary_phrase: tr(lang, summary_key).to_string(),
+    }
+}
+
 pub fn roh_brief(
     lang: Lang,
     pattern: RohPattern,

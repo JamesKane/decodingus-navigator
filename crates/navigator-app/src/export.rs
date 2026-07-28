@@ -503,6 +503,24 @@ pub fn subject_brief_html(b: &SubjectBrief, narration: Option<&crate::NarratedBr
         body.push_str(&format!("<p class=\"meta\">F_ROH {:.4}</p>\n", r.f_roh));
     }
 
+    if let Some(a) = &b.archaic {
+        body.push_str("<h2>Neanderthal ancestry</h2>\n");
+        body.push_str(&format!("<p class=\"hg\">{}</p>\n", esc(&a.pattern)));
+        body.push_str(&format!("<p>{}</p>\n", esc(&a.summary_phrase)));
+        // A count over what was assayed, never a "percent Neanderthal" (design S1/S7) — the export
+        // has to hold the same line as the UI or the two disagree about what was measured.
+        body.push_str(&format!(
+            "<p class=\"meta\">{} of {} marker copies</p>\n",
+            a.total_copies, a.possible_copies
+        ));
+        if let (Some(p), Some(c)) = (a.percentile, &a.cohort) {
+            body.push_str(&format!(
+                "<p class=\"meta\">More than {p:.0}% of {} reference samples</p>\n",
+                esc(c)
+            ));
+        }
+    }
+
     body.push_str("<h2>Your test</h2>\n");
     body.push_str(&format!("<p class=\"hg\">{}</p>\n", esc(&b.test.test_name)));
     body.push_str(&format!("<p>{}</p>\n", esc(&b.test.what_it_tells)));
@@ -590,6 +608,7 @@ mod tests {
                 method_note: "estimated from 400,000 genome-wide markers".into(),
             }),
             roh: None,
+            archaic: None,
             test: TestBrief {
                 test_name: "Whole Genome Sequencing".into(),
                 what_it_tells: "Reads your whole genome.".into(),

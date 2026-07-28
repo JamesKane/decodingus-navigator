@@ -187,6 +187,20 @@ impl App {
             )
         });
 
+        // Archaic (Neanderthal) markers — same contract as ROH: read-only, surfaced only once the
+        // count has been computed and cached, so the brief stays cheap.
+        let archaic = self.cached_archaic(biosample_guid).await?.map(|a| {
+            brief::archaic_brief(
+                lang,
+                a.total_copies,
+                a.possible_copies,
+                a.called_sites,
+                a.panel_sites,
+                a.percentile,
+                a.cohort.clone(),
+            )
+        });
+
         // Global caveats.
         let mut caveats = Vec::new();
         if matches!(pack_status, PackStatus::Bundled | PackStatus::Unavailable) {
@@ -208,6 +222,7 @@ impl App {
             maternal,
             ancestry,
             roh,
+            archaic,
             test,
             // Has a sequencing alignment but no coverage computed → offer the one-click Analyze.
             needs_analysis: default_aln.is_some() && coverage.is_none(),

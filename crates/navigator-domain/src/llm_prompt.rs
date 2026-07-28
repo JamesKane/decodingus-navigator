@@ -232,6 +232,7 @@ mod tests {
                 method_note: "estimated from 400,000 markers".into(),
             }),
             roh: None,
+            archaic: None,
             test: TestBrief {
                 test_name: "Whole Genome Sequencing".into(),
                 what_it_tells: "Reads your whole genome.".into(),

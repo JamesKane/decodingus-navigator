@@ -650,6 +650,11 @@ impl NavigatorApp {
                             );
                         }
                     });
+                    // Per-tab AI explanation of the archaic result — only once it's been computed.
+                    if self.archaic.is_some() {
+                        ui.add_space(8.0);
+                        self.ai_explain(ui, guid, SignalKind::Archaic);
+                    }
                 }
                 DetailTab::Sources => self.sources_tab(ui, guid),
                 DetailTab::IbdMatches => {

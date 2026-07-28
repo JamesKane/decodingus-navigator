@@ -111,6 +111,7 @@ pub enum SignalKind {
     MtMutations,
     Ibd,
     Roh,
+    Archaic,
 }
 
 impl SignalKind {
@@ -123,6 +124,7 @@ impl SignalKind {
             SignalKind::MtMutations => "mtDNA mutations",
             SignalKind::Ibd => "DNA relatives (IBD matches)",
             SignalKind::Roh => "shared ancestry (runs of homozygosity)",
+            SignalKind::Archaic => "Neanderthal (archaic) markers",
         }
     }
 }
@@ -230,6 +232,42 @@ fn roh_section(brief: &SubjectBrief) -> Option<String> {
     Some(s)
 }
 
+fn archaic_section(brief: &SubjectBrief) -> Option<String> {
+    let a = brief.archaic.as_ref()?;
+    let mut s = String::from("\nNeanderthal (archaic) markers:\n");
+    s.push_str(&format!(
+        "- {} archaic-allele copies out of {} assayed\n",
+        a.total_copies, a.possible_copies
+    ));
+    s.push_str(&format!(
+        "- measured at {} of the {} marker sites in the panel ({:.1}% of it)\n",
+        a.called_sites,
+        a.panel_sites,
+        if a.panel_sites == 0 {
+            0.0
+        } else {
+            a.called_sites as f64 * 100.0 / a.panel_sites as f64
+        }
+    ));
+    match (a.percentile, &a.cohort) {
+        (Some(p), Some(c)) => s.push_str(&format!("- more than {p:.0}% of {c} reference samples\n")),
+        _ => s.push_str("- no population comparison: the test covers too few marker sites to rank\n"),
+    }
+    s.push_str(&format!("- pattern: {}\n", a.pattern));
+    // The model must not turn a count into a percentage or a Denisovan claim; both are explicitly
+    // out of scope for this signal (design S1/S7) and the narration is grounded only in this text.
+    s.push_str(
+        "- note: this is a COUNT of marker copies, not a percentage of the genome, and it is specific \
+         to this panel — do not compare it to another company's number, and do not restate it as a \
+         percent Neanderthal.\n",
+    );
+    s.push_str(
+        "- note: no Denisovan result is reported; outside Oceania that signal is at the noise floor. \
+         This is a genealogical curiosity, not a health or trait result.\n",
+    );
+    Some(s)
+}
+
 /// The labelled section for a single signal, or `None` when the subject has nothing for it — the
 /// grounding for an M5 per-tab "Explain this" narration of just that signal.
 pub fn signal_section(ctx: &ResultsContext, kind: SignalKind) -> Option<String> {
@@ -240,6 +278,7 @@ pub fn signal_section(ctx: &ResultsContext, kind: SignalKind) -> Option<String> 
         SignalKind::MtMutations => mt_section(&ctx.mt_mutations),
         SignalKind::Ibd => ibd_section(&ctx.ibd),
         SignalKind::Roh => roh_section(&ctx.brief),
+        SignalKind::Archaic => archaic_section(&ctx.brief),
     }
 }
 
@@ -254,6 +293,9 @@ pub fn results_fact_sheet(ctx: &ResultsContext) -> String {
         private_y_section(&ctx.private_y),
         mt_section(&ctx.mt_mutations),
         ibd_section(&ctx.ibd),
+        // ROH already reaches the sheet via narrate_fact_sheet (it lives on the brief); the archaic
+        // block does not, so add it explicitly or the chat cannot answer about it.
+        archaic_section(&ctx.brief),
     ]
     .into_iter()
     .flatten()
@@ -322,6 +364,7 @@ mod tests {
                 method_note: "estimated from 400,000 markers".into(),
             }),
             roh: None,
+            archaic: None,
             test: TestBrief {
                 test_name: "Whole Genome Sequencing".into(),
                 what_it_tells: "Reads your whole genome.".into(),
@@ -395,6 +438,41 @@ mod tests {
         // Absent when ROH hasn't been computed.
         ctx.brief.roh = None;
         assert!(signal_section(&ctx, SignalKind::Roh).is_none());
+    }
+
+    #[test]
+    fn archaic_section_is_a_count_never_a_percentage_or_a_denisovan_claim() {
+        let mut ctx = full_context();
+        ctx.brief.archaic = Some(crate::brief::ArchaicBrief {
+            total_copies: 12126,
+            possible_copies: 599864,
+            called_sites: 299932,
+            panel_sites: 299958,
+            percentile: Some(12.0),
+            cohort: Some("EUR".into()),
+            pattern: "Fewer than most".into(),
+            summary_phrase: "You carry fewer Neanderthal markers than most people with similar ancestry.".into(),
+        });
+
+        let section = signal_section(&ctx, SignalKind::Archaic).expect("archaic section");
+        assert!(section.contains("12126 archaic-allele copies out of 599864"));
+        assert!(section.contains("more than 12% of EUR"));
+
+        // The grounding must actively steer the model off the two framings the design forbids:
+        // restating a count as a percent-Neanderthal, and reporting a Denisovan finding.
+        assert!(section.contains("not a percentage"), "must warn against percent framing");
+        assert!(section.contains("no Denisovan result is reported"));
+        assert!(!mentions_health(&section), "archaic must not read as a health result");
+
+        // And it must not itself state a percent-of-genome figure anywhere.
+        assert!(!section.contains('%') || section.contains("% of EUR") || section.contains("% of it"));
+
+        // The chat fact sheet carries it too.
+        assert!(results_fact_sheet(&ctx).contains("Neanderthal (archaic) markers"));
+
+        // Absent until the count has been computed.
+        ctx.brief.archaic = None;
+        assert!(signal_section(&ctx, SignalKind::Archaic).is_none());
     }
 
     #[test]

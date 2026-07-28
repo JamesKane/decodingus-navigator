@@ -972,6 +972,28 @@ impl NavigatorApp {
             ui.add_space(10.0);
         }
 
+        // Neanderthal markers — present only once the archaic count has been computed.
+        if let Some(a) = &brief.archaic {
+            let gloss = self.tr("glossary.archaic");
+            card(ui, self.tr("brief.archaic"), |ui| {
+                ui.heading(&a.pattern).on_hover_text(gloss);
+                ui.add_space(4.0);
+                ui.label(&a.summary_phrase);
+                ui.add_space(4.0);
+                // The count, framed as copies-of-copies-assayed exactly as the Advanced card does —
+                // never a "percent Neanderthal" (design S1/S7).
+                ui.label(format!("{} of {} marker copies", a.total_copies, a.possible_copies));
+                if let (Some(p), Some(c)) = (a.percentile, &a.cohort) {
+                    ui.label(
+                        egui::RichText::new(format!("More than {p:.0}% of {c} reference samples"))
+                            .weak()
+                            .small(),
+                    );
+                }
+            });
+            ui.add_space(10.0);
+        }
+
         // Your test & quality.
         let test = &brief.test;
         card(ui, self.tr("brief.yourTest"), |ui| {
