@@ -61,6 +61,17 @@ archaic_vcf_url() {  # <name> <chrom>
     *) die "unknown archaic genome: $1";;
   esac
 }
+# Is this file BGZF (block-gzip), i.e. capable of indexed random access?
+#
+# Not academic: EVA publishes **Chagyrskaya as plain gzip** while Altai / Vindija / Denisova are
+# BGZF (verified 2026-07-27 from the gzip FEXTRA "BC" subfield). Plain gzip cannot be indexed at all
+# — `bcftools index` reports "a format that cannot be usefully indexed" — yet the server ships a
+# .tbi next to it anyway, which is an upstream inconsistency: that index is unusable and any -R
+# query against the file fails outright. Pass B therefore selects its access mode per file.
+is_bgzf() {
+  od -A n -t x1 -N 16 "$1" 2>/dev/null | tr -d ' \n' | grep -q '4243'
+}
+
 archaic_mask_url() {  # <name> <chrom>
   case "$1" in
     AltaiNeandertal) printf "$ALTAI_MASK_PATTERN" "$2";;
@@ -92,7 +103,11 @@ for name in "${ARCHAIC_NAMES[@]}"; do
     [[ -s "$vcf"  ]] || fetch "$(archaic_vcf_url "$name" "$c")"  "${name}.chr${c}.vcf.gz"      "$ARCHAIC_RAW" || log "WARN: no VCF for $name chr$c"
     [[ -s "$vcf.tbi" ]] || fetch "$(archaic_vcf_url "$name" "$c").tbi" "${name}.chr${c}.vcf.gz.tbi" "$ARCHAIC_RAW" || true
     [[ -s "$mask" ]] || fetch "$(archaic_mask_url "$name" "$c")" "${name}.chr${c}.mask.bed.gz" "$ARCHAIC_RAW" || log "WARN: no mask for $name chr$c (unfiltered)"
-    [[ -s "$vcf" && ( -s "$vcf.tbi" || -s "$vcf.csi" ) ]] || { [[ -s "$vcf" ]] && bcftools index -f -t "$vcf" 2>/dev/null; } || true
+    # Build a missing index only where one is possible — see is_bgzf below.
+    if [[ -s "$vcf" ]] && is_bgzf "$vcf" && [[ ! -s "$vcf.tbi" && ! -s "$vcf.csi" ]]; then
+      log "indexing $(basename "$vcf") (no index published)"
+      bcftools index -f -t "$vcf" 2>/dev/null || log "WARN: indexing failed for $(basename "$vcf")"
+    fi
   done
 done
 
@@ -123,12 +138,27 @@ for name in "${ARCHAIC_NAMES[@]}"; do
   for c in $CHROMS; do
     vcf="$ARCHAIC_RAW/${name}.chr${c}.vcf.gz"; mask="$ARCHAIC_RAW/${name}.chr${c}.mask.bed.gz"
     [[ -s "$vcf" ]] || continue
-    # -R jumps via the index to the universe positions; -T additionally intersects this genome's
-    # own quality mask (bcftools accepts both, and they compose).
-    mask_args=(); [[ -s "$mask" ]] && mask_args=(-T "$mask")
-    bcftools view -R "$UNIVERSE" ${mask_args[@]+"${mask_args[@]}"} -Ou "$vcf" \
-      | bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%GT]\n' \
-      >> "$TMP/.archaic.$name.part" || log "WARN: pass B failed for $name chr$c"
+    # Access mode per file: -R index-jumps straight to the universe positions (fast, but needs BGZF
+    # plus an index); -T streams the file and filters (no index, works on plain gzip). Chagyrskaya
+    # is plain gzip, so it takes the streaming path.
+    if is_bgzf "$vcf" && [[ -s "$vcf.tbi" || -s "$vcf.csi" ]]; then
+      sel=(-R "$UNIVERSE")
+    else
+      sel=(-T "$UNIVERSE")
+    fi
+    # The genome's own quality mask is applied as a SECOND view in the pipe: bcftools takes at most
+    # one -T per invocation, and a BED is accepted directly (expanding it to per-position rows would
+    # be hundreds of millions of lines for a large chromosome).
+    if [[ -s "$mask" ]]; then
+      bcftools view "${sel[@]}" -Ou "$vcf" \
+        | bcftools view -T "$mask" -Ou \
+        | bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%GT]\n' \
+        >> "$TMP/.archaic.$name.part" || log "WARN: pass B failed for $name chr$c"
+    else
+      bcftools view "${sel[@]}" -Ou "$vcf" \
+        | bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%GT]\n' \
+        >> "$TMP/.archaic.$name.part" || log "WARN: pass B failed for $name chr$c"
+    fi
   done
   [[ -s "$TMP/.archaic.$name.part" ]] || die "no calls extracted for $name"
   gzip -c "$TMP/.archaic.$name.part" > "$out" && rm -f "$TMP/.archaic.$name.part"
