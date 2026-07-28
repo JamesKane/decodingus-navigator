@@ -3491,10 +3491,11 @@ impl App {
     /// alignment under a kind salted with the panel's manifest hash, so recalibrating the panel
     /// invalidates stale genotypes instead of silently mixing site sets.
     ///
-    /// **CHM13 only.** Unlike the IBD panel, `ArchaicSite` carries no per-build coordinates, so a
-    /// GRCh37/38 alignment cannot be genotyped at these loci without a runtime liftover we
-    /// deliberately do not do. Such a subject falls back to consensus coverage; giving the panel
-    /// per-build loci (the GRCh37 positions already exist in the build pipeline) is the follow-up.
+    /// Works on **any build the panel carries loci for**: CHM13 natively, and GRCh37/38 via the
+    /// panel's per-build coordinates (offline lift, oriented at build time — no runtime liftover).
+    /// A dosage measured on a non-CHM13 build is re-keyed to the CHM13 alleles before it is
+    /// returned, because that build's ref/alt may be swapped or strand-flipped relative to CHM13
+    /// and feeding the raw dosage through would invert those sites silently.
     async fn genotype_archaic_for_alignment(
         &self,
         alignment_id: i64,
@@ -3505,39 +3506,141 @@ impl App {
             return Ok(g);
         }
         let build = self.alignment_or_err(alignment_id).await?.reference_build;
-        if !matches!(
+        let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
+        let is_chm13 = matches!(
             canonical_build(&build),
             Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
-        ) {
-            return Ok(Vec::new()); // not CHM13 — see the doc comment
-        }
-        let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
-        let sites: Vec<Site> = panel
-            .sites
-            .iter()
-            .map(|s| Site {
-                name: String::new(),
-                contig: s.contig.clone(),
-                position: s.position,
-                reference_allele: s.reference_allele.to_string(),
-                alternate_allele: s.alternate_allele.to_string(),
+        );
+
+        let genotypes = if is_chm13 {
+            let sites: Vec<Site> = panel
+                .sites
+                .iter()
+                .map(|s| Site {
+                    name: String::new(),
+                    contig: s.contig.clone(),
+                    position: s.position,
+                    reference_allele: s.reference_allele.to_string(),
+                    alternate_allele: s.alternate_allele.to_string(),
+                })
+                .collect();
+            tokio::task::spawn_blocking(move || {
+                let params = HaploidCallerParams::default();
+                caller::genotype_sites_all_contigs(
+                    &bam,
+                    &sites,
+                    2,
+                    &params,
+                    reference.as_deref(),
+                    &navigator_analysis::CancelToken::none(),
+                )
             })
-            .collect();
-        let genotypes = tokio::task::spawn_blocking(move || {
-            let params = HaploidCallerParams::default();
-            caller::genotype_sites_all_contigs(
-                &bam,
-                &sites,
-                2,
-                &params,
-                reference.as_deref(),
-                &navigator_analysis::CancelToken::none(),
-            )
-        })
-        .await??;
+            .await??
+        } else if panel.sites.iter().any(|s| s.locus(&build).is_some()) {
+            // Match the panel's per-build contig names to the file's naming (`chr1` vs `1`).
+            let (bam_h, ref_h) = (bam.clone(), reference.clone());
+            let file_contigs =
+                tokio::task::spawn_blocking(move || navigator_analysis::reader::contig_names(&bam_h, ref_h.as_deref()))
+                    .await??;
+            let index: HashMap<String, String> = file_contigs
+                .into_iter()
+                .map(|c| (navigator_analysis::contig::bare_upper(&c), c))
+                .collect();
+            // Keep the panel site alongside its build locus so the dosage can be re-keyed after.
+            let mut targets: Vec<(&navigator_analysis::archaic::ArchaicSite, Site)> = Vec::new();
+            for s in &panel.sites {
+                let Some(l) = s.locus(&build) else { continue };
+                let key = navigator_analysis::contig::bare_upper(&l.contig);
+                let Some(contig) = index.get(&key).cloned() else { continue };
+                targets.push((
+                    s,
+                    Site {
+                        name: String::new(),
+                        contig,
+                        position: l.position,
+                        reference_allele: l.reference.to_string(),
+                        alternate_allele: l.alternate.to_string(),
+                    },
+                ));
+            }
+            let sites: Vec<Site> = targets.iter().map(|(_, site)| site.clone()).collect();
+            let called = tokio::task::spawn_blocking(move || {
+                let params = HaploidCallerParams::default();
+                caller::genotype_sites_all_contigs(
+                    &bam,
+                    &sites,
+                    2,
+                    &params,
+                    reference.as_deref(),
+                    &navigator_analysis::CancelToken::none(),
+                )
+            })
+            .await??;
+
+            // Re-key onto CHM13: same position/alleles the counter expects, dosage re-expressed.
+            let by_pos: HashMap<(&str, i64), &SiteGenotype> = called
+                .iter()
+                .map(|g| ((g.contig.as_str(), g.position), g))
+                .collect();
+            let mut out = Vec::with_capacity(targets.len());
+            for (site, target) in &targets {
+                let Some(g) = by_pos.get(&(target.contig.as_str(), target.position)) else {
+                    continue;
+                };
+                if g.dosage < 0 {
+                    continue;
+                }
+                let measured_alt = target.alternate_allele.chars().next().unwrap_or('N');
+                let Some(dosage) = site.rekey_dosage(measured_alt, g.dosage, g.ploidy) else {
+                    continue;
+                };
+                out.push(SiteGenotype {
+                    name: String::new(),
+                    contig: site.contig.clone(),
+                    position: site.position,
+                    reference_allele: site.reference_allele.to_string(),
+                    alternate_allele: site.alternate_allele.to_string(),
+                    ploidy: g.ploidy,
+                    dosage,
+                    gq: g.gq,
+                    depth: g.depth,
+                    ref_depth: g.ref_depth,
+                    alt_depth: g.alt_depth,
+                    pls: Vec::new(),
+                    gt: None,
+                    allele_depths: None,
+                });
+            }
+            out
+        } else {
+            Vec::new() // panel carries no loci for this build
+        };
+
         self.save_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION, &genotypes)
             .await?;
         Ok(genotypes)
+    }
+
+    /// Count archaic markers from **one specific alignment**, bypassing both the cache and the
+    /// best-callable pick. Used for cross-build validation: the same person's GRCh38 and CHM13
+    /// alignments should agree, which is the check that the per-build loci and the dosage re-keying
+    /// are correct rather than merely plausible.
+    pub async fn archaic_for_alignment(
+        &self,
+        _biosample_guid: SampleGuid,
+        alignment_id: i64,
+    ) -> Result<ArchaicMarkerResult, AppError> {
+        let build = ReferenceBuild::Chm13v2;
+        self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build)).await?;
+        let path = crate::archaic_markers_path(build);
+        let bytes = crate::read_verified_asset(build, &path)?
+            .ok_or_else(|| AppError::AncestryPanelMissing(path.clone()))?;
+        let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
+        let genotypes = self.genotype_archaic_for_alignment(alignment_id, &panel).await?;
+        Ok(tokio::task::spawn_blocking(move || {
+            navigator_analysis::archaic::count_archaic_markers(&genotypes, &panel)
+        })
+        .await?)
     }
 
     /// The cached archaic (Tier A) marker count for a subject, if one was computed from the

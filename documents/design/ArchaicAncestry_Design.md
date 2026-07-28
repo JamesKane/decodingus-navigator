@@ -614,16 +614,42 @@ non-alignment sources keep contributing where the alignment has no depth; the di
 site it covers. Measured on the ground-truth subject: **2.6 % → 100.0 % coverage** (299,932 of
 299,958 sites) in a single 2 m 40 s decode pass.
 
-Two constraints worth knowing:
+The rejected alternatives, for the record: folding the archaic loci into the consensus target set
+would be more efficient but changes the consensus contract and needs everyone re-genotyped;
+restricting the panel to the 1240k intersection would discard the calibration and cap WGS at chip
+resolution.
 
-- **CHM13 only.** Unlike the IBD panel, `ArchaicSite` carries no per-build coordinates, so a
-  GRCh37/38 alignment falls back to consensus coverage. The GRCh37 positions already exist in the
-  build pipeline (`archaic_candidates.grch37.tsv`), so giving the panel per-build loci is the
-  follow-up that removes this.
-- The rejected alternatives, for the record: folding the archaic loci into the consensus target set
-  would be more efficient but changes the consensus contract and needs everyone re-genotyped;
-  restricting the panel to the 1240k intersection would discard the calibration and cap WGS at chip
-  resolution.
+### Per-build loci — all three builds genotype natively (2026-07-28)
+
+`ArchaicSite` now carries `grch37` / `grch38` loci beside its canonical CHM13 one, mirroring
+`IbdPanelSite`, so the CHM13-only restriction is gone.
+
+- **GRCh37 is exact, not lifted.** Those are the archaic VCFs' own hg19 coordinates and alleles
+  carried straight through, so that build has no liftover and no strand risk whatsoever.
+- **GRCh38 is lifted and oriented** against an hg38 reference exactly as the CHM13 pass is — the
+  hg19→hg38 lift is not allele-aware either. 2,031,439 of 2,032,189 candidates carry an hg38 locus;
+  750 were dropped where the reference base matched neither allele.
+- A dosage measured on a non-CHM13 build is **re-keyed** to the CHM13 alleles
+  (`ArchaicSite::rekey_dosage`) before counting, because that build's ref/alt may be swapped *or*
+  strand-flipped. Feeding the raw dosage through would invert exactly those sites, silently — the
+  same failure class the CHM13 orientation pass exists to prevent.
+
+Site selection is unchanged (299,958); the asset grows 13.6 → 26.1 MB, still small enough to bundle.
+
+**Cross-build validation** — the same person's GRCh38 alignment (`WGS229.b38.bam`) against the
+CHM13 result, both at ~100 % coverage:
+
+| | CHM13 | GRCh38 | Δ |
+|---|---|---|---|
+| copies | 12,126 | 12,112 | **0.12 %** |
+| sites called | 299,932 | 299,832 | |
+| Neanderthal | 9,460 | 9,449 | 0.12 % |
+| Denisovan | 254 | 254 | 0 |
+
+That agreement is the real test of the re-keying: had it been wrong, the swapped and strand-flipped
+sites would have inverted and the two builds would have diverged grossly rather than by 0.12 %. It is
+also the cross-source stability gate from the M2 plan, met on the cross-build axis.
+`navigator archaic --alignment <id>` exists to run this check.
 
 ### Validation — the percentile problem is solvable, and the numbers are sane
 

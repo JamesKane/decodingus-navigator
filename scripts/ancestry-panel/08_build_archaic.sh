@@ -187,6 +187,23 @@ if [[ ! -s "$LIFTED" ]]; then
   log "lifted $(wc -l < "$LIFTED") of $(wc -l < "$CAND_BED") candidates"
 fi
 
+# ── 3b. also project the candidates into GRCh38 ─────────────────────────────────
+# So the panel carries hg38 coordinates and a GRCh38 alignment can be genotyped without a runtime
+# liftover. GRCh37 needs no lift at all — those are the archaic VCFs' own coordinates, carried
+# straight through. The hg38 lift is NOT allele-aware, so archaic-panel orients it against the hg38
+# reference exactly as it does for CHM13.
+LIFTED38="$TMP/archaic_candidates.hg38.bed"
+HG38_FA="${HG38_FASTA:-$RAW/hg38.fa}"
+if [[ ! -s "$LIFTED38" ]]; then
+  HG38_CHAIN="$RAW/$(basename "$CHAIN_HG19_TO_HG38" .gz)"
+  if [[ -s "$HG38_CHAIN" ]]; then
+    log "CrossMap bed -> hg38"
+    CrossMap bed "$HG38_CHAIN" "$CAND_BED" "$LIFTED38" || log "WARN: hg38 lift failed — GRCh38 alignments will fall back to consensus coverage"
+  else
+    log "NOTE: no hg19->hg38 chain at $HG38_CHAIN — skipping GRCh38 loci"
+  fi
+fi
+
 # ── 4. African-outgroup frequencies at the lifted positions (CHM13) ─────────────
 # From the per-super-pop AC_<POP>_unrel / AN_<POP>_unrel INFO fields the stage-01 `withafinfo`
 # VCFs already carry (design §9 Q2 — no new data source). Emitted as
@@ -233,6 +250,7 @@ cargo run --release -q -p navigator-panelbuild -- archaic-panel \
   --max-afr-freq "${ARCHAIC_MAX_AFR_FREQ:-0.01}" \
   --min-non-afr-freq "${ARCHAIC_MIN_NON_AFR_FREQ:-0.05}" \
   --sites-tsv "$TMP/archaic_markers.${BUILD}.tsv" \
+  ${LIFTED38:+$([[ -s "$LIFTED38" && -s "$HG38_FA" ]] && echo "--lifted-hg38 $LIFTED38 --reference-hg38 $HG38_FA")} \
   --out "$OUT" || die "archaic-panel failed"
 
 log "stage 8 complete: $OUT"

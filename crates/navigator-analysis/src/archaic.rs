@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::caller::SiteGenotype;
 use crate::error::AnalysisError;
+use crate::ibd_panel::Locus;
 
 /// The four openly-downloadable archaic reference genomes, in the fixed order every
 /// [`ArchaicSite::calls`] array uses.
@@ -104,9 +105,61 @@ pub struct ArchaicSite {
     /// Derived-allele frequency in the African outgroup, kept for transparency and so the panel can
     /// be re-filtered at a stricter threshold without a rebuild.
     pub afr_freq: f32,
+    /// GRCh37 locus. Exact, not lifted: these are the archaic VCFs' own hg19 coordinates and
+    /// alleles, so there is no liftover and no strand risk on this build.
+    #[serde(default)]
+    pub grch37: Option<Locus>,
+    /// GRCh38 locus, when the site lifted cleanly and could be oriented against an hg38 reference.
+    #[serde(default)]
+    pub grch38: Option<Locus>,
+}
+
+/// The complement of a base, for comparing alleles across builds that may differ in strand.
+fn complement(b: char) -> char {
+    match b.to_ascii_uppercase() {
+        'A' => 'T',
+        'T' => 'A',
+        'C' => 'G',
+        'G' => 'C',
+        other => other,
+    }
 }
 
 impl ArchaicSite {
+    /// The locus for a build name, mirroring [`crate::ibd_panel::IbdPanelSite::locus`].
+    pub fn locus(&self, build: &str) -> Option<&Locus> {
+        let b = build.to_ascii_lowercase();
+        if b.contains("38") || b == "hg38" {
+            self.grch38.as_ref()
+        } else if b.contains("37") || b == "hg19" || b == "b37" {
+            self.grch37.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// Re-express a dosage measured against some build's `alt` allele as a dosage against this
+    /// site's **CHM13** alternate allele.
+    ///
+    /// Genotyping a GRCh37/38 alignment tallies that build's alleles, which may be ref/alt-swapped
+    /// or strand-flipped relative to CHM13. Feeding such a dosage into the count unchanged would
+    /// invert those sites silently — the same class of error the CHM13 orientation pass exists to
+    /// prevent. Returns `None` when the measured allele corresponds to neither CHM13 allele.
+    pub fn rekey_dosage(&self, measured_alt: char, dosage: i32, ploidy: u8) -> Option<i32> {
+        let m = measured_alt.to_ascii_uppercase();
+        let (r, a) = (
+            self.reference_allele.to_ascii_uppercase(),
+            self.alternate_allele.to_ascii_uppercase(),
+        );
+        if m == a || m == complement(a) {
+            Some(dosage)
+        } else if m == r || m == complement(r) {
+            Some(ploidy as i32 - dosage)
+        } else {
+            None
+        }
+    }
+
     /// Copies of the archaic-derived allele (0–2) in a diploid observation.
     ///
     /// Takes the subject's two alleles as bases rather than a dosage, because dosage is defined
@@ -373,6 +426,8 @@ mod tests {
             calls: [ArchaicCall::HomDerived; 4],
             diagnostic_class: DiagnosticClass::SharedArchaic,
             afr_freq: 0.0,
+            grch37: None,
+            grch38: None,
         };
         assert_eq!(site.derived_copies('A', 'A'), 2);
         assert_eq!(site.derived_copies('A', 'G'), 1);
@@ -398,6 +453,8 @@ mod tests {
                 calls: [ArchaicCall::HomDerived; 4],
                 diagnostic_class: DiagnosticClass::SharedArchaic,
                 afr_freq: 0.002,
+                grch37: None,
+                grch38: None,
             }],
         };
         let bytes = panel.to_bytes().expect("encode");
@@ -434,6 +491,8 @@ mod tests {
             calls: [ArchaicCall::HomDerived; 4],
             diagnostic_class: class,
             afr_freq: 0.001,
+            grch37: None,
+            grch38: None,
         }
     }
 
@@ -461,6 +520,39 @@ mod tests {
         assert_eq!(r.denisovan_copies, 1, "derived on REF: 2 - dosage");
         assert_eq!(r.total_copies, 2);
         assert!((r.rate() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rekey_dosage_handles_swap_and_strand_flip() {
+        // CHM13 alleles A/G, derived G.
+        let s = site(100, 'A', 'G', 'G', DiagnosticClass::Neanderthal);
+        // Same orientation: the other build also calls G the ALT -> dosage passes through.
+        assert_eq!(s.rekey_dosage('G', 1, 2), Some(1));
+        assert_eq!(s.rekey_dosage('G', 2, 2), Some(2));
+        // Ref/alt swapped on the other build (its ALT is our REF) -> dosage inverts.
+        assert_eq!(s.rekey_dosage('A', 2, 2), Some(0));
+        assert_eq!(s.rekey_dosage('A', 0, 2), Some(2));
+        // Strand-flipped: the other build's ALT is complement(G) = C -> still our ALT.
+        assert_eq!(s.rekey_dosage('C', 1, 2), Some(1));
+        // Strand-flipped AND swapped: complement(A) = T -> our REF, inverts.
+        assert_eq!(s.rekey_dosage('T', 2, 2), Some(0));
+    }
+
+    #[test]
+    fn locus_lookup_matches_build_aliases() {
+        let mut s = site(100, 'A', 'G', 'G', DiagnosticClass::Neanderthal);
+        s.grch37 = Some(Locus {
+            contig: "1".into(),
+            position: 42,
+            reference: 'A',
+            alternate: 'G',
+        });
+        assert_eq!(s.locus("GRCh37").map(|l| l.position), Some(42));
+        assert_eq!(s.locus("hg19").map(|l| l.position), Some(42));
+        assert_eq!(s.locus("b37").map(|l| l.position), Some(42));
+        // Not populated / not a per-build lookup.
+        assert!(s.locus("GRCh38").is_none());
+        assert!(s.locus("chm13v2.0").is_none());
     }
 
     #[test]

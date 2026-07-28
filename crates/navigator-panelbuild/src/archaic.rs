@@ -34,7 +34,7 @@ use clap::Parser;
 use navigator_analysis::archaic::{
     classify_diagnostic, ArchaicCall, ArchaicMarkerPanel, ArchaicPanelThresholds, ArchaicSite, ARCHAIC_GENOMES,
 };
-use navigator_analysis::ibd_panel::is_palindromic;
+use navigator_analysis::ibd_panel::{is_palindromic, Locus};
 
 use crate::pca::{open_maybe_gz, write_bin};
 
@@ -404,6 +404,14 @@ pub struct ArchaicPanelArgs {
     /// Output panel (bincode `ArchaicMarkerPanel`).
     #[arg(long)]
     out: PathBuf,
+    /// Optional lifted BED (GRCh38) from the same candidates, so the panel carries hg38 coordinates
+    /// and a GRCh38 alignment can be genotyped without a runtime liftover.
+    #[arg(long)]
+    lifted_hg38: Option<PathBuf>,
+    /// GRCh38 reference FASTA (indexed). Required with `--lifted-hg38`: the hg38 lift is not
+    /// allele-aware either, so its alleles must be oriented the same way the CHM13 ones are.
+    #[arg(long)]
+    reference_hg38: Option<PathBuf>,
     /// Optional inspection TSV of the final sites.
     #[arg(long)]
     sites_tsv: Option<PathBuf>,
@@ -508,6 +516,50 @@ fn derived_freq(derived: char, og_ref: char, og_alt: char, af_alt: f32) -> Optio
     }
 }
 
+/// Lift + orient the candidates onto GRCh38, returning `candidate index -> Locus`.
+///
+/// Same discipline as the CHM13 pass: `CrossMap bed` is not allele-aware, so each site is oriented
+/// against the hg38 reference base (swap ref/alt where reversed, drop where neither matches).
+fn build_hg38_loci(bed: &Path, reference: &Path, candidates: &HashMap<usize, Candidate>) -> Result<HashMap<usize, Locus>> {
+    let lifted = load_lifted(bed)?;
+    let mut rows: Vec<(usize, String, i64)> = lifted.into_iter().map(|(i, (c, p))| (i, c, p)).collect();
+    rows.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
+    let (mut out, mut cur, mut seq, mut dropped) = (HashMap::new(), String::new(), Vec::new(), 0usize);
+    for (idx, contig, position) in rows {
+        let Some(cand) = candidates.get(&idx) else { continue };
+        if contig != cur {
+            seq = navigator_analysis::reader::read_contig_sequence(reference, &contig)
+                .map_err(|e| anyhow::anyhow!("reading {contig} from {}: {e}", reference.display()))?;
+            cur = contig.clone();
+        }
+        let base = seq
+            .get((position - 1) as usize)
+            .map(|b| b.to_ascii_uppercase() as char)
+            .unwrap_or('N');
+        let (reference_allele, alternate_allele) = if base == cand.reference_allele {
+            (cand.reference_allele, cand.alternate_allele)
+        } else if base == cand.alternate_allele {
+            (cand.alternate_allele, cand.reference_allele)
+        } else {
+            dropped += 1;
+            continue;
+        };
+        out.insert(
+            idx,
+            Locus {
+                contig,
+                position,
+                reference: reference_allele,
+                alternate: alternate_allele,
+            },
+        );
+    }
+    if dropped > 0 {
+        eprintln!("GRCh38: {dropped} sites dropped (reference base matched neither allele)");
+    }
+    Ok(out)
+}
+
 pub fn build_archaic_panel(args: ArchaicPanelArgs) -> Result<()> {
     let candidates = load_candidates(&args.candidates)?;
     let lifted = load_lifted(&args.lifted)?;
@@ -518,6 +570,17 @@ pub fn build_archaic_panel(args: ArchaicPanelArgs) -> Result<()> {
         lifted.len(),
         outgroup.len()
     );
+
+    // GRCh38 loci: lift + orient exactly as the CHM13 pass does. Optional — without them a GRCh38
+    // alignment simply falls back to whatever the consensus covers.
+    let hg38 = match (&args.lifted_hg38, &args.reference_hg38) {
+        (Some(bed), Some(fa)) => build_hg38_loci(bed, fa, &candidates)?,
+        (Some(_), None) => anyhow::bail!("--lifted-hg38 requires --reference-hg38 (the lift is not allele-aware)"),
+        _ => HashMap::new(),
+    };
+    if !hg38.is_empty() {
+        eprintln!("{} sites carry a GRCh38 locus", hg38.len());
+    }
 
     // Walk in lifted-coordinate order so each contig's reference sequence is loaded once.
     let mut rows: Vec<(usize, String, i64)> = lifted.iter().map(|(i, (c, p))| (*i, c.clone(), *p)).collect();
@@ -584,6 +647,15 @@ pub fn build_archaic_panel(args: ArchaicPanelArgs) -> Result<()> {
             position,
             reference_allele,
             alternate_allele,
+            // GRCh37 is EXACT — the archaic VCFs' own coordinates and alleles, never lifted, so this
+            // build carries no liftover or strand risk at all.
+            grch37: Some(Locus {
+                contig: cand.contig.clone(),
+                position: cand.position,
+                reference: cand.reference_allele,
+                alternate: cand.alternate_allele,
+            }),
+            grch38: hg38.get(&idx).cloned(),
             // Unchanged by the swap: the derived allele is stored as a base precisely so orientation
             // cannot invert its meaning.
             archaic_derived_allele: cand.derived,

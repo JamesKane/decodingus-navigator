@@ -56,7 +56,7 @@ pub enum Command {
     /// consensus. Reports copies carried of copies assayed — a count over the sites the subject's
     /// data actually covered, not a "% Neanderthal". Requires the consensus to be built first.
     /// See `navigator_app::App::estimate_archaic_from_consensus`.
-    Archaic(ShowArgs),
+    Archaic(ArchaicArgs),
     /// Panel batch-process mode (progressive-consensus): genotype the subject's CHM13 alignment(s) at
     /// the full-1240k panel, caching the dosages and refreshing the autosomal consensus so ancestry is
     /// ready without a later lazy build. Heavy (a whole-genome decode per alignment).
@@ -166,6 +166,26 @@ pub struct ProbeArgs {
     /// Emit JSON instead of a human-readable table.
     #[arg(long)]
     json: bool,
+}
+
+/// `archaic` takes an optional alignment override so a specific build can be genotyped directly —
+/// the app otherwise picks the subject's best-callable alignment, which makes the GRCh37/38 code
+/// path unreachable on a subject that also has CHM13 data.
+#[derive(Args)]
+pub struct ArchaicArgs {
+    /// Subject donor identifier.
+    #[arg(long, short)]
+    subject: String,
+    /// Workspace database path.
+    #[arg(long)]
+    db: Option<PathBuf>,
+    /// Emit JSON instead of a human-readable summary.
+    #[arg(long)]
+    json: bool,
+    /// Genotype this alignment instead of the subject's best-callable one. Bypasses the cached
+    /// result, so it re-genotypes; intended for cross-build validation.
+    #[arg(long)]
+    alignment: Option<i64>,
 }
 
 #[derive(Args)]
@@ -1566,7 +1586,7 @@ async fn debug_ancient(args: ShowArgs) -> i32 {
 
 /// Archaic (Neanderthal / Denisovan) Tier-A marker count — see
 /// [`navigator_app::App::estimate_archaic_from_consensus`].
-async fn archaic(args: ShowArgs) -> i32 {
+async fn archaic(args: ArchaicArgs) -> i32 {
     let app = match open(args.db).await {
         Ok(a) => a,
         Err(c) => return c,
@@ -1579,9 +1599,15 @@ async fn archaic(args: ShowArgs) -> i32 {
         }
         Err(c) => return c,
     };
-    let r = match app.estimate_archaic_from_consensus(guid).await {
-        Ok(r) => r,
-        Err(e) => return report(e),
+    let r = match args.alignment {
+        Some(aln) => match app.archaic_for_alignment(guid, aln).await {
+            Ok(r) => r,
+            Err(e) => return report(e),
+        },
+        None => match app.estimate_archaic_from_consensus(guid).await {
+            Ok(r) => r,
+            Err(e) => return report(e),
+        },
     };
     if args.json {
         println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
