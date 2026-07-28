@@ -386,17 +386,20 @@ pub struct ArchaicPanelArgs {
     #[arg(long)]
     reference: PathBuf,
     /// Maximum derived-allele frequency in the African outgroup.
+    ///
+    /// 0.01 confirmed by the checkpoint-A sweep: relaxing it costs precision without buying recall
+    /// (0.02 -> 73.8 %, 0.05 -> 63.9 %, against 78.4 % here). This is the criterion doing the actual
+    /// archaic-specificity work.
     #[arg(long, default_value_t = 0.01)]
     max_afr_freq: f32,
     /// Minimum derived-allele frequency outside Africa.
     ///
-    /// 0.01, not the 0.05 this started at: at 0.05 the surviving sites pile up against the floor
-    /// (p10 = 0.054, mean 0.089), which keeps the common tail and discards the rare variants that
-    /// make up most of a real introgression panel. Measured on the v5 chip intersection, 0.05 gave
-    /// 0.155 archaic copies/site against ~0.051 for the Sankararaman panel 23andMe uses; lowering
-    /// the floor moves it to ~0.099 and roughly doubles chip overlap. Below ~0.005 it plateaus and
-    /// the Denisovan-diagnostic count inflates implausibly for a European, which is noise entering.
-    #[arg(long, default_value_t = 0.01)]
+    /// 0.0005, calibrated against the hmmix callset (design §10 checkpoint A): F1 peaks there at
+    /// 0.701 (precision 78.4 %, recall 63.4 %). The floor is small but load-bearing — removing it
+    /// entirely (0.0) collapses precision to 64.7 % for almost no recall gain. Most confidently
+    /// introgressed variants are rare (hmmix median frequency 0.87 %), so a high floor mostly
+    /// discards signal: the original 0.05 scored F1 0.473 at 33.8 % recall.
+    #[arg(long, default_value_t = 0.0005)]
     min_non_afr_freq: f32,
     /// Output panel (bincode `ArchaicMarkerPanel`).
     #[arg(long)]

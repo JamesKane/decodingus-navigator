@@ -199,9 +199,11 @@ VINDIJA_MASK_PATTERN="${VINDIJA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Vindij
 CHAGYRSKAYA_MASK_PATTERN="${CHAGYRSKAYA_MASK_PATTERN:-$EVA_FTP_BASE/Chagyrskaya/FilterBed/chr%s_mask.bed.gz}"
 DENISOVA_MASK_PATTERN="${DENISOVA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Denisova/chr%s_mask.bed.gz}"
 
-# Site-selection thresholds. THESE ARE PROVISIONAL — design §10 M1 checkpoint A fixes them by
-# calibrating against the hmmix Zenodo cross-validation set. The site list IS the product, so every
-# downstream count inherits these; do not treat the defaults as validated.
+# Site-selection thresholds — CALIBRATED (design §10, M1 checkpoint A, 2026-07-28) against the
+# hmmix Zenodo callset (CC BY 4.0), by lifting its 370,960 diagnostic "DAV" SNPs to CHM13 and
+# maximising F1 against them. Optimum 0.0005/0.01: precision 78.4%, recall 63.4%, F1 0.701.
+# Both bounds are load-bearing — dropping the floor to 0 collapses precision to 64.7%, and relaxing
+# the AFR ceiling costs precision without buying recall (0.02 -> 73.8%, 0.05 -> 63.9%).
 # Where the bulk archaic VCFs land. These are ALL-SITES files — one record per genome position,
 # not per variant — so the four genomes total ~197 GB (measured: Altai chr1 alone is 5.65 GB, and
 # the BAM for the same chromosome is 12.65 GB, so the VCFs are NOT the large end of this dataset).
@@ -210,6 +212,6 @@ DENISOVA_MASK_PATTERN="${DENISOVA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Deni
 ARCHAIC_RAW="${ARCHAIC_RAW:-$RAW/archaic}"
 
 ARCHAIC_MAX_AFR_FREQ="${ARCHAIC_MAX_AFR_FREQ:-0.01}"        # derived allele rare/absent in Africans
-ARCHAIC_MIN_NON_AFR_FREQ="${ARCHAIC_MIN_NON_AFR_FREQ:-0.01}" # ...but present outside Africa
+ARCHAIC_MIN_NON_AFR_FREQ="${ARCHAIC_MIN_NON_AFR_FREQ:-0.0005}" # ...but present outside Africa
 ARCHAIC_MIN_CALLED="${ARCHAIC_MIN_CALLED:-1}"               # archaic genomes required to have a call
 ARCHAIC_OUT="$ASSETS/archaic_markers_${BUILD}.bin"          # Tier A marker panel

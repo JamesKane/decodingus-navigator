@@ -438,30 +438,65 @@ called site on the chip intersection:
 | 0.005 | 199,072 | 10,721 | 0.0950 | 1.86× |
 | 0.001 | 267,852 | 10,907 | 0.0936 | 1.83× |
 
-Two findings:
+The floor was set far too high. At 0.05 the surviving sites piled up against it (p10 = 0.054,
+mean 0.089, median 0.077), keeping the common tail and discarding the rare variants that make up
+most of a real introgression panel. A *ceiling* cannot help: while the floor sets the distribution
+it cannot push the rate below ~0.139.
 
-1. **The floor was set wrong, and the fix is to lower it, not to add a ceiling.** At 0.05 the
-   surviving sites piled up against the floor (p10 = 0.054, mean 0.089, median 0.077), keeping the
-   common tail and discarding the rare variants that make up most of a real introgression panel —
-   Sankararaman's average ~2.6 %. A *ceiling* cannot help: it cannot push the rate below ~0.139
-   while the floor sets the distribution. Adopted 0.01; below ~0.005 returns diminish and the
-   Denisovan-diagnostic count inflates implausibly for a European (914 → 25,438 at 0.001), which is
-   noise entering and a useful guard rail.
-2. **Thresholds cannot close the gap — the selection criterion is the limit.** The rate flattens at
-   ~1.83×, so the residual is structural, not tuning. Sankararaman's sites come from an HMM over
-   haplotypes; ours come from a frequency filter plus an archaic hom-derived call, and a frequency
-   filter cannot separate "introgressed" from "any out-of-Africa-specific variant". This is inherent
-   to the §4 recipe.
+Two inferences drawn here were **wrong**, and checkpoint A overturned both — recorded because the
+reasoning is a trap worth not repeating:
 
-**Why that does not invalidate Tier A.** The report is a count plus a percentile against our own
-1kGP cohort (Asset 4), which is internally consistent whatever the absolute rate, and §1/§7 already
-forbid presenting it as equivalent to a vendor's number. What the residual does mean is that
-**checkpoint A is now the binding work**: calibrating archaic-specificity against the hmmix
-cross-validation set is the only principled way to tighten it, and it should happen before this
-panel is treated as shippable.
+- *"Below ~0.005 the Denisovan-diagnostic count inflates implausibly, so that is noise."* It is not.
+  hmmix independently contains 40,408 Denisova-only diagnostic SNPs, so a large Denisovan count is
+  signal. That was proxy reasoning with no oracle behind it.
+- *"The residual ~1.83× rate gap is structural — a frequency filter cannot separate introgressed
+  from out-of-Africa-specific variants."* Too pessimistic: measured precision against hmmix is
+  ~78 %, so the panel is mostly genuinely introgressed sites. The rate gap reflects *which*
+  introgressed sites each panel selects, not junk in ours.
 
-**Still outstanding for M1:** checkpoint A (hmmix calibration); Asset 4, the percentile
-distribution, which is not built yet; and adding both assets to the SHA-256 manifest.
+### Checkpoint A — hmmix calibration (2026-07-28)
+
+Source: the hmmix Zenodo callset (DOI 10.5281/zenodo.14136628, **CC BY 4.0**),
+`hg38_1000g_SNPS.txt`. Its 370,960 `DAV` (directly diagnostic) SNPs were lifted hg38 → CHM13 with
+the existing chain (553,597 of 553,763 lifted) and used as the positive set. `linkedDAV` rows are
+excluded — they are LD-linked, not independent evidence.
+
+**Three independent validations, all passing:**
+
+| check | result |
+|---|---|
+| polarity (derived base) agreement on the overlap | **99.99 %** (125,304 vs 12) |
+| diagnostic class on the diagonal | **98.5 %** |
+| Neanderthal ↔ Denisovan confusions | **zero** |
+
+Every off-diagonal classification is "we said lineage-specific, hmmix said shared" — the
+conservative direction `classify_diagnostic` predicts, since a masked-out Denisova reads as
+no-evidence rather than as absence. The polarity result is the important one: it independently
+confirms the EPO-based ancestral/derived assignment, which is the one thing this panel cannot
+afford to get wrong.
+
+**Threshold sweep, scored by F1 against the hmmix positives:**
+
+| `min_non_afr_freq` : `max_afr_freq` | panel | precision | recall | F1 |
+|---|---|---|---|---|
+| 0.05 : 0.01 (initial) | 48,687 | 74.7 % | 9.8 % | 0.173 |
+| 0.01 : 0.01 | 159,384 | 78.6 % | 33.8 % | 0.473 |
+| 0.001 : 0.01 | 267,852 | 79.8 % | 57.6 % | 0.669 |
+| **0.0005 : 0.01 (ADOPTED)** | **299,958** | **78.4 %** | **63.4 %** | **0.701** |
+| 0.0 : 0.01 | 371,839 | 64.7 % | 64.9 % | 0.648 |
+| 0.001 : 0.02 | 291,283 | 73.8 % | 57.9 % | 0.649 |
+| 0.001 : 0.05 | 336,338 | 63.9 % | 58.0 % | 0.608 |
+
+Both bounds are load-bearing. Precision is flat (~75–80 %) while a floor exists at all, so lowering
+it is nearly free recall — but removing it entirely (0.0) collapses precision to 64.7 % for almost
+no recall gain. Relaxing the **AFR ceiling** costs precision without buying recall, which identifies
+it as the criterion actually doing the archaic-specificity work; the non-African floor is only
+suppressing the very rarest noise.
+
+**Shipped panel: 299,958 sites** (202,097 Neanderthal / 36,268 Denisovan / 61,593 shared).
+
+**Still outstanding for M1:** Asset 4, the percentile distribution, is not built; and neither asset
+is in the SHA-256 manifest, so the app would load them through the unverified path.
 
 ### M4 — Phase 3 (optional)
 
