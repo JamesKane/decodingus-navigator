@@ -3448,6 +3448,98 @@ impl App {
         Ok(result)
     }
 
+    /// The subject's archaic percentile within their inferred super-population, plus that cohort's
+    /// label. `None` when the distribution asset is absent or the subject's ancestry is unknown.
+    ///
+    /// The cohort is keyed to the subject's **super-population**, not their fine population (design
+    /// §9 Q3): a fine-grained cohort would be more specific, but it would also let an ancestry error
+    /// move the archaic headline, and a wrong percentile is worse than a coarse one.
+    async fn archaic_percentile(
+        &self,
+        biosample_guid: SampleGuid,
+        copies: u32,
+    ) -> Result<Option<(f32, String)>, AppError> {
+        let build = ReferenceBuild::Chm13v2;
+        let _ = self.ensure_ancestry_asset(build, &crate::archaic_marker_dist_path(build)).await;
+        let Some(bytes) = crate::read_verified_asset(build, &crate::archaic_marker_dist_path(build))? else {
+            return Ok(None);
+        };
+        let dist = ArchaicCountDistribution::from_bytes(&bytes)?;
+
+        // The subject's dominant super-population, from the cached consensus ancestry. No estimate →
+        // no cohort → no percentile, rather than defaulting to one and quietly mis-ranking them.
+        let Ok(ancestry) = self.estimate_ancestry_from_consensus(biosample_guid).await else {
+            return Ok(None);
+        };
+        let Some(top) = ancestry
+            .components
+            .iter()
+            .max_by(|a, b| a.percentage.total_cmp(&b.percentage))
+        else {
+            return Ok(None);
+        };
+        let sup = navigator_domain::ancestry::population_super(&top.population_code)
+            .unwrap_or(top.population_code.as_str())
+            .to_string();
+        Ok(dist.percentile_in_super(&sup, copies).map(|p| (p, sup)))
+    }
+
+    /// Genotype the archaic marker panel directly from one alignment.
+    ///
+    /// The consensus only carries the 1240k/IBD loci, so this is what gives a WGS subject the full
+    /// panel rather than the ~2.6 % that happens to intersect 1240k. Results are cached per
+    /// alignment under a kind salted with the panel's manifest hash, so recalibrating the panel
+    /// invalidates stale genotypes instead of silently mixing site sets.
+    ///
+    /// **CHM13 only.** Unlike the IBD panel, `ArchaicSite` carries no per-build coordinates, so a
+    /// GRCh37/38 alignment cannot be genotyped at these loci without a runtime liftover we
+    /// deliberately do not do. Such a subject falls back to consensus coverage; giving the panel
+    /// per-build loci (the GRCh37 positions already exist in the build pipeline) is the follow-up.
+    async fn genotype_archaic_for_alignment(
+        &self,
+        alignment_id: i64,
+        panel: &ArchaicMarkerPanel,
+    ) -> Result<Vec<SiteGenotype>, AppError> {
+        let kind = crate::archaic_panel_cache_kind();
+        if let Some(g) = self.load_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION).await? {
+            return Ok(g);
+        }
+        let build = self.alignment_or_err(alignment_id).await?.reference_build;
+        if !matches!(
+            canonical_build(&build),
+            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
+        ) {
+            return Ok(Vec::new()); // not CHM13 — see the doc comment
+        }
+        let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
+        let sites: Vec<Site> = panel
+            .sites
+            .iter()
+            .map(|s| Site {
+                name: String::new(),
+                contig: s.contig.clone(),
+                position: s.position,
+                reference_allele: s.reference_allele.to_string(),
+                alternate_allele: s.alternate_allele.to_string(),
+            })
+            .collect();
+        let genotypes = tokio::task::spawn_blocking(move || {
+            let params = HaploidCallerParams::default();
+            caller::genotype_sites_all_contigs(
+                &bam,
+                &sites,
+                2,
+                &params,
+                reference.as_deref(),
+                &navigator_analysis::CancelToken::none(),
+            )
+        })
+        .await??;
+        self.save_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION, &genotypes)
+            .await?;
+        Ok(genotypes)
+    }
+
     /// The cached archaic (Tier A) marker count for a subject, if one was computed from the
     /// **current** autosomal consensus. `None` if absent or stale. Cheap — a cache read.
     pub async fn cached_archaic(&self, biosample_guid: SampleGuid) -> Result<Option<ArchaicMarkerResult>, AppError> {
@@ -3501,12 +3593,47 @@ impl App {
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
         let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
 
+        // Start from the consensus — it covers chips and every non-alignment source, but only where
+        // the archaic panel intersects the 1240k/IBD loci the consensus is built over (~2.6% of the
+        // panel). Design §5 assumed the consensus spanned the genome; it does not.
         let profile: DiploidProfile = serde_json::from_str(&row.payload)?;
-        let genotypes = consensus_genotypes(&profile);
-        let result = tokio::task::spawn_blocking(move || {
+        let mut genotypes = consensus_genotypes(&profile);
+
+        // Then genotype the panel DIRECTLY from the subject's best-callable alignment, which is the
+        // only way a WGS subject reaches the other 97%. Best-effort: a subject with no callable
+        // alignment (chip-only) keeps the consensus-derived coverage and simply reports a lower
+        // call rate, which the "X of Y" headline states honestly.
+        if let Some(aln) = self.best_callable_alignment(biosample_guid).await? {
+            match self.genotype_archaic_for_alignment(aln, &panel).await {
+                Ok(direct) if !direct.is_empty() => {
+                    // Prefer the direct call at any site it covers; keep consensus calls elsewhere
+                    // so a chip still contributes where the alignment had no depth.
+                    let covered: std::collections::HashSet<(String, i64)> =
+                        direct.iter().map(|g| (g.contig.clone(), g.position)).collect();
+                    genotypes.retain(|g| !covered.contains(&(g.contig.clone(), g.position)));
+                    genotypes.extend(direct);
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("archaic: direct genotyping of alignment {aln} failed: {e}"),
+            }
+        }
+
+        let mut result = tokio::task::spawn_blocking(move || {
             navigator_analysis::archaic::count_archaic_markers(&genotypes, &panel)
         })
         .await?;
+
+        // Percentile — only when the subject was scored on a comparable basis to the reference
+        // cohort. The cohort is scored over the whole panel, so a sparse subject (a chip reaches
+        // ~3%, and those sites are the panel's common tail) cannot be ranked against it without
+        // producing a confidently wrong number. Below the floor the field simply stays None and the
+        // UI says why (design §10).
+        if result.call_rate >= ARCHAIC_PERCENTILE_MIN_CALL_RATE {
+            if let Some((pct, cohort)) = self.archaic_percentile(biosample_guid, result.total_copies).await? {
+                result.percentile = Some(pct);
+                result.cohort = Some(cohort);
+            }
+        }
 
         consensus_archaic::upsert(
             self.store.pool(),

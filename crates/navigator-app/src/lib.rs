@@ -2693,6 +2693,35 @@ fn ibd_panel_cache_kind() -> String {
     }
 }
 
+/// Cache kind for per-alignment archaic-panel genotypes.
+const ARCHAIC_PANEL_KIND: &str = "archaic_panel_genotypes";
+
+/// Minimum panel call rate before an archaic count may be ranked against the reference cohort.
+///
+/// The cohort is scored over the whole panel. A consumer chip reaches ~3 % of it, and those sites
+/// are the panel's common tail, so ranking such a count would put every chip user near the 0th
+/// percentile for reasons that have nothing to do with their ancestry. A directly-genotyped WGS
+/// reaches ~100 %, which is comparable.
+pub const ARCHAIC_PERCENTILE_MIN_CALL_RATE: f32 = 0.90;
+
+/// The archaic-panel genotype cache kind, salted with the panel asset's manifest sha256 exactly as
+/// [`ibd_panel_cache_kind`] is — the archaic panel's site list changes whenever its thresholds are
+/// recalibrated, and serving genotypes taken over an older site set would silently corrupt the count.
+fn archaic_panel_cache_kind() -> String {
+    let build = ReferenceBuild::Chm13v2;
+    let name = archaic_markers_path(build)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(String::from);
+    match (load_asset_manifest(build), name) {
+        (Some(m), Some(n)) => match m.assets.get(&n) {
+            Some(e) => format!("{ARCHAIC_PANEL_KIND}:{}", &e.sha256[..16.min(e.sha256.len())]),
+            None => ARCHAIC_PANEL_KIND.to_string(),
+        },
+        _ => ARCHAIC_PANEL_KIND.to_string(),
+    }
+}
+
 /// Count of sites called (dosage within ploidy) in **both** samples — the effective IBD comparison
 /// size, surfaced so a sparse chip↔chip / chip↔WGS overlap isn't mistaken for a confident result.
 fn overlapping_called_sites(a: &[SiteGenotype], b: &[SiteGenotype]) -> usize {

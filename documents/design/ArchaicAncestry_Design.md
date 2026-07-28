@@ -606,15 +606,24 @@ archaic panel intersects that set at **7,679 sites**, and the app called 7,677 o
 sees 2.6 % of the panel *regardless of whether the subject has WGS*, and 97 % of the calibrated
 panel is unreachable through this path.
 
-Options, none yet taken:
+**Resolved — option 1 taken.** `genotype_archaic_for_alignment` genotypes the panel directly from
+the subject's best-callable alignment via `caller::genotype_sites_all_contigs`, cached per alignment
+under a kind salted with the panel's manifest hash (recalibrating the panel invalidates stale
+genotypes rather than mixing site sets). The consensus is still read first, so chips and
+non-alignment sources keep contributing where the alignment has no depth; the direct call wins at any
+site it covers. Measured on the ground-truth subject: **2.6 % → 100.0 % coverage** (299,932 of
+299,958 sites) in a single 2 m 40 s decode pass.
 
-1. **Genotype the archaic panel directly from the alignment**, as `genotype_panel_for_alignment`
-   already does for 1240k. Correct and gives WGS subjects the full panel, at the cost of a decode
-   pass.
-2. **Add the archaic loci to the consensus's genotyping target set**, so one pass covers both. Most
-   efficient long-term, but it changes the consensus contract and needs everyone re-genotyped.
-3. **Restrict the shipped panel to the 1240k intersection** (~7.7 k sites). Cheap and consistent,
-   but discards the calibration work and caps chip *and* WGS at the same low resolution.
+Two constraints worth knowing:
+
+- **CHM13 only.** Unlike the IBD panel, `ArchaicSite` carries no per-build coordinates, so a
+  GRCh37/38 alignment falls back to consensus coverage. The GRCh37 positions already exist in the
+  build pipeline (`archaic_candidates.grch37.tsv`), so giving the panel per-build loci is the
+  follow-up that removes this.
+- The rejected alternatives, for the record: folding the archaic loci into the consensus target set
+  would be more efficient but changes the consensus contract and needs everyone re-genotyped;
+  restricting the panel to the 1240k intersection would discard the calibration and cap WGS at chip
+  resolution.
 
 ### Validation — the percentile problem is solvable, and the numbers are sane
 
@@ -633,11 +642,20 @@ lands at **914 copies — the 10th percentile within EUR** (mean 1003, range 819
 well inside the distribution.
 
 That is the **percentile fix demonstrated**: comparing subject and cohort on the *same* called-site
-subset is valid, whatever that subset is. It confirms option 1 of the earlier list — store per-site
-per-population derived frequencies in Asset 4 and compute the expected distribution over whatever
-the subject actually called, rather than shipping pre-reduced per-sample totals. The current
-`ArchaicCountDistribution` (per-sample totals over all panel sites) cannot support this and should
-be replaced or supplemented.
+basis is valid.
+
+**Now wired.** With direct genotyping the subject reaches ~100 % of the panel — the same basis the
+cohort was scored on — so the percentile is filled when
+`call_rate >= ARCHAIC_PERCENTILE_MIN_CALL_RATE` (0.90) and left `None` below it. The cohort is keyed
+to the subject's inferred **super**-population, not their fine population (§9 Q3): a wrong percentile
+is worse than a coarse one, and no ancestry estimate means no percentile rather than a default.
+The ground-truth subject reports **12,126 of 599,864 copies at 100 % coverage, "more than 7 % of
+EUR"** — consistent with the 5th–10th percentile the two independent hand calculations gave.
+
+Storing per-site per-population frequencies in Asset 4 remains the better long-term shape: it would
+let a *chip* subject get an honest percentile too, by computing the cohort's expected distribution
+over just the sites that subject called. The call-rate gate is the correct interim behaviour, not a
+substitute for it.
 
 ### M4 — Phase 3 (optional)
 
