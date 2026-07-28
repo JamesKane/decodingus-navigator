@@ -516,7 +516,19 @@ Africans carry ~10× fewer archaic alleles, and East Asians exceed Europeans by 
 textbook result (EAS ~2.3–2.6 % vs EUR ~1.8–2.0 % Neanderthal). The non-zero AFR floor is expected:
 the AFR ceiling is 1 %, not 0.
 
-### The percentile is NOT comparable across data types — unresolved, blocks M2
+### The percentile — but NOT the count — is incomparable across data types
+
+**Scope first, because this is easy to over-read.** The headline is a *count over what was actually
+assayed* — copies carried of copies possible, exactly the shape of 23andMe's "191 of 7,462"
+(= 2 × 3,731 sites), and exactly what `ArchaicMarkerResult` already models via `total_copies` /
+`possible_copies` / `call_rate`. That form is self-normalising: whatever subset of the panel a test
+covers becomes the denominator, so **chip and WGS each get an honest headline with no cross-data-type
+comparison and nothing below is a blocker for it.** For the ground-truth sample the chip figure is
+1,005 of 21,478 (4.68 %), against 23andMe's 191 of 7,462 (2.56 %) — different because the panels
+ascertain different sites, which §1 and §10 already forbid presenting as equivalent.
+
+What follows applies **only to the percentile**, which ranks that number against a cohort and so
+does require the cohort to have been scored on comparable sites.
 
 Measured, not anticipated. A 23andMe v5 chip covers **3.6 %** of the calibrated panel (10,739 of
 299,958 sites), so the ground-truth sample's raw chip count is 1,005 against a EUR WGS mean of
@@ -541,7 +553,8 @@ rough order of preference:
 3. Report the percentile **only** for WGS and suppress it for chip data, showing the bare count.
    Honest but weak, given chip is the common case.
 
-Until one is implemented, the Tier A card must not render a percentile for chip input.
+Until one is implemented, the Tier A card renders the count and rate as normal and simply omits the
+percentile for chip input — the count does not depend on any of this.
 
 ### Manifest (2026-07-28)
 
@@ -565,8 +578,8 @@ rather than here, because both would be dead code without a consumer:
 - **App-side plumbing** (§4): `archaic_markers_path` / `archaic_marker_dist_path` beside
   `ancestry_qpadm_path`, plus `ensure_ancestry_asset` and `ancestry_asset_status` entries so the
   assets download on first use and appear in the Settings asset list.
-- **The percentile comparability fix** — see the section above. It is a hard prerequisite for the
-  Tier A card, not a polish item.
+- **The percentile comparability fix** — see the section above. It gates the *percentile* only; the
+  count-and-rate headline can ship without it.
 
 **Publishing is deliberately not done.** The raw archaic inputs must never be published (§2), and
 the derived assets go to the GitHub asset release via `packaging/publish-assets.sh` as a separate,
