@@ -397,6 +397,72 @@ sample (§7); the overall Nea/Den/unknown split should be in the neighbourhood o
 84.5 / 3.3 / 12.2 on Icelanders. The Denisovan confidence floor must be exercised by a test that
 asserts "none reliably detected" rather than a small number.
 
+### M1 — as built (2026-07-28)
+
+The pipeline ran end to end. Inputs: 202.8 GB of EVA all-sites VCFs (four genomes × 22 autosomes)
+plus the EPO ancestral sequence. Funnel at the shipped thresholds:
+
+| stage | count |
+|---|---|
+| candidates (GRCh37, polarized, archaic hom-derived) | 2,032,698 |
+| lifted to CHM13 | 2,031,406 (99.94 %) |
+| dropped — no outgroup AF | 627,063 |
+| dropped — too common in AFR (>1 %) | 968,493 |
+| dropped — too rare outside AFR (<1 %) | 247,165 |
+| dropped — palindromic | 29,295 |
+| dropped — failed CHM13 orientation | 6 |
+| **kept** | **159,384** (118,522 Nea / 6,406 Den / 34,456 shared) |
+
+**The orientation step earns its keep:** 8,844 sites were ref/alt-swapped relative to CHM13. Without
+it they would have been silently inverted — the §7.16 defect from the ancient-ancestry work. Only 6
+sites failed orientation outright, so the lift itself is clean.
+
+The 627 k "no outgroup AF" losses are benign: those sites are absent from the 1000G AF VCFs because
+1000G is monomorphic there, so their derived allele is at 0 % outside Africa and fails the floor
+regardless.
+
+### Checkpoint B — chip overlap, and what it revealed
+
+Measured against a real 23andMe v5 raw file (1,407,553 markers). **Chip overlap is not the
+constraint**: ~10,000 panel sites are assayed, comfortably more than the 3,731 Sankararaman sites
+23andMe uses, so Tier A is viable on chip data.
+
+The *rate* is the interesting part. Sweeping the non-African floor, measuring archaic copies per
+called site on the chip intersection:
+
+| `min_non_afr_freq` | panel | on chip | copies/site | vs 23andMe (0.0512) |
+|---|---|---|---|---|
+| 0.05 (initial) | 48,687 | 4,807 | 0.1545 | 3.02× |
+| 0.02 | 113,194 | 8,236 | 0.1140 | 2.23× |
+| **0.01 (adopted)** | **159,384** | **10,006** | **0.0991** | **1.94×** |
+| 0.005 | 199,072 | 10,721 | 0.0950 | 1.86× |
+| 0.001 | 267,852 | 10,907 | 0.0936 | 1.83× |
+
+Two findings:
+
+1. **The floor was set wrong, and the fix is to lower it, not to add a ceiling.** At 0.05 the
+   surviving sites piled up against the floor (p10 = 0.054, mean 0.089, median 0.077), keeping the
+   common tail and discarding the rare variants that make up most of a real introgression panel —
+   Sankararaman's average ~2.6 %. A *ceiling* cannot help: it cannot push the rate below ~0.139
+   while the floor sets the distribution. Adopted 0.01; below ~0.005 returns diminish and the
+   Denisovan-diagnostic count inflates implausibly for a European (914 → 25,438 at 0.001), which is
+   noise entering and a useful guard rail.
+2. **Thresholds cannot close the gap — the selection criterion is the limit.** The rate flattens at
+   ~1.83×, so the residual is structural, not tuning. Sankararaman's sites come from an HMM over
+   haplotypes; ours come from a frequency filter plus an archaic hom-derived call, and a frequency
+   filter cannot separate "introgressed" from "any out-of-Africa-specific variant". This is inherent
+   to the §4 recipe.
+
+**Why that does not invalidate Tier A.** The report is a count plus a percentile against our own
+1kGP cohort (Asset 4), which is internally consistent whatever the absolute rate, and §1/§7 already
+forbid presenting it as equivalent to a vendor's number. What the residual does mean is that
+**checkpoint A is now the binding work**: calibrating archaic-specificity against the hmmix
+cross-validation set is the only principled way to tighten it, and it should happen before this
+panel is treated as shippable.
+
+**Still outstanding for M1:** checkpoint A (hmmix calibration); Asset 4, the percentile
+distribution, which is not built yet; and adding both assets to the SHA-256 manifest.
+
 ### M4 — Phase 3 (optional)
 
 Trait associations (each needs a curated GWAS-backed table — curatorial work, not engineering),

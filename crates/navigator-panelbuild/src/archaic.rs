@@ -389,7 +389,14 @@ pub struct ArchaicPanelArgs {
     #[arg(long, default_value_t = 0.01)]
     max_afr_freq: f32,
     /// Minimum derived-allele frequency outside Africa.
-    #[arg(long, default_value_t = 0.05)]
+    ///
+    /// 0.01, not the 0.05 this started at: at 0.05 the surviving sites pile up against the floor
+    /// (p10 = 0.054, mean 0.089), which keeps the common tail and discards the rare variants that
+    /// make up most of a real introgression panel. Measured on the v5 chip intersection, 0.05 gave
+    /// 0.155 archaic copies/site against ~0.051 for the Sankararaman panel 23andMe uses; lowering
+    /// the floor moves it to ~0.099 and roughly doubles chip overlap. Below ~0.005 it plateaus and
+    /// the Denisovan-diagnostic count inflates implausibly for a European, which is noise entering.
+    #[arg(long, default_value_t = 0.01)]
     min_non_afr_freq: f32,
     /// Output panel (bincode `ArchaicMarkerPanel`).
     #[arg(long)]

@@ -210,6 +210,6 @@ DENISOVA_MASK_PATTERN="${DENISOVA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Deni
 ARCHAIC_RAW="${ARCHAIC_RAW:-$RAW/archaic}"
 
 ARCHAIC_MAX_AFR_FREQ="${ARCHAIC_MAX_AFR_FREQ:-0.01}"        # derived allele rare/absent in Africans
-ARCHAIC_MIN_NON_AFR_FREQ="${ARCHAIC_MIN_NON_AFR_FREQ:-0.05}" # ...but present outside Africa
+ARCHAIC_MIN_NON_AFR_FREQ="${ARCHAIC_MIN_NON_AFR_FREQ:-0.01}" # ...but present outside Africa
 ARCHAIC_MIN_CALLED="${ARCHAIC_MIN_CALLED:-1}"               # archaic genomes required to have a call
 ARCHAIC_OUT="$ASSETS/archaic_markers_${BUILD}.bin"          # Tier A marker panel
