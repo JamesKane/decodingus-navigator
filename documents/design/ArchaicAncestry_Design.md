@@ -543,8 +543,35 @@ rough order of preference:
 
 Until one is implemented, the Tier A card must not render a percentile for chip input.
 
-**Still outstanding for M1:** neither asset is in the SHA-256 manifest, so the app would load them
-through the unverified path.
+### Manifest (2026-07-28)
+
+Both assets are now in `ancestry_manifest_chm13v2.0.json` (12 → 14 entries), so
+`read_verified_asset` checks them instead of loading through the unverified passthrough:
+
+| asset | bytes |
+|---|---|
+| `archaic_markers_chm13v2.0.bin` | 14,220,626 |
+| `archaic_marker_dist_chm13v2.0.bin` | 10,829 |
+
+`panelbuild manifest` globs `*_<build>.bin`, so no builder change was needed. Regenerating rewrites
+every entry, so the pre-existing 12 were diffed against a backup
+(`.bak-prearchaic`): **no hash changed and nothing was removed**, which matters because a changed
+hash would invalidate an asset already published to the release. Both new hashes were then verified
+independently of the builder.
+
+**M1 is complete.** What remains before the feature is usable is M2, and two items belong with it
+rather than here, because both would be dead code without a consumer:
+
+- **App-side plumbing** (§4): `archaic_markers_path` / `archaic_marker_dist_path` beside
+  `ancestry_qpadm_path`, plus `ensure_ancestry_asset` and `ancestry_asset_status` entries so the
+  assets download on first use and appear in the Settings asset list.
+- **The percentile comparability fix** — see the section above. It is a hard prerequisite for the
+  Tier A card, not a polish item.
+
+**Publishing is deliberately not done.** The raw archaic inputs must never be published (§2), and
+the derived assets go to the GitHub asset release via `packaging/publish-assets.sh` as a separate,
+explicit step. Note `archaic_markers_*.bin` is 14 MB — small enough to bundle, unlike the 133 MB
+haplotype panel, so it does not need an `ON_DEMAND_PREFIXES` entry in `packaging/stage-assets.sh`.
 
 ### M4 — Phase 3 (optional)
 
