@@ -45,3 +45,7 @@ dist/
 # Python bytecode (scripts/)
 __pycache__/
 *.pyc
+
+# Downloaded data artifacts in the panel-build scripts dir (not source)
+scripts/ancestry-panel/*.vcf.gz
+scripts/ancestry-panel/*.tbi
