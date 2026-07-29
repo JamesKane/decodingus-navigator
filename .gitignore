@@ -41,3 +41,7 @@ temp/
 # Packaging: staged ancestry assets (bundled at build time, not committed) + cargo-packager output
 packaging/staging/
 dist/
+
+# Python bytecode (scripts/)
+__pycache__/
+*.pyc
