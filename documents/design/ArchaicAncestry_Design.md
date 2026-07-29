@@ -791,6 +791,27 @@ are now measured in callable bases.
    total extent both fall inside hmmix's EUR p10–p90, not that the caller is validated. Median tract
    length is still 1.8× long; settings that match it exactly double the segment count, which is the
    worse trade since extent is what a user sees.
+
+   **Genome-wide run (2026-07-29).** Full assets built (outgroup 53,467,252 sites / 55.8 MB at 1.09
+   bytes/site; classify 2,031,406 sites / 7.4 MB; callable 1,815.3 Mb / 5.4 MB) and a whole-genome
+   diploid calling pass over the ground-truth CHM13 alignment (2,806,458 calls, 27 contigs).
+
+   Result: **2,023 segments, 81.88 Mb = 4.51 % of callable**, against a measured hmmix EUR
+   genome-wide distribution of **mean 90.9 Mb (p10 84.6, p90 97.2, n=633)**.
+
+   - **The chr21+22 calibration generalised.** 4.51 % of callable genome-wide versus 4.50 % on the
+     two chromosomes it was fitted on — the thresholds are not chromosome-specific.
+   - **We now under-call by ~10 %**, sitting just below hmmix's p10. That is a large improvement on
+     the 1.6× *over*-call before calibration, and it errs in the safer direction, but it is outside
+     their normal range and should be stated as such rather than described as agreement.
+   - **Deliberately not re-tuned.** Closing a 10 % gap against a single individual would be fitting
+     noise; the subject matched the mean closely on chr21+22 (2.01 vs 2.09), so he is not
+     intrinsically low. Validating across several individuals is the honest next step, and needs
+     WGS for people whose hmmix result is known.
+   - A caution recorded for future work: extrapolating the chr21+22 target by the callable ratio
+     predicted 85.1 Mb against a measured 90.9 Mb — **6 % low**. Those two chromosomes carry
+     slightly less archaic ancestry per callable megabase than the genome average, so two-chromosome
+     extrapolation is not a substitute for measuring.
 2. **Lineage attribution does not work, and is now gated off** (`attribute_lineage: false`).
 
    Two fixes were made and neither rescued it, which is itself the finding:
