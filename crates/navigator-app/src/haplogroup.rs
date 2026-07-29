@@ -3448,6 +3448,311 @@ impl App {
         Ok(result)
     }
 
+    /// The subject's archaic percentile within their inferred super-population, plus that cohort's
+    /// label. `None` when the distribution asset is absent or the subject's ancestry is unknown.
+    ///
+    /// The cohort is keyed to the subject's **super-population**, not their fine population (design
+    /// §9 Q3): a fine-grained cohort would be more specific, but it would also let an ancestry error
+    /// move the archaic headline, and a wrong percentile is worse than a coarse one.
+    async fn archaic_percentile(
+        &self,
+        biosample_guid: SampleGuid,
+        result: &ArchaicMarkerResult,
+        panel_fingerprint: &str,
+    ) -> Result<Option<(f32, String)>, AppError> {
+        let build = ReferenceBuild::Chm13v2;
+        let _ = self.ensure_ancestry_asset(build, &crate::archaic_marker_dist_path(build)).await;
+        let Some(bytes) = crate::read_verified_asset(build, &crate::archaic_marker_dist_path(build))? else {
+            return Ok(None);
+        };
+        let dist = ArchaicCountDistribution::from_bytes(&bytes)?;
+
+        // The subject's dominant super-population, from the cached consensus ancestry. No estimate →
+        // no cohort → no percentile, rather than defaulting to one and quietly mis-ranking them.
+        let Ok(ancestry) = self.estimate_ancestry_from_consensus(biosample_guid).await else {
+            return Ok(None);
+        };
+        let Some(top) = ancestry
+            .components
+            .iter()
+            .max_by(|a, b| a.percentage.total_cmp(&b.percentage))
+        else {
+            return Ok(None);
+        };
+        let sup = navigator_domain::ancestry::population_super(&top.population_code)
+            .unwrap_or(top.population_code.as_str())
+            .to_string();
+        Ok(dist
+            .percentile_for_called(&sup, &result.called_indices, result.total_copies, panel_fingerprint)
+            .map(|p| (p, sup)))
+    }
+
+    /// Genotype the archaic marker panel directly from one alignment.
+    ///
+    /// The consensus only carries the 1240k/IBD loci, so this is what gives a WGS subject the full
+    /// panel rather than the ~2.6 % that happens to intersect 1240k. Results are cached per
+    /// alignment under a kind salted with the panel's manifest hash, so recalibrating the panel
+    /// invalidates stale genotypes instead of silently mixing site sets.
+    ///
+    /// Works on **any build the panel carries loci for**: CHM13 natively, and GRCh37/38 via the
+    /// panel's per-build coordinates (offline lift, oriented at build time — no runtime liftover).
+    /// A dosage measured on a non-CHM13 build is re-keyed to the CHM13 alleles before it is
+    /// returned, because that build's ref/alt may be swapped or strand-flipped relative to CHM13
+    /// and feeding the raw dosage through would invert those sites silently.
+    async fn genotype_archaic_for_alignment(
+        &self,
+        alignment_id: i64,
+        panel: &ArchaicMarkerPanel,
+    ) -> Result<Vec<SiteGenotype>, AppError> {
+        let kind = crate::archaic_panel_cache_kind();
+        if let Some(g) = self.load_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION).await? {
+            return Ok(g);
+        }
+        let build = self.alignment_or_err(alignment_id).await?.reference_build;
+        let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
+        let is_chm13 = matches!(
+            canonical_build(&build),
+            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
+        );
+
+        let genotypes = if is_chm13 {
+            let sites: Vec<Site> = panel
+                .sites
+                .iter()
+                .map(|s| Site {
+                    name: String::new(),
+                    contig: s.contig.clone(),
+                    position: s.position,
+                    reference_allele: s.reference_allele.to_string(),
+                    alternate_allele: s.alternate_allele.to_string(),
+                })
+                .collect();
+            tokio::task::spawn_blocking(move || {
+                let params = HaploidCallerParams::default();
+                caller::genotype_sites_all_contigs(
+                    &bam,
+                    &sites,
+                    2,
+                    &params,
+                    reference.as_deref(),
+                    &navigator_analysis::CancelToken::none(),
+                )
+            })
+            .await??
+        } else if panel.sites.iter().any(|s| s.locus(&build).is_some()) {
+            // Match the panel's per-build contig names to the file's naming (`chr1` vs `1`).
+            let (bam_h, ref_h) = (bam.clone(), reference.clone());
+            let file_contigs =
+                tokio::task::spawn_blocking(move || navigator_analysis::reader::contig_names(&bam_h, ref_h.as_deref()))
+                    .await??;
+            let index: HashMap<String, String> = file_contigs
+                .into_iter()
+                .map(|c| (navigator_analysis::contig::bare_upper(&c), c))
+                .collect();
+            // Keep the panel site alongside its build locus so the dosage can be re-keyed after.
+            let mut targets: Vec<(&navigator_analysis::archaic::ArchaicSite, Site)> = Vec::new();
+            for s in &panel.sites {
+                let Some(l) = s.locus(&build) else { continue };
+                let key = navigator_analysis::contig::bare_upper(&l.contig);
+                let Some(contig) = index.get(&key).cloned() else { continue };
+                targets.push((
+                    s,
+                    Site {
+                        name: String::new(),
+                        contig,
+                        position: l.position,
+                        reference_allele: l.reference.to_string(),
+                        alternate_allele: l.alternate.to_string(),
+                    },
+                ));
+            }
+            let sites: Vec<Site> = targets.iter().map(|(_, site)| site.clone()).collect();
+            let called = tokio::task::spawn_blocking(move || {
+                let params = HaploidCallerParams::default();
+                caller::genotype_sites_all_contigs(
+                    &bam,
+                    &sites,
+                    2,
+                    &params,
+                    reference.as_deref(),
+                    &navigator_analysis::CancelToken::none(),
+                )
+            })
+            .await??;
+
+            // Re-key onto CHM13: same position/alleles the counter expects, dosage re-expressed.
+            let by_pos: HashMap<(&str, i64), &SiteGenotype> = called
+                .iter()
+                .map(|g| ((g.contig.as_str(), g.position), g))
+                .collect();
+            let mut out = Vec::with_capacity(targets.len());
+            for (site, target) in &targets {
+                let Some(g) = by_pos.get(&(target.contig.as_str(), target.position)) else {
+                    continue;
+                };
+                if g.dosage < 0 {
+                    continue;
+                }
+                let measured_alt = target.alternate_allele.chars().next().unwrap_or('N');
+                let Some(dosage) = site.rekey_dosage(measured_alt, g.dosage, g.ploidy) else {
+                    continue;
+                };
+                out.push(SiteGenotype {
+                    name: String::new(),
+                    contig: site.contig.clone(),
+                    position: site.position,
+                    reference_allele: site.reference_allele.to_string(),
+                    alternate_allele: site.alternate_allele.to_string(),
+                    ploidy: g.ploidy,
+                    dosage,
+                    gq: g.gq,
+                    depth: g.depth,
+                    ref_depth: g.ref_depth,
+                    alt_depth: g.alt_depth,
+                    pls: Vec::new(),
+                    gt: None,
+                    allele_depths: None,
+                });
+            }
+            out
+        } else {
+            Vec::new() // panel carries no loci for this build
+        };
+
+        self.save_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION, &genotypes)
+            .await?;
+        Ok(genotypes)
+    }
+
+    /// Count archaic markers from **one specific alignment**, bypassing both the cache and the
+    /// best-callable pick. Used for cross-build validation: the same person's GRCh38 and CHM13
+    /// alignments should agree, which is the check that the per-build loci and the dosage re-keying
+    /// are correct rather than merely plausible.
+    pub async fn archaic_for_alignment(
+        &self,
+        _biosample_guid: SampleGuid,
+        alignment_id: i64,
+    ) -> Result<ArchaicMarkerResult, AppError> {
+        let build = ReferenceBuild::Chm13v2;
+        self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build)).await?;
+        let path = crate::archaic_markers_path(build);
+        let bytes = crate::read_verified_asset(build, &path)?
+            .ok_or_else(|| AppError::AncestryPanelMissing(path.clone()))?;
+        let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
+        let genotypes = self.genotype_archaic_for_alignment(alignment_id, &panel).await?;
+        Ok(tokio::task::spawn_blocking(move || {
+            navigator_analysis::archaic::count_archaic_markers(&genotypes, &panel)
+        })
+        .await?)
+    }
+
+    /// The cached archaic (Tier A) marker count for a subject, if one was computed from the
+    /// **current** autosomal consensus. `None` if absent or stale. Cheap — a cache read.
+    pub async fn cached_archaic(&self, biosample_guid: SampleGuid) -> Result<Option<ArchaicMarkerResult>, AppError> {
+        let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
+            return Ok(None);
+        };
+        let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? else {
+            return Ok(None);
+        };
+        if r.consensus_sig == row.last_reconciled_at {
+            Ok(Some(serde_json::from_str(&r.archaic)?))
+        } else {
+            Ok(None) // computed from an older consensus — stale
+        }
+    }
+
+    /// Count the subject's archaic (Neanderthal / Denisovan) marker copies from the **consensus** —
+    /// no BAM walk. Returns the cached result when it matches the current consensus signature.
+    ///
+    /// The headline is a count over what was actually assayed (copies carried of copies possible),
+    /// so chip and WGS input both yield an honest figure without comparing across data types.
+    ///
+    /// The **percentile is deliberately left unset for sparse input**. A consumer chip covers only a
+    /// few percent of the panel, and those sites are its common tail, so ranking such a count against
+    /// the WGS-scored reference cohort would produce a confidently wrong number (design §10). Until
+    /// per-site frequencies land in the distribution asset, the percentile is only filled when the
+    /// subject's call rate is comparable to the cohort's.
+    pub async fn estimate_archaic_from_consensus(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<ArchaicMarkerResult, AppError> {
+        let row = consensus_profile::get(self.store.pool(), biosample_guid, "Auto")
+            .await?
+            .ok_or_else(|| {
+                AppError::Import(
+                    "build the autosomal consensus first (Autosomal tab) before the archaic report".into(),
+                )
+            })?;
+        let sig = row.last_reconciled_at.clone();
+
+        if let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? {
+            if r.consensus_sig == sig {
+                return Ok(serde_json::from_str(&r.archaic)?);
+            }
+        }
+
+        let build = ReferenceBuild::Chm13v2;
+        self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build)).await?;
+        let panel_path = crate::archaic_markers_path(build);
+        let bytes = crate::read_verified_asset(build, &panel_path)?
+            .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
+        let panel_fingerprint = navigator_analysis::manifest::sha256_hex(&bytes);
+        let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
+
+        // Start from the consensus — it covers chips and every non-alignment source, but only where
+        // the archaic panel intersects the 1240k/IBD loci the consensus is built over (~2.6% of the
+        // panel). Design §5 assumed the consensus spanned the genome; it does not.
+        let profile: DiploidProfile = serde_json::from_str(&row.payload)?;
+        let mut genotypes = consensus_genotypes(&profile);
+
+        // Then genotype the panel DIRECTLY from the subject's best-callable alignment, which is the
+        // only way a WGS subject reaches the other 97%. Best-effort: a subject with no callable
+        // alignment (chip-only) keeps the consensus-derived coverage and simply reports a lower
+        // call rate, which the "X of Y" headline states honestly.
+        if let Some(aln) = self.best_callable_alignment(biosample_guid).await? {
+            match self.genotype_archaic_for_alignment(aln, &panel).await {
+                Ok(direct) if !direct.is_empty() => {
+                    // Prefer the direct call at any site it covers; keep consensus calls elsewhere
+                    // so a chip still contributes where the alignment had no depth.
+                    let covered: std::collections::HashSet<(String, i64)> =
+                        direct.iter().map(|g| (g.contig.clone(), g.position)).collect();
+                    genotypes.retain(|g| !covered.contains(&(g.contig.clone(), g.position)));
+                    genotypes.extend(direct);
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("archaic: direct genotyping of alignment {aln} failed: {e}"),
+            }
+        }
+
+        let mut result = tokio::task::spawn_blocking(move || {
+            navigator_analysis::archaic::count_archaic_markers(&genotypes, &panel)
+        })
+        .await?;
+
+        // Percentile — valid at ANY coverage now, because the cohort is scored over exactly the
+        // sites this subject called rather than over the whole panel. A chip reaching ~3% of the
+        // panel is compared against what the cohort would score on those same 3%, so the call-rate
+        // artefact that used to pin every chip user near the 0th percentile is gone (design §10).
+        if let Some((pct, cohort)) = self
+            .archaic_percentile(biosample_guid, &result, &panel_fingerprint)
+            .await?
+        {
+            result.percentile = Some(pct);
+            result.cohort = Some(cohort);
+        }
+
+        consensus_archaic::upsert(
+            self.store.pool(),
+            biosample_guid,
+            &sig,
+            &serde_json::to_string(&result)?,
+            &Utc::now().to_rfc3339(),
+        )
+        .await?;
+        Ok(result)
+    }
+
     /// An alignment's content SHA-256, computed once at import. Read from the record if present,
     /// else computed now (hashing the file) and stored — so batch-imported alignments are hashed
     /// lazily on first analysis, then cached on the row.

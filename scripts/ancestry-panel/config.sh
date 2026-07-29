@@ -176,3 +176,42 @@ ASCERTAIN_SITES="$TMP/ascertain_sites.${BUILD}.tsv"        # generated: CHM13 co
 GMAP_OUT="$ASSETS/genetic_map_${BUILD}.bin"               # IBD recombination map (bp->cM)
 IBD_PANEL_OUT="$ASSETS/ibd_panel_${BUILD}.bin"            # chip-compatible multi-build IBD SNP panel
 MANIFEST="$ASSETS/ancestry_manifest_${BUILD}.json"         # provenance + checksums
+
+# ── archaic (Neanderthal / Denisovan) panel — stage 08 ──────────────────────────
+# Design: documents/design/ArchaicAncestry_Design.md §2 (sources) / §4 (assets).
+# LICENSING: the EVA archaic genomes carry no explicit open licence (Ft. Lauderdale principles
+# only). They are fetched at build time and NEVER redistributed — only our derived sites ship.
+# All URLs below were VERIFIED against the live servers on 2026-07-26 (directory listings +
+# range-request header inspection); the `# VERIFY` markers are removed accordingly.
+ANCESTRAL_GRCH37_URL="${ANCESTRAL_GRCH37_URL:-https://ftp.ensembl.org/pub/release-75/fasta/ancestral_alleles/homo_sapiens_ancestor_GRCh37_e71.tar.bz2}"
+EVA_BASE="${EVA_BASE:-http://cdna.eva.mpg.de/neandertal}"
+EVA_FTP_BASE="${EVA_FTP_BASE:-http://ftp.eva.mpg.de/neandertal}"
+# %s = chromosome, BARE (1..22) — the archaic VCFs use unprefixed contig names. All four genomes are
+# hg19/GRCh37, which is why polarity is assigned pre-lift.
+ALTAI_VCF_PATTERN="${ALTAI_VCF_PATTERN:-$EVA_BASE/altai/AltaiNeandertal/VCF/AltaiNea.hg19_1000g.%s.mod.vcf.gz}"
+VINDIJA_VCF_PATTERN="${VINDIJA_VCF_PATTERN:-$EVA_BASE/Vindija/VCF/Vindija33.19/chr%s_mq25_mapab100.vcf.gz}"
+CHAGYRSKAYA_VCF_PATTERN="${CHAGYRSKAYA_VCF_PATTERN:-$EVA_FTP_BASE/Chagyrskaya/VCF/chr%s.noRB.vcf.gz}"
+DENISOVA_VCF_PATTERN="${DENISOVA_VCF_PATTERN:-$EVA_BASE/Vindija/VCF/Denisova/chr%s_mq25_mapab100.vcf.gz}"
+# Quality masks. NOTE: there is NO FilterBed under altai/AltaiNeandertal/ — the Vindija release
+# bundles masks for the earlier genomes, so Altai's and Denisova's both live under Vindija/FilterBed/.
+ALTAI_MASK_PATTERN="${ALTAI_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Altai/chr%s_mask.bed.gz}"
+VINDIJA_MASK_PATTERN="${VINDIJA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Vindija33.19/chr%s_mask.bed.gz}"
+CHAGYRSKAYA_MASK_PATTERN="${CHAGYRSKAYA_MASK_PATTERN:-$EVA_FTP_BASE/Chagyrskaya/FilterBed/chr%s_mask.bed.gz}"
+DENISOVA_MASK_PATTERN="${DENISOVA_MASK_PATTERN:-$EVA_BASE/Vindija/FilterBed/Denisova/chr%s_mask.bed.gz}"
+
+# Site-selection thresholds — CALIBRATED (design §10, M1 checkpoint A, 2026-07-28) against the
+# hmmix Zenodo callset (CC BY 4.0), by lifting its 370,960 diagnostic "DAV" SNPs to CHM13 and
+# maximising F1 against them. Optimum 0.0005/0.01: precision 78.4%, recall 63.4%, F1 0.701.
+# Both bounds are load-bearing — dropping the floor to 0 collapses precision to 64.7%, and relaxing
+# the AFR ceiling costs precision without buying recall (0.02 -> 73.8%, 0.05 -> 63.9%).
+# Where the bulk archaic VCFs land. These are ALL-SITES files — one record per genome position,
+# not per variant — so the four genomes total ~197 GB (measured: Altai chr1 alone is 5.65 GB, and
+# the BAM for the same chromosome is 12.65 GB, so the VCFs are NOT the large end of this dataset).
+# Split out from $RAW precisely so it can point at external storage; the derived per-genome genotype
+# tables that stage 08 produces are small and stay under $TMP.
+ARCHAIC_RAW="${ARCHAIC_RAW:-$RAW/archaic}"
+
+ARCHAIC_MAX_AFR_FREQ="${ARCHAIC_MAX_AFR_FREQ:-0.01}"        # derived allele rare/absent in Africans
+ARCHAIC_MIN_NON_AFR_FREQ="${ARCHAIC_MIN_NON_AFR_FREQ:-0.0005}" # ...but present outside Africa
+ARCHAIC_MIN_CALLED="${ARCHAIC_MIN_CALLED:-1}"               # archaic genomes required to have a call
+ARCHAIC_OUT="$ASSETS/archaic_markers_${BUILD}.bin"          # Tier A marker panel

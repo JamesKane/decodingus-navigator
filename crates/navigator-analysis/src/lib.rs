@@ -10,6 +10,7 @@
 //! golden-truth parity harness gates cutover. Implemented in roadmap phases 2–3.
 
 pub mod ancestry;
+pub mod archaic;
 pub mod caller;
 pub mod callset;
 pub mod cancel;

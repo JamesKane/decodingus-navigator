@@ -41,3 +41,11 @@ temp/
 # Packaging: staged ancestry assets (bundled at build time, not committed) + cargo-packager output
 packaging/staging/
 dist/
+
+# Python bytecode (scripts/)
+__pycache__/
+*.pyc
+
+# Downloaded data artifacts in the panel-build scripts dir (not source)
+scripts/ancestry-panel/*.vcf.gz
+scripts/ancestry-panel/*.tbi

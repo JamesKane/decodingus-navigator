@@ -835,6 +835,9 @@ pub struct NavigatorApp {
     /// Runs-of-homozygosity result for the selected subject. `roh_running` while the HMM computes.
     roh: Option<navigator_app::RohResult>,
     roh_running: bool,
+    /// Archaic (Neanderthal / Denisovan) Tier-A marker count for the selected subject.
+    archaic: Option<navigator_app::ArchaicMarkerResult>,
+    archaic_running: bool,
     /// Last private Y bucket: (alignment id, bucket).
     private_y: Option<(i64, PrivateBucket)>,
     finding_private_y: bool,
@@ -1281,6 +1284,8 @@ impl NavigatorApp {
             painting_running: false,
             roh: None,
             roh_running: false,
+            archaic: None,
+            archaic_running: false,
             private_y: None,
             finding_private_y: false,
             y_mask_path: None,

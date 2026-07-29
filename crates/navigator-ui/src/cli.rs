@@ -52,6 +52,11 @@ pub enum Command {
     /// consensus to be built first (see the Autosomal tab / `ingest`), then persists. See
     /// `navigator_app::App::estimate_deep_ancestry`.
     DeepAncestry(ShowArgs),
+    /// Archaic (Neanderthal / Denisovan) Tier-A marker count from the subject's pooled autosomal
+    /// consensus. Reports copies carried of copies assayed — a count over the sites the subject's
+    /// data actually covered, not a "% Neanderthal". Requires the consensus to be built first.
+    /// See `navigator_app::App::estimate_archaic_from_consensus`.
+    Archaic(ArchaicArgs),
     /// Panel batch-process mode (progressive-consensus): genotype the subject's CHM13 alignment(s) at
     /// the full-1240k panel, caching the dosages and refreshing the autosomal consensus so ancestry is
     /// ready without a later lazy build. Heavy (a whole-genome decode per alignment).
@@ -161,6 +166,26 @@ pub struct ProbeArgs {
     /// Emit JSON instead of a human-readable table.
     #[arg(long)]
     json: bool,
+}
+
+/// `archaic` takes an optional alignment override so a specific build can be genotyped directly —
+/// the app otherwise picks the subject's best-callable alignment, which makes the GRCh37/38 code
+/// path unreachable on a subject that also has CHM13 data.
+#[derive(Args)]
+pub struct ArchaicArgs {
+    /// Subject donor identifier.
+    #[arg(long, short)]
+    subject: String,
+    /// Workspace database path.
+    #[arg(long)]
+    db: Option<PathBuf>,
+    /// Emit JSON instead of a human-readable summary.
+    #[arg(long)]
+    json: bool,
+    /// Genotype this alignment instead of the subject's best-callable one. Bypasses the cached
+    /// result, so it re-genotypes; intended for cross-build validation.
+    #[arg(long)]
+    alignment: Option<i64>,
 }
 
 #[derive(Args)]
@@ -409,6 +434,7 @@ pub fn run(command: Command) -> i32 {
             Command::PrivateY(a) => private_y(a).await,
             Command::DebugAncient(a) => debug_ancient(a).await,
             Command::DeepAncestry(a) => deep_ancestry(a).await,
+            Command::Archaic(a) => archaic(a).await,
             Command::GenotypePanel(a) => genotype_panel(a).await,
             Command::BranchReport(a) => branch_report(a).await,
             Command::Doctor(a) => doctor(a).await,
@@ -1555,6 +1581,54 @@ async fn debug_ancient(args: ShowArgs) -> i32 {
         );
     }
     println!("\nStability gate: the per-source rows must agree with the consensus (and each other)\nto within a few percent — they are the same person genotyped by different means.");
+    0
+}
+
+/// Archaic (Neanderthal / Denisovan) Tier-A marker count — see
+/// [`navigator_app::App::estimate_archaic_from_consensus`].
+async fn archaic(args: ArchaicArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let guid = match find_subject(&app, &args.subject).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            eprintln!("error: no subject with identifier \"{}\"", args.subject);
+            return 1;
+        }
+        Err(c) => return c,
+    };
+    let r = match args.alignment {
+        Some(aln) => match app.archaic_for_alignment(guid, aln).await {
+            Ok(r) => r,
+            Err(e) => return report(e),
+        },
+        None => match app.estimate_archaic_from_consensus(guid).await {
+            Ok(r) => r,
+            Err(e) => return report(e),
+        },
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+        return 0;
+    }
+    println!("Archaic markers (Tier A): {} of {} copies", r.total_copies, r.possible_copies);
+    println!(
+        "  {} of {} panel sites called ({:.1}%)",
+        r.called_sites,
+        r.panel_sites,
+        r.call_rate * 100.0
+    );
+    println!("  rate            {:.4} copies/site", r.rate());
+    println!("  Neanderthal     {}", r.neanderthal_copies);
+    println!("  shared archaic  {}", r.shared_copies);
+    println!("  Denisovan       {} (near the noise floor outside Oceania — not a finding)", r.denisovan_copies);
+    match (r.percentile, &r.cohort) {
+        (Some(p), Some(c)) => println!("  percentile      more than {p:.0}% of {c}"),
+        _ => println!("  percentile      not reported (coverage not comparable to the reference cohort)"),
+    }
+    println!("\nThis count is specific to our marker panel; it is not comparable to another company's number.");
     0
 }
 
