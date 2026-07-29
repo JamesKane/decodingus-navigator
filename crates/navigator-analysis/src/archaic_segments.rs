@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::archaic::{ArchaicClassify, ArchaicOutgroup, DiagnosticClass};
+use crate::archaic::{ArchaicCallable, ArchaicClassify, ArchaicOutgroup, DiagnosticClass};
 use crate::caller::SiteGenotype;
 use crate::ibd::GeneticMap;
 
@@ -99,6 +99,11 @@ pub struct ArchaicConfig {
     /// A segment is attributed to a lineage only when its diagnostic matches favour that lineage by
     /// at least this ratio; otherwise it is `Unknown` rather than guessed.
     pub min_lineage_ratio: f64,
+    /// Minimum callable fraction for a window to be modelled at all. Windows below this are
+    /// **excluded**, not down-weighted: a mostly-uncallable window's variant density is dominated by
+    /// mapping error, and including it is what made the first real run call 3.62 % archaic out of
+    /// repetitive sequence.
+    pub min_callable_fraction: f64,
 }
 
 impl Default for ArchaicConfig {
@@ -112,6 +117,7 @@ impl Default for ArchaicConfig {
             min_segment_bp: 50_000,
             min_posterior: 0.8,
             min_lineage_ratio: 2.0,
+            min_callable_fraction: 0.5,
         }
     }
 }
@@ -149,6 +155,7 @@ pub fn call_archaic_segments(
     calls: &[SiteGenotype],
     outgroup: &ArchaicOutgroup,
     classify: &ArchaicClassify,
+    callable: &ArchaicCallable,
     gmap: &GeneticMap,
     cfg: &ArchaicConfig,
 ) -> ArchaicSegmentResult {
@@ -188,10 +195,21 @@ pub fn call_archaic_segments(
         positions.sort_unstable();
         positions.dedup();
         let kept = outgroup.retain_private(&contig, &positions);
+        // Count only callable windows toward the background rate — otherwise the denominator is
+        // inflated by regions the model will not look at anyway.
         if let Some((lo, hi)) = extent.get(&contig) {
-            total_windows += ((hi - lo).max(0) as f64 / cfg.window_bp as f64).max(1.0);
+            let mut w = *lo;
+            while w <= *hi {
+                if callable.callable_fraction(&contig, w) >= cfg.min_callable_fraction {
+                    total_windows += 1.0;
+                }
+                w += cfg.window_bp;
+            }
         }
-        total_private += kept.len();
+        total_private += kept
+            .iter()
+            .filter(|&&p| callable.callable_fraction(&contig, p) >= cfg.min_callable_fraction)
+            .count();
         private.insert(contig, kept);
     }
 
@@ -203,27 +221,48 @@ pub fn call_archaic_segments(
     let archaic_rate = background * cfg.archaic_rate_multiple.max(1.1);
 
     let mut segments = Vec::new();
-    let mut callable_mb = 0.0f64;
     for (contig, positions) in &private {
         let Some(&(lo, hi)) = extent.get(contig) else { continue };
-        callable_mb += (hi - lo).max(0) as f64 / 1_000_000.0;
         if positions.is_empty() || hi <= lo {
             continue;
         }
         segments.extend(call_contig(
-            contig, positions, lo, hi, gmap, cfg, background, archaic_rate, classify, &alleles,
+            contig, positions, lo, hi, gmap, cfg, background, archaic_rate, classify, callable, &alleles,
         ));
     }
 
+    // Both sides of the ratio must be measured in the SAME units. A segment's span includes windows
+    // the mask excluded, so counting span against callable megabases mixes them and inflates the
+    // percentage — the first run read 4.80% of "96.4 Mb callable" while the callable track was
+    // 44.6 Mb. Archaic extent is therefore summed over callable bases only.
+    let seg_callable_mb = |s: &ArchaicSegment| -> f64 {
+        let mut bp = 0.0;
+        let mut w = s.start;
+        while w <= s.end {
+            bp += callable.callable_fraction(&s.contig, w) * cfg.window_bp as f64;
+            w += cfg.window_bp;
+        }
+        bp / 1_000_000.0
+    };
     let (mut nea, mut den, mut unk) = (0.0, 0.0, 0.0);
     for s in &segments {
+        let mb = seg_callable_mb(s);
         match s.source {
-            ArchaicSource::Neanderthal => nea += s.length_mb(),
-            ArchaicSource::Denisovan => den += s.length_mb(),
-            ArchaicSource::Unknown => unk += s.length_mb(),
+            ArchaicSource::Neanderthal => nea += mb,
+            ArchaicSource::Denisovan => den += mb,
+            ArchaicSource::Unknown => unk += mb,
         }
     }
     let total_mb = nea + den + unk;
+    // Denominator: callable bases within the analysed contigs, from the mask itself.
+    let callable_mb: f64 = callable
+        .contigs
+        .iter()
+        .filter(|c| private.contains_key(&c.contig))
+        .flat_map(|c| c.callable_bp.iter())
+        .map(|&b| b as f64)
+        .sum::<f64>()
+        / 1_000_000.0;
     let summary = ArchaicSummary {
         total_mb,
         pct_callable: if callable_mb > 0.0 {
@@ -253,6 +292,7 @@ fn call_contig(
     background: f64,
     archaic_rate: f64,
     classify: &ArchaicClassify,
+    callable: &ArchaicCallable,
     alleles: &BTreeMap<(String, i64), (char, char, i32)>,
 ) -> Vec<ArchaicSegment> {
     let n_windows = (((hi - lo) / cfg.window_bp) + 1) as usize;
@@ -267,9 +307,27 @@ fn call_contig(
         }
     }
 
+    // Callable fraction per window. A window below the floor is uninformative: it emits nothing in
+    // either state, so it neither supports nor breaks a segment.
+    let frac: Vec<f64> = (0..n_windows)
+        .map(|i| callable.callable_fraction(contig, lo + i as i64 * cfg.window_bp))
+        .collect();
+    let usable: Vec<bool> = frac.iter().map(|f| *f >= cfg.min_callable_fraction).collect();
+    if !usable.iter().any(|u| *u) {
+        return Vec::new();
+    }
+
     let ln = |x: f64| x.max(1e-300).ln();
     let ln_pi = [ln(1.0 - cfg.prior_archaic), ln(cfg.prior_archaic)];
-    let emit = |k: u32| [ln_poisson(k, background), ln_poisson(k, archaic_rate)];
+    // Expected counts scale with how much of the window is actually callable, so a half-callable
+    // window is not mistaken for a variant-poor one.
+    let emit = |i: usize, k: u32| -> [f64; 2] {
+        if !usable[i] {
+            return [0.0, 0.0];
+        }
+        let f = frac[i].max(1e-3);
+        [ln_poisson(k, background * f), ln_poisson(k, archaic_rate * f)]
+    };
 
     // Transition log-probabilities between adjacent windows, scaled by genetic distance: tracts
     // break at recombination, so a wide gap in cM means a switch is likelier.
@@ -283,11 +341,11 @@ fn call_contig(
 
     // Forward.
     let mut fwd = vec![[f64::NEG_INFINITY; 2]; n_windows];
-    let e0 = emit(counts[0]);
+    let e0 = emit(0, counts[0]);
     fwd[0] = [ln_pi[0] + e0[0], ln_pi[1] + e0[1]];
     for i in 1..n_windows {
         let t = trans(i - 1);
-        let e = emit(counts[i]);
+        let e = emit(i, counts[i]);
         for s in 0..2 {
             fwd[i][s] = ln_sum_exp(fwd[i - 1][0] + t[0][s], fwd[i - 1][1] + t[1][s]) + e[s];
         }
@@ -296,7 +354,7 @@ fn call_contig(
     let mut bwd = vec![[0.0f64; 2]; n_windows];
     for i in (0..n_windows - 1).rev() {
         let t = trans(i);
-        let e = emit(counts[i + 1]);
+        let e = emit(i + 1, counts[i + 1]);
         for s in 0..2 {
             bwd[i][s] = ln_sum_exp(t[s][0] + e[0] + bwd[i + 1][0], t[s][1] + e[1] + bwd[i + 1][1]);
         }
@@ -332,6 +390,12 @@ fn call_contig(
         }
         let mean_post = post[start_w..=end_w].iter().sum::<f64>() / (end_w - start_w + 1) as f64;
         if mean_post < cfg.min_posterior {
+            continue;
+        }
+        // At least half the run's windows must be callable, so a tract cannot be carried by a
+        // stretch of uninformative windows riding on the transition prior.
+        let callable_windows = usable[start_w..=end_w].iter().filter(|u| **u).count();
+        if callable_windows * 2 < end_w - start_w + 1 {
             continue;
         }
         let n_private = private.iter().filter(|&&p| p >= start && p <= end).count();
@@ -395,7 +459,7 @@ fn attribute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::archaic::{ClassifyContig, PositionStream};
+    use crate::archaic::{ArchaicCallable, CallableContig, ClassifyContig, PositionStream};
 
     fn gt(contig: &str, position: i64, dosage: i32) -> SiteGenotype {
         SiteGenotype {
@@ -418,6 +482,19 @@ mod tests {
 
     /// Background variants every 5 kb across 2 Mb, plus a dense block (every 200 bp) in
     /// [1.0 Mb, 1.3 Mb] — an introgressed tract. None are in the outgroup.
+    /// Fully-callable track over the synthetic 2 Mb contig.
+    fn callable_all() -> ArchaicCallable {
+        ArchaicCallable {
+            build: "chm13v2.0".into(),
+            window_bp: 1_000,
+            contigs: vec![CallableContig {
+                contig: "chr21".into(),
+                start: 0,
+                callable_bp: vec![1_000u16; 2_100],
+            }],
+        }
+    }
+
     fn sample() -> (Vec<SiteGenotype>, ArchaicOutgroup) {
         let mut calls = Vec::new();
         let mut p = 1i64;
@@ -445,7 +522,7 @@ mod tests {
             build: "chm13v2.0".into(),
             contigs: Vec::new(),
         };
-        let r = call_archaic_segments(&calls, &og, &classify, &GeneticMap::from_markers(Vec::new()), &ArchaicConfig::default());
+        let r = call_archaic_segments(&calls, &og, &classify, &callable_all(), &GeneticMap::from_markers(Vec::new()), &ArchaicConfig::default());
         assert_eq!(r.segments.len(), 1, "exactly the dense block should call");
         let s = &r.segments[0];
         assert!(s.start >= 950_000 && s.start <= 1_050_000, "start {} off", s.start);
@@ -473,8 +550,36 @@ mod tests {
             build: "chm13v2.0".into(),
             contigs: Vec::new(),
         };
-        let r = call_archaic_segments(&calls, &og, &classify, &GeneticMap::from_markers(Vec::new()), &ArchaicConfig::default());
+        let r = call_archaic_segments(&calls, &og, &classify, &callable_all(), &GeneticMap::from_markers(Vec::new()), &ArchaicConfig::default());
         assert!(r.segments.is_empty(), "outgroup-shared density must not call archaic");
+    }
+
+    #[test]
+    fn an_uncallable_dense_region_is_not_called() {
+        // The same dense block, but the mask says that region is not callable — the exact situation
+        // that made the first real run report 3.62% archaic out of repetitive sequence.
+        let (calls, og) = sample();
+        let mut track = callable_all();
+        for w in 950..1_350 {
+            track.contigs[0].callable_bp[w] = 0;
+        }
+        let classify = ArchaicClassify {
+            build: "chm13v2.0".into(),
+            contigs: Vec::new(),
+        };
+        let r = call_archaic_segments(
+            &calls,
+            &og,
+            &classify,
+            &track,
+            &GeneticMap::from_markers(Vec::new()),
+            &ArchaicConfig::default(),
+        );
+        assert!(
+            r.segments.is_empty(),
+            "density in an uncallable region must not be called archaic, got {:?}",
+            r.segments
+        );
     }
 
     #[test]

@@ -80,6 +80,8 @@ enum Cmd {
     ArchaicOutgroup(archaic_tierb::ArchaicOutgroupArgs),
     /// Tier B asset 3: genome-wide archaic diagnostic sites for labelling called segments.
     ArchaicClassify(archaic_tierb::ArchaicClassifyArgs),
+    /// Tier B callability mask: callable bases per window, from the archaic FilterBed intersection.
+    ArchaicCallable(archaic_tierb::ArchaicCallableArgs),
     /// Build the chip-compatible IBD panel (multi-build, palindrome-free) from a sites table.
     IbdPanel(ibd_panel::IbdPanelArgs),
     /// Build the asset integrity manifest (sha256 of every `*_<build>.bin`). Run last.
@@ -152,6 +154,7 @@ fn main() -> Result<()> {
         Cmd::ArchaicDist(args) => archaic_dist::build_archaic_dist(args),
         Cmd::ArchaicOutgroup(args) => archaic_tierb::build_archaic_outgroup(args),
         Cmd::ArchaicClassify(args) => archaic_tierb::build_archaic_classify(args),
+        Cmd::ArchaicCallable(args) => archaic_tierb::build_archaic_callable(args),
         Cmd::IbdPanel(args) => ibd_panel::build_ibd_panel(args),
         Cmd::Manifest(args) => manifest::build_manifest(args),
     }

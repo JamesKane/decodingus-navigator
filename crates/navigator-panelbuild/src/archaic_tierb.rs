@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 use navigator_analysis::archaic::{
-    ArchaicClassify, ArchaicOutgroup, ClassifyContig, DiagnosticClass, PositionStream,
+    ArchaicCallable, ArchaicClassify, ArchaicOutgroup, CallableContig, ClassifyContig, DiagnosticClass,
+    PositionStream,
 };
 
 use crate::pca::{open_maybe_gz, write_bin};
@@ -195,6 +196,91 @@ pub fn build_archaic_classify(args: ArchaicClassifyArgs) -> Result<()> {
         "classify: {total} sites over {} contigs ({nea} Neanderthal, {den} Denisovan, {} shared) -> {:.1} MB",
         asset.contigs.len(),
         total - nea - den,
+        encoded.len() as f64 / 1_048_576.0
+    );
+    write_bin(&args.out, &encoded)?;
+    eprintln!("wrote {}", args.out.display());
+    Ok(())
+}
+
+#[derive(Parser)]
+pub struct ArchaicCallableArgs {
+    /// Callable regions as BED on the target build — the intersection of the four archaic genomes'
+    /// `FilterBed` masks, lifted. Where all four archaic genomes are callable is where a
+    /// private-variant excess can be interpreted at all.
+    #[arg(long)]
+    bed: PathBuf,
+    /// Window width the counts are binned at; must match the segment caller's `window_bp`.
+    #[arg(long, default_value_t = 1000)]
+    window_bp: i64,
+    /// Output (bincode `ArchaicCallable`).
+    #[arg(long)]
+    out: PathBuf,
+}
+
+pub fn build_archaic_callable(args: ArchaicCallableArgs) -> Result<()> {
+    anyhow::ensure!(args.window_bp > 0, "--window-bp must be positive");
+    let rdr = open_maybe_gz(&args.bed).with_context(|| format!("opening {}", args.bed.display()))?;
+    // Accumulate callable bases per window, per contig.
+    let mut spans: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
+    for line in rdr.lines() {
+        let line = line?;
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 3 {
+            continue;
+        }
+        let (Ok(s), Ok(e)) = (f[1].parse::<i64>(), f[2].parse::<i64>()) else {
+            continue;
+        };
+        if e > s {
+            spans.entry(f[0].to_string()).or_default().push((s, e));
+        }
+    }
+    anyhow::ensure!(!spans.is_empty(), "no callable intervals read from {}", args.bed.display());
+
+    let mut contigs = Vec::with_capacity(spans.len());
+    let mut total_bp = 0f64;
+    for (contig, mut v) in spans {
+        v.sort_unstable();
+        let start = (v[0].0 / args.window_bp) * args.window_bp;
+        let last = v.iter().map(|(_, e)| *e).max().unwrap_or(start);
+        let n = (((last - start) / args.window_bp) + 1) as usize;
+        let mut callable_bp = vec![0u16; n];
+        for (s, e) in v {
+            // Split the interval across the windows it touches, saturating per window.
+            let (mut cur, end) = (s, e);
+            while cur < end {
+                let idx = ((cur - start) / args.window_bp) as usize;
+                let win_end = start + (idx as i64 + 1) * args.window_bp;
+                let take = end.min(win_end) - cur;
+                if let Some(slot) = callable_bp.get_mut(idx) {
+                    *slot = slot.saturating_add(take.clamp(0, u16::MAX as i64) as u16).min(args.window_bp as u16);
+                }
+                cur = win_end;
+            }
+        }
+        total_bp += callable_bp.iter().map(|&b| b as f64).sum::<f64>();
+        contigs.push(CallableContig {
+            contig,
+            start,
+            callable_bp,
+        });
+    }
+
+    let asset = ArchaicCallable {
+        build: BUILD.to_string(),
+        window_bp: args.window_bp,
+        contigs,
+    };
+    let encoded = asset.to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?;
+    eprintln!(
+        "callable: {:.1} Mb over {} contigs, {} bp windows -> {:.1} MB",
+        total_bp / 1_000_000.0,
+        asset.contigs.len(),
+        args.window_bp,
         encoded.len() as f64 / 1_048_576.0
     );
     write_bin(&args.out, &encoded)?;

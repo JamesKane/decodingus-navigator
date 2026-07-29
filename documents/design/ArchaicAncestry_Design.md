@@ -741,12 +741,42 @@ distinguish an introgressed tract from a mapping artifact. The mask data is alre
 per-genome `FilterBed/` files fetched in stage 08 define where the archaic genomes are callable at
 all, which is precisely the region where a private-variant excess is interpretable.
 
-Next: build a callable-region asset (intersection of the archaic masks, restricted to the analysed
-build), restrict the HMM's windows to it, then re-run the chr21+chr22 validation before touching a
-genome-wide pass. The attribution logic is verified independently by unit test and by a direct
-check on real data (2,596 of 5,298 overlapping sites have the subject carrying the derived allele,
-only 17 orientation mismatches) — it returns `Unknown` here because the segments are spurious, not
-because attribution is broken.
+**Callability mask built — the artifact problem is solved.** `ArchaicCallable` stores callable bases
+per 1 kb window (not intervals: the archaic masks fragment into ~56 k sub-kb pieces per chromosome,
+while a genome-wide 1 kb grid is ~6 MB), built from the intersection of all four `FilterBed` masks
+lifted to CHM13. Windows below `min_callable_fraction` are **excluded** rather than down-weighted,
+and the expected Poisson rate scales with each window's callable fraction.
+
+Re-running the same chr21+chr22 data:
+
+| | before mask | after mask |
+|---|---|---|
+| segments | 35 | 17 |
+| private-variant density | **4,000–9,700/Mb** | **121–500/Mb** |
+| attribution | all `Unknown`, 0 diagnostic matches | Nea / Den / Unknown, with matches |
+
+Densities are now in the biologically plausible range and diagnostic sites are present, which is the
+signal that the caller is looking at real sequence rather than mapping noise.
+
+One unit bug fell out of the same run: archaic extent was summed as segment **span** while the
+denominator was callable megabases, so the two sides of the percentage were in different units. Both
+are now measured in callable bases.
+
+**Remaining, and both are calibration rather than defects:**
+
+1. **Over-calling: 3.34 Mb of 44.6 Mb callable = 7.49 %**, against the ~1.5–2 % §7 predicts — roughly
+   4× high. The knobs are `prior_archaic`, `archaic_rate_multiple`, `min_posterior` and
+   `min_segment_bp`; none has been fitted yet, they are the design's illustrative values.
+2. **Denisovan is implausibly high for a European** (0.62 Mb, ~19 % of called archaic; §7 expects
+   ≈0). The cause is known and documented in `classify_diagnostic`: `NoCall` is treated as "no
+   evidence of derived", so a site where the Neanderthals were **masked out** and Denisova was
+   called reads as Denisovan-*specific*. On chr21+22 the classify track carries 18,551
+   Denisovan-diagnostic sites against 24,077 Neanderthal, a far higher ratio than reality. The fix
+   is to require the other lineage to be positively *called* ancestral before declaring
+   lineage-specificity, rather than inferring it from absence.
+
+Attribution itself is sound: unit-tested, and checked directly on real data (2,596 of 5,298
+overlapping sites have the subject carrying the derived allele, 17 orientation mismatches).
 
 ### M4 — Phase 3 (optional)
 

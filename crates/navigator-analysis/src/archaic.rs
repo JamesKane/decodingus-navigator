@@ -1014,3 +1014,70 @@ impl ArchaicClassify {
         out
     }
 }
+
+/// Callable-region track: **callable bases per fixed-width window**, per contig.
+///
+/// Stored as per-window counts rather than intervals because that is what the segment HMM actually
+/// needs and it is far smaller: the archaic masks are fragmented into hundreds of thousands of
+/// sub-kb intervals per chromosome, while a genome-wide 1 kb window grid is ~3.1 M `u16`s (~6 MB).
+///
+/// This is not a nicety. Without it the HMM finds private-variant density excesses in repetitive
+/// regions — measured at 4,000–9,700 variants/Mb against 50–200/Mb for a real introgressed tract —
+/// and reports them as archaic. Those regions are exactly where the archaic genomes' own quality
+/// masks exclude data, so a region callable in all four archaic genomes is the region where a
+/// private-variant excess can be interpreted at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchaicCallable {
+    pub build: String,
+    /// Window width the counts are binned at.
+    pub window_bp: i64,
+    pub contigs: Vec<CallableContig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallableContig {
+    pub contig: String,
+    /// Genomic start of window 0.
+    pub start: i64,
+    /// Callable bases in each window (saturating at `window_bp`).
+    pub callable_bp: Vec<u16>,
+}
+
+impl ArchaicCallable {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AnalysisError> {
+        bincode::deserialize(bytes).map_err(|e| AnalysisError::Message(format!("archaic callable decode: {e}")))
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, AnalysisError> {
+        bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("archaic callable encode: {e}")))
+    }
+
+    pub fn contig(&self, contig: &str) -> Option<&CallableContig> {
+        self.contigs.iter().find(|c| c.contig == contig)
+    }
+
+    /// Callable fraction (0.0–1.0) of the window containing `position`, or 0.0 when the contig or
+    /// window is absent — an unknown region is treated as **not** callable, so the HMM skips it
+    /// rather than interpreting density it cannot trust.
+    pub fn callable_fraction(&self, contig: &str, position: i64) -> f64 {
+        let Some(c) = self.contig(contig) else { return 0.0 };
+        if position < c.start {
+            return 0.0;
+        }
+        let idx = ((position - c.start) / self.window_bp) as usize;
+        match c.callable_bp.get(idx) {
+            Some(&bp) => (bp as f64 / self.window_bp as f64).clamp(0.0, 1.0),
+            None => 0.0,
+        }
+    }
+
+    /// Total callable megabases across all contigs — the honest denominator for "% of genome".
+    pub fn callable_mb(&self) -> f64 {
+        self.contigs
+            .iter()
+            .flat_map(|c| c.callable_bp.iter())
+            .map(|&bp| bp as f64)
+            .sum::<f64>()
+            / 1_000_000.0
+    }
+}
