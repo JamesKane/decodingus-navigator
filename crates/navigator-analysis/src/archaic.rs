@@ -724,6 +724,54 @@ mod tests {
     }
 
     #[test]
+    fn position_stream_round_trips_and_streams_in_order() {
+        let positions = vec![10i64, 11, 300, 70_000, 70_001, 5_000_000];
+        let st = PositionStream::encode("chr21", &positions);
+        assert_eq!(st.len, positions.len());
+        assert_eq!(st.iter().collect::<Vec<_>>(), positions);
+        // The point of the encoding: gaps, not positions. A run of far-apart sites must still cost
+        // far less than 4 bytes each on average for the dense case.
+        let dense: Vec<i64> = (0..10_000).map(|i| i * 40).collect();
+        let ds = PositionStream::encode("chr21", &dense);
+        assert_eq!(ds.iter().collect::<Vec<_>>(), dense);
+        assert!(ds.deltas.len() < dense.len() * 2, "delta encoding should stay ~1 byte/site here");
+    }
+
+    #[test]
+    fn retain_private_drops_everything_the_outgroup_carries() {
+        let og = ArchaicOutgroup {
+            build: "chm13v2.0".into(),
+            min_allele_count: 1,
+            contigs: vec![PositionStream::encode("chr21", &[100, 200, 300, 400])],
+        };
+        // 200 and 400 are shared with Africans -> stripped; the rest are private.
+        assert_eq!(og.retain_private("chr21", &[50, 200, 250, 400, 500]), vec![50, 250, 500]);
+        // Exact-boundary behaviour: first and last outgroup entries.
+        assert_eq!(og.retain_private("chr21", &[100, 400]), Vec::<i64>::new());
+        // A contig with no outgroup data yields NOTHING rather than everything — stripping nothing
+        // would declare the whole contig archaic.
+        assert_eq!(og.retain_private("chr7", &[1, 2, 3]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn classify_lookup_returns_sites_in_range_with_their_lineage() {
+        let cls = ArchaicClassify {
+            build: "chm13v2.0".into(),
+            contigs: vec![ClassifyContig {
+                positions: PositionStream::encode("chr21", &[100, 200, 300]),
+                derived: vec![b'A', b'C', b'G'],
+                classes: vec![0, 1, 2],
+            }],
+        };
+        let hits = cls.in_range("chr21", 150, 300);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0], (200, 'C', DiagnosticClass::Denisovan));
+        assert_eq!(hits[1], (300, 'G', DiagnosticClass::SharedArchaic));
+        assert!(cls.in_range("chr21", 1, 50).is_empty());
+        assert!(cls.in_range("chr7", 1, 1000).is_empty());
+    }
+
+    #[test]
     fn subset_percentile_compares_against_the_same_sites() {
         // Two populations. At every site the "high" cohort carries the derived allele at 50% and the
         // "low" cohort at 5%. A subject calling only 1000 sites is scored against the cohort's
@@ -787,5 +835,182 @@ mod tests {
         // Cohorts do not bleed into each other, and an unknown one is None (not a fake 0).
         assert_eq!(dist.percentile_in_super("AFR", 1), Some(50.0));
         assert_eq!(dist.percentile_in_super("EAS", 10), None);
+    }
+}
+
+// ─────────────────────────── Tier B assets (design §4, assets 2 and 3) ───────────────────────────
+
+/// Variable-length integer encoding for a sorted position stream: 7 bits per byte, high bit = more.
+///
+/// Both Tier B assets store **gaps between consecutive positions**, not the positions themselves.
+/// The African-outgroup track alone is ~67 M positions genome-wide; as raw `u32`s that is ~270 MB,
+/// which is too much to hold and too much to ship. Typical gaps are tens of bases, so a varint delta
+/// costs one byte for most sites.
+fn push_varint(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        out.push((v as u8) | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+/// Decode the varint starting at `i`, returning the value and the next index.
+fn read_varint(bytes: &[u8], mut i: usize) -> Option<(u64, usize)> {
+    let (mut v, mut shift) = (0u64, 0u32);
+    loop {
+        let b = *bytes.get(i)?;
+        i += 1;
+        v |= ((b & 0x7f) as u64) << shift;
+        if b & 0x80 == 0 {
+            return Some((v, i));
+        }
+        shift += 7;
+        if shift > 63 {
+            return None;
+        }
+    }
+}
+
+/// One contig's sorted positions, delta-varint encoded.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PositionStream {
+    pub contig: String,
+    /// Number of positions encoded (so a reader can size buffers without decoding).
+    pub len: usize,
+    deltas: Vec<u8>,
+}
+
+impl PositionStream {
+    /// Encode a **sorted, deduplicated** position list.
+    pub fn encode(contig: &str, sorted_positions: &[i64]) -> Self {
+        let mut deltas = Vec::with_capacity(sorted_positions.len());
+        let mut prev = 0i64;
+        for &p in sorted_positions {
+            push_varint(&mut deltas, (p - prev).max(0) as u64);
+            prev = p;
+        }
+        PositionStream {
+            contig: contig.to_string(),
+            len: sorted_positions.len(),
+            deltas,
+        }
+    }
+
+    /// Stream the positions back in ascending order.
+    ///
+    /// An iterator rather than a `Vec` on purpose: the caller merge-joins it against the subject's
+    /// own (much smaller) sorted variants, so neither side is ever fully materialised.
+    pub fn iter(&self) -> impl Iterator<Item = i64> + '_ {
+        let mut i = 0usize;
+        let mut pos = 0i64;
+        std::iter::from_fn(move || {
+            let (d, next) = read_varint(&self.deltas, i)?;
+            i = next;
+            pos += d as i64;
+            Some(pos)
+        })
+    }
+}
+
+/// Asset 2 — positions **variable in the African outgroup**, used to strip shared variants before
+/// the segment HMM (design §5 step 1).
+///
+/// Anything a modern African population also carries is not evidence of archaic introgression; what
+/// survives the strip is the "private" derived variation the HMM looks for a density excess in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchaicOutgroup {
+    pub build: String,
+    /// Minimum allele count in the outgroup for a site to be considered variable there.
+    pub min_allele_count: u32,
+    pub contigs: Vec<PositionStream>,
+}
+
+impl ArchaicOutgroup {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AnalysisError> {
+        bincode::deserialize(bytes).map_err(|e| AnalysisError::Message(format!("archaic outgroup decode: {e}")))
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, AnalysisError> {
+        bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("archaic outgroup encode: {e}")))
+    }
+
+    pub fn contig(&self, contig: &str) -> Option<&PositionStream> {
+        self.contigs.iter().find(|c| c.contig == contig)
+    }
+
+    /// Retain only those `sorted_positions` **absent** from the outgroup — the private set.
+    ///
+    /// A linear merge over both sorted streams, so cost is O(subject + outgroup) with no index and
+    /// no allocation proportional to the outgroup.
+    pub fn retain_private(&self, contig: &str, sorted_positions: &[i64]) -> Vec<i64> {
+        let Some(stream) = self.contig(contig) else {
+            // No outgroup data for this contig: stripping nothing would call the whole contig
+            // archaic, so refuse rather than guess.
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut og = stream.iter().peekable();
+        for &p in sorted_positions {
+            while og.peek().is_some_and(|&o| o < p) {
+                og.next();
+            }
+            if og.peek() != Some(&p) {
+                out.push(p);
+            }
+        }
+        out
+    }
+}
+
+/// Asset 3 — genome-wide archaic diagnostic sites, for labelling a called segment Neanderthal vs
+/// Denisovan (design §5 step 3).
+///
+/// The HMM itself cannot tell the lineages apart — they coalesce before either meets modern humans
+/// (§3) — so attribution is a downstream count of derived-allele matches against these sites.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchaicClassify {
+    pub build: String,
+    pub contigs: Vec<ClassifyContig>,
+}
+
+/// One contig's diagnostic sites: positions delta-encoded, with a parallel derived base and class.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClassifyContig {
+    pub positions: PositionStream,
+    /// Derived base per site, same order as `positions`.
+    pub derived: Vec<u8>,
+    /// Diagnostic class per site: 0 = Neanderthal, 1 = Denisovan, 2 = shared archaic.
+    pub classes: Vec<u8>,
+}
+
+impl ArchaicClassify {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AnalysisError> {
+        bincode::deserialize(bytes).map_err(|e| AnalysisError::Message(format!("archaic classify decode: {e}")))
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, AnalysisError> {
+        bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("archaic classify encode: {e}")))
+    }
+
+    /// Diagnostic sites on `contig` within `[start, end]`, as `(position, derived_base, class)`.
+    pub fn in_range(&self, contig: &str, start: i64, end: i64) -> Vec<(i64, char, DiagnosticClass)> {
+        let Some(c) = self.contigs.iter().find(|c| c.positions.contig == contig) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (i, p) in c.positions.iter().enumerate() {
+            if p > end {
+                break;
+            }
+            if p >= start {
+                let class = match c.classes.get(i).copied().unwrap_or(2) {
+                    0 => DiagnosticClass::Neanderthal,
+                    1 => DiagnosticClass::Denisovan,
+                    _ => DiagnosticClass::SharedArchaic,
+                };
+                out.push((p, c.derived.get(i).copied().unwrap_or(b'N') as char, class));
+            }
+        }
+        out
     }
 }
