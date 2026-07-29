@@ -127,14 +127,24 @@ pub fn build_archaic_classify(args: ArchaicClassifyArgs) -> Result<()> {
         let Ok(idx) = f[0].parse::<usize>() else { continue };
         let derived = f[5].chars().next().unwrap_or('N');
         // Re-derive the class from the stored per-genome call tokens: index 3 is Denisova.
+        // Same rule as `classify_diagnostic`: lineage-specificity needs the OTHER lineage called
+        // homozygous-ancestral ('0'), never merely missing ('.'). Tokens: 0 hom-ancestral,
+        // 1 het, 2 hom-derived, . no-call; index 3 is Denisova.
         let calls: Vec<char> = f[6].chars().collect();
-        let carries = |c: Option<&char>| matches!(c, Some('1') | Some('2'));
-        let nea = calls.iter().take(3).any(|c| carries(Some(c)));
-        let den = carries(calls.get(3));
-        let class = match (nea, den) {
-            (true, false) => DiagnosticClass::Neanderthal,
-            (false, true) => DiagnosticClass::Denisovan,
-            _ => DiagnosticClass::SharedArchaic,
+        let derived_at = |c: Option<&char>| matches!(c, Some('1') | Some('2'));
+        let ancestral_at = |c: Option<&char>| matches!(c, Some('0'));
+        let nea_derived = calls.iter().take(3).any(|c| derived_at(Some(c)));
+        let nea_ancestral = calls.iter().take(3).any(|c| ancestral_at(Some(c)));
+        let den_derived = derived_at(calls.get(3));
+        let den_ancestral = ancestral_at(calls.get(3));
+        let class = if nea_derived && den_derived {
+            DiagnosticClass::SharedArchaic
+        } else if nea_derived && den_ancestral {
+            DiagnosticClass::Neanderthal
+        } else if den_derived && nea_ancestral {
+            DiagnosticClass::Denisovan
+        } else {
+            DiagnosticClass::SharedArchaic
         };
         payload.insert(idx, (derived, class));
     }

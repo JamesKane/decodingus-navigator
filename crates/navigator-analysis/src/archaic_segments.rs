@@ -96,9 +96,36 @@ pub struct ArchaicConfig {
     pub min_segment_bp: i64,
     /// Discard tracts whose mean posterior is below this.
     pub min_posterior: f64,
-    /// A segment is attributed to a lineage only when its diagnostic matches favour that lineage by
-    /// at least this ratio; otherwise it is `Unknown` rather than guessed.
+    /// A segment is attributed to a lineage only when its **enrichment** over the expected
+    /// carrier rate favours that lineage by at least this ratio; otherwise it is `Unknown`.
     pub min_lineage_ratio: f64,
+    /// Expected fraction of Neanderthal-diagnostic sites at which a non-archaic-specific genome
+    /// carries the derived allele, and the same for Denisovan-diagnostic sites.
+    ///
+    /// These base rates are the reason raw match counts cannot attribute a lineage. Measured on the
+    /// ground-truth European: 4.3 % at Neanderthal-diagnostic sites versus 3.9 % at
+    /// Denisovan-diagnostic ones — a ratio of 1.10, essentially no discrimination. Carrying a
+    /// "Denisovan-diagnostic" allele mostly reflects ordinary shared ancestry, not Denisovan
+    /// introgression, so attribution must compare observed against expected rather than
+    /// Neanderthal-count against Denisovan-count.
+    pub base_rate_neanderthal: f64,
+    pub base_rate_denisovan: f64,
+    /// Minimum diagnostic matches of the winning lineage before any attribution is made. A handful
+    /// of matches on a sub-megabase segment is noise at these base rates.
+    pub min_lineage_matches: usize,
+    /// Whether to attempt per-segment lineage attribution at all. **Default `false`.**
+    ///
+    /// Attribution is built and unit-tested but is NOT validated, and on the ground-truth European
+    /// it produces the opposite of the known pattern: 0.00 Mb Neanderthal against 0.48 Mb
+    /// Denisovan, where §7 expects essentially all Neanderthal and no Denisovan. The cause is
+    /// visible in the base rates — a European carries the derived allele at 4.3 % of
+    /// Neanderthal-diagnostic sites and 3.9 % of Denisovan-diagnostic ones, a ratio of 1.10, so
+    /// there is almost no discriminating signal to work with at segment scale.
+    ///
+    /// Shipping a lineage split on that basis would manufacture exactly the Denisovan-in-Europeans
+    /// claim §7 forbids, so segments are reported as archaic-but-unattributed until the method is
+    /// validated. This is the same discipline that gated ancient ancestry.
+    pub attribute_lineage: bool,
     /// Minimum callable fraction for a window to be modelled at all. Windows below this are
     /// **excluded**, not down-weighted: a mostly-uncallable window's variant density is dominated by
     /// mapping error, and including it is what made the first real run call 3.62 % archaic out of
@@ -117,6 +144,10 @@ impl Default for ArchaicConfig {
             min_segment_bp: 50_000,
             min_posterior: 0.8,
             min_lineage_ratio: 2.0,
+            base_rate_neanderthal: 0.043,
+            base_rate_denisovan: 0.039,
+            min_lineage_matches: 10,
+            attribute_lineage: false,
             min_callable_fraction: 0.5,
         }
     }
@@ -399,7 +430,7 @@ fn call_contig(
             continue;
         }
         let n_private = private.iter().filter(|&&p| p >= start && p <= end).count();
-        let (source, nea, den) = attribute(contig, start, end, classify, alleles, cfg.min_lineage_ratio);
+        let (source, nea, den) = attribute(contig, start, end, classify, alleles, cfg);
         out.push(ArchaicSegment {
             contig: contig.to_string(),
             start,
@@ -425,10 +456,19 @@ fn attribute(
     end: i64,
     classify: &ArchaicClassify,
     alleles: &BTreeMap<(String, i64), (char, char, i32)>,
-    min_ratio: f64,
+    cfg: &ArchaicConfig,
 ) -> (ArchaicSource, usize, usize) {
+    // Count both MATCHES and the diagnostic sites available, per lineage: the enrichment is
+    // matches / (sites x base rate), and without the site counts the comparison silently favours
+    // whichever lineage happens to have more sites in this segment.
     let (mut nea, mut den) = (0usize, 0usize);
+    let (mut nea_sites, mut den_sites) = (0usize, 0usize);
     for (pos, derived, class) in classify.in_range(contig, start, end) {
+        match class {
+            DiagnosticClass::Neanderthal => nea_sites += 1,
+            DiagnosticClass::Denisovan => den_sites += 1,
+            DiagnosticClass::SharedArchaic => {}
+        }
         let Some(&(r, a, dosage)) = alleles.get(&(contig.to_string(), pos)) else {
             continue;
         };
@@ -444,13 +484,23 @@ fn attribute(
             DiagnosticClass::SharedArchaic => {}
         }
     }
-    let source = if nea == 0 && den == 0 {
-        ArchaicSource::Unknown
-    } else if nea as f64 >= den as f64 * min_ratio && nea > 0 {
+    // Enrichment over the expected carrier rate, not raw counts.
+    let exp_nea = nea_sites as f64 * cfg.base_rate_neanderthal;
+    let exp_den = den_sites as f64 * cfg.base_rate_denisovan;
+    let enr_nea = if exp_nea > 0.0 { nea as f64 / exp_nea } else { 0.0 };
+    let enr_den = if exp_den > 0.0 { den as f64 / exp_den } else { 0.0 };
+
+    if !cfg.attribute_lineage {
+        // Machinery preserved and unit-tested; the label is withheld until it validates.
+        return (ArchaicSource::Unknown, nea, den);
+    }
+    let source = if nea >= cfg.min_lineage_matches && enr_nea >= enr_den * cfg.min_lineage_ratio {
         ArchaicSource::Neanderthal
-    } else if den as f64 >= nea as f64 * min_ratio && den > 0 {
+    } else if den >= cfg.min_lineage_matches && enr_den >= enr_nea * cfg.min_lineage_ratio {
         ArchaicSource::Denisovan
     } else {
+        // Not enough evidence to separate the lineages. For a European this is the expected
+        // outcome and the honest one — §7 forbids manufacturing a Denisovan finding.
         ArchaicSource::Unknown
     };
     (source, nea, den)
@@ -583,27 +633,58 @@ mod tests {
     }
 
     #[test]
-    fn attribution_needs_a_clear_margin() {
+    fn attribution_compares_enrichment_not_raw_counts() {
+        // 40 Neanderthal-diagnostic sites and 40 Denisovan ones in the segment. The subject matches
+        // 12 of each. Raw counts say "tie"; against base rates of 4.3% vs 3.9% the expected counts
+        // are 1.7 and 1.6, so both are enriched almost identically -> genuinely Unknown, which is
+        // the honest answer rather than a coin flip.
+        let mut positions: Vec<i64> = Vec::new();
+        let mut derived: Vec<u8> = Vec::new();
+        let mut classes: Vec<u8> = Vec::new();
+        for i in 0..80i64 {
+            positions.push(1_000_000 + i * 10);
+            derived.push(b'G');
+            classes.push(if i < 40 { 0 } else { 1 });
+        }
         let cls = ArchaicClassify {
             build: "chm13v2.0".into(),
             contigs: vec![ClassifyContig {
-                positions: PositionStream::encode("chr21", &[1_000_200, 1_000_400, 1_000_600]),
-                derived: vec![b'G', b'G', b'G'],
-                classes: vec![0, 0, 1], // 2 Neanderthal, 1 Denisovan
+                positions: PositionStream::encode("chr21", &positions),
+                derived,
+                classes,
             }],
         };
         let mut alleles = BTreeMap::new();
-        for p in [1_000_200i64, 1_000_400, 1_000_600] {
-            alleles.insert(("chr21".to_string(), p), ('A', 'G', 1));
+        for i in 0..12i64 {
+            alleles.insert(("chr21".to_string(), 1_000_000 + i * 10), ('A', 'G', 1));
         }
-        // 2:1 clears a 2.0 ratio -> Neanderthal.
-        let (src, nea, den) = attribute("chr21", 1_000_000, 1_001_000, &cls, &alleles, 2.0);
-        assert_eq!((src, nea, den), (ArchaicSource::Neanderthal, 2, 1));
-        // The same evidence under a stricter ratio is not enough -> Unknown rather than a guess.
-        let (src, _, _) = attribute("chr21", 1_000_000, 1_001_000, &cls, &alleles, 3.0);
-        assert_eq!(src, ArchaicSource::Unknown);
-        // No diagnostic sites at all -> Unknown.
-        let (src, _, _) = attribute("chr21", 5_000_000, 5_001_000, &cls, &alleles, 2.0);
+        for i in 40..52i64 {
+            alleles.insert(("chr21".to_string(), 1_000_000 + i * 10), ('A', 'G', 1));
+        }
+        // Attribution is off by default (see `attribute_lineage`); this test exercises the logic.
+        let cfg = ArchaicConfig {
+            attribute_lineage: true,
+            ..ArchaicConfig::default()
+        };
+        let (src, nea, den) = attribute("chr21", 1_000_000, 1_001_000, &cls, &alleles, &cfg);
+        assert_eq!((nea, den), (12, 12));
+        assert_eq!(src, ArchaicSource::Unknown, "equal enrichment must not pick a lineage");
+
+        // Now give Neanderthal a genuine excess and strip the Denisovan matches: it should call.
+        let mut alleles2 = BTreeMap::new();
+        for i in 0..30i64 {
+            alleles2.insert(("chr21".to_string(), 1_000_000 + i * 10), ('A', 'G', 1));
+        }
+        let (src, nea, den) = attribute("chr21", 1_000_000, 1_001_000, &cls, &alleles2, &cfg);
+        assert_eq!((nea, den), (30, 0));
+        assert_eq!(src, ArchaicSource::Neanderthal);
+
+        // Too few matches to mean anything at these base rates -> Unknown, not a guess.
+        let mut alleles3 = BTreeMap::new();
+        for i in 0..3i64 {
+            alleles3.insert(("chr21".to_string(), 1_000_000 + i * 10), ('A', 'G', 1));
+        }
+        let (src, _, _) = attribute("chr21", 1_000_000, 1_001_000, &cls, &alleles3, &cfg);
         assert_eq!(src, ArchaicSource::Unknown);
     }
 }

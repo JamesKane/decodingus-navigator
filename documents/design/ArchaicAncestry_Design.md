@@ -767,13 +767,34 @@ are now measured in callable bases.
 1. **Over-calling: 3.34 Mb of 44.6 Mb callable = 7.49 %**, against the ~1.5–2 % §7 predicts — roughly
    4× high. The knobs are `prior_archaic`, `archaic_rate_multiple`, `min_posterior` and
    `min_segment_bp`; none has been fitted yet, they are the design's illustrative values.
-2. **Denisovan is implausibly high for a European** (0.62 Mb, ~19 % of called archaic; §7 expects
-   ≈0). The cause is known and documented in `classify_diagnostic`: `NoCall` is treated as "no
-   evidence of derived", so a site where the Neanderthals were **masked out** and Denisova was
-   called reads as Denisovan-*specific*. On chr21+22 the classify track carries 18,551
-   Denisovan-diagnostic sites against 24,077 Neanderthal, a far higher ratio than reality. The fix
-   is to require the other lineage to be positively *called* ancestral before declaring
-   lineage-specificity, rather than inferring it from absence.
+2. **Lineage attribution does not work, and is now gated off** (`attribute_lineage: false`).
+
+   Two fixes were made and neither rescued it, which is itself the finding:
+
+   - `classify_diagnostic` now requires **positive evidence of absence** — the other lineage must be
+     *called* homozygous-ancestral, never merely `NoCall`. This was the suspected cause. It was not:
+     Denisovan-diagnostic sites moved only 18,551 → 18,354. (The change is still correct and is
+     kept. Writing its test also caught a real logic bug: a site derived in *both* lineages fell
+     through to the Denisovan branch whenever some other Neanderthal was ancestral, which the four
+     genomes disagree about constantly.)
+   - Attribution then moved from raw match counts to **enrichment over the expected carrier rate**,
+     since raw counts silently favour whichever lineage has more sites in the segment.
+
+   **The real cause is that the discriminating signal is not there.** Measured on the ground-truth
+   European: the subject carries the derived allele at **4.3 %** of Neanderthal-diagnostic sites and
+   **3.9 %** of Denisovan-diagnostic ones — a ratio of 1.10. Carrying a "Denisovan-diagnostic"
+   allele overwhelmingly reflects ordinary shared ancestry rather than Denisovan introgression, so
+   at segment scale there is almost nothing to separate the lineages with. Forced to choose, the
+   caller returned **0.00 Mb Neanderthal against 0.48 Mb Denisovan** — the inverse of the known
+   pattern.
+
+   Shipping that would manufacture precisely the Denisovan-in-Europeans claim §7 forbids, so
+   segments are reported as **archaic-but-unattributed** until the method validates. The machinery
+   is kept and unit-tested behind the flag. This is the discipline that gated ancient ancestry.
+
+   A working approach needs more than site-matching — Skov 2020 compares a segment's whole
+   haplotype against each archaic genome relative to a background expectation. That is the upgrade
+   path, not a threshold change.
 
 Attribution itself is sound: unit-tested, and checked directly on real data (2,596 of 5,298
 overlapping sites have the subject carrying the derived allele, 17 orientation mismatches).

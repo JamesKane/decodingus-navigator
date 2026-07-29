@@ -56,28 +56,49 @@ impl ArchaicCall {
 /// downstream, so it is stored per site at build time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiagnosticClass {
-    /// Derived in ≥1 Neanderthal, absent from Denisova.
+    /// Derived in ≥1 Neanderthal, and Denisova positively **called ancestral**.
     Neanderthal,
-    /// Derived in Denisova, absent from every Neanderthal.
+    /// Derived in Denisova, and ≥1 Neanderthal positively **called ancestral**.
     Denisovan,
-    /// Derived in both lineages — informative for "archaic" but not for attribution.
+    /// Not attributable to one lineage: derived in both, or the other lineage had no call so its
+    /// absence cannot be established.
     SharedArchaic,
 }
 
-/// Classify a site from its per-genome calls. `NoCall` is treated as "no evidence of derived",
-/// which is deliberately conservative: a masked-out Denisova makes a site Neanderthal-diagnostic
-/// only in the sense that we cannot show it is shared, so attribution downstream should lean on
-/// [`DiagnosticClass::Neanderthal`] counts in aggregate rather than trusting any single site.
+/// Classify a site from its per-genome calls.
+///
+/// Lineage-specificity requires **positive evidence of absence** in the other lineage — that lineage
+/// must be *called* homozygous-ancestral, not merely missing. Treating `NoCall` as absence is what
+/// an earlier version did, and it was the dominant error in Tier B attribution: a site where the
+/// Neanderthals happened to be masked out and Denisova was called read as Denisovan-*specific*,
+/// inflating Denisovan-diagnostic sites to 18,551 against 24,077 Neanderthal on chr21+22 and
+/// producing ~19 % Denisovan for a European, where design §7 expects approximately zero.
+///
+/// Sites that cannot be attributed fall to [`DiagnosticClass::SharedArchaic`], which therefore means
+/// "archaic but not attributable" rather than strictly "derived in both".
 pub fn classify_diagnostic(calls: &[ArchaicCall; 4]) -> DiagnosticClass {
-    let nea = calls
+    let nea_derived = calls
         .iter()
         .enumerate()
         .any(|(i, c)| i != DENISOVA && c.carries_derived());
-    let den = calls[DENISOVA].carries_derived();
-    match (nea, den) {
-        (true, false) => DiagnosticClass::Neanderthal,
-        (false, true) => DiagnosticClass::Denisovan,
-        _ => DiagnosticClass::SharedArchaic,
+    let nea_ancestral = calls
+        .iter()
+        .enumerate()
+        .any(|(i, c)| i != DENISOVA && *c == ArchaicCall::HomAncestral);
+    let den_derived = calls[DENISOVA].carries_derived();
+    let den_ancestral = calls[DENISOVA] == ArchaicCall::HomAncestral;
+
+    // Derived in BOTH lineages short-circuits to shared. Without this the Denisovan branch fires
+    // whenever some *other* Neanderthal is ancestral at a site both lineages carry — the four
+    // genomes disagree with each other constantly, so this is common, not a corner case.
+    if nea_derived && den_derived {
+        DiagnosticClass::SharedArchaic
+    } else if nea_derived && den_ancestral {
+        DiagnosticClass::Neanderthal
+    } else if den_derived && nea_ancestral {
+        DiagnosticClass::Denisovan
+    } else {
+        DiagnosticClass::SharedArchaic
     }
 }
 
@@ -526,19 +547,19 @@ mod tests {
     }
 
     #[test]
-    fn classify_splits_the_two_lineages() {
+    fn classify_requires_positive_evidence_of_absence() {
         use ArchaicCall::*;
-        // Derived in Neanderthals only.
+        // Derived in Neanderthals, Denisova CALLED ancestral -> Neanderthal-diagnostic.
         assert_eq!(
             classify_diagnostic(&calls(HomDerived, HomDerived, NoCall, HomAncestral)),
             DiagnosticClass::Neanderthal
         );
-        // Derived in Denisova only.
+        // Derived in Denisova, a Neanderthal CALLED ancestral -> Denisovan-diagnostic.
         assert_eq!(
-            classify_diagnostic(&calls(HomAncestral, HomAncestral, HomAncestral, HomDerived)),
+            classify_diagnostic(&calls(HomAncestral, NoCall, NoCall, HomDerived)),
             DiagnosticClass::Denisovan
         );
-        // Derived in both → not attributable.
+        // Derived in both -> not attributable.
         assert_eq!(
             classify_diagnostic(&calls(HomDerived, HomAncestral, HomAncestral, Het)),
             DiagnosticClass::SharedArchaic
@@ -547,6 +568,19 @@ mod tests {
         assert_eq!(
             classify_diagnostic(&calls(Het, NoCall, NoCall, HomAncestral)),
             DiagnosticClass::Neanderthal
+        );
+
+        // THE REGRESSION THIS GUARDS. Denisova derived, every Neanderthal MASKED OUT: absence is
+        // unknown, not established, so this must NOT read as Denisovan-specific. The old rule
+        // called it Denisovan and that single mistake produced ~19% Denisovan for a European.
+        assert_eq!(
+            classify_diagnostic(&calls(NoCall, NoCall, NoCall, HomDerived)),
+            DiagnosticClass::SharedArchaic
+        );
+        // Mirror case: Neanderthal derived, Denisova masked out -> also not attributable.
+        assert_eq!(
+            classify_diagnostic(&calls(HomDerived, NoCall, NoCall, NoCall)),
+            DiagnosticClass::SharedArchaic
         );
     }
 
