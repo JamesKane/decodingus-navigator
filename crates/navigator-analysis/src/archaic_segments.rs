@@ -138,11 +138,21 @@ impl Default for ArchaicConfig {
         ArchaicConfig {
             window_bp: 1_000,
             rate_background: None,
-            archaic_rate_multiple: 4.0,
+            // Calibrated against the hmmix 1000G callset (Zenodo, CC BY 4.0) on chr21+chr22 of the
+            // ground-truth European: 45 segments / 2.01 Mb against their EUR target of 43 / 2.09 Mb,
+            // both inside the p10-p90 spread (35-51 segments, 1.51-2.65 Mb).
+            archaic_rate_multiple: 6.0,
             prior_archaic: 0.02,
-            switches_per_cm: 1.0,
-            min_segment_bp: 50_000,
-            min_posterior: 0.8,
+            // 5, not 1. The transition rate IS the tract-length prior: at 1.0 with the 1 cM/Mb
+            // fallback a 1 kb window switches with probability ~0.001, implying ~1 Mb tracts against
+            // a real median of 31 kb. That single parameter was why the caller produced a third as
+            // many segments, each several times too long.
+            switches_per_cm: 5.0,
+            // 5 kb, not 50 kb. hmmix's median European tract on these chromosomes is 31 kb and its
+            // p10 is 7 kb, so a 50 kb floor discarded more than half of all real segments by
+            // construction.
+            min_segment_bp: 5_000,
+            min_posterior: 0.70,
             min_lineage_ratio: 2.0,
             base_rate_neanderthal: 0.043,
             base_rate_denisovan: 0.039,

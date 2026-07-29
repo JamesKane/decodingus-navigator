@@ -764,9 +764,33 @@ are now measured in callable bases.
 
 **Remaining, and both are calibration rather than defects:**
 
-1. **Over-calling: 3.34 Mb of 44.6 Mb callable = 7.49 %**, against the ~1.5–2 % §7 predicts — roughly
-   4× high. The knobs are `prior_archaic`, `archaic_rate_multiple`, `min_posterior` and
-   `min_segment_bp`; none has been fitted yet, they are the design's illustrative values.
+1. **Extent — CALIBRATED (2026-07-29).** Against the hmmix 1000G segment callset
+   (`hg38_1000g_segments.txt`, same Zenodo record and licence as checkpoint A), filtered to
+   chr21+chr22 and unioned across `hap1`/`hap2` — hmmix reports per haplotype while our caller is
+   unphased, and *summing* rather than unioning would have doubled their figure and made us look
+   correctly calibrated when we were not.
+
+   | | segments | total Mb | median tract |
+   |---|---|---|---|
+   | hmmix EUR target (n=633) | 43 (p10 35, p90 51) | 2.09 (p10 1.51, p90 2.65) | 0.031 Mb |
+   | ours, before | 17 | 3.34 | 0.188 Mb |
+   | **ours, after** | **45** | **2.01** | 0.056 Mb |
+
+   Two parameters were wrong, and the segment-count/length distribution is what exposed them —
+   total megabases alone would have been matched by the wrong trade-off:
+
+   - **`switches_per_cm` 1.0 → 5.0.** The transition rate *is* the tract-length prior. At 1.0 with
+     the 1 cM/Mb fallback a 1 kb window switches with probability ~0.001, implying ~1 Mb tracts
+     against a real median of 31 kb. This is why the caller produced a third as many segments, each
+     several times too long.
+   - **`min_segment_bp` 50 kb → 5 kb.** hmmix's median European tract here is 31 kb with a p10 of
+     7 kb, so the 50 kb floor was discarding more than half of all real segments by construction.
+
+   `archaic_rate_multiple` moved 4.0 → 6.0 and `min_posterior` 0.8 → 0.70 to land on the target.
+   Honest limits: fitted on **one individual, two chromosomes**. The claim is that segment count and
+   total extent both fall inside hmmix's EUR p10–p90, not that the caller is validated. Median tract
+   length is still 1.8× long; settings that match it exactly double the segment count, which is the
+   worse trade since extent is what a user sees.
 2. **Lineage attribution does not work, and is now gated off** (`attribute_lineage: false`).
 
    Two fixes were made and neither rescued it, which is itself the finding:
@@ -795,6 +819,14 @@ are now measured in callable bases.
    A working approach needs more than site-matching — Skov 2020 compares a segment's whole
    haplotype against each archaic genome relative to a background expectation. That is the upgrade
    path, not a threshold change.
+
+   **The hmmix callset confirms both halves of this.** On European chr21+chr22 their attribution is
+   Neanderthal 53.1 %, unattributed 41.2 %, both 4.3 %, **Denisova 1.4 %** — so the lineage signal
+   *is* recoverable (they get 53 % Neanderthal where we got 0 %), and their Denisovan figure is the
+   ~0 that §7 predicts, confirming our 0.48 Mb Denisovan was an artefact of the method rather than a
+   real finding. Their per-segment `Altai`/`Vindija`/`Denisova`/`Chagyrskaya` match columns show the
+   shape of the fix: match a segment's own variants against each archaic genome, not against
+   pre-classified site categories.
 
 Attribution itself is sound: unit-tested, and checked directly on real data (2,596 of 5,298
 overlapping sites have the subject carrying the derived allele, 17 orientation mismatches).
