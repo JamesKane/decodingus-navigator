@@ -716,6 +716,38 @@ rank. Exactness would need the cohort's per-sample genotypes at runtime (~188 MB
 shape `HaplotypeReference` already uses); that is the upgrade path if the approximation ever proves
 insufficient.
 
+### M3 (Tier B) — in progress: assets + HMM built, callability mask REQUIRED
+
+Built and unit-tested: the two Tier B assets (`ArchaicOutgroup`, `ArchaicClassify` — delta-varint
+position streams, 1.07 bytes/site measured, so the ~67 M-position outgroup track lands near 72 MB
+genome-wide) and `call_archaic_segments` (private-variant strip → windowed Poisson HMM with
+forward/backward posteriors and cM-scaled transitions → lineage attribution → aggregate).
+
+**First real-data run exposed a blocker.** On the ground-truth subject's cached chr21+chr22 diploid
+calls (96.4 Mb callable) it called 35 segments totalling 3.49 Mb — **3.62 % of callable, about 2×
+the ~1.5–2 % §7 predicts** — and attributed *every one* of them to `Unknown` with zero diagnostic
+matches.
+
+Both symptoms have one cause. The called segments carry **4,000–9,700 private variants per Mb**,
+where a real introgressed tract has on the order of 50–200/Mb, and they contain **zero** archaic
+diagnostic sites. They are artifact regions: repetitive/low-complexity sequence where the caller
+emits spurious variants, and where archaic candidates do not exist *because the archaic genomes'
+own `FilterBed` masks excluded the same regions*. The HMM is doing exactly what it was asked to —
+finding private-variant density excesses — and the excess is technical, not biological.
+
+**So the callability mask is not optional.** §9 Q2 recorded it as "reuses the existing 1kGP-on-CHM13
+assets" and it was never implemented; that was the gap. Without it the density model has no way to
+distinguish an introgressed tract from a mapping artifact. The mask data is already local: the
+per-genome `FilterBed/` files fetched in stage 08 define where the archaic genomes are callable at
+all, which is precisely the region where a private-variant excess is interpretable.
+
+Next: build a callable-region asset (intersection of the archaic masks, restricted to the analysed
+build), restrict the HMM's windows to it, then re-run the chr21+chr22 validation before touching a
+genome-wide pass. The attribution logic is verified independently by unit test and by a direct
+check on real data (2,596 of 5,298 overlapping sites have the subject carrying the derived allele,
+only 17 orientation mismatches) — it returns `Unknown` here because the segments are spurious, not
+because attribution is broken.
+
 ### M4 — Phase 3 (optional)
 
 Trait associations (each needs a curated GWAS-backed table — curatorial work, not engineering),
