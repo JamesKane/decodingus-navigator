@@ -48,10 +48,21 @@ ASSET_BUILD="${NAVIGATOR_ASSET_BUILD:-chm13v2.0}"
 # needs it, so bundling it would grow every download for a feature many users never open.
 # Local-dir mode omits it by simply not listing it in PATTERNS; release mode has to filter, because
 # it fetches whatever the manifest names.
-ON_DEMAND_PREFIXES="ancestry_haps_"
+#
+# The three Tier B ARCHAIC assets follow the same rule, and for a stronger reason than the painter:
+# archaic *segment* calling needs whole-genome data AND an hours-long de-novo calling pass to have
+# already been run, so the number of users who reach it is very small, while the three assets total
+# 72 MB. Tier A (the marker panel + percentile reference, 33 MB) stays in the bundle — it is the
+# report every user can reach, including from chip data, so it must work with no network.
+ON_DEMAND_PREFIXES="ancestry_haps_ archaic_outgroup_af_ archaic_classify_ archaic_callable_"
 
-# The full Option-A bundle: ancestry panels/PCA/freqs + manifest + genetic map + IBD panel.
+# The full Option-A bundle: ancestry panels/PCA/freqs + manifest + genetic map + IBD panel + the
+# Tier A archaic assets.
 # NOTE: keep in step with ON_DEMAND_PREFIXES above — anything omitted here must be downloadable.
+# The two lists are the SAME decision written twice, once per source mode: local-dir mode bundles
+# exactly what PATTERNS names, while release mode bundles everything the manifest names EXCEPT
+# ON_DEMAND_PREFIXES. An asset absent from both lists is bundled in CI and missing in dev builds —
+# which is what happened to the archaic assets in v0.1.0-alpha.14 and cost ~60 MB per installer.
 PATTERNS=(
   "ancestry_panel_"*.bin
   "ancestry_pca_"*.bin
@@ -61,6 +72,8 @@ PATTERNS=(
   "ancestry_manifest_"*.json
   "genetic_map_"*.bin
   "ibd_panel_"*.bin
+  "archaic_markers_"*.bin
+  "archaic_marker_dist_"*.bin
 )
 
 sha256_of() {

@@ -241,8 +241,22 @@ pipeline asset (sizes measured on disk) split the rest by size × volatility:
 | Y/mt haplotrees | 60–127 MB | High (~weekly) | **Runtime fetch + conditional GET** | ETag/`If-None-Match` → 304 (implemented 2026-07-10); optionally Cloudflare-free in front of the AppView. **Not** the paid S3 CDN. |
 | chrY callable/cohort masks | ~1.8 MB | Rare | **Installer bundle** (git `assets/masks/` → seed) | Small, done. |
 | Ancestry/IBD `.bin` | ~160 MB | Rare | **Installer bundle** (GitHub release → stage → seed) | Decision A, done. |
+| **Archaic Tier A** (`archaic_markers_`, `archaic_marker_dist_`) | 33 MB | Rare | **Installer bundle → seed** | Reachable by every user *including from chip data*, so it must work with no network. |
+| **Archaic Tier B** (`archaic_outgroup_af_`, `archaic_classify_`, `archaic_callable_`) | 72 MB | Rare | **On demand** (`ensure_ancestry_asset`) | Segment calling needs WGS *and* a completed hours-long de-novo calling pass, so very few users reach it. Decided 2026-07-30 — see below. |
 | **STR HipSTR reference** | 20 MB (GRCh38) / 0.2 MB (CHM13) | Static | **Installer bundle → seed** (release-hosted, wired 2026-07-11) | Small, static; delivery path added below. |
 | **Y-SNP dictionary** (`dictionary.tsv`) | ~208 MB | Medium (~weekly YBrowse) | **Lazy download from GitHub release, sha256-verified** | Too big to bundle, too volatile; had *no* delivery path. |
+
+**Archaic asset split — decided 2026-07-30, after it shipped wrong.** The archaic design's M1 said to
+check Asset 1's size against `ON_DEMAND_PREFIXES` "before deciding"; no decision was ever recorded, so
+`archaic_*` appeared in **neither** `PATTERNS` nor `ON_DEMAND_PREFIXES`. Those two lists are the same
+decision written once per source mode — local-dir mode bundles what `PATTERNS` names, release mode
+bundles everything the manifest names *except* `ON_DEMAND_PREFIXES` — so an asset missing from both is
+**bundled in CI and absent in dev builds**. All five archaic assets (105.3 MB) therefore shipped in
+`v0.1.0-alpha.14`, whose installers came out ~60 MB larger than `alpha.13`'s (`.dmg` 136→199 MB,
+`.exe` 105→163 MB) with no one having chosen that.
+
+Both lists now name every archaic asset explicitly: Tier A bundled, Tier B on demand. **When adding an
+asset, put it in one list or the other — silence is not a default, it is the CI-only bundle.**
 
 **Cost stance (creative GitHub):** GitHub **Releases** is the free asset host for app-built data
 (ancestry `.bin`, STR ref, Y-SNP dict) — public repo, tokenless HTTPS, no egress bill. Do **not**
