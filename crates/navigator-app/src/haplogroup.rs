@@ -3808,7 +3808,9 @@ impl App {
         let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? else {
             return Ok(None);
         };
-        if r.consensus_sig == row.last_reconciled_at {
+        // Prefix match: the stored sig is "<consensus>:<panel16>", so a consensus change or a panel
+        // rebuild both read as stale.
+        if r.consensus_sig.starts_with(&row.last_reconciled_at) {
             Ok(Some(serde_json::from_str(&r.archaic)?))
         } else {
             Ok(None) // computed from an older consensus — stale
@@ -3837,20 +3839,23 @@ impl App {
                     "build the autosomal consensus first (Autosomal tab) before the archaic report".into(),
                 )
             })?;
-        let sig = row.last_reconciled_at.clone();
-
-        if let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? {
-            if r.consensus_sig == sig {
-                return Ok(serde_json::from_str(&r.archaic)?);
-            }
-        }
-
+        // Load the panel BEFORE the cache check: the cache signature is salted with the panel's
+        // hash as well as the consensus signature, because rebuilding the panel changes the site
+        // list and the per-class split, and keying on the consensus alone would serve a stale count
+        // computed against a different panel.
         let build = ReferenceBuild::Chm13v2;
         self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build)).await?;
         let panel_path = crate::archaic_markers_path(build);
         let bytes = crate::read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
         let panel_fingerprint = navigator_analysis::manifest::sha256_hex(&bytes);
+        let sig = format!("{}:{}", row.last_reconciled_at, &panel_fingerprint[..16]);
+
+        if let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? {
+            if r.consensus_sig == sig {
+                return Ok(serde_json::from_str(&r.archaic)?);
+            }
+        }
         let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
 
         // Start from the consensus — it covers chips and every non-alignment source, but only where
