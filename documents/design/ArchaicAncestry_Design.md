@@ -716,6 +716,166 @@ rank. Exactness would need the cohort's per-sample genotypes at runtime (~188 MB
 shape `HaplotypeReference` already uses); that is the upgrade path if the approximation ever proves
 insufficient.
 
+### M3 (Tier B) — in progress: assets + HMM built, callability mask REQUIRED
+
+Built and unit-tested: the two Tier B assets (`ArchaicOutgroup`, `ArchaicClassify` — delta-varint
+position streams, 1.07 bytes/site measured, so the ~67 M-position outgroup track lands near 72 MB
+genome-wide) and `call_archaic_segments` (private-variant strip → windowed Poisson HMM with
+forward/backward posteriors and cM-scaled transitions → lineage attribution → aggregate).
+
+**First real-data run exposed a blocker.** On the ground-truth subject's cached chr21+chr22 diploid
+calls (96.4 Mb callable) it called 35 segments totalling 3.49 Mb — **3.62 % of callable, about 2×
+the ~1.5–2 % §7 predicts** — and attributed *every one* of them to `Unknown` with zero diagnostic
+matches.
+
+Both symptoms have one cause. The called segments carry **4,000–9,700 private variants per Mb**,
+where a real introgressed tract has on the order of 50–200/Mb, and they contain **zero** archaic
+diagnostic sites. They are artifact regions: repetitive/low-complexity sequence where the caller
+emits spurious variants, and where archaic candidates do not exist *because the archaic genomes'
+own `FilterBed` masks excluded the same regions*. The HMM is doing exactly what it was asked to —
+finding private-variant density excesses — and the excess is technical, not biological.
+
+**So the callability mask is not optional.** §9 Q2 recorded it as "reuses the existing 1kGP-on-CHM13
+assets" and it was never implemented; that was the gap. Without it the density model has no way to
+distinguish an introgressed tract from a mapping artifact. The mask data is already local: the
+per-genome `FilterBed/` files fetched in stage 08 define where the archaic genomes are callable at
+all, which is precisely the region where a private-variant excess is interpretable.
+
+**Callability mask built — the artifact problem is solved.** `ArchaicCallable` stores callable bases
+per 1 kb window (not intervals: the archaic masks fragment into ~56 k sub-kb pieces per chromosome,
+while a genome-wide 1 kb grid is ~6 MB), built from the intersection of all four `FilterBed` masks
+lifted to CHM13. Windows below `min_callable_fraction` are **excluded** rather than down-weighted,
+and the expected Poisson rate scales with each window's callable fraction.
+
+Re-running the same chr21+chr22 data:
+
+| | before mask | after mask |
+|---|---|---|
+| segments | 35 | 17 |
+| private-variant density | **4,000–9,700/Mb** | **121–500/Mb** |
+| attribution | all `Unknown`, 0 diagnostic matches | Nea / Den / Unknown, with matches |
+
+Densities are now in the biologically plausible range and diagnostic sites are present, which is the
+signal that the caller is looking at real sequence rather than mapping noise.
+
+One unit bug fell out of the same run: archaic extent was summed as segment **span** while the
+denominator was callable megabases, so the two sides of the percentage were in different units. Both
+are now measured in callable bases.
+
+**Remaining, and both are calibration rather than defects:**
+
+1. **Extent — CALIBRATED (2026-07-29).** Against the hmmix 1000G segment callset
+   (`hg38_1000g_segments.txt`, same Zenodo record and licence as checkpoint A), filtered to
+   chr21+chr22 and unioned across `hap1`/`hap2` — hmmix reports per haplotype while our caller is
+   unphased, and *summing* rather than unioning would have doubled their figure and made us look
+   correctly calibrated when we were not.
+
+   | | segments | total Mb | median tract |
+   |---|---|---|---|
+   | hmmix EUR target (n=633) | 43 (p10 35, p90 51) | 2.09 (p10 1.51, p90 2.65) | 0.031 Mb |
+   | ours, before | 17 | 3.34 | 0.188 Mb |
+   | **ours, after** | **45** | **2.01** | 0.056 Mb |
+
+   Two parameters were wrong, and the segment-count/length distribution is what exposed them —
+   total megabases alone would have been matched by the wrong trade-off:
+
+   - **`switches_per_cm` 1.0 → 5.0.** The transition rate *is* the tract-length prior. At 1.0 with
+     the 1 cM/Mb fallback a 1 kb window switches with probability ~0.001, implying ~1 Mb tracts
+     against a real median of 31 kb. This is why the caller produced a third as many segments, each
+     several times too long.
+   - **`min_segment_bp` 50 kb → 5 kb.** hmmix's median European tract here is 31 kb with a p10 of
+     7 kb, so the 50 kb floor was discarding more than half of all real segments by construction.
+
+   `archaic_rate_multiple` moved 4.0 → 6.0 and `min_posterior` 0.8 → 0.70 to land on the target.
+   Honest limits: fitted on **one individual, two chromosomes**. The claim is that segment count and
+   total extent both fall inside hmmix's EUR p10–p90, not that the caller is validated. Median tract
+   length is still 1.8× long; settings that match it exactly double the segment count, which is the
+   worse trade since extent is what a user sees.
+
+   **Genome-wide run (2026-07-29).** Full assets built (outgroup 53,467,252 sites / 55.8 MB at 1.09
+   bytes/site; classify 2,031,406 sites / 7.4 MB; callable 1,815.3 Mb / 5.4 MB) and a whole-genome
+   diploid calling pass over the ground-truth CHM13 alignment (2,806,458 calls, 27 contigs).
+
+   Result: **2,023 segments, 81.88 Mb = 4.51 % of callable**, against a measured hmmix EUR
+   genome-wide distribution of **mean 90.9 Mb (p10 84.6, p90 97.2, n=633)**.
+
+   - **The chr21+22 calibration generalised.** 4.51 % of callable genome-wide versus 4.50 % on the
+     two chromosomes it was fitted on — the thresholds are not chromosome-specific.
+   - **The under-call was an artefact of the harness, not the caller.** The probe passed a uniform
+     1 cM/Mb fallback map; the app loads the **real recombination map**, and since transitions are
+     recombination-scaled that changes the calls materially. Through the app the same data gives
+     **91.5 Mb in 2,084 tracts (5.04 % of callable)** against the hmmix EUR mean of 90.9 Mb —
+     **1.01×, comfortably inside p10–p90**. The 81.88 Mb figure below is the fallback-map result and
+     is kept only to record the size of that effect (~10 %).
+   - **Deliberately not re-tuned.** Closing a 10 % gap against a single individual would be fitting
+     noise; the subject matched the mean closely on chr21+22 (2.01 vs 2.09), so he is not
+     intrinsically low. Validating across several individuals is the honest next step, and needs
+     WGS for people whose hmmix result is known.
+   - A caution recorded for future work: extrapolating the chr21+22 target by the callable ratio
+     predicted 85.1 Mb against a measured 90.9 Mb — **6 % low**. Those two chromosomes carry
+     slightly less archaic ancestry per callable megabase than the genome average, so two-chromosome
+     extrapolation is not a substitute for measuring.
+2. **Lineage attribution does not work, and is now gated off** (`attribute_lineage: false`).
+
+   Two fixes were made and neither rescued it, which is itself the finding:
+
+   - `classify_diagnostic` now requires **positive evidence of absence** — the other lineage must be
+     *called* homozygous-ancestral, never merely `NoCall`. This was the suspected cause. It was not:
+     Denisovan-diagnostic sites moved only 18,551 → 18,354. (The change is still correct and is
+     kept. Writing its test also caught a real logic bug: a site derived in *both* lineages fell
+     through to the Denisovan branch whenever some other Neanderthal was ancestral, which the four
+     genomes disagree about constantly.)
+   - Attribution then moved from raw match counts to **enrichment over the expected carrier rate**,
+     since raw counts silently favour whichever lineage has more sites in the segment.
+
+   **The real cause is that the discriminating signal is not there.** Measured on the ground-truth
+   European: the subject carries the derived allele at **4.3 %** of Neanderthal-diagnostic sites and
+   **3.9 %** of Denisovan-diagnostic ones — a ratio of 1.10. Carrying a "Denisovan-diagnostic"
+   allele overwhelmingly reflects ordinary shared ancestry rather than Denisovan introgression, so
+   at segment scale there is almost nothing to separate the lineages with. Forced to choose, the
+   caller returned **0.00 Mb Neanderthal against 0.48 Mb Denisovan** — the inverse of the known
+   pattern.
+
+   Shipping that would manufacture precisely the Denisovan-in-Europeans claim §7 forbids, so
+   segments are reported as **archaic-but-unattributed** until the method validates. The machinery
+   is kept and unit-tested behind the flag. This is the discipline that gated ancient ancestry.
+
+   A working approach needs more than site-matching — Skov 2020 compares a segment's whole
+   haplotype against each archaic genome relative to a background expectation. That is the upgrade
+   path, not a threshold change.
+
+   **The hmmix callset confirms both halves of this.** On European chr21+chr22 their attribution is
+   Neanderthal 53.1 %, unattributed 41.2 %, both 4.3 %, **Denisova 1.4 %** — so the lineage signal
+   *is* recoverable (they get 53 % Neanderthal where we got 0 %), and their Denisovan figure is the
+   ~0 that §7 predicts, confirming our 0.48 Mb Denisovan was an artefact of the method rather than a
+   real finding. Their per-segment `Altai`/`Vindija`/`Denisova`/`Chagyrskaya` match columns show the
+   shape of the fix: match a segment's own variants against each archaic genome, not against
+   pre-classified site categories.
+
+Attribution itself is sound: unit-tested, and checked directly on real data (2,596 of 5,298
+overlapping sites have the subject carrying the derived allele, 17 orientation mismatches).
+
+### M3.3 — wiring (2026-07-29)
+
+Store migration `0040_consensus_archaic_segments`, `call_archaic_segments_for_subject` /
+`cached_archaic_segments`, worker command + event, an "Archaic segments" card with a per-chromosome
+browser, `navigator archaic-segments` for headless runs, and the three Tier B assets added to the
+path helpers and `ancestry_asset_status`. i18n 721/721.
+
+Three decisions, each about refusing to do the wrong thing silently:
+
+- **The method uses cached diploid calls and refuses otherwise.** A genome-wide calling pass takes
+  hours; starting one from a UI click would present as a hang. Same contract as "build the autosomal
+  consensus first".
+- **It prefers an alignment that already has calls** over the highest-coverage one. Found by running
+  it: the refusal fired even though calls existed, because this subject has **four** CHM13
+  alignments — the calls are on #6 while `best_callable_alignment` picks #3713. The app would have
+  told the user to redo an hours-long pass they had already completed on another alignment.
+- **The chromosome browser is one colour and the card says the lineage split is *withheld*.**
+  Colouring by `ArchaicSource` would imply a Neanderthal/Denisovan distinction the data does not
+  support (see the attribution section). Segment width is floored at 1.5 px because a 31 kb median
+  tract is sub-pixel on a whole-chromosome track.
+
 ### M4 — Phase 3 (optional)
 
 Trait associations (each needs a curated GWAS-backed table — curatorial work, not engineering),

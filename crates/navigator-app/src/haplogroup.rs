@@ -3487,6 +3487,159 @@ impl App {
             .map(|p| (p, sup)))
     }
 
+    /// The subject's alignment that already carries genome-wide de-novo diploid calls, if any.
+    ///
+    /// Probes chr1 as the marker: the whole-genome pass writes one artifact per autosome, so a
+    /// cached chr1 means that alignment has been called. Cheap enough at a handful of alignments.
+    async fn alignment_with_diploid_calls(&self, biosample_guid: SampleGuid) -> Result<Option<i64>, AppError> {
+        for a in alignment::list_for_biosample(self.store.pool(), biosample_guid).await? {
+            if a.bam_path.is_none() {
+                continue;
+            }
+            if !matches!(
+                canonical_build(&a.reference_build),
+                Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
+            ) {
+                continue;
+            }
+            if self
+                .load_analysis::<Vec<SiteGenotype>>(a.id, "diploid_denovo:chr1", caller::GENOTYPE_VERSION)
+                .await?
+                .is_some()
+            {
+                return Ok(Some(a.id));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The cached Tier B archaic segment result for a subject, if current for the alignment and
+    /// caller version it was produced from.
+    pub async fn cached_archaic_segments(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Option<ArchaicSegmentResult>, AppError> {
+        let Some(row) = consensus_archaic_segments::get(self.store.pool(), biosample_guid).await? else {
+            return Ok(None);
+        };
+        let Some(aln) = self.alignment_with_diploid_calls(biosample_guid).await? else {
+            return Ok(None);
+        };
+        if row.source_sig == archaic_segment_sig(aln) {
+            Ok(Some(serde_json::from_str(&row.segments)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Call archaic **segments** (Tier B) from the subject's genome-wide de-novo diploid calls.
+    ///
+    /// **Uses already-cached calls and refuses otherwise.** Genome-wide diploid calling is an
+    /// hours-long whole-genome pass; kicking one off from a UI click would look like a hang. The
+    /// contract mirrors "build the autosomal consensus first" — the caller runs `navigator call`
+    /// (or the analysis flow) and this is then a fast read over the cache.
+    ///
+    /// CHM13 only, because the Tier B assets are CHM13 and segment coordinates have no per-build
+    /// loci to re-key through.
+    pub async fn call_archaic_segments_for_subject(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<ArchaicSegmentResult, AppError> {
+        // Prefer an alignment that already HAS genome-wide diploid calls over the
+        // highest-coverage one. Those calls are an hours-long per-alignment pass, so a subject with
+        // several CHM13 alignments (this one has four) would otherwise be told to re-run work they
+        // have already done, just on a different alignment.
+        let aln = match self.alignment_with_diploid_calls(biosample_guid).await? {
+            Some(a) => a,
+            None => self.best_callable_alignment(biosample_guid).await?.ok_or_else(|| {
+                AppError::Import("no callable alignment — archaic segments need a WGS BAM/CRAM".into())
+            })?,
+        };
+        let build = self.alignment_or_err(aln).await?.reference_build;
+        if !matches!(
+            canonical_build(&build),
+            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
+        ) {
+            return Err(AppError::Import(
+                "archaic segments currently require a CHM13 alignment (the Tier B assets are CHM13-only)".into(),
+            ));
+        }
+        let sig = archaic_segment_sig(aln);
+        if let Some(row) = consensus_archaic_segments::get(self.store.pool(), biosample_guid).await? {
+            if row.source_sig == sig {
+                return Ok(serde_json::from_str(&row.segments)?);
+            }
+        }
+
+        // Gather whatever de-novo diploid calls are already cached, per autosome. Never computed
+        // here — see the doc comment.
+        let mut calls: Vec<SiteGenotype> = Vec::new();
+        let mut contigs_present = 0usize;
+        for c in 1..=22u8 {
+            let kind = format!("diploid_denovo:chr{c}");
+            if let Some(mut v) = self
+                .load_analysis::<Vec<SiteGenotype>>(aln, &kind, caller::GENOTYPE_VERSION)
+                .await?
+            {
+                contigs_present += 1;
+                calls.append(&mut v);
+            }
+        }
+        if calls.is_empty() {
+            return Err(AppError::Import(
+                "no de-novo diploid calls cached for this alignment — run `navigator call` first                  (a whole-genome pass, not something to trigger from the UI)"
+                    .into(),
+            ));
+        }
+
+        let rb = ReferenceBuild::Chm13v2;
+        for p in [
+            crate::archaic_outgroup_path(rb),
+            crate::archaic_classify_path(rb),
+            crate::archaic_callable_path(rb),
+        ] {
+            self.ensure_ancestry_asset(rb, &p).await?;
+        }
+        let load = |p: PathBuf| -> Result<Vec<u8>, AppError> {
+            crate::read_verified_asset(rb, &p)?.ok_or_else(|| AppError::AncestryPanelMissing(p.clone()))
+        };
+        let outgroup = ArchaicOutgroup::from_bytes(&load(crate::archaic_outgroup_path(rb))?)?;
+        let classify = ArchaicClassify::from_bytes(&load(crate::archaic_classify_path(rb))?)?;
+        let callable = ArchaicCallable::from_bytes(&load(crate::archaic_callable_path(rb))?)?;
+
+        // Genetic map over the contigs actually present, so transitions are recombination-scaled.
+        let mut lengths: std::collections::BTreeMap<String, i32> = std::collections::BTreeMap::new();
+        for g in &calls {
+            let e = lengths.entry(g.contig.clone()).or_insert(1);
+            *e = (*e).max(g.position as i32);
+        }
+        let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        let gmap = crate::load_genetic_map(rb, &pairs);
+
+        eprintln!("archaic segments: {} calls over {contigs_present} autosome(s)", calls.len());
+        let result = tokio::task::spawn_blocking(move || {
+            navigator_analysis::archaic_segments::call_archaic_segments(
+                &calls,
+                &outgroup,
+                &classify,
+                &callable,
+                &gmap,
+                &navigator_analysis::archaic_segments::ArchaicConfig::default(),
+            )
+        })
+        .await?;
+
+        consensus_archaic_segments::upsert(
+            self.store.pool(),
+            biosample_guid,
+            &sig,
+            &serde_json::to_string(&result)?,
+            &Utc::now().to_rfc3339(),
+        )
+        .await?;
+        Ok(result)
+    }
+
     /// Genotype the archaic marker panel directly from one alignment.
     ///
     /// The consensus only carries the 1240k/IBD loci, so this is what gives a WGS subject the full
@@ -3655,7 +3808,9 @@ impl App {
         let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? else {
             return Ok(None);
         };
-        if r.consensus_sig == row.last_reconciled_at {
+        // Prefix match: the stored sig is "<consensus>:<panel16>", so a consensus change or a panel
+        // rebuild both read as stale.
+        if r.consensus_sig.starts_with(&row.last_reconciled_at) {
             Ok(Some(serde_json::from_str(&r.archaic)?))
         } else {
             Ok(None) // computed from an older consensus — stale
@@ -3684,20 +3839,23 @@ impl App {
                     "build the autosomal consensus first (Autosomal tab) before the archaic report".into(),
                 )
             })?;
-        let sig = row.last_reconciled_at.clone();
-
-        if let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? {
-            if r.consensus_sig == sig {
-                return Ok(serde_json::from_str(&r.archaic)?);
-            }
-        }
-
+        // Load the panel BEFORE the cache check: the cache signature is salted with the panel's
+        // hash as well as the consensus signature, because rebuilding the panel changes the site
+        // list and the per-class split, and keying on the consensus alone would serve a stale count
+        // computed against a different panel.
         let build = ReferenceBuild::Chm13v2;
         self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build)).await?;
         let panel_path = crate::archaic_markers_path(build);
         let bytes = crate::read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
         let panel_fingerprint = navigator_analysis::manifest::sha256_hex(&bytes);
+        let sig = format!("{}:{}", row.last_reconciled_at, &panel_fingerprint[..16]);
+
+        if let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? {
+            if r.consensus_sig == sig {
+                return Ok(serde_json::from_str(&r.archaic)?);
+            }
+        }
         let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
 
         // Start from the consensus — it covers chips and every non-alignment source, but only where

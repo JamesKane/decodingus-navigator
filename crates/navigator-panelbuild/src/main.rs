@@ -25,6 +25,7 @@ use navigator_analysis::ancestry::{AncestryPanel, PanelSite};
 
 mod archaic;
 mod archaic_dist;
+mod archaic_tierb;
 mod genetic_map;
 mod hap_panel;
 mod ibd_panel;
@@ -75,6 +76,12 @@ enum Cmd {
     /// Build the archaic percentile reference: score every 1kGP sample through the same marker
     /// count the app runs, grouped per population, so a subject's count has a cohort to sit in.
     ArchaicDist(archaic_dist::ArchaicDistArgs),
+    /// Tier B asset 2: the African-outgroup position track used to strip shared variants.
+    ArchaicOutgroup(archaic_tierb::ArchaicOutgroupArgs),
+    /// Tier B asset 3: genome-wide archaic diagnostic sites for labelling called segments.
+    ArchaicClassify(archaic_tierb::ArchaicClassifyArgs),
+    /// Tier B callability mask: callable bases per window, from the archaic FilterBed intersection.
+    ArchaicCallable(archaic_tierb::ArchaicCallableArgs),
     /// Build the chip-compatible IBD panel (multi-build, palindrome-free) from a sites table.
     IbdPanel(ibd_panel::IbdPanelArgs),
     /// Build the asset integrity manifest (sha256 of every `*_<build>.bin`). Run last.
@@ -145,6 +152,9 @@ fn main() -> Result<()> {
         Cmd::ArchaicCandidates(args) => archaic::build_archaic_candidates(args),
         Cmd::ArchaicPanel(args) => archaic::build_archaic_panel(args),
         Cmd::ArchaicDist(args) => archaic_dist::build_archaic_dist(args),
+        Cmd::ArchaicOutgroup(args) => archaic_tierb::build_archaic_outgroup(args),
+        Cmd::ArchaicClassify(args) => archaic_tierb::build_archaic_classify(args),
+        Cmd::ArchaicCallable(args) => archaic_tierb::build_archaic_callable(args),
         Cmd::IbdPanel(args) => ibd_panel::build_ibd_panel(args),
         Cmd::Manifest(args) => manifest::build_manifest(args),
     }

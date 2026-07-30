@@ -15,6 +15,7 @@ pub mod biosample;
 pub mod biosample_project;
 pub mod chip_profile;
 pub mod consensus_archaic;
+pub mod consensus_archaic_segments;
 pub mod consensus_painting;
 pub mod consensus_profile;
 pub mod consensus_roh;

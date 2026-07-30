@@ -655,6 +655,52 @@ impl NavigatorApp {
                         ui.add_space(8.0);
                         self.ai_explain(ui, guid, SignalKind::Archaic);
                     }
+
+                    // Tier B: archaic SEGMENTS (WGS only — needs genome-wide de-novo calls).
+                    ui.add_space(10.0);
+                    card(ui, self.tr("card.archaicSegments"), |ui| {
+                        ui.horizontal(|ui| {
+                            let have = self.archaic_segments.is_some();
+                            let label = if have {
+                                self.tr("common.refresh")
+                            } else {
+                                self.tr("archaicSegments.compute")
+                            };
+                            if ui
+                                .add_enabled(!self.archaic_segments_running, egui::Button::new(label))
+                                .clicked()
+                            {
+                                self.archaic_segments_running = true;
+                                self.status = "Calling archaic segments…".into();
+                                let _ = self
+                                    .tx
+                                    .send(Command::CallArchaicSegments { biosample_guid: guid });
+                            }
+                            if self.archaic_segments_running {
+                                ui.spinner();
+                            }
+                            ui.label(egui::RichText::new(self.tr("hint.archaicSegments")).weak().small());
+                        });
+                        if let Some(r) = &self.archaic_segments {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(format!("{:.1} Mb", r.summary.total_mb)).heading(),
+                            );
+                            ui.label(format!(
+                                "{} archaic tracts, {:.2}% of the {:.0} Mb we could read reliably.",
+                                r.summary.n_segments, r.summary.pct_callable, r.summary.callable_mb
+                            ));
+                            ui.add_space(4.0);
+                            // Lineage split is withheld, not merely absent — say so.
+                            ui.label(
+                                egui::RichText::new(self.tr("archaicSegments.noLineage"))
+                                    .weak()
+                                    .small(),
+                            );
+                            ui.add_space(8.0);
+                            crate::charts::draw_archaic_segments(ui, r);
+                        }
+                    });
                 }
                 DetailTab::Sources => self.sources_tab(ui, guid),
                 DetailTab::IbdMatches => {

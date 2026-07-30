@@ -56,28 +56,49 @@ impl ArchaicCall {
 /// downstream, so it is stored per site at build time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiagnosticClass {
-    /// Derived in ≥1 Neanderthal, absent from Denisova.
+    /// Derived in ≥1 Neanderthal, and Denisova positively **called ancestral**.
     Neanderthal,
-    /// Derived in Denisova, absent from every Neanderthal.
+    /// Derived in Denisova, and ≥1 Neanderthal positively **called ancestral**.
     Denisovan,
-    /// Derived in both lineages — informative for "archaic" but not for attribution.
+    /// Not attributable to one lineage: derived in both, or the other lineage had no call so its
+    /// absence cannot be established.
     SharedArchaic,
 }
 
-/// Classify a site from its per-genome calls. `NoCall` is treated as "no evidence of derived",
-/// which is deliberately conservative: a masked-out Denisova makes a site Neanderthal-diagnostic
-/// only in the sense that we cannot show it is shared, so attribution downstream should lean on
-/// [`DiagnosticClass::Neanderthal`] counts in aggregate rather than trusting any single site.
+/// Classify a site from its per-genome calls.
+///
+/// Lineage-specificity requires **positive evidence of absence** in the other lineage — that lineage
+/// must be *called* homozygous-ancestral, not merely missing. Treating `NoCall` as absence is what
+/// an earlier version did, and it was the dominant error in Tier B attribution: a site where the
+/// Neanderthals happened to be masked out and Denisova was called read as Denisovan-*specific*,
+/// inflating Denisovan-diagnostic sites to 18,551 against 24,077 Neanderthal on chr21+22 and
+/// producing ~19 % Denisovan for a European, where design §7 expects approximately zero.
+///
+/// Sites that cannot be attributed fall to [`DiagnosticClass::SharedArchaic`], which therefore means
+/// "archaic but not attributable" rather than strictly "derived in both".
 pub fn classify_diagnostic(calls: &[ArchaicCall; 4]) -> DiagnosticClass {
-    let nea = calls
+    let nea_derived = calls
         .iter()
         .enumerate()
         .any(|(i, c)| i != DENISOVA && c.carries_derived());
-    let den = calls[DENISOVA].carries_derived();
-    match (nea, den) {
-        (true, false) => DiagnosticClass::Neanderthal,
-        (false, true) => DiagnosticClass::Denisovan,
-        _ => DiagnosticClass::SharedArchaic,
+    let nea_ancestral = calls
+        .iter()
+        .enumerate()
+        .any(|(i, c)| i != DENISOVA && *c == ArchaicCall::HomAncestral);
+    let den_derived = calls[DENISOVA].carries_derived();
+    let den_ancestral = calls[DENISOVA] == ArchaicCall::HomAncestral;
+
+    // Derived in BOTH lineages short-circuits to shared. Without this the Denisovan branch fires
+    // whenever some *other* Neanderthal is ancestral at a site both lineages carry — the four
+    // genomes disagree with each other constantly, so this is common, not a corner case.
+    if nea_derived && den_derived {
+        DiagnosticClass::SharedArchaic
+    } else if nea_derived && den_ancestral {
+        DiagnosticClass::Neanderthal
+    } else if den_derived && nea_ancestral {
+        DiagnosticClass::Denisovan
+    } else {
+        DiagnosticClass::SharedArchaic
     }
 }
 
@@ -526,19 +547,19 @@ mod tests {
     }
 
     #[test]
-    fn classify_splits_the_two_lineages() {
+    fn classify_requires_positive_evidence_of_absence() {
         use ArchaicCall::*;
-        // Derived in Neanderthals only.
+        // Derived in Neanderthals, Denisova CALLED ancestral -> Neanderthal-diagnostic.
         assert_eq!(
             classify_diagnostic(&calls(HomDerived, HomDerived, NoCall, HomAncestral)),
             DiagnosticClass::Neanderthal
         );
-        // Derived in Denisova only.
+        // Derived in Denisova, a Neanderthal CALLED ancestral -> Denisovan-diagnostic.
         assert_eq!(
-            classify_diagnostic(&calls(HomAncestral, HomAncestral, HomAncestral, HomDerived)),
+            classify_diagnostic(&calls(HomAncestral, NoCall, NoCall, HomDerived)),
             DiagnosticClass::Denisovan
         );
-        // Derived in both → not attributable.
+        // Derived in both -> not attributable.
         assert_eq!(
             classify_diagnostic(&calls(HomDerived, HomAncestral, HomAncestral, Het)),
             DiagnosticClass::SharedArchaic
@@ -547,6 +568,19 @@ mod tests {
         assert_eq!(
             classify_diagnostic(&calls(Het, NoCall, NoCall, HomAncestral)),
             DiagnosticClass::Neanderthal
+        );
+
+        // THE REGRESSION THIS GUARDS. Denisova derived, every Neanderthal MASKED OUT: absence is
+        // unknown, not established, so this must NOT read as Denisovan-specific. The old rule
+        // called it Denisovan and that single mistake produced ~19% Denisovan for a European.
+        assert_eq!(
+            classify_diagnostic(&calls(NoCall, NoCall, NoCall, HomDerived)),
+            DiagnosticClass::SharedArchaic
+        );
+        // Mirror case: Neanderthal derived, Denisova masked out -> also not attributable.
+        assert_eq!(
+            classify_diagnostic(&calls(HomDerived, NoCall, NoCall, NoCall)),
+            DiagnosticClass::SharedArchaic
         );
     }
 
@@ -724,6 +758,54 @@ mod tests {
     }
 
     #[test]
+    fn position_stream_round_trips_and_streams_in_order() {
+        let positions = vec![10i64, 11, 300, 70_000, 70_001, 5_000_000];
+        let st = PositionStream::encode("chr21", &positions);
+        assert_eq!(st.len, positions.len());
+        assert_eq!(st.iter().collect::<Vec<_>>(), positions);
+        // The point of the encoding: gaps, not positions. A run of far-apart sites must still cost
+        // far less than 4 bytes each on average for the dense case.
+        let dense: Vec<i64> = (0..10_000).map(|i| i * 40).collect();
+        let ds = PositionStream::encode("chr21", &dense);
+        assert_eq!(ds.iter().collect::<Vec<_>>(), dense);
+        assert!(ds.deltas.len() < dense.len() * 2, "delta encoding should stay ~1 byte/site here");
+    }
+
+    #[test]
+    fn retain_private_drops_everything_the_outgroup_carries() {
+        let og = ArchaicOutgroup {
+            build: "chm13v2.0".into(),
+            min_allele_count: 1,
+            contigs: vec![PositionStream::encode("chr21", &[100, 200, 300, 400])],
+        };
+        // 200 and 400 are shared with Africans -> stripped; the rest are private.
+        assert_eq!(og.retain_private("chr21", &[50, 200, 250, 400, 500]), vec![50, 250, 500]);
+        // Exact-boundary behaviour: first and last outgroup entries.
+        assert_eq!(og.retain_private("chr21", &[100, 400]), Vec::<i64>::new());
+        // A contig with no outgroup data yields NOTHING rather than everything — stripping nothing
+        // would declare the whole contig archaic.
+        assert_eq!(og.retain_private("chr7", &[1, 2, 3]), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn classify_lookup_returns_sites_in_range_with_their_lineage() {
+        let cls = ArchaicClassify {
+            build: "chm13v2.0".into(),
+            contigs: vec![ClassifyContig {
+                positions: PositionStream::encode("chr21", &[100, 200, 300]),
+                derived: vec![b'A', b'C', b'G'],
+                classes: vec![0, 1, 2],
+            }],
+        };
+        let hits = cls.in_range("chr21", 150, 300);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0], (200, 'C', DiagnosticClass::Denisovan));
+        assert_eq!(hits[1], (300, 'G', DiagnosticClass::SharedArchaic));
+        assert!(cls.in_range("chr21", 1, 50).is_empty());
+        assert!(cls.in_range("chr7", 1, 1000).is_empty());
+    }
+
+    #[test]
     fn subset_percentile_compares_against_the_same_sites() {
         // Two populations. At every site the "high" cohort carries the derived allele at 50% and the
         // "low" cohort at 5%. A subject calling only 1000 sites is scored against the cohort's
@@ -787,5 +869,249 @@ mod tests {
         // Cohorts do not bleed into each other, and an unknown one is None (not a fake 0).
         assert_eq!(dist.percentile_in_super("AFR", 1), Some(50.0));
         assert_eq!(dist.percentile_in_super("EAS", 10), None);
+    }
+}
+
+// ─────────────────────────── Tier B assets (design §4, assets 2 and 3) ───────────────────────────
+
+/// Variable-length integer encoding for a sorted position stream: 7 bits per byte, high bit = more.
+///
+/// Both Tier B assets store **gaps between consecutive positions**, not the positions themselves.
+/// The African-outgroup track alone is ~67 M positions genome-wide; as raw `u32`s that is ~270 MB,
+/// which is too much to hold and too much to ship. Typical gaps are tens of bases, so a varint delta
+/// costs one byte for most sites.
+fn push_varint(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        out.push((v as u8) | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+/// Decode the varint starting at `i`, returning the value and the next index.
+fn read_varint(bytes: &[u8], mut i: usize) -> Option<(u64, usize)> {
+    let (mut v, mut shift) = (0u64, 0u32);
+    loop {
+        let b = *bytes.get(i)?;
+        i += 1;
+        v |= ((b & 0x7f) as u64) << shift;
+        if b & 0x80 == 0 {
+            return Some((v, i));
+        }
+        shift += 7;
+        if shift > 63 {
+            return None;
+        }
+    }
+}
+
+/// One contig's sorted positions, delta-varint encoded.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PositionStream {
+    pub contig: String,
+    /// Number of positions encoded (so a reader can size buffers without decoding).
+    pub len: usize,
+    deltas: Vec<u8>,
+}
+
+impl PositionStream {
+    /// Encode a **sorted, deduplicated** position list.
+    pub fn encode(contig: &str, sorted_positions: &[i64]) -> Self {
+        let mut deltas = Vec::with_capacity(sorted_positions.len());
+        let mut prev = 0i64;
+        for &p in sorted_positions {
+            push_varint(&mut deltas, (p - prev).max(0) as u64);
+            prev = p;
+        }
+        PositionStream {
+            contig: contig.to_string(),
+            len: sorted_positions.len(),
+            deltas,
+        }
+    }
+
+    /// Stream the positions back in ascending order.
+    ///
+    /// An iterator rather than a `Vec` on purpose: the caller merge-joins it against the subject's
+    /// own (much smaller) sorted variants, so neither side is ever fully materialised.
+    pub fn iter(&self) -> impl Iterator<Item = i64> + '_ {
+        let mut i = 0usize;
+        let mut pos = 0i64;
+        std::iter::from_fn(move || {
+            let (d, next) = read_varint(&self.deltas, i)?;
+            i = next;
+            pos += d as i64;
+            Some(pos)
+        })
+    }
+}
+
+/// Asset 2 — positions **variable in the African outgroup**, used to strip shared variants before
+/// the segment HMM (design §5 step 1).
+///
+/// Anything a modern African population also carries is not evidence of archaic introgression; what
+/// survives the strip is the "private" derived variation the HMM looks for a density excess in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchaicOutgroup {
+    pub build: String,
+    /// Minimum allele count in the outgroup for a site to be considered variable there.
+    pub min_allele_count: u32,
+    pub contigs: Vec<PositionStream>,
+}
+
+impl ArchaicOutgroup {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AnalysisError> {
+        bincode::deserialize(bytes).map_err(|e| AnalysisError::Message(format!("archaic outgroup decode: {e}")))
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, AnalysisError> {
+        bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("archaic outgroup encode: {e}")))
+    }
+
+    pub fn contig(&self, contig: &str) -> Option<&PositionStream> {
+        self.contigs.iter().find(|c| c.contig == contig)
+    }
+
+    /// Retain only those `sorted_positions` **absent** from the outgroup — the private set.
+    ///
+    /// A linear merge over both sorted streams, so cost is O(subject + outgroup) with no index and
+    /// no allocation proportional to the outgroup.
+    pub fn retain_private(&self, contig: &str, sorted_positions: &[i64]) -> Vec<i64> {
+        let Some(stream) = self.contig(contig) else {
+            // No outgroup data for this contig: stripping nothing would call the whole contig
+            // archaic, so refuse rather than guess.
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut og = stream.iter().peekable();
+        for &p in sorted_positions {
+            while og.peek().is_some_and(|&o| o < p) {
+                og.next();
+            }
+            if og.peek() != Some(&p) {
+                out.push(p);
+            }
+        }
+        out
+    }
+}
+
+/// Asset 3 — genome-wide archaic diagnostic sites, for labelling a called segment Neanderthal vs
+/// Denisovan (design §5 step 3).
+///
+/// The HMM itself cannot tell the lineages apart — they coalesce before either meets modern humans
+/// (§3) — so attribution is a downstream count of derived-allele matches against these sites.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArchaicClassify {
+    pub build: String,
+    pub contigs: Vec<ClassifyContig>,
+}
+
+/// One contig's diagnostic sites: positions delta-encoded, with a parallel derived base and class.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClassifyContig {
+    pub positions: PositionStream,
+    /// Derived base per site, same order as `positions`.
+    pub derived: Vec<u8>,
+    /// Diagnostic class per site: 0 = Neanderthal, 1 = Denisovan, 2 = shared archaic.
+    pub classes: Vec<u8>,
+}
+
+impl ArchaicClassify {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AnalysisError> {
+        bincode::deserialize(bytes).map_err(|e| AnalysisError::Message(format!("archaic classify decode: {e}")))
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, AnalysisError> {
+        bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("archaic classify encode: {e}")))
+    }
+
+    /// Diagnostic sites on `contig` within `[start, end]`, as `(position, derived_base, class)`.
+    pub fn in_range(&self, contig: &str, start: i64, end: i64) -> Vec<(i64, char, DiagnosticClass)> {
+        let Some(c) = self.contigs.iter().find(|c| c.positions.contig == contig) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (i, p) in c.positions.iter().enumerate() {
+            if p > end {
+                break;
+            }
+            if p >= start {
+                let class = match c.classes.get(i).copied().unwrap_or(2) {
+                    0 => DiagnosticClass::Neanderthal,
+                    1 => DiagnosticClass::Denisovan,
+                    _ => DiagnosticClass::SharedArchaic,
+                };
+                out.push((p, c.derived.get(i).copied().unwrap_or(b'N') as char, class));
+            }
+        }
+        out
+    }
+}
+
+/// Callable-region track: **callable bases per fixed-width window**, per contig.
+///
+/// Stored as per-window counts rather than intervals because that is what the segment HMM actually
+/// needs and it is far smaller: the archaic masks are fragmented into hundreds of thousands of
+/// sub-kb intervals per chromosome, while a genome-wide 1 kb window grid is ~3.1 M `u16`s (~6 MB).
+///
+/// This is not a nicety. Without it the HMM finds private-variant density excesses in repetitive
+/// regions — measured at 4,000–9,700 variants/Mb against 50–200/Mb for a real introgressed tract —
+/// and reports them as archaic. Those regions are exactly where the archaic genomes' own quality
+/// masks exclude data, so a region callable in all four archaic genomes is the region where a
+/// private-variant excess can be interpreted at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchaicCallable {
+    pub build: String,
+    /// Window width the counts are binned at.
+    pub window_bp: i64,
+    pub contigs: Vec<CallableContig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallableContig {
+    pub contig: String,
+    /// Genomic start of window 0.
+    pub start: i64,
+    /// Callable bases in each window (saturating at `window_bp`).
+    pub callable_bp: Vec<u16>,
+}
+
+impl ArchaicCallable {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AnalysisError> {
+        bincode::deserialize(bytes).map_err(|e| AnalysisError::Message(format!("archaic callable decode: {e}")))
+    }
+
+    pub fn to_bytes(&self) -> Result<Vec<u8>, AnalysisError> {
+        bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("archaic callable encode: {e}")))
+    }
+
+    pub fn contig(&self, contig: &str) -> Option<&CallableContig> {
+        self.contigs.iter().find(|c| c.contig == contig)
+    }
+
+    /// Callable fraction (0.0–1.0) of the window containing `position`, or 0.0 when the contig or
+    /// window is absent — an unknown region is treated as **not** callable, so the HMM skips it
+    /// rather than interpreting density it cannot trust.
+    pub fn callable_fraction(&self, contig: &str, position: i64) -> f64 {
+        let Some(c) = self.contig(contig) else { return 0.0 };
+        if position < c.start {
+            return 0.0;
+        }
+        let idx = ((position - c.start) / self.window_bp) as usize;
+        match c.callable_bp.get(idx) {
+            Some(&bp) => (bp as f64 / self.window_bp as f64).clamp(0.0, 1.0),
+            None => 0.0,
+        }
+    }
+
+    /// Total callable megabases across all contigs — the honest denominator for "% of genome".
+    pub fn callable_mb(&self) -> f64 {
+        self.contigs
+            .iter()
+            .flat_map(|c| c.callable_bp.iter())
+            .map(|&bp| bp as f64)
+            .sum::<f64>()
+            / 1_000_000.0
     }
 }

@@ -838,6 +838,9 @@ pub struct NavigatorApp {
     /// Archaic (Neanderthal / Denisovan) Tier-A marker count for the selected subject.
     archaic: Option<navigator_app::ArchaicMarkerResult>,
     archaic_running: bool,
+    /// Tier B archaic segments for the selected subject.
+    archaic_segments: Option<navigator_app::ArchaicSegmentResult>,
+    archaic_segments_running: bool,
     /// Last private Y bucket: (alignment id, bucket).
     private_y: Option<(i64, PrivateBucket)>,
     finding_private_y: bool,
@@ -1286,6 +1289,8 @@ impl NavigatorApp {
             roh_running: false,
             archaic: None,
             archaic_running: false,
+            archaic_segments: None,
+            archaic_segments_running: false,
             private_y: None,
             finding_private_y: false,
             y_mask_path: None,
