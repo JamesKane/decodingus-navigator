@@ -21,7 +21,7 @@ use navigator_app::{
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
     HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
     NarratedBrief, PaintingResult, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
-    ArchaicMarkerResult, ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, RohResult, SexInferenceResult,
+    ArchaicMarkerResult, ArchaicSegmentResult, ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, RohResult, SexInferenceResult,
     SignalKind,
     SourceType, StoredIbdExchange, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult, YMatch,
     YstrClustering,
@@ -240,6 +240,14 @@ pub enum Command {
     },
     /// Load the cached archaic marker count (if current for the consensus signature) — cheap.
     LoadArchaic {
+        biosample_guid: SampleGuid,
+    },
+    /// Call Tier B archaic SEGMENTS from cached genome-wide diploid calls.
+    CallArchaicSegments {
+        biosample_guid: SampleGuid,
+    },
+    /// Load the cached Tier B segment result — cheap.
+    LoadArchaicSegments {
         biosample_guid: SampleGuid,
     },
     /// Load the cached detailed consensus ancestry reports (modern fine + ancient components).
@@ -945,6 +953,11 @@ pub enum Event {
     ArchaicResultReady {
         biosample_guid: SampleGuid,
         result: Option<Box<ArchaicMarkerResult>>,
+    },
+    /// Tier B archaic segment result. `None` on a cache-miss load.
+    ArchaicSegmentsReady {
+        biosample_guid: SampleGuid,
+        result: Option<Box<ArchaicSegmentResult>>,
     },
     /// Private Y variants (off-backbone de-novo calls) for an alignment.
     PrivateY {
@@ -1789,6 +1802,20 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::LoadArchaic { biosample_guid } => ev(
             app.cached_archaic(biosample_guid).await,
             |result| Event::ArchaicResultReady {
+                biosample_guid,
+                result: result.map(Box::new),
+            },
+        ),
+        Command::CallArchaicSegments { biosample_guid } => ev(
+            app.call_archaic_segments_for_subject(biosample_guid).await,
+            |result| Event::ArchaicSegmentsReady {
+                biosample_guid,
+                result: Some(Box::new(result)),
+            },
+        ),
+        Command::LoadArchaicSegments { biosample_guid } => ev(
+            app.cached_archaic_segments(biosample_guid).await,
+            |result| Event::ArchaicSegmentsReady {
                 biosample_guid,
                 result: result.map(Box::new),
             },

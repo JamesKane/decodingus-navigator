@@ -737,3 +737,48 @@ pub(crate) fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &
         .include_y(max_count)
         .show(ui, |plot_ui| plot_ui.bar_chart(chart));
 }
+
+/// Draw archaic (Tier B) segments as a per-chromosome track.
+///
+/// Deliberately one colour: lineage attribution is gated off (design §7 — a Denisovan split for a
+/// European would be manufactured), so colouring by `ArchaicSource` would imply a distinction the
+/// data does not support. When attribution lands, colour by source here.
+pub(crate) fn draw_archaic_segments(ui: &mut egui::Ui, result: &navigator_app::ArchaicSegmentResult) {
+    use std::collections::BTreeMap;
+    let mut by_chr: BTreeMap<&str, Vec<&navigator_app::ArchaicSegment>> = BTreeMap::new();
+    for s in &result.segments {
+        by_chr.entry(s.contig.as_str()).or_default().push(s);
+    }
+    if by_chr.is_empty() {
+        return;
+    }
+    let max_end = result.segments.iter().map(|s| s.end).max().unwrap_or(1).max(1) as f32;
+    let row_h = 12.0;
+    let label_w = 52.0;
+    let avail = ui.available_width() - label_w - 8.0;
+    for (chr, segs) in by_chr {
+        ui.horizontal(|ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(label_w, row_h),
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    ui.label(egui::RichText::new(chr).small().weak());
+                },
+            );
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(avail, row_h), egui::Sense::hover());
+            let p = ui.painter();
+            p.rect_filled(rect, 2.0, egui::Color32::from_rgb(38, 38, 42));
+            for s in segs {
+                let x0 = rect.left() + (s.start as f32 / max_end) * rect.width();
+                let x1 = rect.left() + (s.end as f32 / max_end) * rect.width();
+                // Sub-pixel tracts still need to be visible; a 31 kb median segment on a 3 Mb-wide
+                // track is well under a pixel.
+                let seg = egui::Rect::from_min_max(
+                    egui::pos2(x0, rect.top() + 2.0),
+                    egui::pos2(x1.max(x0 + 1.5), rect.bottom() - 2.0),
+                );
+                p.rect_filled(seg, 1.0, egui::Color32::from_rgb(196, 132, 74));
+            }
+        });
+    }
+}

@@ -765,3 +765,7 @@ brief.archaicMoreSummary=You carry more Neanderthal markers than most people wit
 brief.archaicFound=Neanderthal markers found
 brief.archaicFoundSummary=Your data covers too few marker sites to compare you with a reference group, so this is the raw count only.
 glossary.archaic=Everyone whose ancestry is partly outside Africa carries a small amount of Neanderthal DNA, from interbreeding roughly 50,000 years ago. This is a count of archaic marker copies your test could check — a genealogical curiosity, not a health or trait result.
+card.archaicSegments=Archaic segments (whole-genome)
+hint.archaicSegments=introgressed tracts found from genome-wide variant density; needs de-novo calling first
+archaicSegments.compute=Find archaic segments
+archaicSegments.noLineage=Not split into Neanderthal vs Denisovan: that attribution is not yet reliable enough to report, so these are shown simply as archaic.

@@ -57,6 +57,9 @@ pub enum Command {
     /// data actually covered, not a "% Neanderthal". Requires the consensus to be built first.
     /// See `navigator_app::App::estimate_archaic_from_consensus`.
     Archaic(ArchaicArgs),
+    /// Tier B: call archaic SEGMENTS from the subject's cached genome-wide de-novo diploid calls.
+    /// Run `call` first — this reads the cache rather than starting a whole-genome pass.
+    ArchaicSegments(ShowArgs),
     /// Panel batch-process mode (progressive-consensus): genotype the subject's CHM13 alignment(s) at
     /// the full-1240k panel, caching the dosages and refreshing the autosomal consensus so ancestry is
     /// ready without a later lazy build. Heavy (a whole-genome decode per alignment).
@@ -435,6 +438,7 @@ pub fn run(command: Command) -> i32 {
             Command::DebugAncient(a) => debug_ancient(a).await,
             Command::DeepAncestry(a) => deep_ancestry(a).await,
             Command::Archaic(a) => archaic(a).await,
+            Command::ArchaicSegments(a) => archaic_segments(a).await,
             Command::GenotypePanel(a) => genotype_panel(a).await,
             Command::BranchReport(a) => branch_report(a).await,
             Command::Doctor(a) => doctor(a).await,
@@ -1581,6 +1585,35 @@ async fn debug_ancient(args: ShowArgs) -> i32 {
         );
     }
     println!("\nStability gate: the per-source rows must agree with the consensus (and each other)\nto within a few percent — they are the same person genotyped by different means.");
+    0
+}
+
+/// Tier B archaic segments — see [`navigator_app::App::call_archaic_segments_for_subject`].
+async fn archaic_segments(args: ShowArgs) -> i32 {
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let guid = match find_subject(&app, &args.subject).await {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            eprintln!("error: no subject with identifier \"{}\"", args.subject);
+            return 1;
+        }
+        Err(c) => return c,
+    };
+    let r = match app.call_archaic_segments_for_subject(guid).await {
+        Ok(r) => r,
+        Err(e) => return report(e),
+    };
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+        return 0;
+    }
+    let s = &r.summary;
+    println!("Archaic segments (Tier B): {:.1} Mb in {} tracts", s.total_mb, s.n_segments);
+    println!("  {:.2}% of the {:.0} Mb callable", s.pct_callable, s.callable_mb);
+    println!("  lineage split withheld — attribution is not yet reliable enough to report");
     0
 }
 

@@ -552,7 +552,19 @@ impl NavigatorApp {
                         self.roh = result.map(|b| *b);
                     }
                 }
-Event::ArchaicResultReady { biosample_guid, result } => {
+                Event::ArchaicSegmentsReady { biosample_guid, result } => {
+                    if self.selected_sample == Some(biosample_guid) {
+                        self.archaic_segments_running = false;
+                        if let Some(r) = &result {
+                            self.status = format!(
+                                "Archaic segments: {} tracts, {:.1} Mb ({:.2}% of callable)",
+                                r.summary.n_segments, r.summary.total_mb, r.summary.pct_callable
+                            );
+                        }
+                        self.archaic_segments = result.map(|b| *b);
+                    }
+                }
+                Event::ArchaicResultReady { biosample_guid, result } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.archaic_running = false;
                         if let Some(r) = &result {
@@ -567,7 +579,7 @@ Event::ArchaicResultReady { biosample_guid, result } => {
                         self.archaic = result.map(|b| *b);
                     }
                 }
-                                Event::Consensus { biosample_guid, y, mt } => {
+                Event::Consensus { biosample_guid, y, mt } => {
                     if self.selected_sample == Some(biosample_guid) {
                         self.consensus_y = y;
                         self.consensus_mt = mt;
@@ -1274,6 +1286,7 @@ Event::ArchaicResultReady { biosample_guid, result } => {
         self.painting_running = false;
         self.roh = None;
         self.archaic = None;
+        self.archaic_segments = None;
         self.roh_running = false;
         self.donor_private_y = None;
         self.y_profile = None;
@@ -1357,6 +1370,7 @@ Event::ArchaicResultReady { biosample_guid, result } => {
         let _ = self.tx.send(Command::LoadRoh { biosample_guid: guid });
         // ...and a cached archaic marker count.
         let _ = self.tx.send(Command::LoadArchaic { biosample_guid: guid });
+        let _ = self.tx.send(Command::LoadArchaicSegments { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
         // The Y-variant profile is *built* on explicit request (re-genotypes each alignment), but a
         // previously-built snapshot loads cheaply — fetch it so the Y-DNA tab shows it immediately.

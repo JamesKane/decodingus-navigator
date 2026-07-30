@@ -801,9 +801,12 @@ are now measured in callable bases.
 
    - **The chr21+22 calibration generalised.** 4.51 % of callable genome-wide versus 4.50 % on the
      two chromosomes it was fitted on — the thresholds are not chromosome-specific.
-   - **We now under-call by ~10 %**, sitting just below hmmix's p10. That is a large improvement on
-     the 1.6× *over*-call before calibration, and it errs in the safer direction, but it is outside
-     their normal range and should be stated as such rather than described as agreement.
+   - **The under-call was an artefact of the harness, not the caller.** The probe passed a uniform
+     1 cM/Mb fallback map; the app loads the **real recombination map**, and since transitions are
+     recombination-scaled that changes the calls materially. Through the app the same data gives
+     **91.5 Mb in 2,084 tracts (5.04 % of callable)** against the hmmix EUR mean of 90.9 Mb —
+     **1.01×, comfortably inside p10–p90**. The 81.88 Mb figure below is the fallback-map result and
+     is kept only to record the size of that effect (~10 %).
    - **Deliberately not re-tuned.** Closing a 10 % gap against a single individual would be fitting
      noise; the subject matched the mean closely on chr21+22 (2.01 vs 2.09), so he is not
      intrinsically low. Validating across several individuals is the honest next step, and needs
@@ -851,6 +854,27 @@ are now measured in callable bases.
 
 Attribution itself is sound: unit-tested, and checked directly on real data (2,596 of 5,298
 overlapping sites have the subject carrying the derived allele, 17 orientation mismatches).
+
+### M3.3 — wiring (2026-07-29)
+
+Store migration `0040_consensus_archaic_segments`, `call_archaic_segments_for_subject` /
+`cached_archaic_segments`, worker command + event, an "Archaic segments" card with a per-chromosome
+browser, `navigator archaic-segments` for headless runs, and the three Tier B assets added to the
+path helpers and `ancestry_asset_status`. i18n 721/721.
+
+Three decisions, each about refusing to do the wrong thing silently:
+
+- **The method uses cached diploid calls and refuses otherwise.** A genome-wide calling pass takes
+  hours; starting one from a UI click would present as a hang. Same contract as "build the autosomal
+  consensus first".
+- **It prefers an alignment that already has calls** over the highest-coverage one. Found by running
+  it: the refusal fired even though calls existed, because this subject has **four** CHM13
+  alignments — the calls are on #6 while `best_callable_alignment` picks #3713. The app would have
+  told the user to redo an hours-long pass they had already completed on another alignment.
+- **The chromosome browser is one colour and the card says the lineage split is *withheld*.**
+  Colouring by `ArchaicSource` would imply a Neanderthal/Denisovan distinction the data does not
+  support (see the attribution section). Segment width is floored at 1.5 px because a 31 kb median
+  tract is sub-pixel on a whole-chromosome track.
 
 ### M4 — Phase 3 (optional)
 

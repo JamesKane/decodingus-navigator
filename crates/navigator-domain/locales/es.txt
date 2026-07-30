@@ -750,3 +750,7 @@ brief.archaicMoreSummary=Tienes más marcadores neandertales que la mayoría de 
 brief.archaicFound=Marcadores neandertales encontrados
 brief.archaicFoundSummary=Tus datos cubren muy pocos sitios marcadores para compararte con un grupo de referencia, así que este es solo el recuento bruto.
 glossary.archaic=Toda persona cuya ascendencia proviene en parte de fuera de África lleva una pequeña cantidad de ADN neandertal, por el mestizaje de hace unos 50.000 años. Este es un recuento de copias de marcadores arcaicos que tu prueba pudo comprobar: una curiosidad genealógica, no un resultado de salud ni de rasgos.
+card.archaicSegments=Segmentos arcaicos (genoma completo)
+hint.archaicSegments=tramos introgresados hallados por densidad de variantes en todo el genoma; requiere llamado de novo previo
+archaicSegments.compute=Buscar segmentos arcaicos
+archaicSegments.noLineage=Sin dividir entre neandertal y denisovano: esa atribución aún no es lo bastante fiable como para informarla, así que se muestran simplemente como arcaicos.
