@@ -745,9 +745,16 @@ pub(crate) fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &
 /// data does not support. When attribution lands, colour by source here.
 pub(crate) fn draw_archaic_segments(ui: &mut egui::Ui, result: &navigator_app::ArchaicSegmentResult) {
     use std::collections::BTreeMap;
-    let mut by_chr: BTreeMap<&str, Vec<&navigator_app::ArchaicSegment>> = BTreeMap::new();
+    // Order rows NUMERICALLY, not lexicographically: keying a BTreeMap on the contig string gives
+    // chr1, chr10, chr11 … chr19, chr2, chr20 — which reads as a bug to anyone scanning the track.
+    let mut by_chr: BTreeMap<(u32, &str), Vec<&navigator_app::ArchaicSegment>> = BTreeMap::new();
     for s in &result.segments {
-        by_chr.entry(s.contig.as_str()).or_default().push(s);
+        let n = s
+            .contig
+            .trim_start_matches("chr")
+            .parse::<u32>()
+            .unwrap_or(u32::MAX); // non-numeric contigs sort last, keeping their own order
+        by_chr.entry((n, s.contig.as_str())).or_default().push(s);
     }
     if by_chr.is_empty() {
         return;
@@ -756,7 +763,7 @@ pub(crate) fn draw_archaic_segments(ui: &mut egui::Ui, result: &navigator_app::A
     let row_h = 12.0;
     let label_w = 52.0;
     let avail = ui.available_width() - label_w - 8.0;
-    for (chr, segs) in by_chr {
+    for ((_, chr), segs) in by_chr {
         ui.horizontal(|ui| {
             ui.allocate_ui_with_layout(
                 egui::vec2(label_w, row_h),
