@@ -1,8 +1,10 @@
 # Archaic Ancestry Report (Neanderthal / Denisovan) — Design
 
-**Status:** Design + **implementation plan (§10)**. No code yet. Drafted 2026-07-23; plan added
-2026-07-26 on branch `feat/archaic-ancestry`. Two of the three §9 open questions are now settled;
-the third is a gating checkpoint inside M1.
+**Status:** **SHIPPED** in `v0.1.0-alpha.14` (2026-07-30). Tier A (#34) and Tier B (#35) are both in
+`main` and in users' hands; §8 Phases 1 and 2 are complete, Phase 3 (M4) is not started and remains
+optional. Drafted 2026-07-23; plan added 2026-07-26 on branch `feat/archaic-ancestry`; all three §9
+questions resolved. **Two things shipped differently from the plan below — see *Deviations from the
+plan* at the end of §10 before trusting §7's expected percentage or M3's feature-gate rule.**
 **Goal:** Reconstruct a 23andMe-style Neanderthal report — and go beyond it with a Denisovan
 estimate and a true whole-genome introgression map — from public archaic reference genomes and
 recent methods, using the app's existing ancestry/panel/HMM machinery.
@@ -222,6 +224,15 @@ Verified population baselines: a typical **European carries ~1.5–2% Neandertha
 in the Icelandic data Denisovan was 3.3% *of* the ~2% archaic total, i.e. a European's Denisovan
 signal sits **at the noise floor**. Denisovan ancestry concentrates in Oceanians / East & South Asians.
 
+> **As shipped, the ~1.5–2 % figure above is NOT the number the caller targets.** It is the commonly
+> quoted whole-genome fraction from the literature, and Tier B was ultimately calibrated against
+> hmmix's *measured* 1000G European distribution instead — mean **90.9 Mb** (p10 84.6, p90 97.2,
+> n=633), which is ~2.9 % of a 3.1 Gb genome, not 1.5–2 %. Our shipped result is 91.5 Mb = 5.04 % of
+> **callable** (1,815 Mb), a third denominator again. Three different denominators are in play and
+> they are not comparable: whole genome, callable genome, and hmmix's per-haplotype-unioned total.
+> The validation claim is **1.01× hmmix's mean**, and nothing in this section supersedes that. See
+> *Deviations from the plan* (§10).
+
 Design consequence: **never emit a fabricated small Denisovan number for a European.** This is the
 same failure mode that got ancient ancestry disabled ([[ancient-ancestry-broken]] — fabricated numbers
 from centroids that sat on top of each other). Follow the `estimate_qpadm_ancestry` precedent: report
@@ -233,6 +244,9 @@ against his real 23andMe Neanderthal count if available.
 ---
 
 ## 8. Phasing
+
+*Status as of v0.1.0-alpha.14: **Phase 1 DONE**, **Phase 2 DONE** (with per-segment Nea/Den
+attribution built but gated off), **Phase 3 NOT STARTED**.*
 
 - **Phase 1 (MVP):** Asset 1 + Asset 4, Tier A `count_archaic_markers`, domain/store/UI card. Delivers
   the full 23andMe-equivalent for **both chip and WGS**, reusing the ancestry-panel machinery almost
@@ -261,11 +275,12 @@ The **hmmix Zenodo set (CC BY 4.0)** is retained as a citable cross-validation r
 carries into Phase 1: finalize the exact site-selection thresholds (AFR-frequency cutoff, min
 non-African frequency) by calibrating against that cross-validation set.
 
-### Still open before Phase 1
+### Resolved during Phase 1 (this heading formerly read "Still open before Phase 1")
 
-*(Reviewed 2026-07-26 when the implementation plan below was written; two of the three are now settled.)*
+*(Reviewed 2026-07-26 when the implementation plan below was written; two of the three were settled
+then. **All three are now closed** — Q1 was measured at M1 checkpoint B, below.)*
 
-1. **Chip overlap — MEASUREMENT SCHEDULED (M1 checkpoint B).** How many informative sites actually
+1. **Chip overlap — MEASURED, see *Checkpoint B* in §10.** How many informative sites actually
    overlap 23andMe/AncestryDNA v5 chip content after lift to CHM13? Unanswerable until candidate
    sites exist, so it becomes a gating checkpoint *inside* M1 rather than a blocker before it. It
    sets the realistic chip call rate and the honest ceiling on the count.
@@ -392,10 +407,21 @@ disabled. Tier B has more moving parts than Tier A and the same blast radius, so
 discipline — a constant gate that also covers the read *and* publish paths, flipped only once the
 validation targets below pass.
 
+> **NOT IMPLEMENTED AS WRITTEN.** No such constant exists. Tier B's *extent* shipped ungated — the
+> "Archaic segments" card is always present — and only the **lineage attribution** is gated
+> (`attribute_lineage: false`). See *Deviations from the plan* below for why, and for what the
+> resulting exposure actually is.
+
 **Validation targets:** ~1.5–2 % Neanderthal and **no** Denisovan for the European ground-truth
 sample (§7); the overall Nea/Den/unknown split should be in the neighbourhood of Skov 2020's
 84.5 / 3.3 / 12.2 on Icelanders. The Denisovan confidence floor must be exercised by a test that
 asserts "none reliably detected" rather than a small number.
+
+> **SUPERSEDED, and one part unmet.** The extent target became hmmix's measured EUR distribution
+> rather than §7's 1.5–2 % (see the note in §7 and *Extent — CALIBRATED* below). The Nea/Den/unknown
+> split target is moot: attribution is off, so everything reports unattributed. **The required
+> "none reliably detected" test was never written** — Denisovan is instead never surfaced at all,
+> which is a stronger guarantee but not the check specified here.
 
 ### M1 — as built (2026-07-28)
 
@@ -716,7 +742,10 @@ rank. Exactness would need the cohort's per-sample genotypes at runtime (~188 MB
 shape `HaplotypeReference` already uses); that is the upgrade path if the approximation ever proves
 insufficient.
 
-### M3 (Tier B) — in progress: assets + HMM built, callability mask REQUIRED
+### M3 (Tier B) — DONE: assets + HMM built, callability mask REQUIRED
+
+*(This section was written as a running log while M3 was in progress; it reads chronologically and
+ends at the shipped state. M3.1–M3.3 are all complete and shipped in v0.1.0-alpha.14.)*
 
 Built and unit-tested: the two Tier B assets (`ArchaicOutgroup`, `ArchaicClassify` — delta-varint
 position streams, 1.07 bytes/site measured, so the ~67 M-position outgroup track lands near 72 MB
@@ -876,14 +905,65 @@ Three decisions, each about refusing to do the wrong thing silently:
   support (see the attribution section). Segment width is floored at 1.5 px because a 31 kb median
   tract is sub-pixel on a whole-chromosome track.
 
-### M4 — Phase 3 (optional)
+### M4 — Phase 3 (optional) — NOT STARTED
 
 Trait associations (each needs a curated GWAS-backed table — curatorial work, not engineering),
 export + PDS records, fine-pop percentile re-keying, and a possible DAIseg-style joint Nea/Den
 upgrade if that method matures past preprint.
+
+Partial credit only: the archaic count reaches the **HTML brief export** (`export.rs:506`), so the
+exported artifact agrees with the UI. There is no archaic **PDS/federated record**, no trait table,
+and the percentile is still keyed to the 1kGP super-population as decided in §9 Q3.
 
 ### Sequencing note
 
 M1 is the long pole and everything else depends on Asset 1, but M2 is where the user-visible feature
 lands. M3 is separable — if effort runs short, **M1 + M2 is a complete, honest, shippable report**
 (it is exactly what 23andMe ships), and Tier B can follow later without rework.
+
+---
+
+## Deviations from the plan (recorded 2026-07-30, post-ship audit)
+
+Three things shipped differently from §10 as written. Each is defensible; none was written down at
+the point where the plan states the rule, which is why this section exists. A plan that silently
+disagrees with the code is worse than no plan, because the next reader trusts it.
+
+**1. Tier B shipped without the feature gate M3 mandates.** The plan called for a constant covering
+the read *and* publish paths, flipped only after the validation targets passed. What exists is
+narrower: `attribute_lineage: false` suppresses the Neanderthal-vs-Denisovan split, while the extent
+number (Mb, % of callable) and the chromosome browser are always available.
+
+*Why this is defensible:* the gate's purpose was to stop a fabricated number reaching users, and the
+fabrication risk was concentrated entirely in attribution — which is gated. Extent was calibrated
+against an external callset and lands at 1.01× hmmix's European mean, so it passed the bar the gate
+was protecting. *What the exposure actually is:* extent is fitted on **one individual**, so a user
+with unusual ancestry or coverage gets a number whose error is uncharacterised. That is a real and
+unmeasured risk, not a resolved one.
+
+**2. §7's ~1.5–2 % is not the shipped target.** Three denominators are in circulation — whole genome,
+callable genome, and hmmix's per-haplotype-unioned total — and they are not interchangeable. The
+operative claim is 91.5 Mb against hmmix's measured EUR mean of 90.9 Mb. §7 now carries a note
+saying so. Anyone quoting "1.5–2 %" from this document alongside the shipped 5.04 % is comparing two
+different measurements.
+
+**3. The Denisovan "none reliably detected" test was never written.** The shipped behaviour is
+stronger than the spec — Denisovan is never surfaced as a finding at all, and `archaic.denisovanNote`
+in the UI explains why — but the specific regression test M3 requires does not exist. Nothing
+currently fails if a future change starts emitting `denisovan_copies` as a headline. **This is a
+genuine open gap, not a deviation that resolved itself.**
+
+### Open follow-ups
+
+- **Write the Denisovan-floor regression test** (item 3 above).
+- **Validate extent across several individuals**, not one. Needs WGS for people whose hmmix result is
+  known. Until then the 1.01× agreement is a calibration check, not a validation.
+- **Lineage attribution** needs the Skov-2020 approach — match a segment's own haplotype against each
+  archaic genome relative to a background expectation, rather than against pre-classified site
+  categories. Threshold tuning will not fix it; see the attribution section above.
+- **Asset staging policy was never decided.** M1 said to check Asset 1's size against
+  `ON_DEMAND_PREFIXES` in `packaging/stage-assets.sh` "before deciding"; that decision was never
+  made. As a result `PATTERNS` lists no `archaic_*`, so dev-mode staging omits them, while
+  release-mode fetches everything the manifest names except `ancestry_haps_` and bundles all five
+  (105.3 MB). The two modes disagree — exactly what the comment above `PATTERNS` warns against — and
+  alpha.14's installers are ~60 MB larger than alpha.13's as a result. Tracked separately.
