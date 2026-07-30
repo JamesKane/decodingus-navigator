@@ -3384,6 +3384,7 @@ dependencies = [
 name = "navigator-ui"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "arboard",
  "clap",
  "eframe",

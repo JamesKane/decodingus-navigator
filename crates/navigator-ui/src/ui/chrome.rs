@@ -175,7 +175,9 @@ impl NavigatorApp {
                 let tabs: &[(Nav, &str, &str)] = match self.ui_mode {
                     UiMode::Simple => &[
                         (Nav::Dashboard, "📊", "nav.dashboard"),
-                        (Nav::Subjects, "🧬", "nav.myDna"),
+                        // Not 🧬 (U+1F9EC): absent from egui's Proportional family, renders as tofu.
+                        // 👤 pairs with Advanced's 👥 — one person here, the workspace roster there.
+                        (Nav::Subjects, "👤", "nav.myDna"),
                     ],
                     UiMode::Advanced => &[
                         (Nav::Dashboard, "📊", "nav.dashboard"),
@@ -256,6 +258,12 @@ impl NavigatorApp {
     }
 
     /// The left panel, routed by the active nav tab. Hidden on the Dashboard.
+    ///
+    /// Each variant gets its **own** panel id. egui persists a side panel's width per id, and a
+    /// stored width overrides `default_width` — so while these all shared the id `"left"`, whichever
+    /// panel was shown last dictated the width of every other. In practice that meant the Advanced
+    /// subjects table (a wide multi-column grid) handed its 680px to Simple mode's list of names,
+    /// which needs a quarter of that and was taking half the window.
     pub(crate) fn left_panel(&mut self, ctx: &egui::Context) {
         match self.nav {
             // Dashboard + Community are full-width (no side panel).
@@ -263,7 +271,7 @@ impl NavigatorApp {
             Nav::Projects if self.projects_collapsed => {
                 // Collapsed: a thin strip with just an expand button, handing the detail panel
                 // the full width for the wide Y-STR chart.
-                egui::SidePanel::left("left")
+                egui::SidePanel::left("left_projects_collapsed")
                     .resizable(false)
                     .exact_width(34.0)
                     .show(ctx, |ui| {
@@ -274,7 +282,7 @@ impl NavigatorApp {
                     });
             }
             Nav::Projects => {
-                egui::SidePanel::left("left")
+                egui::SidePanel::left("left_projects")
                     .resizable(true)
                     .default_width(300.0)
                     .min_width(240.0)
@@ -282,20 +290,22 @@ impl NavigatorApp {
             }
             // Simple mode: a single-subject experience. With one subject (the common case) the
             // side panel is hidden entirely — the brief/overview fills the window; with several,
-            // a minimal "who am I looking at" selector.
+            // a minimal "who am I looking at" selector. It holds nothing but names, so it is capped:
+            // every pixel it takes comes out of the brief, which is the thing the user came to read.
             Nav::Subjects if self.ui_mode == UiMode::Simple => {
                 if self.all_biosamples.len() > 1 {
-                    egui::SidePanel::left("left")
+                    egui::SidePanel::left("left_subjects_simple")
                         .resizable(true)
-                        .default_width(260.0)
-                        .min_width(200.0)
+                        .default_width(240.0)
+                        .min_width(180.0)
+                        .max_width(360.0)
                         .show(ctx, |ui| self.simple_subjects_side(ui));
                 }
             }
             Nav::Subjects if self.subjects_collapsed => {
                 // Collapsed: a thin strip with just an expand button, handing the detail panel
                 // the full width for charts/tables.
-                egui::SidePanel::left("left")
+                egui::SidePanel::left("left_subjects_collapsed")
                     .resizable(false)
                     .exact_width(34.0)
                     .show(ctx, |ui| {
@@ -306,7 +316,7 @@ impl NavigatorApp {
                     });
             }
             Nav::Subjects => {
-                egui::SidePanel::left("left")
+                egui::SidePanel::left("left_subjects")
                     .resizable(true)
                     .default_width(680.0)
                     .min_width(420.0)

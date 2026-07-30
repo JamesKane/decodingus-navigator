@@ -1,9 +1,8 @@
 # Subject Brief & Simple Mode — design
 
-Status: **IMPLEMENTED** (verified against the tree 2026-07-26). Drafted 2026-06-22 as design.
-Simple mode ships as a vertical scroll of `simple_*` sections in `navigator-ui/src/ui/central.rs`
-(`simple_first_run`, `simple_analyze_prompt`, `simple_dna_sides_section`, …), with the plain-language
-Subject Brief in `navigator-app/src/brief.rs` and LLM narration layered on top (see
+Status: **IMPLEMENTED** (verified against the tree 2026-07-26; layout revised 2026-07-30 — see
+*Layout revision* below). Drafted 2026-06-22 as design. The plain-language Subject Brief is built in
+`navigator-app/src/brief.rs` with LLM narration layered on top (see
 [`local-llm-integration.md`](local-llm-integration.md)). Alpha feedback fixes are recorded in
 `memory/simple-mode-alpha-fixes.md`.
 
@@ -288,6 +287,47 @@ casual user can share/print a "DNA Story" report. In Advanced Mode the whole bri
   seed/stub pack; author breadth later (M5).
 - **First-run mode default heuristic** = "0 projects & ≤1 subject ⇒ Simple" (implemented in M1,
   re-evaluated until the user pins a mode). No explicit welcome dialog for now.
+
+## Layout revision (2026-07-30) — section rail
+
+The first implementation rendered every section of the brief into one `ScrollArea` in
+`subjects_central`. With ancestry, ancient ancestry, archaic markers, ROH, the parent-split painting,
+relatives and the chat all stacked, that column ran several screens tall and nothing in it was
+findable. The sections are now dedicated panels behind a left rail, in `navigator-ui/src/ui/simple.rs`
+(`SimplePanel` + `simple_subject_view`); `central.rs`'s Simple branch is a single call into it.
+
+Panels, in rail order — this order **is** the narrative, from the deepest past to the present day:
+
+| Panel | Contents |
+|-------|----------|
+| **Your story** (landing) | Headline + test chip, the synopsis, an at-a-glance tile grid that jumps into the other panels, and the results chat. |
+| **Paternal line** | The Y lineage card (haplogroup, age, origin, story, confidence, descent trail). |
+| **Maternal line** | The same for mtDNA. |
+| **Ancestry** | Chronological: ancient (qpAdm) sources → archaic/Neanderthal → continental super-pops → fine populations → parent-split painting → ROH, with era dividers between the deep and recent halves. |
+| **Relatives** | Match list grouped into Close family / Extended family / Distant relatives. |
+| **Your test** | Test, quality chip, caveats, brief export, pack-status footer. |
+
+Design points worth keeping:
+
+- **The rail is also the summary.** Each item carries its own headline value (terminal haplogroup, top
+  ancestry, match count), so the rail answers most questions without a click. A panel with no data
+  says "Not available yet" rather than rendering an empty item — an absent line reads as a rendering
+  bug, a stated absence reads as a fact.
+- **The AI narration replaces the synopsis, it does not stack on top of it.** When a narration exists
+  it *is* the story card; the structured one-liner stays under a "Plain summary" disclosure, so the
+  model's prose is never the only account of the data on screen (the guardrail from *Tone & guardrails*
+  is preserved, not the old always-both layout).
+- **Relative grouping states its own evidence.** The three bands are chosen from *measured* shared cM
+  when a segment exchange has completed (≥1200 cM → close, ≥200 cM → extended), and from the
+  `IbdSuggestion` score tier otherwise. Rows say which: a measured row shows cM + segment count, an
+  unmeasured one is labelled "Estimated from shared signals — connect to measure". This matters
+  because "Close family" backed by a composite score is a far weaker claim than the same words backed
+  by 1,800 centimorgans, and `IbdSuggestion::strength`'s own doc comment warns against overstating a
+  match to a stranger. Completed exchanges with no live suggestion behind them are still listed.
+- **Blockers stay above the split.** The reference-download progress and the "not analyzed yet"
+  prompt render above the rail, because they apply to every panel equally.
+- `simple_panel` resets to the landing panel on every subject switch, and rail values are gated on the
+  brief belonging to the selected subject (it is rebuilt asynchronously after a switch).
 
 ## Open questions
 

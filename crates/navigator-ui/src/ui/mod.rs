@@ -210,6 +210,41 @@ impl DetailTab {
     ];
 }
 
+/// Sections of the Simple-mode subject view, in rail order.
+///
+/// Simple mode used to be one long vertical scroll of every section at once; this splits it into
+/// dedicated panels reached from a left rail, with [`SimplePanel::Story`] as the landing synopsis.
+/// The order encodes the narrative the view is trying to tell: who you are, then the two lineages
+/// that reach furthest back, then the autosomal ancestry (deep origins → recent populations), then
+/// living relatives, then the test the whole thing rests on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum SimplePanel {
+    #[default]
+    Story,
+    Paternal,
+    Maternal,
+    Ancestry,
+    Relatives,
+    Test,
+}
+
+impl SimplePanel {
+    /// `(panel, icon, i18n label key)` in rail order.
+    ///
+    /// Every icon here must be covered by egui's **Proportional** font family (Ubuntu-Light +
+    /// NotoEmoji + emoji-icon-font). That set is much narrower than it looks: `◆` U+25C6, `⚭` U+26AD,
+    /// `✓` U+2713 and `🧬` U+1F9EC are all absent and render as tofu boxes. `icon_glyphs_are_renderable`
+    /// pins this down — add an icon there when you add one here.
+    const ALL: [(SimplePanel, &'static str, &'static str); 6] = [
+        (SimplePanel::Story, "📖", "simple.panel.story"),
+        (SimplePanel::Paternal, "♂", "simple.panel.paternal"),
+        (SimplePanel::Maternal, "♀", "simple.panel.maternal"),
+        (SimplePanel::Ancestry, "🌍", "simple.panel.ancestry"),
+        (SimplePanel::Relatives, "👥", "simple.panel.relatives"),
+        (SimplePanel::Test, "🔬", "simple.panel.test"),
+    ];
+}
+
 /// Y-DNA sub-tabs: compact haplogroup landing, the heavy SNP surface, and STR (separated from SNP).
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum YSub {
@@ -652,6 +687,10 @@ pub struct NavigatorApp {
     subject_brief_loading: bool,
     /// Free-text filter over the Simple-mode "My DNA" subject selector (matches the donor name).
     simple_subject_filter: String,
+    /// Which Simple-mode panel the left rail has open. Reset to the landing synopsis on every
+    /// subject switch — each person's view starts from their story, not from wherever the last
+    /// person's was left.
+    simple_panel: SimplePanel,
     /// Whether the local-LLM "AI assistant" is enabled (cached from settings; gates "Polish with AI").
     ai_enabled: bool,
     /// AI-assisted narration of the selected subject's brief `(guid, narration)`; `None` until run.
@@ -1094,6 +1133,7 @@ mod events;
 mod ibd;
 mod modals;
 mod rowcache;
+mod simple;
 mod sources;
 
 impl NavigatorApp {
@@ -1183,6 +1223,7 @@ impl NavigatorApp {
             subject_brief: None,
             subject_brief_loading: false,
             simple_subject_filter: String::new(),
+            simple_panel: SimplePanel::default(),
             ai_enabled: navigator_app::llm::llm_config().enabled,
             brief_narration: None,
             narration_stream: None,
@@ -2163,5 +2204,64 @@ mod nav_persistence_tests {
             assert_eq!(DetailTab::from_key(tab.as_key()), Some(tab));
         }
         assert_eq!(DetailTab::from_key("bogus"), None);
+    }
+}
+
+/// Every icon the chrome renders must have a real glyph in the font family it renders with.
+///
+/// egui's **Proportional** family is Ubuntu-Light + NotoEmoji-Regular + emoji-icon-font — a much
+/// narrower set than "Unicode". Picking a plausible-looking character without checking is how the
+/// Simple-mode rail shipped `◆`, `⚭` and `✓` and the nav shipped `🧬`, all four of which rendered as
+/// empty tofu boxes. A missing glyph is invisible to every other test and to the compiler; only
+/// looking at the running app catches it. So look at the fonts instead.
+#[cfg(test)]
+mod icon_glyph_tests {
+    use super::egui::{FontDefinitions, FontFamily};
+    use super::SimplePanel;
+    use ab_glyph::{Font, FontRef};
+
+        /// True when at least one font in `Proportional`'s fallback chain has a glyph for `c`.
+    ///
+    /// Reads egui's own `FontDefinitions::default()` rather than a vendored copy of the `.ttf`s, so
+    /// the test keeps testing the fonts the app actually ships as egui is upgraded. `glyph_id`
+    /// returns 0 (`.notdef` — the tofu box) when a font has no mapping for the character.
+    fn renderable(c: char) -> bool {
+        let defs = FontDefinitions::default();
+        let chain = &defs.families[&FontFamily::Proportional];
+        chain.iter().any(|name| {
+            let data = &defs.font_data[name];
+            FontRef::try_from_slice(&data.font).is_ok_and(|f| f.glyph_id(c).0 != 0)
+        })
+    }
+
+    #[test]
+    fn probe_agrees_with_known_bad_glyphs() {
+        // Guards the test itself: if these ever start reporting renderable, the check has broken
+        // rather than the fonts having improved.
+        for c in ['◆', '⚭', '✓', '🧬'] {
+            assert!(!renderable(c), "{c} (U+{:04X}) should be missing from Proportional", c as u32);
+        }
+        assert!(renderable('♂'), "sanity: ♂ is present");
+    }
+
+    #[test]
+    fn icon_glyphs_are_renderable() {
+        for (panel, icon, _) in SimplePanel::ALL {
+            for c in icon.chars() {
+                assert!(
+                    renderable(c),
+                    "{panel:?} rail icon {c:?} (U+{:04X}) has no glyph — it renders as a tofu box",
+                    c as u32
+                );
+            }
+        }
+        // The nav strip's icons, which live inline in `chrome::nav_bar`.
+        for icon in ['📊', '👤', '👥', '📁', '💬'] {
+            assert!(
+                renderable(icon),
+                "nav icon {icon:?} (U+{:04X}) has no glyph — it renders as a tofu box",
+                icon as u32
+            );
+        }
     }
 }
