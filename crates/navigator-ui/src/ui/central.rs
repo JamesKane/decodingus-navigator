@@ -272,50 +272,10 @@ impl NavigatorApp {
         };
         self.subject_detail_header(ui, guid);
         ui.add_space(6.0);
-        // Simple mode hides the per-DNA-type tabs — the subject view *is* the plain-language brief.
+        // Simple mode hides the per-DNA-type tabs — the subject view is the plain-language brief,
+        // split across a section rail rather than stacked in one scroll (see `ui::simple`).
         if self.ui_mode == UiMode::Simple {
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.add_space(4.0);
-                // A background reference-genome download (kicked off after import) only otherwise
-                // renders in the Advanced Projects panel — surface its progress bar here too so a
-                // Simple-mode user on a slow connection sees why the app is busy. No-ops when idle.
-                self.reference_prompt(ui);
-                // When this subject has data but hasn't been analyzed yet, offer a prominent Analyze
-                // action right at the top — the pipeline (coverage → haplogroups → ancestry) must run
-                // before the brief has anything to show.
-                self.simple_analyze_prompt(ui, guid);
-                // Optional AI-assisted narration sits above the facts (additive, clearly labelled).
-                self.simple_ai_narration(ui, guid);
-                // The brief's paternal/maternal cards now render the compact descent path in place of
-                // the old lineage trail (see brief_descent_trail).
-                self.subject_brief_view(ui, guid);
-                // Export the brief as a shareable "DNA Story" once it's built.
-                if matches!(&self.subject_brief, Some((g, _)) if *g == guid) {
-                    ui.add_space(8.0);
-                    self.export_row(ui, &[navigator_app::ExportRequest::SubjectBriefHtml(guid)]);
-                }
-                ui.add_space(10.0);
-                // Relatives are live/online, so they render outside the precomputed brief.
-                self.simple_relatives_section(ui);
-                // "Your DNA sides" — the parent-split chromosome painting, in plain language.
-                ui.add_space(10.0);
-                self.simple_dna_sides_section(ui, guid);
-                // Ask-my-results chat (local AI; enabled-gated).
-                ui.add_space(10.0);
-                self.simple_chat_section(ui, guid);
-                // A discreet bridge to the full power-user view for the curious.
-                ui.add_space(14.0);
-                ui.separator();
-                ui.add_space(4.0);
-                if ui
-                    .link(self.tr("brief.seeData"))
-                    .on_hover_text(self.tr("brief.seeDataHint"))
-                    .clicked()
-                {
-                    self.enter_advanced_mode();
-                }
-            });
+            self.simple_subject_view(ui, guid);
             return;
         }
         // Advanced shows the full tab strip.

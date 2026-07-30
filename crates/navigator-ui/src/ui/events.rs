@@ -1273,6 +1273,9 @@ impl NavigatorApp {
         self.y_snp_sub = YSnpSub::default();
         self.mt_sub = MtSub::default();
         self.auto_sub = AutoSub::default();
+        // Simple mode opens on the landing synopsis for the newly-selected person, never on the
+        // panel the previous person happened to be left on.
+        self.simple_panel = SimplePanel::default();
         self.y_snp_names.clear();
         self.y_snp_names_requested = false;
         self.pending_alignment = None;

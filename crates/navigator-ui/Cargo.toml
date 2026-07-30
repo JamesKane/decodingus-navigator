@@ -67,3 +67,6 @@ tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros"] }
 
 [dev-dependencies]
 navigator-store = { workspace = true }
+# Reads the cmap of egui's own bundled fonts so `icon_glyphs_are_renderable` can prove an icon
+# actually has a glyph. Already in the tree via epaint, so this adds no new build unit.
+ab_glyph = "0.2"
