@@ -57,13 +57,40 @@
 //! null (mean 45.3 % sensitivity against a 7.1 % null); the density caller scored 2.1 % against a
 //! 5.0 % null, i.e. below chance.
 //!
-//! **Still not enough to re-enable**, and the limits are specific rather than general unease:
-//! precision is 34.9 %, so two thirds of called sequence is not in the reference callset; the cohort
-//! is **European only** and **chr21+22 only**; and the reference callset is itself weakly supported
-//! (hmmix's own tracts are enriched only 1.84x for their own archaic SNPs), so agreement with it
-//! caps out well below 100 % even for a correct caller. `ARCHAIC_SEGMENTS_ENABLED` stays `false`
-//! until this reproduces outside Europe — East Asians are the sharp test, since the truth predicts
-//! ~1.18x more archaic sequence there and a caller merely tracking European structure would miss it.
+//! ## Cross-population: transfers per individual, but the reported number does not
+//!
+//! Run on 30 East Asians with the parameters **frozen** at the European fit, nothing refitted:
+//!
+//! | | Europe (fitted) | East Asia (new) |
+//! |---|---|---|
+//! | above own random-placement null | 60/60 | **30/30** |
+//! | sensitivity | 31.6 % | **31.6 %** |
+//! | precision | 32.2 % | **41.9 %** |
+//! | per-individual extent `r` | +0.620 | **+0.545** |
+//!
+//! Detection transfers: identical sensitivity and *better* precision on a population the thresholds
+//! never saw, so the calibration learned archaic structure rather than European structure.
+//!
+//! **But the reported extent orders the populations backwards.** The truth puts East Asian archaic
+//! extent at **1.217x** Europe's; our called extent is **0.937x**. A user would be told an East
+//! Asian carries *less* archaic ancestry than a European, which is the wrong way round and is the
+//! single reason this is still gated.
+//!
+//! The cause is that reported extent is true positives *plus* false positives, and the false-positive
+//! load is population-dependent (precision 32.2 % against 41.9 %), so Europeans accumulate more
+//! spurious extent. Note that "detected sequence reproduces 1.22x" is **not** evidence to the
+//! contrary: detected = sensitivity x truth, and sensitivity is equal across the two populations, so
+//! that ratio matches by construction. It restates the invariance, it does not test the ordering.
+//!
+//! Ruled out as causes, each measured rather than argued: background contamination of `p_background`
+//! (carrying rates 11.9 % vs 12.2 %, and both states scale together), tract length (median 29 kb in
+//! both; East Asians simply have more tracts, 54 vs 46 per person), and panel ascertainment
+//! (in-tract contrast 2.99x vs 3.04x, ratio 1.014 — the panel is equally informative in both).
+//!
+//! **Still not enough to re-enable.** Beyond the ordering: precision is 34.9 % on held-out
+//! Europeans, the cohort is **chr21+22 only**, and the reference callset is itself weakly supported
+//! (hmmix's own tracts are enriched just 1.84x for their own archaic SNPs), so agreement with it
+//! caps well below 100 % even for a correct caller — F1 alone cannot say when this is done.
 
 use std::collections::BTreeMap;
 
