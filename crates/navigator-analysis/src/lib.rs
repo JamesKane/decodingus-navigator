@@ -11,6 +11,7 @@
 
 pub mod ancestry;
 pub mod archaic;
+pub mod archaic_match;
 pub mod archaic_segments;
 pub mod caller;
 pub mod callset;
