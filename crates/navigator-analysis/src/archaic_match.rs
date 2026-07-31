@@ -87,6 +87,31 @@
 //! both; East Asians simply have more tracts, 54 vs 46 per person), and panel ascertainment
 //! (in-tract contrast 2.99x vs 3.04x, ratio 1.014 — the panel is equally informative in both).
 //!
+//! ## How much of the "false positive" rate is really ours
+//!
+//! Precision is measured against hmmix, but a call they did not make is not automatically wrong.
+//! An independent arbiter settles this without asking another caller: the Tier A panel records, per
+//! site, which of the four archaic genomes carries the derived allele, and **this caller never sees
+//! that** — it reads only a derived base and a lineage class. So per-genome concordance is evidence
+//! it cannot have been fitted to.
+//!
+//! Of the sites where a given archaic genome is derived, what fraction does the subject carry
+//! (best-matching genome):
+//!
+//! | | true positive | false positive | background |
+//! |---|---|---|---|
+//! | Europe | 93.6 % | **81.3 %** | 59.0 % |
+//! | East Asia | 93.5 % | **72.9 %** | 45.5 % |
+//!
+//! Our "false positives" sit **64 % / 57 %** of the way from background to true positive. They are a
+//! mixture: real tracts hmmix missed, plus genuine noise, plus calls that are correctly placed but
+//! over-extended. So precision against hmmix **understates** this caller — though not enough to
+//! dismiss it, and F1 remains a usable objective.
+//!
+//! Note the background rates differ by population (59.0 % against 45.5 %): Europeans carry
+//! archaic-derived alleles more often *outside* tracts. That is a candidate mechanism for the
+//! population-varying false-positive load, and hence for the ordering inversion above.
+//!
 //! **Still not enough to re-enable.** Beyond the ordering: precision is 34.9 % on held-out
 //! Europeans, the cohort is **chr21+22 only**, and the reference callset is itself weakly supported
 //! (hmmix's own tracts are enriched just 1.84x for their own archaic SNPs), so agreement with it
