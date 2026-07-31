@@ -1,11 +1,15 @@
 # Archaic Ancestry Report (Neanderthal / Denisovan) — Design
 
 **Status:** **Tier A SHIPPED** (`v0.1.0-alpha.14`). **Tier B GATED OFF** (`ARCHAIC_SEGMENTS_ENABLED
-= false`) after per-individual validation showed the segment caller carries no per-person signal —
-see *Tier B validation* at the end of §10. It shipped enabled in alpha.14 and was withdrawn in the
-next release. Drafted 2026-07-23; plan added 2026-07-26; all three §9 questions resolved.
-**Read *Tier B validation* and *Deviations from the plan* (end of §10) before trusting anything
-below about Tier B, §7's expected percentage, or M3's feature-gate rule.**
+= false`) after per-individual validation showed the segment caller carries no per-person signal, and
+diagnosed as **built on the wrong observable** — §3's choice of a method designed for people who do
+*not* have archaic reference genomes, which we do. It shipped enabled in alpha.14 and was withdrawn
+in the next release. Drafted 2026-07-23; plan added 2026-07-26; all three §9 questions resolved.
+
+> **Read *Tier B validation* and *Why it failed* (both at the end of §10) before anything else in
+> this document about Tier B.** §3's method choice, §5's Tier B pipeline and M3's calibration are all
+> superseded by that diagnosis. *Deviations from the plan* also qualifies §7's expected percentage
+> and M3's feature-gate rule. Tier A (§5 Tier A, M1, M2) stands unaffected.
 **Goal:** Reconstruct a 23andMe-style Neanderthal report — and go beyond it with a Denisovan
 estimate and a true whole-genome introgression map — from public archaic reference genomes and
 recent methods, using the app's existing ancestry/panel/HMM machinery.
@@ -94,6 +98,15 @@ Rejected alternatives: **S\*** and **Sprime** need an introgression-free modern 
 are population-scale; **IBDmix** is reference-based and heavier; **DAIseg** (jointly separates
 Nea/Den, no post-processing) is attractive but an unreviewed 2025 preprint with self-benchmarks — a
 possible future upgrade, not the v1 foundation.
+
+> **THIS CHOICE WAS WRONG, and the one-clause dismissal of IBDmix is the root of it.** hmmix's
+> premise is detecting introgression *without* archaic reference genomes — it infers them from
+> private-mutation density because it assumes you do not have them. We do: all four archaic genomes,
+> and `archaic_classify` with 2,031,406 diagnostic sites derived from them. Measured, the density
+> observable leaves ~1 informative variant per median tract (14.3 % sensitivity at 5 % false
+> positives) where reference-based allele matching leaves ~30 (95.1 %). "Reference-based and
+> heavier" traded the only thing that made the problem tractable for a saving that was never needed.
+> See *Why it failed* at the end of §10.
 
 ---
 
@@ -1038,7 +1051,108 @@ intersection with real 23andMe v5 chip content). It remains enabled and is what 
 
 ### Re-enabling
 
-Needs a method change, not a threshold sweep — Skov 2020 matches a segment's whole haplotype against
-each archaic genome relative to a background expectation, where ours tests private-variant density
-against pre-classified sites. Re-running the validation harness that produced the numbers above is
-the gate.
+Needs a method change, not a threshold sweep. **The change required is the OBSERVABLE, not the
+model** — see *Why it failed* immediately below. Re-running the validation harness that produced the
+numbers above is the gate.
+
+---
+
+## Why it failed (2026-07-31) — we chose a method for a problem we do not have
+
+The caller was not mis-tuned. It was built on the wrong observable, and no amount of fitting could
+have rescued it. This section records how that was established, because the wrong turn is easy to
+repeat and every intermediate hypothesis here was plausible.
+
+### The chain of diagnosis
+
+Each step was measured on HG00096, chr21+22, against hmmix's own calls for the same individual.
+
+1. **The signal is real and the pipeline upstream is sound.** Private-variant density inside real
+   archaic tracts is **2.89x** background (357.8 vs 123.9/Mb). The outgroup strip and the variant
+   calls both work.
+2. **The hard-coded `archaic_rate_multiple = 6.0` is roughly double the real effect.** At 1 kb
+   windows and 0.124 background variants/window, the Poisson crossover lands at k* ~ 0.35 — *any*
+   window containing a single private variant is called archaic.
+3. **Per-individual Baum-Welch EM (what hmmix does and we do not) makes it worse.** Unconstrained,
+   it learns a 22.4x multiple and a 0.116 switch probability (~9 kb tracts), calling 17.4 Mb in
+   1,452 segments — 7x the truth. It fits the zero-inflation of sparse counts, not spatial structure.
+4. **Oracle parameters do not help either.** Given the *measured* rates and several tract-length
+   priors, precision stays pinned at 4-5% and every configuration sits at or near its
+   random-placement null. **The model class is wrong, not its parameters.**
+5. **The background is not the distribution the emission assumes.** In callable, non-archaic 100 kb
+   bins: p10-p90 spread **5.3x**, **overdispersion 14.6x** against the Poisson's assumed 1.0x, and
+   **5.9%** of pure-background bins already exceed 2.89x the median. The noise is bigger than the
+   signal, so a single-lambda model calls its own upper tail archaic — and background bins outnumber
+   archaic ones ~20:1.
+6. **A mutation-rate map would not have been enough.** African-outgroup site density — the best
+   proxy available without new data — explains only **38%** of the background variance and takes
+   overdispersion 14.6x -> 7.4x, still above the signal. Quality filtering does not help either: it
+   lowers overdispersion only by discarding variants proportionally, and enrichment falls with it.
+7. **It is not our variant calling.** HG00096 is in the 1000G callset, so the same quantity is
+   computable from their calls. Ours are noisier — 2.12x the carried SNVs on chr21 (93,643 vs
+   44,255), 6x the private-variant density, 97% of our private calls unique to us — but the
+   **contrast is identical**: 1.98x for their calls against 2.08x for ours. Noise dilutes counts,
+   not the ratio.
+8. **It is not the truth set or the lift.** Checked in native hg38 with no lifting, using only
+   hmmix's own segments and their own DAV SNP list: their tracts are enriched **1.84x** for their
+   own archaic SNPs against a null of 1.04x (p95 1.39x). The callset is internally consistent and
+   the lift preserved it.
+
+### The actual cause: one bit of evidence per tract
+
+At ~20-120 private variants/Mb, the **median 36 kb tract contains about ONE informative variant**
+(1.3 expected inside a tract against 0.64 in background). That is the entire evidence separating a
+real tract from noise. Detectability, computed directly:
+
+| observable | evidence per 36 kb tract | sensitivity at <=5% FP | at <=1% FP |
+|---|---|---|---|
+| private-variant density (built) | ~1 variant | **14.3 %** | 4.3 % |
+| archaic-allele matching at diagnostic sites | ~30 sites | **95.1 %** | 80.9 % |
+
+To reach 80% sensitivity at 5% false positives, allele matching needs **36 kb** — the real median
+tract. Density does not get there **at 500 kb**, and hmmix's p10 tract is 7 kb. Both observables
+carry the *same* ~3x contrast (2.89x vs 3.04x), so contrast was never the problem: **evidence per
+tract** was.
+
+### The wrong turn, named
+
+§3 chose **Skov 2018 (hmmix)**, whose premise is detecting introgression **without archaic reference
+genomes** — it infers them indirectly from private-mutation density precisely because it assumes you
+do not have them. We adopted it while **holding all four archaic genomes** and already shipping
+`archaic_classify` with 2,031,406 diagnostic sites derived from them. §3 rejected the reference-based
+alternative in one clause — *"IBDmix is reference-based and heavier"* — and that clause is the root
+of every failure above.
+
+An introgressed tract is **a haplotype inherited intact from an archaic ancestor**. The question is
+whether a stretch of the genome *matches an archaic genome*, not whether it is slightly more mutated
+than average. Runs, not counts.
+
+Measured, the reference-based observable gives **39.5%** archaic-allele carrying inside real tracts
+against **13.0%** elsewhere, over ~30 sites per tract instead of ~1 variant.
+
+### What the reframe also fixes
+
+- **The mutation-rate map becomes unnecessary.** Diagnostic sites are the denominator, so their
+  uneven density cancels out — the thing the map existed to correct.
+- **The 5.3x background spread and 14.6x overdispersion stop applying**, because nothing is being
+  modelled as a density any more.
+- **The assets already exist.** `archaic_classify_<build>.bin` carries the sites, derived bases and
+  per-lineage classes; no new offline pipeline is needed to start.
+- **Attribution may come back with it.** The same per-site matching, split by lineage class, *is*
+  Skov's post-hoc annotation — the thing `attribute_lineage` was gated for.
+
+### Open before this becomes a plan
+
+- **The background carrying rate measures 13.0%**, against the 4.3% recorded earlier in this
+  document. Unreconciled; probably our call noise. It sets the contrast, so it matters.
+- **~30 sites per tract assumes adequate coverage at diagnostic sites.** Check against real call
+  rates rather than assuming.
+- **n = 1 for the reframe.** The 3.04x enrichment is HG00096 only. The harness in
+  `scripts/archaic-validation/` runs the cohort cheaply now that the CRAM fix has landed.
+
+### Instruments
+
+The examples these numbers came from, all under `crates/navigator-analysis/examples/`:
+`archaic_private_dump` (the HMM's actual input, with quality columns), `archaic_outgroup_density`
+(the rate-map proxy), `archaic_classify_dump` (diagnostic sites), `archaic_callable_dump` (what the
+caller can see at all), and `cram_query_probe` (the CRAM defect found on the way here).
