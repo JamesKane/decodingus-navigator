@@ -75,6 +75,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         GeneticMap::from_bytes(&std::fs::read(&a[3])?).map_err(|e| e.to_string())?
     };
 
+    // `ARCHAIC_RATIOS=2.0,2.5,3.04` sweeps the emission ratio in one process. It cannot be swept
+    // post-hoc like the three thresholds — it changes the emissions, so the HMM must be re-decoded —
+    // but the expensive part (reading the reference, walking the diagnostic sites) is per sample,
+    // not per ratio, so doing it here costs one pass instead of one per value.
+    if let Ok(spec) = std::env::var("ARCHAIC_RATIOS") {
+        let mut out = serde_json::Map::new();
+        for tok in spec.split(',').filter(|t| !t.trim().is_empty()) {
+            let ratio: f64 = tok.trim().parse()?;
+            let cfg = MatchConfig {
+                archaic_ratio: ratio,
+                ..Default::default()
+            };
+            let r = call_from_observations(&observations, &gmap, &callable, &cfg);
+            eprintln!(
+                "  ratio {ratio:>5.2} -> {} segments, {:.3} Mb",
+                r.summary.n_segments, r.summary.total_mb
+            );
+            out.insert(tok.trim().to_string(), serde_json::to_value(&r)?);
+        }
+        println!("{}", serde_json::to_string(&out)?);
+        return Ok(());
+    }
+
     let result = call_from_observations(&observations, &gmap, &callable, &MatchConfig::default());
     let s = &result.summary;
     eprintln!(

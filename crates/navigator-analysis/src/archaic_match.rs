@@ -43,20 +43,27 @@
 //! is the held-out half. The split exists because the previous caller was tuned until a cohort
 //! statistic matched and the statistic was then reported as evidence.
 //!
-//! | | density caller | this, defaults | this, calibrated |
+//! | | density caller | this, uncalibrated | this, calibrated |
 //! |---|---|---|---|
-//! | base-level F1 | — | 27.9 % | **32.5 %** |
-//! | precision | 1.5 % | 20.2 % | **28.8 %** |
-//! | extent ratio ours/theirs | 1.45 | 2.23 | **1.30** |
-//! | per-individual extent `r` | −0.018 (p = 0.94) | +0.520 | **+0.642 (p = 0.0001)** |
+//! | base-level F1 | — | 27.9 % | **34.5 %** |
+//! | precision | 1.5 % | 20.2 % | **34.9 %** |
+//! | extent ratio ours/theirs | 1.45 | 2.23 | **0.98** |
+//! | per-individual extent `r` | −0.018 (p = 0.94) | +0.520 | **+0.710 (p < 0.0001)** |
+//!
+//! The extent ratio of 0.98 is the one to notice: the caller is no longer systematically
+//! over-calling, which the emission-ratio sweep is what fixed.
 //!
 //! On locations, all 20 individuals of an earlier cohort scored above their own random-placement
 //! null (mean 45.3 % sensitivity against a 7.1 % null); the density caller scored 2.1 % against a
 //! 5.0 % null, i.e. below chance.
 //!
-//! **Not yet good enough to re-enable.** Precision is 28.8 % and the extent ratio 1.30, so the
-//! caller still over-calls by about a third. `ARCHAIC_SEGMENTS_ENABLED` stays `false` until that is
-//! closed and the result reproduces outside Europe.
+//! **Still not enough to re-enable**, and the limits are specific rather than general unease:
+//! precision is 34.9 %, so two thirds of called sequence is not in the reference callset; the cohort
+//! is **European only** and **chr21+22 only**; and the reference callset is itself weakly supported
+//! (hmmix's own tracts are enriched only 1.84x for their own archaic SNPs), so agreement with it
+//! caps out well below 100 % even for a correct caller. `ARCHAIC_SEGMENTS_ENABLED` stays `false`
+//! until this reproduces outside Europe — East Asians are the sharp test, since the truth predicts
+//! ~1.18x more archaic sequence there and a caller merely tracking European structure would miss it.
 
 use std::collections::BTreeMap;
 
@@ -115,19 +122,25 @@ impl Default for MatchConfig {
         MatchConfig {
             p_background: None,
             p_archaic: None,
-            // Measured (39.5 % carrying inside real tracts against 13.0 % elsewhere), not fitted.
-            archaic_ratio: 3.04,
+            // FITTED (not measured): the observed enrichment inside real tracts is 3.04x, but the
+            // model separates best at 4.5x. That is not a contradiction — 3.04x is the *average*
+            // over an external tract set that is itself only weakly supported, while the emission
+            // ratio is what makes the HMM selective enough to place boundaries. Fitted on 30
+            // Europeans, reported on 30 held-out ones; it is the parameter that removed the
+            // over-calling (extent ratio 2.23 -> 0.98).
+            archaic_ratio: 4.5,
             switches_per_cm: 1.0,
-            // CALIBRATED on 30 Europeans and reported on 30 held-out ones (see the module docs).
-            // Fitted by grid search on base-level F1, because sensitivity alone is bought by calling
-            // more sequence — the uncalibrated caller over-called 2.2x and still scored 45 %.
-            min_posterior: 0.95,
-            min_sites: 24,
-            // 5 kb, NOT the 40 kb the grid's argmax preferred. That floor scored 0.1 F1 points
-            // higher while discarding 61 % of real tracts by construction — hmmix's median tract is
-            // 31-36 kb and its p10 is 7 kb — and it scored *worse* on the two things the number is
-            // for: sensitivity (37.4 % vs 38.2 %) and per-individual extent correlation (+0.642 vs
-            // +0.658). The design already recorded this exact trap once, at 50 kb.
+            // All three CALIBRATED on train, reported on held-out test (see the module docs).
+            // Objective was base-level F1: sensitivity alone is bought by calling more sequence, and
+            // the uncalibrated caller over-called 2.2x while still scoring 45 %.
+            min_posterior: 0.98,
+            min_sites: 16,
+            // 5 kb, though the grid's argmax preferred 10 kb. Within the plateau the two differ by
+            // 0.1 F1 points, the 5 kb floor is slightly BETTER on per-individual extent correlation
+            // (+0.710 vs +0.706), and it discards half as many real tracts (8 % of the truth under
+            // 5 kb against 16 % under 10 kb). An earlier sweep wanted 40 kb, which would have
+            // discarded 61 %; the design records the same trap once before at 50 kb. Structural
+            // exclusion of real tracts is not worth a tenth of a point.
             min_segment_bp: 5_000,
             min_callable_fraction: 0.5,
             attribute_lineage: false,
@@ -406,9 +419,14 @@ mod tests {
         }
         let mut m = BTreeMap::new();
         m.insert("chr21".to_string(), obs(&sites));
+        // Thresholds pinned rather than inherited: this test is about whether the model finds a
+        // run at all, and should not move when the calibrated defaults do. (It broke once when
+        // `min_posterior` rose to 0.98 and trimmed the run's edges — correct behaviour, wrong
+        // thing for this test to be sensitive to.)
         let cfg = MatchConfig {
             p_background: Some(0.13),
             p_archaic: Some(0.40),
+            min_posterior: 0.80,
             min_sites: 5,
             min_segment_bp: 1_000,
             ..Default::default()
