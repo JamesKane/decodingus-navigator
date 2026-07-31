@@ -112,10 +112,35 @@
 //! archaic-derived alleles more often *outside* tracts. That is a candidate mechanism for the
 //! population-varying false-positive load, and hence for the ordering inversion above.
 //!
-//! **Still not enough to re-enable.** Beyond the ordering: precision is 34.9 % on held-out
-//! Europeans, the cohort is **chr21+22 only**, and the reference callset is itself weakly supported
-//! (hmmix's own tracts are enriched just 1.84x for their own archaic SNPs), so agreement with it
-//! caps well below 100 % even for a correct caller — F1 alone cannot say when this is done.
+//! ## A concordance filter fixes precision, and exposes a harder limit
+//!
+//! Scoring each called segment against the archaic genomes and dropping the poor matches raises
+//! **precision from 54 % to 90 %**. The filter is sound: with Denisova held out of it entirely, kept
+//! segments score 74.9 % on Denisova concordance against 21.5 % for dropped ones — a 3.5x separation
+//! on a genome the filter never saw.
+//!
+//! It does **not** fix the population ordering, and tightening it makes the ordering worse. At 90 %
+//! precision the reported extent is mostly true positives, and it still orders the populations
+//! backwards, so the cause is no longer false positives. What remains is a difference in *recovery*:
+//! roughly 46 % of European truth against 38 % of East Asian.
+//!
+//! The reason is visible in the concordance itself. East Asian tracts match our archaic genomes less
+//! well than European ones (83.4 % against 89.2 %), and Denisova is the best match for **32.2 % of
+//! East Asian tracts against 11.2 % of European** ones. That 2.9x is the known Denisovan ancestry
+//! East Asians carry and Europeans essentially lack — the data reproduces it — but it also means our
+//! four sequenced archaic genomes **under-represent East Asian archaic diversity**. Any
+//! reference-based filter therefore under-calls East Asians, and holding Denisova out (the first
+//! design here) makes it markedly worse.
+//!
+//! That is a limit of the approach, not a threshold to tune: it would take archaic genomes closer to
+//! the populations that introgressed into East Asia, which do not exist. **A cross-population
+//! comparable number is therefore not currently achievable this way** — the caller is defensible
+//! within a population and not between them.
+//!
+//! **Still not enough to re-enable.** Beyond the ordering: precision is 34.9 % unfiltered on
+//! held-out Europeans, the cohort is **chr21+22 only**, and the reference callset is itself weakly
+//! supported (hmmix's own tracts are enriched just 1.84x for their own archaic SNPs), so agreement
+//! with it caps well below 100 % even for a correct caller — F1 alone cannot say when this is done.
 
 use std::collections::BTreeMap;
 
