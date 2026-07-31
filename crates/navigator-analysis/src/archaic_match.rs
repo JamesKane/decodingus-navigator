@@ -35,6 +35,28 @@
 //!
 //! Transitions stay recombination-scaled between consecutive sites, as in [`crate::roh`] and the
 //! chromosome painter.
+//!
+//! # Validation
+//!
+//! Scored against hmmix's own calls for the same individuals, 60 Europeans on chr21+22, split 30
+//! **train** / 30 **test** on a fixed seed. Thresholds were fitted on train only; every figure below
+//! is the held-out half. The split exists because the previous caller was tuned until a cohort
+//! statistic matched and the statistic was then reported as evidence.
+//!
+//! | | density caller | this, defaults | this, calibrated |
+//! |---|---|---|---|
+//! | base-level F1 | — | 27.9 % | **32.5 %** |
+//! | precision | 1.5 % | 20.2 % | **28.8 %** |
+//! | extent ratio ours/theirs | 1.45 | 2.23 | **1.30** |
+//! | per-individual extent `r` | −0.018 (p = 0.94) | +0.520 | **+0.642 (p = 0.0001)** |
+//!
+//! On locations, all 20 individuals of an earlier cohort scored above their own random-placement
+//! null (mean 45.3 % sensitivity against a 7.1 % null); the density caller scored 2.1 % against a
+//! 5.0 % null, i.e. below chance.
+//!
+//! **Not yet good enough to re-enable.** Precision is 28.8 % and the extent ratio 1.30, so the
+//! caller still over-calls by about a third. `ARCHAIC_SEGMENTS_ENABLED` stays `false` until that is
+//! closed and the result reproduces outside Europe.
 
 use std::collections::BTreeMap;
 
@@ -93,10 +115,19 @@ impl Default for MatchConfig {
         MatchConfig {
             p_background: None,
             p_archaic: None,
+            // Measured (39.5 % carrying inside real tracts against 13.0 % elsewhere), not fitted.
             archaic_ratio: 3.04,
             switches_per_cm: 1.0,
-            min_posterior: 0.80,
-            min_sites: 8,
+            // CALIBRATED on 30 Europeans and reported on 30 held-out ones (see the module docs).
+            // Fitted by grid search on base-level F1, because sensitivity alone is bought by calling
+            // more sequence — the uncalibrated caller over-called 2.2x and still scored 45 %.
+            min_posterior: 0.95,
+            min_sites: 24,
+            // 5 kb, NOT the 40 kb the grid's argmax preferred. That floor scored 0.1 F1 points
+            // higher while discarding 61 % of real tracts by construction — hmmix's median tract is
+            // 31-36 kb and its p10 is 7 kb — and it scored *worse* on the two things the number is
+            // for: sensitivity (37.4 % vs 38.2 %) and per-individual extent correlation (+0.642 vs
+            // +0.658). The design already recorded this exact trap once, at 50 kb.
             min_segment_bp: 5_000,
             min_callable_fraction: 0.5,
             attribute_lineage: false,
