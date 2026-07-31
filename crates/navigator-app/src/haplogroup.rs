@@ -3515,10 +3515,17 @@ impl App {
 
     /// The cached Tier B archaic segment result for a subject, if current for the alignment and
     /// caller version it was produced from.
+    ///
+    /// Gated by [`crate::ARCHAIC_SEGMENTS_ENABLED`] on the **read** path as well as the compute
+    /// path: rows persisted before the gate went in are still in the workspace, and a read-only
+    /// gate is the difference between withholding a result and merely declining to recompute it.
     pub async fn cached_archaic_segments(
         &self,
         biosample_guid: SampleGuid,
     ) -> Result<Option<ArchaicSegmentResult>, AppError> {
+        if !crate::ARCHAIC_SEGMENTS_ENABLED {
+            return Ok(None);
+        }
         let Some(row) = consensus_archaic_segments::get(self.store.pool(), biosample_guid).await? else {
             return Ok(None);
         };
@@ -3545,6 +3552,18 @@ impl App {
         &self,
         biosample_guid: SampleGuid,
     ) -> Result<ArchaicSegmentResult, AppError> {
+        // Withheld: the caller reproduces the cohort mean and nothing about the individual. An
+        // error rather than an empty result, because every caller of this asked for a computation —
+        // silently returning zero segments would read as "you have no archaic ancestry", which is
+        // a far worse claim than "we are not reporting this".
+        if !crate::ARCHAIC_SEGMENTS_ENABLED {
+            return Err(AppError::Import(
+                "archaic segment calling is disabled: validated against hmmix's per-individual \
+                 calls (n=20), it reproduced the cohort mean but showed no per-person signal — \
+                 locations below chance and extent r = -0.02. See ARCHAIC_SEGMENTS_ENABLED."
+                    .into(),
+            ));
+        }
         // Prefer an alignment that already HAS genome-wide diploid calls over the
         // highest-coverage one. Those calls are an hours-long per-alignment pass, so a subject with
         // several CHM13 alignments (this one has four) would otherwise be told to re-run work they

@@ -1,10 +1,11 @@
 # Archaic Ancestry Report (Neanderthal / Denisovan) — Design
 
-**Status:** **SHIPPED** in `v0.1.0-alpha.14` (2026-07-30). Tier A (#34) and Tier B (#35) are both in
-`main` and in users' hands; §8 Phases 1 and 2 are complete, Phase 3 (M4) is not started and remains
-optional. Drafted 2026-07-23; plan added 2026-07-26 on branch `feat/archaic-ancestry`; all three §9
-questions resolved. **Two things shipped differently from the plan below — see *Deviations from the
-plan* at the end of §10 before trusting §7's expected percentage or M3's feature-gate rule.**
+**Status:** **Tier A SHIPPED** (`v0.1.0-alpha.14`). **Tier B GATED OFF** (`ARCHAIC_SEGMENTS_ENABLED
+= false`) after per-individual validation showed the segment caller carries no per-person signal —
+see *Tier B validation* at the end of §10. It shipped enabled in alpha.14 and was withdrawn in the
+next release. Drafted 2026-07-23; plan added 2026-07-26; all three §9 questions resolved.
+**Read *Tier B validation* and *Deviations from the plan* (end of §10) before trusting anything
+below about Tier B, §7's expected percentage, or M3's feature-gate rule.**
 **Goal:** Reconstruct a 23andMe-style Neanderthal report — and go beyond it with a Denisovan
 estimate and a true whole-genome introgression map — from public archaic reference genomes and
 recent methods, using the app's existing ancestry/panel/HMM machinery.
@@ -956,14 +957,88 @@ genuine open gap, not a deviation that resolved itself.**
 ### Open follow-ups
 
 - **Write the Denisovan-floor regression test** (item 3 above).
-- **Validate extent across several individuals**, not one. Needs WGS for people whose hmmix result is
-  known. Until then the 1.01× agreement is a calibration check, not a validation.
+- ~~**Validate extent across several individuals**~~ — **DONE, and Tier B failed it.** See below.
 - **Lineage attribution** needs the Skov-2020 approach — match a segment's own haplotype against each
   archaic genome relative to a background expectation, rather than against pre-classified site
-  categories. Threshold tuning will not fix it; see the attribution section above.
-- **Asset staging policy was never decided.** M1 said to check Asset 1's size against
-  `ON_DEMAND_PREFIXES` in `packaging/stage-assets.sh` "before deciding"; that decision was never
-  made. As a result `PATTERNS` lists no `archaic_*`, so dev-mode staging omits them, while
-  release-mode fetches everything the manifest names except `ancestry_haps_` and bundles all five
-  (105.3 MB). The two modes disagree — exactly what the comment above `PATTERNS` warns against — and
-  alpha.14's installers are ~60 MB larger than alpha.13's as a result. Tracked separately.
+  categories. Threshold tuning will not fix it; see the attribution section above. The same paper is
+  now also the path back for the segments themselves.
+- ~~**Asset staging policy was never decided**~~ — decided 2026-07-30 (PR #38): Tier A bundled,
+  Tier B on demand. See `packaging-and-release.md`.
+
+---
+
+## Tier B validation (2026-07-30) — no per-individual signal; GATED OFF
+
+The follow-up above ("validate extent across several individuals") was run, and Tier B did not
+survive it. `ARCHAIC_SEGMENTS_ENABLED = false`.
+
+**What made it possible.** The workspace holds CHM13 CRAMs for **2,307 of the 2,309** individuals in
+hmmix's own published callset, including 632 of the 633 Europeans — so the comparison is against
+*the same people*, not against a cohort distribution. (Getting there required fixing a CRAM
+region-query defect that made every query cost a whole chromosome; chr21+22 per sample went from
+~3.5 hours to ~90 seconds. See PR #39.)
+
+### Locations disagree — below chance
+
+HG00096, chr21+22, our segments against hmmix's for the same individual, lifted hg38→CHM13:
+
+| | |
+|---|---|
+| our extent | 2.294 Mb in 112 segments |
+| hmmix extent | 2.333 Mb in 48 tracts |
+| **base overlap** | **0.050 Mb** |
+| sensitivity / precision | **2.1 % / 1.5 %** |
+| null: our own segment lengths placed at random in the same span | **5.0 %** (p95 9.4 %) |
+
+**We score below chance.** Every alternative explanation was tested and ruled out:
+
+- **Not a coordinate error.** Overlap-vs-shift is flat (1–4 %) across ±2 Mb with no peak; zero-shift
+  sits mid-range. The lift is faithful — lifted fragment lengths sum to the hg38 input exactly.
+- **Not callability.** 70.7 % of hmmix's tracts lie inside our callable territory, so they were
+  reachable. Restricted to reachable truth, sensitivity is 3.0 %.
+- **Not haplotype handling.** hmmix is per-haplotype and is unioned, not summed — which reproduces
+  their published EUR mean of 2.09 Mb exactly.
+- **Not a harness artefact.** Overlap was re-derived brute-force. (One real harness bug was found and
+  fixed: CrossMap splits tracts at median 2 bp gaps, inflating 48 tracts to 423.)
+
+### Amounts do not track the individual either
+
+n = 20 Europeans, randomly drawn, spanning the natural range:
+
+| statistic | value |
+|---|---|
+| Pearson r (our extent vs theirs) | **−0.018** (permutation p = 0.94) |
+| Spearman ρ | **−0.020** (p = 0.94) |
+| segment-count r | −0.222 |
+| mean ratio ours/theirs | **0.923** |
+| SD: truth 0.496 Mb, ours 0.312 Mb | ours = **0.63×** the truth's spread |
+
+Truth ranged 1.19–2.97 Mb; our output barely moved. The two individuals with the *least* archaic
+ancestry drew our two *highest* calls (1.71×, 1.90×), and the two with the most drew among our
+lowest (0.54×, 0.63×).
+
+### What this means about the earlier "validation"
+
+The M3 result — 1.01× the hmmix EUR mean — was **three fitted parameters hitting the statistic they
+were fitted to**, on one individual. It was recorded honestly as a calibration check rather than a
+validation, and that caution was right: the fit does not transfer. A caller emitting a calibrated
+constant passes a cohort-mean test and fails every test that asks about a person.
+
+The general lesson, which is the same one the ancient-ancestry work produced: **agreement with an
+aggregate is not evidence of a per-individual measurement.** Any future re-enable must clear the
+per-individual bar — positive r against held-out individuals, and location overlap well above the
+random-placement null — not a mean.
+
+### What is NOT affected
+
+**Tier A is a different method and is unaffected.** The marker count is direct dosage over a fixed
+panel with no HMM, no fitted thresholds, and was checked differently (per-site archaic rate on the
+intersection with real 23andMe v5 chip content). It remains enabled and is what the Simple-mode
+"Neanderthal ancestry" card and the Advanced count + percentile report.
+
+### Re-enabling
+
+Needs a method change, not a threshold sweep — Skov 2020 matches a segment's whole haplotype against
+each archaic genome relative to a background expectation, where ours tests private-variant density
+against pre-classified sites. Re-running the validation harness that produced the numbers above is
+the gate.
