@@ -807,3 +807,4 @@ simple.relatives.estimate=Estimated from shared signals — connect to measure h
 # Tier B archaic segments — withheld pending a method that carries per-person signal.
 archaicSegments.withheld=Not reported: we could not show you where your archaic DNA sits accurately enough to be worth reporting.
 archaicSegments.withheldWhy=Checked against an independent published callset for the same 20 people, our tract locations matched no better than chance, and the total did not track the individual. The overall amount for a population came out right, which is not the same as being right about you. We would rather report nothing than a map that looks precise and is not.
+archaicSegments.withinPopulation=Compare this only with people of similar ancestry. The amount is measured against four sequenced archaic genomes, and they match some ancestries better than others — so this figure is not a like-for-like number between, say, a European and an East Asian.

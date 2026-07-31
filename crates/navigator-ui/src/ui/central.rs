@@ -663,6 +663,16 @@ impl NavigatorApp {
                                 "{} archaic tracts, {:.2}% of the {:.0} Mb we could read reliably.",
                                 r.summary.n_segments, r.summary.pct_callable, r.summary.callable_mb
                             ));
+                            ui.add_space(6.0);
+                            // The comparability limit sits directly under the number, not in a
+                            // footnote: this figure is measured against four sequenced archaic
+                            // genomes that represent some ancestries better than others, so
+                            // comparing it between people of different ancestry is the one use it
+                            // cannot support. Stated where the number is read, or it will not be.
+                            ui.label(
+                                egui::RichText::new(self.tr("archaicSegments.withinPopulation"))
+                                    .color(egui::Color32::from_rgb(230, 180, 90)),
+                            );
                             ui.add_space(4.0);
                             // Lineage split is withheld, not merely absent — say so.
                             ui.label(
