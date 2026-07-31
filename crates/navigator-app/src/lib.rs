@@ -2450,6 +2450,38 @@ pub struct AncientFitRow {
 /// See `documents/design/ancient-ancestry-rebuild.md` (start at §7.14).
 pub const ANCIENT_ANCESTRY_ENABLED: bool = true;
 
+/// Whether Tier B **archaic segments** (the introgressed-tract caller and its chromosome browser)
+/// are computed, read back, or shown. **Off**: validation against an external per-individual truth
+/// set showed the caller carries no per-person signal.
+///
+/// Tier B was shipped on the strength of one number — its total extent landed at 1.01x the hmmix
+/// European mean. Validating it properly, against hmmix's own calls **for the same individuals**
+/// (n=20 Europeans, chr21+22), showed that number is all there is:
+///
+/// - **Locations disagree.** For HG00096, 2.1 % of hmmix's archaic bases are also called by us,
+///   against a 5.0 % expectation (p95 9.4 %) for segments of our own lengths placed at *random* in
+///   the same span. Below chance. Not a coordinate artefact: the overlap-vs-shift curve is flat
+///   across +/-2 Mb with no peak, and 70.7 % of the truth lies inside our callable territory, so
+///   the tracts were reachable.
+/// - **Amounts do not track the individual.** Across the 20, Pearson r = -0.018 (p = 0.94) and
+///   Spearman rho = -0.020 against a true range of 1.19-2.97 Mb. Our own spread is 0.63x the
+///   truth's. The two individuals with the least archaic ancestry drew our two highest calls.
+///
+/// The mean ratio really is ~0.92 — the caller reproduces the cohort average and nothing else,
+/// which is what three fitted parameters were tuned to do. An honest report needs a measurement of
+/// *this person*, so the feature is withheld rather than shown with a caveat.
+///
+/// The machinery stays, unit-tested, behind this flag — same discipline as `attribute_lineage` and
+/// the ancient-ancestry precedent above. Re-enabling needs a method change (the design records
+/// Skov-2020 haplotype matching as the path), not a threshold tweak, and a re-run of the validation
+/// harness that produced these numbers.
+///
+/// Tier A — the marker **count** and percentile — is a different method on a different asset and is
+/// **not** gated by this.
+///
+/// See `documents/design/ArchaicAncestry_Design.md`, "Tier B validation (2026-07-30)".
+pub const ARCHAIC_SEGMENTS_ENABLED: bool = false;
+
 /// The persisted method name of the deep-ancestry breakdown — re-exported so the UI reads the
 /// rebuilt method by name and can never fall back to a retired one.
 pub use navigator_analysis::ancestry::ANCIENT_ADMIXTURE;

@@ -617,8 +617,21 @@ impl NavigatorApp {
                     }
 
                     // Tier B: archaic SEGMENTS (WGS only — needs genome-wide de-novo calls).
+                    // Withheld pending a working method: the card states that rather than
+                    // disappearing, because a section that silently vanishes between releases reads
+                    // as a bug, where a stated withholding is a finding about the data.
                     ui.add_space(10.0);
                     card(ui, self.tr("card.archaicSegments"), |ui| {
+                        if !navigator_app::ARCHAIC_SEGMENTS_ENABLED {
+                            ui.label(self.tr("archaicSegments.withheld"));
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(self.tr("archaicSegments.withheldWhy"))
+                                    .weak()
+                                    .small(),
+                            );
+                            return;
+                        }
                         ui.horizontal(|ui| {
                             let have = self.archaic_segments.is_some();
                             let label = if have {
