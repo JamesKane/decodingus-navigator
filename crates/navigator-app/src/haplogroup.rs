@@ -3532,7 +3532,8 @@ impl App {
         let Some(aln) = self.alignment_with_diploid_calls(biosample_guid).await? else {
             return Ok(None);
         };
-        if row.source_sig == archaic_segment_sig(aln) {
+        let contigs = crate::called_diploid_contigs(&self.store, aln).await?;
+        if row.source_sig == archaic_segment_sig(aln, &contigs) {
             Ok(Some(serde_json::from_str(&row.segments)?))
         } else {
             Ok(None)
@@ -3583,7 +3584,9 @@ impl App {
                 "archaic segments currently require a CHM13 alignment (the Tier B assets are CHM13-only)".into(),
             ));
         }
-        let sig = archaic_segment_sig(aln);
+        // Computed from the contigs actually cached, so a later genome-wide pass invalidates a
+        // partial result instead of inheriting it.
+        let sig = archaic_segment_sig(aln, &crate::called_diploid_contigs(&self.store, aln).await?);
         if let Some(row) = consensus_archaic_segments::get(self.store.pool(), biosample_guid).await? {
             if row.source_sig == sig {
                 return Ok(serde_json::from_str(&row.segments)?);

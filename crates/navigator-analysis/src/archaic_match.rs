@@ -38,6 +38,24 @@
 //!
 //! # Validation
 //!
+//! ## Genome-wide (the shipping configuration)
+//!
+//! Three Europeans called across all 22 autosomes and scored against hmmix's genome-wide callset for
+//! the same individuals:
+//!
+//! | | ours | hmmix | ratio | sensitivity | precision | null (max of 400 draws) |
+//! |---|---|---|---|---|---|---|
+//! | HG00096 | 83.6 Mb | 93.0 | 0.90 | 40.3 % | 44.9 % | 5.5 % |
+//! | HG00102 | 83.9 Mb | 89.3 | 0.94 | 42.4 % | 45.1 % | 4.9 % |
+//! | HG00112 | 82.1 Mb | 91.0 | 0.90 | 42.9 % | 47.5 % | 5.1 % |
+//!
+//! All three sit above the *entire* random-placement null. Both sensitivity and precision are
+//! **better** genome-wide than on chr21+22 (40–43 % against 31.6 %, ~46 % against 34.9 %), so the
+//! two-chromosome figures below are conservative rather than optimistic — worth stating because the
+//! previous caller's design was burned by the opposite, extrapolating a chr21+22 target 6 % low.
+//!
+//! ## chr21+22, with a train/test split
+//!
 //! Scored against hmmix's own calls for the same individuals, 60 Europeans on chr21+22, split 30
 //! **train** / 30 **test** on a fixed seed. Thresholds were fitted on train only; every figure below
 //! is the held-out half. The split exists because the previous caller was tuned until a cohort

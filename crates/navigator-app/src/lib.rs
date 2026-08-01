@@ -1122,16 +1122,38 @@ fn archaic_marker_dist_path(build: ReferenceBuild) -> PathBuf {
 /// Tier B: positions variable in the African outgroup, for stripping shared variants.
 /// Cache signature for a Tier B segment result: the alignment it came from plus the caller's
 /// genotype version, so re-calling with a newer caller invalidates it.
-pub(crate) fn archaic_segment_sig(alignment_id: i64) -> String {
-    // The METHOD version is part of the key, not just the genotype version. Tier B was rebuilt from
-    // a private-variant density model to archaic-genome matching, and without this a workspace
-    // carrying results from the old caller would keep serving them — stale answers from a method
-    // that was withdrawn for having no per-individual signal.
+pub(crate) fn archaic_segment_sig(alignment_id: i64, called_contigs: &[String]) -> String {
+    // Three things make a result stale, and all three are in the key.
+    //
+    // The METHOD version, because Tier B was rebuilt from a private-variant density model to
+    // archaic-genome matching; without it a workspace carrying output from the withdrawn caller
+    // would keep serving it.
+    //
+    // The CONTIGS ACTUALLY CALLED, because the result covers only those. A subject called on chr21
+    // alone and later called genome-wide would otherwise keep the two-chromosome answer forever —
+    // observed doing exactly that during genome-wide validation, reporting 1.94 Mb over 2 contigs
+    // while 22 sat cached and ready.
+    let mut contigs: Vec<&str> = called_contigs.iter().map(String::as_str).collect();
+    contigs.sort_unstable();
     format!(
-        "aln{alignment_id}:gt{}:m{}",
+        "aln{alignment_id}:gt{}:m{}:c[{}]",
         navigator_analysis::caller::GENOTYPE_VERSION,
-        navigator_analysis::archaic_match::METHOD_VERSION
+        navigator_analysis::archaic_match::METHOD_VERSION,
+        contigs.join(",")
     )
+}
+
+/// The autosomes that have cached de-novo diploid calls for `alignment_id`, as bare contig names.
+pub(crate) async fn called_diploid_contigs(
+    store: &navigator_store::Store,
+    alignment_id: i64,
+) -> Result<Vec<String>, AppError> {
+    const PREFIX: &str = "diploid_denovo:";
+    Ok(navigator_store::artifact::list_kinds(store.pool(), alignment_id)
+        .await?
+        .into_iter()
+        .filter_map(|k| k.strip_prefix(PREFIX).map(str::to_string))
+        .collect())
 }
 
 fn archaic_outgroup_path(build: ReferenceBuild) -> PathBuf {
