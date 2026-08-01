@@ -1122,8 +1122,38 @@ fn archaic_marker_dist_path(build: ReferenceBuild) -> PathBuf {
 /// Tier B: positions variable in the African outgroup, for stripping shared variants.
 /// Cache signature for a Tier B segment result: the alignment it came from plus the caller's
 /// genotype version, so re-calling with a newer caller invalidates it.
-pub(crate) fn archaic_segment_sig(alignment_id: i64) -> String {
-    format!("aln{alignment_id}:gt{}", navigator_analysis::caller::GENOTYPE_VERSION)
+pub(crate) fn archaic_segment_sig(alignment_id: i64, called_contigs: &[String]) -> String {
+    // Three things make a result stale, and all three are in the key.
+    //
+    // The METHOD version, because Tier B was rebuilt from a private-variant density model to
+    // archaic-genome matching; without it a workspace carrying output from the withdrawn caller
+    // would keep serving it.
+    //
+    // The CONTIGS ACTUALLY CALLED, because the result covers only those. A subject called on chr21
+    // alone and later called genome-wide would otherwise keep the two-chromosome answer forever —
+    // observed doing exactly that during genome-wide validation, reporting 1.94 Mb over 2 contigs
+    // while 22 sat cached and ready.
+    let mut contigs: Vec<&str> = called_contigs.iter().map(String::as_str).collect();
+    contigs.sort_unstable();
+    format!(
+        "aln{alignment_id}:gt{}:m{}:c[{}]",
+        navigator_analysis::caller::GENOTYPE_VERSION,
+        navigator_analysis::archaic_match::METHOD_VERSION,
+        contigs.join(",")
+    )
+}
+
+/// The autosomes that have cached de-novo diploid calls for `alignment_id`, as bare contig names.
+pub(crate) async fn called_diploid_contigs(
+    store: &navigator_store::Store,
+    alignment_id: i64,
+) -> Result<Vec<String>, AppError> {
+    const PREFIX: &str = "diploid_denovo:";
+    Ok(navigator_store::artifact::list_kinds(store.pool(), alignment_id)
+        .await?
+        .into_iter()
+        .filter_map(|k| k.strip_prefix(PREFIX).map(str::to_string))
+        .collect())
 }
 
 fn archaic_outgroup_path(build: ReferenceBuild) -> PathBuf {
@@ -2451,36 +2481,56 @@ pub struct AncientFitRow {
 pub const ANCIENT_ANCESTRY_ENABLED: bool = true;
 
 /// Whether Tier B **archaic segments** (the introgressed-tract caller and its chromosome browser)
-/// are computed, read back, or shown. **Off**: validation against an external per-individual truth
-/// set showed the caller carries no per-person signal.
+/// are computed, read back, or shown.
 ///
-/// Tier B was shipped on the strength of one number — its total extent landed at 1.01x the hmmix
-/// European mean. Validating it properly, against hmmix's own calls **for the same individuals**
-/// (n=20 Europeans, chr21+22), showed that number is all there is:
+/// **ON**, for the rebuilt caller ([`navigator_analysis::archaic_match`]) — and specifically as a
+/// **within-population** measure. The history below is the first implementation, which was withdrawn.
 ///
-/// - **Locations disagree.** For HG00096, 2.1 % of hmmix's archaic bases are also called by us,
-///   against a 5.0 % expectation (p95 9.4 %) for segments of our own lengths placed at *random* in
-///   the same span. Below chance. Not a coordinate artefact: the overlap-vs-shift curve is flat
-///   across +/-2 Mb with no peak, and 70.7 % of the truth lies inside our callable territory, so
-///   the tracts were reachable.
-/// - **Amounts do not track the individual.** Across the 20, Pearson r = -0.018 (p = 0.94) and
-///   Spearman rho = -0.020 against a true range of 1.19-2.97 Mb. Our own spread is 0.63x the
-///   truth's. The two individuals with the least archaic ancestry drew our two highest calls.
+/// What changed: the caller no longer counts private-variant density, it matches the archaic genomes
+/// directly. Held out on 30 Europeans the fit never saw, per-individual extent correlates at
+/// **r = +0.710 (p < 0.0001)** where the old caller managed −0.018 (p = 0.94); every individual of
+/// 90 scores above their own random-placement null; and a concordance filter takes precision from
+/// 54 % to 90 %.
 ///
-/// The mean ratio really is ~0.92 — the caller reproduces the cohort average and nothing else,
-/// which is what three fitted parameters were tuned to do. An honest report needs a measurement of
-/// *this person*, so the feature is withheld rather than shown with a caveat.
-///
-/// The machinery stays, unit-tested, behind this flag — same discipline as `attribute_lineage` and
-/// the ancient-ancestry precedent above. Re-enabling needs a method change (the design records
-/// Skov-2020 haplotype matching as the path), not a threshold tweak, and a re-run of the validation
-/// harness that produced these numbers.
-///
-/// Tier A — the marker **count** and percentile — is a different method on a different asset and is
-/// **not** gated by this.
-///
-/// See `documents/design/ArchaicAncestry_Design.md`, "Tier B validation (2026-07-30)".
-pub const ARCHAIC_SEGMENTS_ENABLED: bool = false;
+/// **The one thing it must not be used for is comparing people of different ancestries.** East Asian
+/// tracts match our four sequenced archaic genomes less well than European ones, so extent is
+/// under-called for them — the reported figure orders the two populations backwards against the
+/// truth. That is a property of which archaic genomes have been sequenced, not a threshold, so the
+/// UI states the limit rather than implying a universal percentage.
+pub const ARCHAIC_SEGMENTS_ENABLED: bool = true;
+
+// The prior gate's rationale, kept because it is the reason the current caller exists.
+//
+// **Off**: validation against an external per-individual truth
+// set showed the caller carries no per-person signal.
+//
+// Tier B was shipped on the strength of one number — its total extent landed at 1.01x the hmmix
+// European mean. Validating it properly, against hmmix's own calls **for the same individuals**
+// (n=20 Europeans, chr21+22), showed that number is all there is:
+//
+// - **Locations disagree.** For HG00096, 2.1 % of hmmix's archaic bases are also called by us,
+//   against a 5.0 % expectation (p95 9.4 %) for segments of our own lengths placed at *random* in
+//   the same span. Below chance. Not a coordinate artefact: the overlap-vs-shift curve is flat
+//   across +/-2 Mb with no peak, and 70.7 % of the truth lies inside our callable territory, so
+//   the tracts were reachable.
+// - **Amounts do not track the individual.** Across the 20, Pearson r = -0.018 (p = 0.94) and
+//   Spearman rho = -0.020 against a true range of 1.19-2.97 Mb. Our own spread is 0.63x the
+//   truth's. The two individuals with the least archaic ancestry drew our two highest calls.
+//
+// The mean ratio really is ~0.92 — the caller reproduces the cohort average and nothing else,
+// which is what three fitted parameters were tuned to do. An honest report needs a measurement of
+// *this person*, so the feature is withheld rather than shown with a caveat.
+//
+// The machinery stays, unit-tested, behind this flag — same discipline as `attribute_lineage` and
+// the ancient-ancestry precedent above. Re-enabling needs a method change (the design records
+// Skov-2020 haplotype matching as the path), not a threshold tweak, and a re-run of the validation
+// harness that produced these numbers.
+//
+// Tier A — the marker **count** and percentile — is a different method on a different asset and is
+// **not** gated by this.
+//
+// See `documents/design/ArchaicAncestry_Design.md`, "Tier B validation (2026-07-30)" and
+// "Why it failed" for the full record. Historical only: the live gate is the `true` above.
 
 /// The persisted method name of the deep-ancestry breakdown — re-exported so the UI reads the
 /// rebuilt method by name and can never fall back to a retired one.

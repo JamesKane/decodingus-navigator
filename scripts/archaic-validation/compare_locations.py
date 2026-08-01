@@ -17,7 +17,7 @@ import sys
 from collections import defaultdict
 
 
-def load_bed(path, keep=None):
+def load_bed(path, keep=None, tol=0):
     iv = defaultdict(list)
     for line in open(path):
         p = line.rstrip("\n").split("\t")
@@ -26,14 +26,14 @@ def load_bed(path, keep=None):
         if keep and p[0] not in keep:
             continue
         iv[p[0]].append((int(p[1]), int(p[2])))
-    return {c: union(v) for c, v in iv.items()}
+    return {c: union(v, tol) for c, v in iv.items()}
 
 
-def union(iv):
+def union(iv, tol=0):
     iv = sorted(iv)
     out, cs, ce = [], *iv[0]
     for s, e in iv[1:]:
-        if s > ce:
+        if s > ce + tol:
             out.append((cs, ce))
             cs, ce = s, e
         else:
@@ -65,6 +65,30 @@ def intersect(a, b):
     return out
 
 
+def null_sensitivity(ours, truth, truth_bp, draws=400):
+    """Sensitivity a caller of OUR extent would score by placing its segments at random.
+
+    Sensitivity rises with how much sequence you call, so the raw number is meaningless without
+    this. The density caller scored 2.1% against a 5.0% null -- below chance -- and reporting only
+    the 2.1% would have looked like weak performance rather than none.
+    """
+    import random
+    rnd = random.Random(0)
+    lens = {c: [e - s for s, e in v] for c, v in ours.items()}
+    vals = []
+    for _ in range(draws):
+        r = {}
+        for c, L in lens.items():
+            if c not in truth:
+                continue
+            lo = min(s for s, _ in truth[c])
+            hi = max(e for _, e in truth[c])
+            r[c] = union([(p, p + l) for l in L for p in [rnd.randint(lo, max(lo, hi - l))]])
+        vals.append(intersect(r, truth) / truth_bp * 100)  # both in bp
+    vals.sort()
+    return sum(vals) / len(vals), vals[int(0.95 * len(vals)) - 1], vals[-1]
+
+
 def main():
     ours_path, truth_path = sys.argv[1], sys.argv[2]
     contigs = set(sys.argv[3:]) or None
@@ -78,7 +102,9 @@ def main():
             continue
         ours_iv[c].append((int(s["start"]), int(s["end"])))
     ours = {c: union(v) for c, v in ours_iv.items()} if ours_iv else {}
-    truth = load_bed(truth_path, contigs)
+    # tol=1000: the lift splits tracts at median 2 bp gaps; a strict union reports 423
+    # shards where there are 48 real tracts, which makes per-tract recovery meaningless.
+    truth = load_bed(truth_path, contigs, tol=1000)
 
     o_mb, t_mb = total(ours) / 1e6, total(truth) / 1e6
     inter = intersect(ours, truth) / 1e6
@@ -108,9 +134,16 @@ def main():
                 miss += 1
     print(f"   their tracts hit    : {hit}/{hit + miss}  ({hit / (hit + miss) * 100:.1f}%)" if hit + miss else "   n/a")
     print()
-    print("   A random caller with our extent would score sensitivity ~= our_Mb / callable_Mb,")
-    print("   i.e. a few percent. Sensitivity near that floor means we match the AMOUNT but not")
-    print("   the LOCATION -- which would mean the 1.01x cohort agreement was luck.")
+    if t_mb and ours:
+        mean, p95, mx = null_sensitivity(ours, truth, total(truth))
+        sens = inter / t_mb * 100
+        print()
+        print("4. AGAINST THE NULL  (sensitivity alone rises with how much you call)")
+        print(f"   random placement    : mean {mean:5.1f}%   p95 {p95:5.1f}%   max {mx:5.1f}%")
+        verdict = ("ABOVE the null's full range" if sens > mx
+                   else "above p95" if sens > p95
+                   else "AT OR BELOW CHANCE")
+        print(f"   observed {sens:5.1f}%      : {verdict}")
 
 
 if __name__ == "__main__":

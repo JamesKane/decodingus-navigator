@@ -136,6 +136,20 @@ pub async fn list_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<
     rows.into_iter().map(Row::into_domain).collect()
 }
 
+/// The `kind` of every artifact on `alignment_id`, without their payloads.
+///
+/// Exists so a caller can key a cache on *which* analyses are present without reading them. The
+/// genome-wide de-novo calls run to ~1 GB of JSON across 22 contigs, so [`list_for_alignment`] is
+/// the wrong tool for a question about coverage.
+pub async fn list_kinds(pool: &SqlitePool, alignment_id: i64) -> Result<Vec<String>, StoreError> {
+    let rows: Vec<(String,)> =
+        sqlx::query_as("SELECT kind FROM analysis_artifact WHERE alignment_id = ? ORDER BY kind")
+            .bind(alignment_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows.into_iter().map(|(k,)| k).collect())
+}
+
 /// Every artifact belonging to any of `alignment_ids`, in one query. The caller indexes the result
 /// by `(alignment_id, kind)` itself — this replaces a `get` per (alignment, kind), which for a
 /// project report meant one round-trip per cell. An empty `alignment_ids` yields no query.

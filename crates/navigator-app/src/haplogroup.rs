@@ -3532,7 +3532,8 @@ impl App {
         let Some(aln) = self.alignment_with_diploid_calls(biosample_guid).await? else {
             return Ok(None);
         };
-        if row.source_sig == archaic_segment_sig(aln) {
+        let contigs = crate::called_diploid_contigs(&self.store, aln).await?;
+        if row.source_sig == archaic_segment_sig(aln, &contigs) {
             Ok(Some(serde_json::from_str(&row.segments)?))
         } else {
             Ok(None)
@@ -3583,7 +3584,9 @@ impl App {
                 "archaic segments currently require a CHM13 alignment (the Tier B assets are CHM13-only)".into(),
             ));
         }
-        let sig = archaic_segment_sig(aln);
+        // Computed from the contigs actually cached, so a later genome-wide pass invalidates a
+        // partial result instead of inheriting it.
+        let sig = archaic_segment_sig(aln, &crate::called_diploid_contigs(&self.store, aln).await?);
         if let Some(row) = consensus_archaic_segments::get(self.store.pool(), biosample_guid).await? {
             if row.source_sig == sig {
                 return Ok(serde_json::from_str(&row.segments)?);
@@ -3612,19 +3615,24 @@ impl App {
         }
 
         let rb = ReferenceBuild::Chm13v2;
+        // The outgroup track is no longer needed: the density caller used it to strip
+        // African-shared variants, and this method does not model density at all.
         for p in [
-            crate::archaic_outgroup_path(rb),
             crate::archaic_classify_path(rb),
             crate::archaic_callable_path(rb),
+            crate::archaic_markers_path(rb),
         ] {
             self.ensure_ancestry_asset(rb, &p).await?;
         }
         let load = |p: PathBuf| -> Result<Vec<u8>, AppError> {
             crate::read_verified_asset(rb, &p)?.ok_or_else(|| AppError::AncestryPanelMissing(p.clone()))
         };
-        let outgroup = ArchaicOutgroup::from_bytes(&load(crate::archaic_outgroup_path(rb))?)?;
         let classify = ArchaicClassify::from_bytes(&load(crate::archaic_classify_path(rb))?)?;
         let callable = ArchaicCallable::from_bytes(&load(crate::archaic_callable_path(rb))?)?;
+        // Tier A's panel carries the per-archaic-genome calls the concordance filter needs — the
+        // single largest quality lever measured (precision 54 % -> 90 %).
+        let panel = ArchaicMarkerPanel::from_bytes(&load(crate::archaic_markers_path(rb))?)?;
+        let (_, reference) = self.alignment_bam_reference(aln).await?;
 
         // Genetic map over the contigs actually present, so transitions are recombination-scaled.
         let mut lengths: std::collections::BTreeMap<String, i32> = std::collections::BTreeMap::new();
@@ -3636,17 +3644,39 @@ impl App {
         let gmap = crate::load_genetic_map(rb, &pairs);
 
         eprintln!("archaic segments: {} calls over {contigs_present} autosome(s)", calls.len());
-        let result = tokio::task::spawn_blocking(move || {
-            navigator_analysis::archaic_segments::call_archaic_segments(
+        let result = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
+            use navigator_analysis::archaic_match as am;
+
+            let mut by_contig: std::collections::BTreeMap<String, std::collections::BTreeMap<i64, &SiteGenotype>> =
+                Default::default();
+            for c in &calls {
+                by_contig.entry(c.contig.clone()).or_default().insert(c.position, c);
+            }
+            let mut observations = std::collections::BTreeMap::new();
+            for (contig, pos_map) in &by_contig {
+                // One contig's reference at a time: whether a diagnostic site is informative depends
+                // on the reference base there, and holding all of CHM13 would cost 3.1 GB.
+                let seq = navigator_analysis::reader::read_contig_sequence(&reference, contig)?;
+                let obs = am::observations_for_contig(
+                    contig,
+                    &classify,
+                    pos_map,
+                    |p| seq.get((p - 1).max(0) as usize).copied().map(|b| b.to_ascii_uppercase()),
+                    &callable,
+                    am::MatchConfig::default().min_callable_fraction,
+                );
+                observations.insert(contig.clone(), obs);
+            }
+            let called = am::call_from_observations(&observations, &gmap, &callable, &am::MatchConfig::default());
+            Ok(am::filter_by_concordance(
+                called,
+                &panel,
                 &calls,
-                &outgroup,
-                &classify,
-                &callable,
-                &gmap,
-                &navigator_analysis::archaic_segments::ArchaicConfig::default(),
-            )
+                am::MIN_CONCORDANCE,
+                am::MIN_CONCORDANCE_SITES,
+            ))
         })
-        .await?;
+        .await??;
 
         consensus_archaic_segments::upsert(
             self.store.pool(),
