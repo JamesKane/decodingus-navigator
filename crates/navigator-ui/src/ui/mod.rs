@@ -20,7 +20,7 @@ use navigator_app::{
     Consensus, Coverage, DenovoCall, DescentReport, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
     MatchKind, MatchStrength, MtRegion, MtVariant, NarratedBrief, PackStatus, PaintingResult, PrivateBucket,
-    PrivateClass, ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus,
+    PrivateClass, ProjectBlockTree, ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus,
     SexInferenceResult, SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief,
     SvAnalysisResult, UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
@@ -144,12 +144,14 @@ enum ProjectTab {
     Members,
     Report,
     Ystr,
+    Tree,
 }
 impl ProjectTab {
-    const ALL: [(ProjectTab, &'static str); 3] = [
+    const ALL: [(ProjectTab, &'static str); 4] = [
         (ProjectTab::Members, "project.tab.members"),
         (ProjectTab::Report, "project.tab.report"),
         (ProjectTab::Ystr, "project.tab.ystr"),
+        (ProjectTab::Tree, "project.tab.tree"),
     ];
 }
 
@@ -784,6 +786,15 @@ pub struct NavigatorApp {
     /// background build returns. A boolean tracks the in-flight build so the UI can show a spinner.
     project_str_chart: Option<ProjectStrChart>,
     project_str_loading: bool,
+    /// Cohort Y **block tree** for the selected project; `None` until the background build returns.
+    /// Loaded **lazily on first view of the Tree tab**, not on project select like the STR chart:
+    /// building it fetches and parses a multi-MB haplotree, too much to spend on a tab nobody opened.
+    project_blocktree: Option<ProjectBlockTree>,
+    project_blocktree_loading: bool,
+    /// Blocks (by node id) the user expanded to reveal their equivalent SNPs and full member list.
+    blocktree_expanded: std::collections::HashSet<i64>,
+    /// Zoom factor for the block-tree canvas (1.0 = natural size).
+    blocktree_zoom: f32,
     samples: Vec<Biosample>,
     /// Every biosample (the project-independent subjects list).
     all_biosamples: Vec<Biosample>,
@@ -1163,6 +1174,7 @@ const SUBJECT_COLS: [(&str, f32); 6] = [
     ("Status", 90.0),
 ];
 
+mod blocktree;
 mod branch;
 mod central;
 mod chrome;
@@ -1311,6 +1323,10 @@ impl NavigatorApp {
             project_report: Vec::new(),
             project_str_chart: None,
             project_str_loading: false,
+            project_blocktree: None,
+            project_blocktree_loading: false,
+            blocktree_expanded: std::collections::HashSet::new(),
+            blocktree_zoom: 1.0,
             samples: Vec::new(),
             all_biosamples: Vec::new(),
             haplo_summary: std::collections::HashMap::new(),

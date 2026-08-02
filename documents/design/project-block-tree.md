@@ -1,8 +1,9 @@
 # Project Y block tree — design
 
-**Status:** **Phase 1 implemented** (2026-08-02, branch `feat/project-block-tree`) — the aggregate,
-`App::project_block_tree`, the collapse function and 14 unit tests. No UI yet (phase 2). Drafted
-2026-08-02.
+**Status:** **Phases 1–2 implemented** (2026-08-02, branch `feat/project-block-tree`) — the
+aggregate + builder + collapse (phase 1) and the `ProjectTab::Tree` canvas view (phase 2), 20 unit
+tests, validated live on two 1,900-member cohorts. Phase 3 (private-variant blocks + export) open.
+Drafted 2026-08-02.
 **Closes:** `BACKLOG.md` §3.3 remaining scope ("a genuinely zoomable / searchable *whole-tree* view
 with the subject's placement highlighted") — reframed as **cohort-scoped**, which is the form that
 actually earns its keep.
@@ -187,8 +188,28 @@ following the one-view-per-module split, and keeping `central.rs` from growing a
   unit tests over synthetic trees (no network, no live DB). No UI. Landed as
   `navigator-analysis/src/haplo.rs` (`induced_subtree` / `name_index` / `InducedNode`, 6 tests) +
   `navigator-app/src/blocktree.rs` (builder, `collapse_blocks`, `roll_up_subtree_members`, 8 tests).
-- **Phase 2** — the `ProjectTab::Tree` view: layout, culling, expand/collapse, click-through, i18n
-  keys at en/es parity.
+- **Phase 2** — ✅ **done.** `ProjectTab::Tree` + `navigator-ui/src/ui/blocktree.rs`: a pure `layout`
+  (tidy-tree — depth→x, parent centred on its children's extent) with 6 tests, clip-culled canvas
+  painting, expand-on-click, SNP-name hover, zoom, double-click-to-open-subject, en/es keys.
+  `Command::LoadProjectBlockTree` / `Event::ProjectBlockTree`, loaded **lazily on first view of the
+  tab** rather than on project select — unlike the STR chart, this fetches a multi-MB haplotree.
+
+  **Validated on live data** (`cargo run -p navigator-app --example blocktree_check -- <project_id>`,
+  kept as the harness for phase 3):
+
+  | project | members | blocks | placed | no Y placement | terminal absent from tree | build |
+  |---|---|---|---|---|---|---|
+  | `R1b-CTS4466Plus` | 1881 | 212 | 243 | 1538 | 100 (72 distinct names) | 1.5 s |
+  | `R-L21_South_Irish` | 1906 | 348 | 269 | 1637 combined | — | in-GUI |
+
+  Root absorption behaves as intended: the whole Y-Adam→DF13 backbone folds into a single
+  `R-DF13 [1769 SNPs] (+27 folded)` block, and the tree opens on `R-CTS4466` where the cohort
+  actually lives. Max depth after collapse is 15; 51 branches folded overall.
+
+  The 100 "terminal absent from tree" cases are **genuine provider skew, not a lookup bug** —
+  `F-M89` and `R-A1133` really are absent from the (fresh, 57 MB) DecodingUs tree while `R-A9426` is
+  present; those terminals came from FTDNA-provenance calls. This is exactly what `unplaced` exists
+  to surface.
 - **Phase 3** — private-variant blocks, including **shared-private detection** (two or more members
   carrying the same unnamed variant = a candidate new branch), plus TSV/HTML export alongside the
   existing branch/descent exports in `export.rs`.
@@ -213,3 +234,8 @@ following the one-view-per-module split, and keeping `central.rs` from growing a
 4. **Private-Y coverage** — `donor_private_y` reads *cached* results, so members who have never had
    private-Y computed show `None`, not `0`. Should Phase 3 offer a batch "compute private-Y for this
    project" action, or leave it to the per-subject path?
+5. **Suffixed terminal names** (found in phase-2 validation) — some unresolved terminals are a real
+   node name plus a suffix, e.g. `R-A9426:n0` where `R-A9426` *is* in the tree. Stripping the suffix
+   and matching the parent node would recover those members, but only if the suffix means what it
+   looks like; worth confirming against whatever writes it before special-casing anything.
+6. **Whole-workspace mode** — resolved for v1: **project-scoped only**.
