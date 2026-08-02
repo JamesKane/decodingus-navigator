@@ -264,16 +264,30 @@ M269\tCTS10003
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let hdr = "name\tbuild\tchrom\tposition\tstrand\tancestral\tderived\n";
-        std::fs::write(dir.join("dictionary.tsv"), format!("{hdr}FullOnlySnp\ths1\tchrY\t123\t+\tA\tG\n")).unwrap();
-        std::fs::write(dir.join("chromo2-panel.tsv"), format!("{hdr}PanelOnlySnp\ths1\tchrY\t456\t+\tA\tG\n")).unwrap();
+        std::fs::write(
+            dir.join("dictionary.tsv"),
+            format!("{hdr}FullOnlySnp\ths1\tchrY\t123\t+\tA\tG\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("chromo2-panel.tsv"),
+            format!("{hdr}PanelOnlySnp\ths1\tchrY\t456\t+\tA\tG\n"),
+        )
+        .unwrap();
 
         let d = YsnpDictionary::load(&dir).unwrap();
         assert!(d.resolve("FullOnlySnp", "hs1").is_some(), "loaded the full catalog");
-        assert!(d.resolve("PanelOnlySnp", "hs1").is_none(), "did not load the chromo2 panel");
+        assert!(
+            d.resolve("PanelOnlySnp", "hs1").is_none(),
+            "did not load the chromo2 panel"
+        );
 
         std::fs::remove_file(dir.join("dictionary.tsv")).unwrap();
         let d2 = YsnpDictionary::load(&dir).unwrap();
-        assert!(d2.resolve("PanelOnlySnp", "hs1").is_some(), "fell back to the chromo2 panel");
+        assert!(
+            d2.resolve("PanelOnlySnp", "hs1").is_some(),
+            "fell back to the chromo2 panel"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

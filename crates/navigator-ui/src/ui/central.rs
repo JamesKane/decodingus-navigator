@@ -706,7 +706,9 @@ impl NavigatorApp {
 
     /// The subject-detail header: big name, ID + sex, and Add Data / Edit / Delete actions.
     fn subject_detail_header(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        let Some(bio) = self.find_subject(guid).cloned() else { return };
+        let Some(bio) = self.find_subject(guid).cloned() else {
+            return;
+        };
         ui.add_space(6.0);
         // When the subject was opened from a project's report, offer a way back to that project.
         if let Some(pid) = self.return_to_project {
@@ -873,8 +875,24 @@ impl NavigatorApp {
 /// left, so the caller can fall back to a localized default. The user can rename later.
 fn first_run_subject_name(paths: &[std::path::PathBuf]) -> Option<String> {
     const EXTS: [&str; 18] = [
-        ".g.vcf.gz", ".vcf.gz", ".vcf.bgz", ".fasta.gz", ".fa.gz", ".fna.gz", ".bam", ".cram", ".vcf", ".fasta",
-        ".fa", ".fna", ".fas", ".csv", ".tsv", ".txt", ".gz", ".bgz",
+        ".g.vcf.gz",
+        ".vcf.gz",
+        ".vcf.bgz",
+        ".fasta.gz",
+        ".fa.gz",
+        ".fna.gz",
+        ".bam",
+        ".cram",
+        ".vcf",
+        ".fasta",
+        ".fa",
+        ".fna",
+        ".fas",
+        ".csv",
+        ".tsv",
+        ".txt",
+        ".gz",
+        ".bgz",
     ];
     let name = paths.first()?.file_name()?.to_str()?;
     let lower = name.to_ascii_lowercase();
@@ -898,7 +916,10 @@ mod tests {
     #[test]
     fn derives_subject_name_from_file_stem() {
         assert_eq!(name("/data/HG002.bam").as_deref(), Some("HG002"));
-        assert_eq!(name("HG00096.chm13.chrY.g.vcf.gz").as_deref(), Some("HG00096.chm13.chrY"));
+        assert_eq!(
+            name("HG00096.chm13.chrY.g.vcf.gz").as_deref(),
+            Some("HG00096.chm13.chrY")
+        );
         assert_eq!(name("MyKit.vcf.gz").as_deref(), Some("MyKit"));
         assert_eq!(name("genome_Full.CRAM").as_deref(), Some("genome_Full")); // extension match is case-insensitive
         assert_eq!(name("relative.fasta").as_deref(), Some("relative"));

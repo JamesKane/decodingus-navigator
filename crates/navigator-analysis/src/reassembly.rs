@@ -199,7 +199,11 @@ fn genotype_candidate(
         }
     }
 
-    let allele_fraction = if depth > 0 { alt_depth as f64 / depth as f64 } else { 0.0 };
+    let allele_fraction = if depth > 0 {
+        alt_depth as f64 / depth as f64
+    } else {
+        0.0
+    };
     let genotype = if log_odds > params.min_log_odds && alt_depth >= params.min_alt_fragments {
         Zygosity::Derived
     } else if log_odds < -params.min_log_odds {
@@ -468,7 +472,9 @@ mod tests {
     }
 
     fn call_with(reads: &[WindowRead], params: &ReassemblyParams) -> ReassemblyCall {
-        genotype_window(REF, WIN_START, &[candidate()], reads, params).pop().unwrap()
+        genotype_window(REF, WIN_START, &[candidate()], reads, params)
+            .pop()
+            .unwrap()
     }
 
     #[test]
@@ -539,11 +545,19 @@ mod tests {
         // are clean. Against a reference+single-SNV alt haplotype (v1) the linked variants penalise
         // the true reads; the POA-assembled haplotype (v2) lets them match cleanly, so the call is
         // both DERIVED and more confident than v1.
-        let mut reads: Vec<_> = (0..10).map(|i| read_muts(&format!("alt{i}"), b'T', LINKED, 35, 60)).collect();
+        let mut reads: Vec<_> = (0..10)
+            .map(|i| read_muts(&format!("alt{i}"), b'T', LINKED, 35, 60))
+            .collect();
         reads.extend((0..4).map(|i| read(&format!("ref{i}"), b'A', 35, 60)));
 
         let v1 = call_with(&reads, &ReassemblyParams::default()); // assemble_alt: false (ref+SNV)
-        let v2 = call_with(&reads, &ReassemblyParams { assemble_alt: true, ..Default::default() });
+        let v2 = call_with(
+            &reads,
+            &ReassemblyParams {
+                assemble_alt: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(v1.genotype, Zygosity::Derived);
         assert_eq!(v2.genotype, Zygosity::Derived);
         assert!(

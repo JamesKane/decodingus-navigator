@@ -219,13 +219,14 @@ impl<'a> ReferencePhaser<'a> {
 
             // Collect candidate successor states, keyed by (x,y), keeping the best incoming lp.
             let mut next: HashMap<(u32, u32), (f64, u32)> = HashMap::new();
-            let consider = |x: u32, y: u32, base_lp: f64, trans_ln: f64, bp: u32, next: &mut HashMap<(u32, u32), (f64, u32)>| {
-                let lp = base_lp + trans_ln + self.emit_ln(g, allele(col, x as usize), allele(col, y as usize));
-                let e = next.entry((x, y)).or_insert((f64::NEG_INFINITY, 0));
-                if lp > e.0 {
-                    *e = (lp, bp);
-                }
-            };
+            let consider =
+                |x: u32, y: u32, base_lp: f64, trans_ln: f64, bp: u32, next: &mut HashMap<(u32, u32), (f64, u32)>| {
+                    let lp = base_lp + trans_ln + self.emit_ln(g, allele(col, x as usize), allele(col, y as usize));
+                    let e = next.entry((x, y)).or_insert((f64::NEG_INFINITY, 0));
+                    if lp > e.0 {
+                        *e = (lp, bp);
+                    }
+                };
 
             for (bi, s) in prev.iter().enumerate() {
                 let bp = bi as u32;
@@ -249,10 +250,7 @@ impl<'a> ReferencePhaser<'a> {
                 }
             }
 
-            let mut beam: Vec<Bs> = next
-                .into_iter()
-                .map(|((x, y), (lp, bp))| Bs { x, y, lp, bp })
-                .collect();
+            let mut beam: Vec<Bs> = next.into_iter().map(|((x, y), (lp, bp))| Bs { x, y, lp, bp }).collect();
             prune_beam(&mut beam, self.params.beam);
             trellis.push(beam);
         }

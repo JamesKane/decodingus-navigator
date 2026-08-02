@@ -17,7 +17,11 @@ fn load_ysnp_dictionary_cached() -> Result<Arc<YsnpDictionary>, String> {
         .map(|f| dir.join(f))
         .find(|p| p.is_file())
         .ok_or_else(|| format!("no Y-SNP dictionary in {}", dir.display()))?;
-    let key = format!("{}|{}", dict_path.display(), file_signature(&dict_path).unwrap_or_default());
+    let key = format!(
+        "{}|{}",
+        dict_path.display(),
+        file_signature(&dict_path).unwrap_or_default()
+    );
     let memo = YSNP_MEMO.get_or_init(|| Mutex::new(None));
     if let Some((k, d)) = memo.lock().unwrap().as_ref() {
         if *k == key {
@@ -308,8 +312,7 @@ impl App {
     /// re-publish, not a client change. Best-effort — the caller then loads, degrading clearly if the
     /// dictionary is still absent. Publish with `packaging/publish-assets.sh ysnp`.
     pub async fn ensure_ysnp_dictionary(&self) -> Result<(), AppError> {
-        const YSNP_ASSET_BASE: &str =
-            "https://github.com/JamesKane/decodingus-navigator/releases/download/assets-ysnp";
+        const YSNP_ASSET_BASE: &str = "https://github.com/JamesKane/decodingus-navigator/releases/download/assets-ysnp";
 
         let dir = ysnp_dict::asset_dir();
         if YsnpDictionary::ASSET_FILENAMES.iter().any(|f| dir.join(f).is_file()) {

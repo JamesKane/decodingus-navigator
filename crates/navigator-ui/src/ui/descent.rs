@@ -196,7 +196,11 @@ impl NavigatorApp {
                         .color(egui::Color32::WHITE)
                         .strong(),
                 );
-                ui.label(egui::RichText::new(format!("{d}/{t} {}", self.tr("descent.derivedShort"))).weak().small());
+                ui.label(
+                    egui::RichText::new(format!("{d}/{t} {}", self.tr("descent.derivedShort")))
+                        .weak()
+                        .small(),
+                );
             });
             ui.horizontal_wrapped(|ui| {
                 for s in &node.snps {
@@ -224,7 +228,11 @@ impl NavigatorApp {
 
 /// (derived, total) defining-SNP counts for one node.
 fn node_counts(node: &navigator_app::NodeEvidence) -> (usize, usize) {
-    let derived = node.snps.iter().filter(|s| matches!(s.state, CallState::Derived)).count();
+    let derived = node
+        .snps
+        .iter()
+        .filter(|s| matches!(s.state, CallState::Derived))
+        .count();
     (derived, node.snps.len())
 }
 

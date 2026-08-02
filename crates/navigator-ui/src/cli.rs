@@ -468,7 +468,10 @@ async fn backfill_accessions(args: AccessionArgs) -> i32 {
         Ok(v) => v,
         Err(c) => return c,
     };
-    let r = match app.backfill_accessions(project_id, args.apply, args.all, args.limit).await {
+    let r = match app
+        .backfill_accessions(project_id, args.apply, args.all, args.limit)
+        .await
+    {
         Ok(r) => r,
         Err(e) => return report(e),
     };
@@ -483,10 +486,16 @@ async fn backfill_accessions(args: AccessionArgs) -> i32 {
             println!("  ids attached (name + accession): {}", r.ids_added);
             println!("  local accession fixed:           {}", r.accession_updated);
             if r.conflicts > 0 {
-                println!("  conflicts:                       {} (id already owned by another subject)", r.conflicts);
+                println!(
+                    "  conflicts:                       {} (id already owned by another subject)",
+                    r.conflicts
+                );
             }
         } else {
-            println!("  ids to attach (name + accession): {} (dry run — pass --apply)", r.ids_to_add);
+            println!(
+                "  ids to attach (name + accession): {} (dry run — pass --apply)",
+                r.ids_to_add
+            );
         }
         for ex in &r.examples {
             println!("  e.g. {ex}");
@@ -519,7 +528,10 @@ async fn backfill_catalog_ids(args: CatalogArgs) -> i32 {
         if r.applied {
             println!("  ids added:     {}", r.ids_added);
             if r.conflicts > 0 {
-                println!("  conflicts:     {} (id already owned by another subject — skipped)", r.conflicts);
+                println!(
+                    "  conflicts:     {} (id already owned by another subject — skipped)",
+                    r.conflicts
+                );
             }
         } else {
             println!("  ids to add:    {} (dry run — pass --apply)", r.ids_to_add);
@@ -562,7 +574,10 @@ async fn prune_orphans(args: PruneArgs) -> i32 {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
     } else if report.applied {
-        println!("Examined {} alignment record(s); deleted {} orphan(s).", report.examined, report.deleted);
+        println!(
+            "Examined {} alignment record(s); deleted {} orphan(s).",
+            report.examined, report.deleted
+        );
         for rk in &report.orphans {
             println!("  deleted {rk}");
         }
@@ -876,16 +891,15 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
                 .build_autosomal_profile(*biosample_guid)
                 .await
                 .map(|p| format!("{} site(s)", p.variants.len())),
-            AnalysisStep::Ancestry { biosample_guid } => app
-                .estimate_ancestry_from_consensus(*biosample_guid)
-                .await
-                .map(|r| {
+            AnalysisStep::Ancestry { biosample_guid } => {
+                app.estimate_ancestry_from_consensus(*biosample_guid).await.map(|r| {
                     // The top super-population is the headline the brief shows.
                     r.super_population_summary
                         .first()
                         .map(|p| format!("{} {:.0}%", p.super_population, p.percentage))
                         .unwrap_or_else(|| "(none)".into())
-                }),
+                })
+            }
         };
         match outcome {
             Ok(summary) => eprintln!("  [{:>8.1?}]  {n}/{total} {} — {summary}", t.elapsed(), step.label()),
@@ -902,7 +916,6 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
     eprintln!("done.");
     0
 }
-
 
 fn db_path(over: Option<PathBuf>) -> PathBuf {
     over.unwrap_or_else(crate::default_db_path)
@@ -1348,7 +1361,10 @@ async fn private_y(args: DebugCallsArgs) -> i32 {
             Ok(calls) => {
                 eprintln!("raw de-novo chrY calls: {}", calls.len());
                 for c in &calls {
-                    println!("DENOVO\t{}\t{}\t{}\t{}\t{:.2}", c.position, c.depth, c.alt_depth, c.alternate_allele, c.allele_fraction);
+                    println!(
+                        "DENOVO\t{}\t{}\t{}\t{}\t{:.2}",
+                        c.position, c.depth, c.alt_depth, c.alternate_allele, c.allele_fraction
+                    );
                 }
                 return 0;
             }
@@ -1365,10 +1381,7 @@ async fn private_y(args: DebugCallsArgs) -> i32 {
             return 1;
         }
     };
-    let gate = app
-        .publish_gate_for_alignment(alignment_id)
-        .await
-        .unwrap_or_default();
+    let gate = app.publish_gate_for_alignment(alignment_id).await.unwrap_or_default();
     println!("alignment {alignment_id} — terminal {}", bucket.terminal);
     println!("  DISPLAY (filtered) total: {}", bucket.variants.len());
     println!("    off-path known:          {}", bucket.off_path());
@@ -1525,10 +1538,13 @@ async fn branch_report(args: BranchReportArgs) -> i32 {
             r.position,
             r.ancestral,
             r.derived,
-            r.observed_base.map(|c| c.to_string()).unwrap_or_else(|| ".".to_string()),
+            r.observed_base
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| ".".to_string()),
             status(r.state),
             gt(r.state),
-            r.ad.map(|(rf, al)| format!("{rf},{al}")).unwrap_or_else(|| ".".to_string()),
+            r.ad.map(|(rf, al)| format!("{rf},{al}"))
+                .unwrap_or_else(|| ".".to_string()),
             opt(r.dp),
             opt(r.gq),
             r.source,
@@ -1611,7 +1627,10 @@ async fn archaic_segments(args: ShowArgs) -> i32 {
         return 0;
     }
     let s = &r.summary;
-    println!("Archaic segments (Tier B): {:.1} Mb in {} tracts", s.total_mb, s.n_segments);
+    println!(
+        "Archaic segments (Tier B): {:.1} Mb in {} tracts",
+        s.total_mb, s.n_segments
+    );
     println!("  {:.2}% of the {:.0} Mb callable", s.pct_callable, s.callable_mb);
     println!("  lineage split withheld — attribution is not yet reliable enough to report");
     0
@@ -1646,7 +1665,10 @@ async fn archaic(args: ArchaicArgs) -> i32 {
         println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
         return 0;
     }
-    println!("Archaic markers (Tier A): {} of {} copies", r.total_copies, r.possible_copies);
+    println!(
+        "Archaic markers (Tier A): {} of {} copies",
+        r.total_copies, r.possible_copies
+    );
     println!(
         "  {} of {} panel sites called ({:.1}%)",
         r.called_sites,
@@ -1656,7 +1678,10 @@ async fn archaic(args: ArchaicArgs) -> i32 {
     println!("  rate            {:.4} copies/site", r.rate());
     println!("  Neanderthal     {}", r.neanderthal_copies);
     println!("  shared archaic  {}", r.shared_copies);
-    println!("  Denisovan       {} (near the noise floor outside Oceania — not a finding)", r.denisovan_copies);
+    println!(
+        "  Denisovan       {} (near the noise floor outside Oceania — not a finding)",
+        r.denisovan_copies
+    );
     match (r.percentile, &r.cohort) {
         (Some(p), Some(c)) => println!("  percentile      more than {p:.0}% of {c}"),
         _ => println!("  percentile      not reported (coverage not comparable to the reference cohort)"),
@@ -1868,10 +1893,8 @@ pub struct DoctorArgs {
 async fn doctor(args: DoctorArgs) -> i32 {
     let diagnosis = if let Some(file) = args.file {
         let reference = args.reference;
-        match tokio::task::spawn_blocking(move || {
-            navigator_app::diagnose_alignment_file(&file, reference.as_deref())
-        })
-        .await
+        match tokio::task::spawn_blocking(move || navigator_app::diagnose_alignment_file(&file, reference.as_deref()))
+            .await
         {
             Ok(r) => r,
             Err(e) => {
@@ -1952,10 +1975,14 @@ async fn call(args: CallArgs) -> i32 {
     let scope = args.contig.clone().unwrap_or_else(|| "whole genome".into());
     eprintln!("calling de-novo diploid variants on alignment #{alignment_id} ({scope})…");
     let vcf = match args.contig {
-        Some(contig) => app.diploid_vcf(alignment_id, contig, navigator_app::CancelToken::none())
-            .await,
-        None => app.diploid_vcf_genome(alignment_id, navigator_app::CancelToken::none())
-            .await,
+        Some(contig) => {
+            app.diploid_vcf(alignment_id, contig, navigator_app::CancelToken::none())
+                .await
+        }
+        None => {
+            app.diploid_vcf_genome(alignment_id, navigator_app::CancelToken::none())
+                .await
+        }
     };
     let vcf = match vcf {
         Ok(v) => v,

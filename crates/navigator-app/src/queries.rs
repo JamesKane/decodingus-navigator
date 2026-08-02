@@ -82,11 +82,8 @@ impl App {
     /// [`haplogroup_terminals`](Self::haplogroup_terminals)). A subject is `Complete` once every
     /// alignment it owns has a full `coverage` artifact at the current version; otherwise `Pending`.
     /// Subjects with no alignments are omitted (the list shows no status for them).
-    pub async fn subject_analysis_status(
-        &self,
-    ) -> Result<HashMap<SampleGuid, SubjectAnalysisStatus>, AppError> {
-        let census =
-            artifact::analyzed_census(self.store.pool(), "coverage", coverage::COVERAGE_VERSION).await?;
+    pub async fn subject_analysis_status(&self) -> Result<HashMap<SampleGuid, SubjectAnalysisStatus>, AppError> {
+        let census = artifact::analyzed_census(self.store.pool(), "coverage", coverage::COVERAGE_VERSION).await?;
         Ok(census
             .into_iter()
             .map(|(guid, total, analyzed)| {
@@ -191,8 +188,11 @@ impl App {
                 // evidence (resolves sidecar-imported UNKNOWN-platform runs), then an optional file
                 // rescan for long reads that need the read names to tell HiFi from CLR.
                 if run.read_type.is_none() {
-                    let inferred = infer_read_type_cheap(&run.platform_name, &run.test_type)
-                        .or_else(|| metrics.as_ref().and_then(|(_, m)| read_type_from_mean_len(m.mean_read_length)));
+                    let inferred = infer_read_type_cheap(&run.platform_name, &run.test_type).or_else(|| {
+                        metrics
+                            .as_ref()
+                            .and_then(|(_, m)| read_type_from_mean_len(m.mean_read_length))
+                    });
                     match inferred {
                         Some(rt) => {
                             sequence_run::set_read_type(self.store.pool(), run.id, rt).await?;
@@ -295,7 +295,10 @@ impl App {
     /// (ancient) breakdown here — a separate report — instead of the modern super-population one.
     pub async fn donor_ancestry(&self, biosample_guid: SampleGuid) -> Result<Option<(i64, AncestryResult)>, AppError> {
         let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
-        if let Some(c) = all.iter().find(|(id, r)| *id == CONSENSUS_SOURCE_ID && r.method == "ADMIXTURE") {
+        if let Some(c) = all
+            .iter()
+            .find(|(id, r)| *id == CONSENSUS_SOURCE_ID && r.method == "ADMIXTURE")
+        {
             return Ok(Some(c.clone()));
         }
         Ok(all
@@ -434,7 +437,9 @@ impl App {
                     metrics = artifacts.fresh(a.id, "read_metrics", "1");
                 }
                 if sv_count.is_none() {
-                    sv_count = artifacts.fresh::<navigator_analysis::sv::types::SvAnalysisResult>(a.id, "sv", "1").map(|s| s.sv_calls.len());
+                    sv_count = artifacts
+                        .fresh::<navigator_analysis::sv::types::SvAnalysisResult>(a.id, "sv", "1")
+                        .map(|s| s.sv_calls.len());
                 }
             }
             let sex = sex.map(|s| match s.inferred_sex {

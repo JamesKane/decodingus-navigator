@@ -14,18 +14,14 @@ use std::sync::{Arc, Mutex};
 
 use navigator_app::CancelToken;
 use navigator_app::{
-    AnalysisStep,
-    AlignmentProbe, AncestryResult, App, AppError, AuditEntry, BatchImportSummary, BuildNeed,
-    ChatTurn, Consensus, Coverage, DenovoCall, DescentReport, DmConversationSummary, DmMessage, DnaType,
-    ExchangeSessionInfo,
-    FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
-    HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
-    MatchingEntry,
-    NarratedBrief, PaintingResult, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
-    ArchaicMarkerResult, ArchaicSegmentResult, ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, RohResult, SexInferenceResult,
-    SignalKind,
-    SourceType, StoredIbdExchange, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult, YMatch,
-    YstrClustering,
+    AlignmentProbe, AnalysisStep, AncestryResult, App, AppError, ArchaicMarkerResult, ArchaicSegmentResult, AuditEntry,
+    BatchImportSummary, BuildNeed, ChatTurn, Consensus, Coverage, DenovoCall, DescentReport, DmConversationSummary,
+    DmMessage, DnaType, ExchangeSessionInfo, FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary,
+    FtdnaResolution, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion,
+    IdentityVerification, IncomingRequest, MatchingEntry, NarratedBrief, PaintingResult, PrivateBucket,
+    ProjectImportSummary, ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RecruitmentInvitation,
+    RefBuildStatus, RohResult, SexInferenceResult, SignalKind, SourceType, StoredIbdExchange, StrConcordanceRow,
+    SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult, YMatch, YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -76,7 +72,10 @@ pub enum Command {
     /// Build (off the UI thread) the plain-language Subject Brief for a subject (Simple mode).
     LoadSubjectBrief(SampleGuid),
     /// Build (off the UI thread) a YFull-style Y/mtDNA descent report for a subject.
-    LoadDescentReport { guid: SampleGuid, dna: DnaType },
+    LoadDescentReport {
+        guid: SampleGuid,
+        dna: DnaType,
+    },
     /// Build (off the UI thread) a per-marker branch report over `node`'s subtree for a subject.
     LoadBranchReport {
         guid: SampleGuid,
@@ -93,7 +92,10 @@ pub enum Command {
         question: String,
     },
     /// Explain a single result signal in plain language (per-tab "Explain this", M5).
-    NarrateSignal { guid: SampleGuid, kind: SignalKind },
+    NarrateSignal {
+        guid: SampleGuid,
+        kind: SignalKind,
+    },
     /// Deep-analyze every sample in a project as a cancellable background job, streaming
     /// per-sample `DeepAnalyzeProgress` and yielding between samples so the UI stays responsive.
     /// Skips what the fast path already filled; cancelled via [`Command::CancelAnalysis`].
@@ -1230,7 +1232,10 @@ pub enum Event {
     /// Separate from [`Event::Error`] so the UI can offer the report without having to guess, from
     /// a string, whether an error has one. Only emitted when the preflight actually failed a
     /// check — a tree-download or network error must not raise a file report.
-    Diagnosed { message: String, report: String },
+    Diagnosed {
+        message: String,
+        report: String,
+    },
     /// A run stopped because the user cancelled it.
     ///
     /// Distinct from both `Error` (this is not a failure) and `Noop` (which would leave the
@@ -1325,7 +1330,10 @@ async fn settle_alignment_command(app: &App, alignment_id: i64, event: Event) ->
 /// [`Event::Genealogy`] — the refresh emitted after any genealogy mutation so the detail card
 /// reflects the new state without a separate "changed" round-trip.
 async fn reload_genealogy(app: &App, guid: SampleGuid) -> Event {
-    ev(app.subject_genealogy(guid).await, |data| Event::Genealogy { guid, data })
+    ev(app.subject_genealogy(guid).await, |data| Event::Genealogy {
+        guid,
+        data,
+    })
 }
 
 /// Map a fallible app call to an [`Event`]: `ok` names the success event, and **any** error becomes
@@ -1358,9 +1366,7 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::RefreshTrees => ev(app.refresh_trees().await, Event::TreesRefreshed),
         Command::CreateProject(new) => ev(app.create_project(new).await, Event::ProjectCreated),
         // ImportProjectDir streams ImportProgress from the spawn loop; reaching here is a bug.
-        Command::ImportProjectDir { .. } => {
-            Event::Error("internal: unrouted ImportProjectDir".into())
-        }
+        Command::ImportProjectDir { .. } => Event::Error("internal: unrouted ImportProjectDir".into()),
         Command::PlanFtdnaImport {
             project_id,
             project_name,
@@ -1384,30 +1390,30 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::CommitFtdnaImport { plan, resolutions } => {
             ev(app.commit_ftdna_import(&plan, &resolutions).await, Event::FtdnaImported)
         }
-        Command::LoadGenealogy(guid) => ev(app.subject_genealogy(guid).await, |data| Event::Genealogy { guid, data }),
-        Command::ClusterProject(project_id) => ev(
-            app.cluster_project_ystr(project_id).await,
-            |clustering| Event::ProjectClustering { project_id, clustering },
-        ),
+        Command::LoadGenealogy(guid) => ev(app.subject_genealogy(guid).await, |data| Event::Genealogy {
+            guid,
+            data,
+        }),
+        Command::ClusterProject(project_id) => ev(app.cluster_project_ystr(project_id).await, |clustering| {
+            Event::ProjectClustering { project_id, clustering }
+        }),
         // ResolveReference is handled in the spawn loop (it streams progress events); reaching
         // here would mean a routing bug.
         Command::ResolveReference { build } => Event::Error(format!("internal: unrouted ResolveReference {build}")),
-        Command::LoadSamples(project_id) => {
-            ev(app.list_biosamples(project_id).await, |samples| Event::Samples { project_id, samples })
-        }
-        Command::LoadProjectReport(project_id) => {
-            ev(app.project_report(project_id).await, |rows| Event::ProjectReport { project_id, rows })
-        }
-        Command::LoadProjectStrChart(project_id) => {
-            ev(app.project_str_chart(project_id).await, |chart| Event::ProjectStrChart { project_id, chart })
-        }
-        Command::LoadSubjectBrief(guid) => ev(
-            app.subject_brief(guid).await,
-            |brief| Event::SubjectBrief {
-                guid,
-                brief: Box::new(brief),
-            },
-        ),
+        Command::LoadSamples(project_id) => ev(app.list_biosamples(project_id).await, |samples| Event::Samples {
+            project_id,
+            samples,
+        }),
+        Command::LoadProjectReport(project_id) => ev(app.project_report(project_id).await, |rows| {
+            Event::ProjectReport { project_id, rows }
+        }),
+        Command::LoadProjectStrChart(project_id) => ev(app.project_str_chart(project_id).await, |chart| {
+            Event::ProjectStrChart { project_id, chart }
+        }),
+        Command::LoadSubjectBrief(guid) => ev(app.subject_brief(guid).await, |brief| Event::SubjectBrief {
+            guid,
+            brief: Box::new(brief),
+        }),
         Command::LoadDescentReport { guid, dna } => Event::DescentReportLoaded {
             guid,
             dna,
@@ -1432,13 +1438,11 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::LoadSubjectStatus => ev(app.subject_analysis_status().await, Event::SubjectStatus),
         Command::LoadHaploSummary => ev(app.haplogroup_terminals().await, Event::HaploSummary),
         Command::LoadAllBiosamples => ev(app.list_all_biosamples().await, Event::AllBiosamples),
-        Command::AddBiosample(b) => {
-            ev(
-                app.add_biosample(b.project_id, b.donor_identifier, b.sample_accession, b.sex)
-                    .await,
-                |_| Event::BiosamplesChanged,
-            )
-        }
+        Command::AddBiosample(b) => ev(
+            app.add_biosample(b.project_id, b.donor_identifier, b.sample_accession, b.sex)
+                .await,
+            |_| Event::BiosamplesChanged,
+        ),
         Command::UpdateBiosample {
             guid,
             donor_identifier,
@@ -1446,19 +1450,19 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             description,
             center_name,
             sex,
-        } => {
-            ev(
-                app.update_biosample(guid, donor_identifier, sample_accession, description, center_name, sex)
-                    .await,
-                |_| Event::BiosamplesChanged,
-            )
-        }
-        Command::AddExternalId { guid, source, external_id } => {
-            match app.add_external_id(guid, &source, &external_id).await {
-                Ok(_) => reload_genealogy(app, guid).await,
-                Err(e) => Event::Error(e.to_string()),
-            }
-        }
+        } => ev(
+            app.update_biosample(guid, donor_identifier, sample_accession, description, center_name, sex)
+                .await,
+            |_| Event::BiosamplesChanged,
+        ),
+        Command::AddExternalId {
+            guid,
+            source,
+            external_id,
+        } => match app.add_external_id(guid, &source, &external_id).await {
+            Ok(_) => reload_genealogy(app, guid).await,
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::DeleteExternalId { guid, id } => match app.delete_external_id(id).await {
             Ok(()) => reload_genealogy(app, guid).await,
             Err(e) => Event::Error(e.to_string()),
@@ -1472,15 +1476,15 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             Err(e) => Event::Error(e.to_string()),
         },
         Command::DeleteBiosample(guid) => ev(app.delete_biosample(guid).await, |_| Event::BiosamplesChanged),
-        Command::ClearBiosampleData(guid) => {
-            ev(app.clear_biosample_data(guid).await, |_| Event::BiosampleDataCleared(guid))
-        }
-        Command::ClearHaplogroupData(guid) => {
-            ev(app.clear_haplogroup_data(guid).await, |_| Event::HaplogroupDataReset(guid))
-        }
-        Command::DeleteSequenceRun { id, biosample_guid } => {
-            ev(app.delete_sequence_run(id).await, |_| Event::RunsChanged(biosample_guid))
-        }
+        Command::ClearBiosampleData(guid) => ev(app.clear_biosample_data(guid).await, |_| {
+            Event::BiosampleDataCleared(guid)
+        }),
+        Command::ClearHaplogroupData(guid) => ev(app.clear_haplogroup_data(guid).await, |_| {
+            Event::HaplogroupDataReset(guid)
+        }),
+        Command::DeleteSequenceRun { id, biosample_guid } => ev(app.delete_sequence_run(id).await, |_| {
+            Event::RunsChanged(biosample_guid)
+        }),
         Command::MergeSequenceRuns {
             biosample_guid,
             primary,
@@ -1489,12 +1493,12 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             app.merge_sequence_runs(biosample_guid, primary, secondary).await,
             |_| Event::RunsChanged(biosample_guid),
         ),
-        Command::DeleteAlignment { id, sequence_run_id } => {
-            ev(app.delete_alignment(id).await, |_| Event::AlignmentsChanged(sequence_run_id))
-        }
-        Command::DeleteStrProfile { id, biosample_guid } => {
-            ev(app.delete_str_profile(id).await, |_| Event::StrProfilesChanged(biosample_guid))
-        }
+        Command::DeleteAlignment { id, sequence_run_id } => ev(app.delete_alignment(id).await, |_| {
+            Event::AlignmentsChanged(sequence_run_id)
+        }),
+        Command::DeleteStrProfile { id, biosample_guid } => ev(app.delete_str_profile(id).await, |_| {
+            Event::StrProfilesChanged(biosample_guid)
+        }),
         Command::LoadReferenceSettings => Event::ReferenceSettings(app.reference_settings()),
         Command::TestLlmConnection { base_url } => {
             Event::LlmConnection(app.llm_models_at(&base_url).await.map_err(|e| e.to_string()))
@@ -1502,18 +1506,15 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::SetReferenceOverrides(rows) => {
             ev(app.set_reference_overrides(&rows), |_| Event::ReferenceSettingsChanged)
         }
-        Command::VerifyReference { build } => ev(
-            app.verify_reference(&build).await,
-            |outcome| {
-                let status = match outcome {
-                    navigator_app::VerifyOutcome::Verified => "✓ verified".to_string(),
-                    navigator_app::VerifyOutcome::Mismatch { .. } => "✗ mismatch (corrupted?)".to_string(),
-                    navigator_app::VerifyOutcome::NoSidecar => "• no checksum on record".to_string(),
-                    navigator_app::VerifyOutcome::NotCached => "not cached".to_string(),
-                };
-                Event::ReferenceVerified { build, status }
-            },
-        ),
+        Command::VerifyReference { build } => ev(app.verify_reference(&build).await, |outcome| {
+            let status = match outcome {
+                navigator_app::VerifyOutcome::Verified => "✓ verified".to_string(),
+                navigator_app::VerifyOutcome::Mismatch { .. } => "✗ mismatch (corrupted?)".to_string(),
+                navigator_app::VerifyOutcome::NoSidecar => "• no checksum on record".to_string(),
+                navigator_app::VerifyOutcome::NotCached => "not cached".to_string(),
+            };
+            Event::ReferenceVerified { build, status }
+        }),
         Command::LiftVcf {
             source,
             target,
@@ -1546,24 +1547,28 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 }
             }
         }
-        Command::DeleteVariantSet { id, biosample_guid } => {
-            ev(app.delete_variant_set(id).await, |_| Event::VariantSetsChanged(biosample_guid))
-        }
-        Command::DeleteChipProfile { id, biosample_guid } => {
-            ev(app.delete_chip_profile(id).await, |_| Event::ChipProfilesChanged(biosample_guid))
-        }
-        Command::DeleteMtdnaSequence { id, biosample_guid } => {
-            ev(app.delete_mtdna_sequence(id).await, |_| Event::MtdnaChanged(biosample_guid))
-        }
+        Command::DeleteVariantSet { id, biosample_guid } => ev(app.delete_variant_set(id).await, |_| {
+            Event::VariantSetsChanged(biosample_guid)
+        }),
+        Command::DeleteChipProfile { id, biosample_guid } => ev(app.delete_chip_profile(id).await, |_| {
+            Event::ChipProfilesChanged(biosample_guid)
+        }),
+        Command::DeleteMtdnaSequence { id, biosample_guid } => ev(app.delete_mtdna_sequence(id).await, |_| {
+            Event::MtdnaChanged(biosample_guid)
+        }),
         Command::AssignBiosampleProject { guid, project_id } => {
-            ev(app.add_biosample_to_project(guid, project_id).await, |_| Event::BiosamplesChanged)
+            ev(app.add_biosample_to_project(guid, project_id).await, |_| {
+                Event::BiosamplesChanged
+            })
         }
         Command::UpdateProject {
             id,
             name,
             description,
             administrator,
-        } => ev(app.update_project(id, name, description, administrator).await, |_| Event::ProjectsChanged),
+        } => ev(app.update_project(id, name, description, administrator).await, |_| {
+            Event::ProjectsChanged
+        }),
         Command::DeleteProject(id) => ev(app.delete_project(id).await, |_| Event::ProjectsChanged),
         Command::UpdateSequenceRun {
             id,
@@ -1573,20 +1578,18 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             test_type,
             library_layout,
             sequencing_facility,
-        } => {
-            ev(
-                app.update_sequence_run(
-                    id,
-                    platform_name,
-                    instrument_model,
-                    test_type,
-                    library_layout,
-                    sequencing_facility,
-                )
-                .await,
-                |_| Event::RunsChanged(biosample_guid),
+        } => ev(
+            app.update_sequence_run(
+                id,
+                platform_name,
+                instrument_model,
+                test_type,
+                library_layout,
+                sequencing_facility,
             )
-        }
+            .await,
+            |_| Event::RunsChanged(biosample_guid),
+        ),
         Command::UpdateAlignment {
             id,
             sequence_run_id,
@@ -1597,10 +1600,13 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             app.update_alignment(id, reference_build, aligner, variant_caller).await,
             |_| Event::AlignmentsChanged(sequence_run_id),
         ),
-        Command::LoadRuns(biosample_guid) => {
-            ev(app.list_sequence_runs(biosample_guid).await, |runs| Event::Runs { biosample_guid, runs })
-        }
-        Command::AddRun(new) => ev(app.record_sequence_run(new).await, |run| Event::RunsChanged(run.biosample_guid)),
+        Command::LoadRuns(biosample_guid) => ev(app.list_sequence_runs(biosample_guid).await, |runs| Event::Runs {
+            biosample_guid,
+            runs,
+        }),
+        Command::AddRun(new) => ev(app.record_sequence_run(new).await, |run| {
+            Event::RunsChanged(run.biosample_guid)
+        }),
         Command::LoadConsensus(guid) => {
             let y = app.haplogroup_consensus(guid, DnaType::Y).await.unwrap_or(None);
             let mt = app.haplogroup_consensus(guid, DnaType::Mt).await.unwrap_or(None);
@@ -1621,40 +1627,31 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::YMatches {
             biosample_guid,
             project_id,
-        } => ev(
-            app.y_matches(biosample_guid, project_id).await,
-            |matches| Event::YMatches {
+        } => ev(app.y_matches(biosample_guid, project_id).await, |matches| {
+            Event::YMatches {
                 biosample_guid,
                 matches,
-            },
-        ),
-        Command::LoadStrProfiles(guid) => ev(
-            app.list_str_profiles(guid).await,
-            |profiles| Event::StrProfiles {
-                biosample_guid: guid,
-                profiles,
-            },
-        ),
+            }
+        }),
+        Command::LoadStrProfiles(guid) => ev(app.list_str_profiles(guid).await, |profiles| Event::StrProfiles {
+            biosample_guid: guid,
+            profiles,
+        }),
         Command::ImportStrProfile {
             biosample_guid,
             panel_name,
             provider,
             source,
             path,
-        } => {
-            ev(
-                app.import_str_profile_from_csv(biosample_guid, &panel_name, provider, source, &path)
-                    .await,
-                |_| Event::StrProfilesChanged(biosample_guid),
-            )
-        }
-        Command::LoadVariantSets(guid) => ev(
-            app.list_variant_sets(guid).await,
-            |sets| Event::VariantSets {
-                biosample_guid: guid,
-                sets,
-            },
+        } => ev(
+            app.import_str_profile_from_csv(biosample_guid, &panel_name, provider, source, &path)
+                .await,
+            |_| Event::StrProfilesChanged(biosample_guid),
         ),
+        Command::LoadVariantSets(guid) => ev(app.list_variant_sets(guid).await, |sets| Event::VariantSets {
+            biosample_guid: guid,
+            sets,
+        }),
         Command::ImportVariants {
             biosample_guid,
             path,
@@ -1668,98 +1665,89 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             source_label,
             source_type,
             text,
-        } => {
-            ev(
-                app.add_variants(biosample_guid, &source_label, source_type, &text)
-                    .await,
-                |_| Event::VariantSetsChanged(biosample_guid),
-            )
-        }
-        Command::LoadChipProfiles(guid) => ev(
-            app.list_chip_profiles(guid).await,
-            |profiles| Event::ChipProfiles {
-                biosample_guid: guid,
-                profiles,
-            },
+        } => ev(
+            app.add_variants(biosample_guid, &source_label, source_type, &text)
+                .await,
+            |_| Event::VariantSetsChanged(biosample_guid),
         ),
+        Command::LoadChipProfiles(guid) => ev(app.list_chip_profiles(guid).await, |profiles| Event::ChipProfiles {
+            biosample_guid: guid,
+            profiles,
+        }),
         Command::ImportChipProfile {
             biosample_guid,
             provider,
             path,
-        } => {
-            ev(
-                app.import_chip_profile_from_csv(biosample_guid, provider, None, &path)
-                    .await,
-                |_| Event::ChipProfilesChanged(biosample_guid),
-            )
-        }
-        Command::LoadMtdna(guid) => ev(
-            app.list_mtdna_sequences(guid).await,
-            |sequences| Event::MtdnaSequences {
+        } => ev(
+            app.import_chip_profile_from_csv(biosample_guid, provider, None, &path)
+                .await,
+            |_| Event::ChipProfilesChanged(biosample_guid),
+        ),
+        Command::LoadMtdna(guid) => ev(app.list_mtdna_sequences(guid).await, |sequences| {
+            Event::MtdnaSequences {
                 biosample_guid: guid,
                 sequences,
-            },
-        ),
+            }
+        }),
         Command::ImportMtdna { biosample_guid, path } => {
-            ev(app.import_mtdna_from_fasta(biosample_guid, &path).await, |_| Event::MtdnaChanged(biosample_guid))
+            ev(app.import_mtdna_from_fasta(biosample_guid, &path).await, |_| {
+                Event::MtdnaChanged(biosample_guid)
+            })
         }
-        Command::LoadMtdnaVariants { mtdna_id } => {
-            ev(app.mtdna_variants(mtdna_id).await, |variants| Event::MtdnaVariants { mtdna_id, variants })
+        Command::LoadMtdnaVariants { mtdna_id } => ev(app.mtdna_variants(mtdna_id).await, |variants| {
+            Event::MtdnaVariants { mtdna_id, variants }
+        }),
+        Command::AssignMtdnaHaplogroup { mtdna_id } => ev(app.assign_mtdna_haplogroup(mtdna_id).await, |assignment| {
+            Event::Haplogroup { mtdna_id, assignment }
+        }),
+        Command::AssignYBisdna { biosample_guid } => {
+            ev(app.assign_y_bisdna(biosample_guid, None).await, |assignment| {
+                Event::YBisdnaHaplogroup {
+                    biosample_guid,
+                    assignment,
+                }
+            })
         }
-        Command::AssignMtdnaHaplogroup { mtdna_id } => {
-            ev(app.assign_mtdna_haplogroup(mtdna_id).await, |assignment| Event::Haplogroup { mtdna_id, assignment })
-        }
-        Command::AssignYBisdna { biosample_guid } => ev(
-            app.assign_y_bisdna(biosample_guid, None).await,
-            |assignment| Event::YBisdnaHaplogroup {
-                biosample_guid,
-                assignment,
-            },
-        ),
-        Command::YHaploReport { alignment_id } => ev(
-            app.y_haplogroup_report(alignment_id).await,
-            |(assignment, lineage)| Event::YHaploReport {
-                alignment_id,
-                assignment,
-                lineage,
-            },
-        ),
-        Command::AssignYHaplogroup { alignment_id } => ev(
-            app.assign_y_haplogroup(alignment_id).await,
-            |assignment| Event::YHaplogroup {
-                alignment_id,
-                assignment,
-            },
-        ),
-        Command::AssignMtdnaHaplogroupFromAlignment { alignment_id } => {
-            ev(
-                app.assign_mtdna_haplogroup_from_alignment(alignment_id).await,
-                |assignment| Event::MtHaplogroup {
+        Command::YHaploReport { alignment_id } => {
+            ev(app.y_haplogroup_report(alignment_id).await, |(assignment, lineage)| {
+                Event::YHaploReport {
                     alignment_id,
                     assignment,
-                },
-            )
+                    lineage,
+                }
+            })
         }
+        Command::AssignYHaplogroup { alignment_id } => ev(app.assign_y_haplogroup(alignment_id).await, |assignment| {
+            Event::YHaplogroup {
+                alignment_id,
+                assignment,
+            }
+        }),
+        Command::AssignMtdnaHaplogroupFromAlignment { alignment_id } => ev(
+            app.assign_mtdna_haplogroup_from_alignment(alignment_id).await,
+            |assignment| Event::MtHaplogroup {
+                alignment_id,
+                assignment,
+            },
+        ),
         Command::EstimateAncestryFromConsensus { biosample_guid } => {
             // Estimate from the pooled consensus, then surface it as the donor-level result.
-            ev(
-                app.estimate_ancestry_from_consensus(biosample_guid).await,
-                |result| Event::DonorAncestry {
+            ev(app.estimate_ancestry_from_consensus(biosample_guid).await, |result| {
+                Event::DonorAncestry {
                     alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
                     result,
-                },
-            )
+                }
+            })
         }
         Command::EstimateDeepAncestry { biosample_guid } => {
             // Heavy: genotypes the best CHM13 alignment at ~1.15M sites, then fits qpAdm f4. Persists
             // the ANCIENT_ADMIXTURE result (or nothing, when the model doesn't apply).
-            ev(
-                app.estimate_deep_ancestry(biosample_guid).await,
-                |result| Event::DeepAncestryEstimated {
+            ev(app.estimate_deep_ancestry(biosample_guid).await, |result| {
+                Event::DeepAncestryEstimated {
                     biosample_guid,
                     result: result.map(Box::new),
-                },
-            )
+                }
+            })
         }
         Command::PaintAncestryFromConsensus { biosample_guid } => {
             // Painting from the consensus needs no genotyping pass — fast, no progress stream.
@@ -1771,61 +1759,58 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 },
             )
         }
-        Command::LoadPainting { biosample_guid } => ev(
-            app.cached_painting(biosample_guid).await,
-            |result| Event::AncestryPainting {
+        Command::LoadPainting { biosample_guid } => ev(app.cached_painting(biosample_guid).await, |result| {
+            Event::AncestryPainting {
                 alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
                 result: result.unwrap_or_default(),
-            },
-        ),
+            }
+        }),
         Command::ComputeRohFromConsensus { biosample_guid } => {
             // ROH from the consensus needs no genotyping pass — fast, no progress stream.
-            ev(
-                app.compute_roh_from_consensus(biosample_guid).await,
-                |result| Event::RohResultReady {
+            ev(app.compute_roh_from_consensus(biosample_guid).await, |result| {
+                Event::RohResultReady {
                     biosample_guid,
                     result: Some(Box::new(result)),
-                },
-            )
+                }
+            })
         }
-        Command::LoadRoh { biosample_guid } => ev(
-            app.cached_roh(biosample_guid).await,
-            |result| Event::RohResultReady {
+        Command::LoadRoh { biosample_guid } => {
+            ev(app.cached_roh(biosample_guid).await, |result| Event::RohResultReady {
                 biosample_guid,
                 result: result.map(Box::new),
-            },
-        ),
+            })
+        }
         Command::ComputeArchaicFromConsensus { biosample_guid } => {
             // A pure read over the cached consensus + the marker panel — no genotyping pass.
-            ev(
-                app.estimate_archaic_from_consensus(biosample_guid).await,
-                |result| Event::ArchaicResultReady {
+            ev(app.estimate_archaic_from_consensus(biosample_guid).await, |result| {
+                Event::ArchaicResultReady {
                     biosample_guid,
                     result: Some(Box::new(result)),
-                },
-            )
+                }
+            })
         }
-        Command::LoadArchaic { biosample_guid } => ev(
-            app.cached_archaic(biosample_guid).await,
-            |result| Event::ArchaicResultReady {
+        Command::LoadArchaic { biosample_guid } => ev(app.cached_archaic(biosample_guid).await, |result| {
+            Event::ArchaicResultReady {
                 biosample_guid,
                 result: result.map(Box::new),
-            },
-        ),
-        Command::CallArchaicSegments { biosample_guid } => ev(
-            app.call_archaic_segments_for_subject(biosample_guid).await,
-            |result| Event::ArchaicSegmentsReady {
-                biosample_guid,
-                result: Some(Box::new(result)),
-            },
-        ),
-        Command::LoadArchaicSegments { biosample_guid } => ev(
-            app.cached_archaic_segments(biosample_guid).await,
-            |result| Event::ArchaicSegmentsReady {
-                biosample_guid,
-                result: result.map(Box::new),
-            },
-        ),
+            }
+        }),
+        Command::CallArchaicSegments { biosample_guid } => {
+            ev(app.call_archaic_segments_for_subject(biosample_guid).await, |result| {
+                Event::ArchaicSegmentsReady {
+                    biosample_guid,
+                    result: Some(Box::new(result)),
+                }
+            })
+        }
+        Command::LoadArchaicSegments { biosample_guid } => {
+            ev(app.cached_archaic_segments(biosample_guid).await, |result| {
+                Event::ArchaicSegmentsReady {
+                    biosample_guid,
+                    result: result.map(Box::new),
+                }
+            })
+        }
         Command::LoadConsensusAncestryDetail { biosample_guid } => {
             let fine = app
                 .consensus_ancestry(biosample_guid, "FINE_ADMIXTURE")
@@ -1871,38 +1856,35 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             Err(e) => Event::Error(e.to_string()),
         },
         Command::AddDataBatch { biosample_guid, paths } => {
-            ev(
-                app.add_data_batch(biosample_guid, paths, |_, _| {}).await,
-                |summary| Event::DataBatchImported {
+            ev(app.add_data_batch(biosample_guid, paths, |_, _| {}).await, |summary| {
+                Event::DataBatchImported {
                     biosample_guid,
                     summary,
-                },
-            )
+                }
+            })
         }
         Command::CreateSubjectAndImport {
             donor_identifier,
             sex,
             paths,
         } => match app.add_biosample(None, donor_identifier, None, sex).await {
-            Ok(bio) => ev(
-                app.add_data_batch(bio.guid, paths, |_, _| {}).await,
-                |summary| Event::SubjectCreatedAndImported {
+            Ok(bio) => ev(app.add_data_batch(bio.guid, paths, |_, _| {}).await, |summary| {
+                Event::SubjectCreatedAndImported {
                     biosample_guid: bio.guid,
                     summary,
-                },
-            ),
+                }
+            }),
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::LoadAlignments(sequence_run_id) => ev(
-            app.list_alignments(sequence_run_id).await,
-            |alignments| Event::Alignments {
+        Command::LoadAlignments(sequence_run_id) => ev(app.list_alignments(sequence_run_id).await, |alignments| {
+            Event::Alignments {
                 sequence_run_id,
                 alignments,
-            },
-        ),
-        Command::AddAlignment(new) => {
-            ev(app.record_alignment(new).await, |a| Event::AlignmentsChanged(a.sequence_run_id))
-        }
+            }
+        }),
+        Command::AddAlignment(new) => ev(app.record_alignment(new).await, |a| {
+            Event::AlignmentsChanged(a.sequence_run_id)
+        }),
         Command::ProbeAlignment { path } => ev(app.probe_alignment(path).await, Event::AlignmentProbe),
         Command::DefaultAlignment { biosample_guid } => match app.default_alignment_for_subject(biosample_guid).await {
             Ok(Some((run_id, alignment_id))) => Event::DefaultAlignment { run_id, alignment_id },
@@ -1919,125 +1901,118 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             Ok(None) => Event::Noop,
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::LoadYProfile { biosample_guid } => ev(
-            app.cached_y_profile(biosample_guid).await,
-            |profile| Event::YProfile {
+        Command::LoadYProfile { biosample_guid } => {
+            ev(app.cached_y_profile(biosample_guid).await, |profile| Event::YProfile {
                 biosample_guid,
                 profile,
-            },
-        ),
-        Command::BuildYProfile { biosample_guid } => ev(
-            app.build_y_profile(biosample_guid).await,
-            |profile| Event::YProfile {
+            })
+        }
+        Command::BuildYProfile { biosample_guid } => {
+            ev(app.build_y_profile(biosample_guid).await, |profile| Event::YProfile {
                 biosample_guid,
                 profile: Some(profile),
-            },
-        ),
+            })
+        }
         Command::LoadYSnpNames {
             biosample_guid,
             positions,
-        } => ev(app.y_snp_names_at(biosample_guid, &positions).await, |names| Event::YSnpNames { names }),
-        Command::LoadMtProfile { biosample_guid } => ev(
-            app.cached_mt_profile(biosample_guid).await,
-            |profile| Event::MtProfile {
+        } => ev(app.y_snp_names_at(biosample_guid, &positions).await, |names| {
+            Event::YSnpNames { names }
+        }),
+        Command::LoadMtProfile { biosample_guid } => ev(app.cached_mt_profile(biosample_guid).await, |profile| {
+            Event::MtProfile {
                 biosample_guid,
                 profile,
-            },
-        ),
-        Command::BuildMtProfile { biosample_guid } => ev(
-            app.build_mt_profile(biosample_guid).await,
-            |profile| Event::MtProfile {
+            }
+        }),
+        Command::BuildMtProfile { biosample_guid } => {
+            ev(app.build_mt_profile(biosample_guid).await, |profile| Event::MtProfile {
                 biosample_guid,
                 profile: Some(profile),
-            },
-        ),
-        Command::LoadAutosomalProfile { biosample_guid } => ev(
-            app.cached_autosomal_profile(biosample_guid).await,
-            |profile| Event::AutosomalProfile {
-                biosample_guid,
-                profile,
-            },
-        ),
-        Command::BuildAutosomalProfile { biosample_guid } => ev(
-            app.build_autosomal_profile(biosample_guid).await,
-            |profile| Event::AutosomalProfile {
-                biosample_guid,
-                profile: Some(profile),
-            },
-        ),
-        Command::LoadCoverage(alignment_id) => {
-            ev(app.cached_coverage(alignment_id).await, |result| Event::Coverage { alignment_id, result })
+            })
         }
+        Command::LoadAutosomalProfile { biosample_guid } => {
+            ev(app.cached_autosomal_profile(biosample_guid).await, |profile| {
+                Event::AutosomalProfile {
+                    biosample_guid,
+                    profile,
+                }
+            })
+        }
+        Command::BuildAutosomalProfile { biosample_guid } => {
+            ev(app.build_autosomal_profile(biosample_guid).await, |profile| {
+                Event::AutosomalProfile {
+                    biosample_guid,
+                    profile: Some(profile),
+                }
+            })
+        }
+        Command::LoadCoverage(alignment_id) => ev(app.cached_coverage(alignment_id).await, |result| Event::Coverage {
+            alignment_id,
+            result,
+        }),
         Command::LoadCoverageBulk(ids) => ev(app.cached_coverage_bulk(&ids).await, Event::CoverageBulk),
-        Command::LoadGenomeRegions { alignment_id, build } => ev(
-            app.genome_regions(&build).await,
-            |regions| Event::GenomeRegions {
+        Command::LoadGenomeRegions { alignment_id, build } => {
+            ev(app.genome_regions(&build).await, |regions| Event::GenomeRegions {
                 alignment_id,
                 regions: Some(regions),
-            },
-        ),
-        Command::RunCoverage(alignment_id) => ev(
-            app.run_coverage_for_alignment(alignment_id).await,
-            |result| Event::Coverage {
-                alignment_id,
-                result: Some(result),
-            },
-        ),
-        Command::LoadSex(alignment_id) => {
-            ev(app.cached_sex(alignment_id).await, |result| Event::Sex { alignment_id, result })
+            })
         }
-        Command::RunSex(alignment_id) => ev(
-            app.run_sex(alignment_id).await,
-            |result| Event::Sex {
+        Command::RunCoverage(alignment_id) => ev(app.run_coverage_for_alignment(alignment_id).await, |result| {
+            Event::Coverage {
                 alignment_id,
                 result: Some(result),
-            },
-        ),
-        Command::LoadReadMetrics(alignment_id) => {
-            ev(app.cached_read_metrics(alignment_id).await, |result| Event::ReadMetrics { alignment_id, result })
+            }
+        }),
+        Command::LoadSex(alignment_id) => ev(app.cached_sex(alignment_id).await, |result| Event::Sex {
+            alignment_id,
+            result,
+        }),
+        Command::RunSex(alignment_id) => ev(app.run_sex(alignment_id).await, |result| Event::Sex {
+            alignment_id,
+            result: Some(result),
+        }),
+        Command::LoadReadMetrics(alignment_id) => ev(app.cached_read_metrics(alignment_id).await, |result| {
+            Event::ReadMetrics { alignment_id, result }
+        }),
+        Command::RunReadMetrics(alignment_id) => {
+            ev(app.run_read_metrics(alignment_id).await, |result| Event::ReadMetrics {
+                alignment_id,
+                result: Some(result),
+            })
         }
-        Command::RunReadMetrics(alignment_id) => ev(
-            app.run_read_metrics(alignment_id).await,
-            |result| Event::ReadMetrics {
-                alignment_id,
-                result: Some(result),
-            },
-        ),
-        Command::LoadSv(alignment_id) => {
-            ev(app.cached_sv(alignment_id).await, |result| Event::Sv { alignment_id, result })
-        }
-        Command::RunSv(alignment_id) => ev(
-            app.run_sv(alignment_id, cancel.clone()).await,
-            |result| Event::Sv {
-                alignment_id,
-                result: Some(result),
-            },
-        ),
-        Command::LoadDenovo { alignment_id, contig } => ev(
-            app.cached_denovo(alignment_id, &contig).await,
-            |result| Event::Denovo {
+        Command::LoadSv(alignment_id) => ev(app.cached_sv(alignment_id).await, |result| Event::Sv {
+            alignment_id,
+            result,
+        }),
+        Command::RunSv(alignment_id) => ev(app.run_sv(alignment_id, cancel.clone()).await, |result| Event::Sv {
+            alignment_id,
+            result: Some(result),
+        }),
+        Command::LoadDenovo { alignment_id, contig } => {
+            ev(app.cached_denovo(alignment_id, &contig).await, |result| Event::Denovo {
                 alignment_id,
                 contig,
                 result,
+            })
+        }
+        Command::RunDenovo { alignment_id, contig } => ev(
+            app.run_denovo_for_alignment(alignment_id, contig.clone()).await,
+            |result| Event::Denovo {
+                alignment_id,
+                contig,
+                result: Some(result),
             },
         ),
-        Command::RunDenovo { alignment_id, contig } => {
-            ev(
-                app.run_denovo_for_alignment(alignment_id, contig.clone()).await,
-                |result| Event::Denovo {
-                    alignment_id,
-                    contig,
-                    result: Some(result),
-                },
-            )
-        }
         Command::LoadAllAlignments => ev(app.list_all_alignments().await, Event::AllAlignments),
-        Command::CompareIbdConsensus { a, b } => {
-            ev(app.compare_ibd_consensus(a, b, IbdDetectorConfig::default()).await, Event::Ibd)
-        }
-        Command::CompareIbdSources { a, b } => {
-            ev(app.compare_ibd_sources(a, b, IbdDetectorConfig::default()).await, Event::Ibd)
-        }
+        Command::CompareIbdConsensus { a, b } => ev(
+            app.compare_ibd_consensus(a, b, IbdDetectorConfig::default()).await,
+            Event::Ibd,
+        ),
+        Command::CompareIbdSources { a, b } => ev(
+            app.compare_ibd_sources(a, b, IbdDetectorConfig::default()).await,
+            Event::Ibd,
+        ),
         Command::VerifyIdentityConsensus { a, b } => ev(app.verify_identity_consensus(a, b).await, Event::Identity),
         Command::LoadIbdSuggestions => ev(app.ibd_suggestions().await, Event::IbdSuggestions),
         Command::RequestIntroduction {
@@ -2047,10 +2022,11 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             Ok(_) => ev(app.matching_entries().await, Event::Matching),
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::DismissCandidate { suggested_sample_guid } => ev(
-            app.ibd_dismiss(&suggested_sample_guid).await,
-            |_| Event::CandidateDismissed { suggested_sample_guid },
-        ),
+        Command::DismissCandidate { suggested_sample_guid } => {
+            ev(app.ibd_dismiss(&suggested_sample_guid).await, |_| {
+                Event::CandidateDismissed { suggested_sample_guid }
+            })
+        }
         Command::UseLocalIdentity => ev(app.use_local_identity(), |did| Event::Authenticated(Some(did))),
         Command::RefreshMatching => ev(app.refresh_matching().await, Event::Matching),
         Command::MatchingConsent {
@@ -2092,10 +2068,9 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             }
         }
         Command::LoadIbdExchanges { biosample_guid } => {
-            ev(
-                app.list_ibd_exchanges_for_subject(biosample_guid).await,
-                |rows| Event::IbdExchanges { biosample_guid, rows },
-            )
+            ev(app.list_ibd_exchanges_for_subject(biosample_guid).await, |rows| {
+                Event::IbdExchanges { biosample_guid, rows }
+            })
         }
         Command::DmInitiate { partner_did } => ev(app.dm_initiate(&partner_did).await, |_| Event::DmInitiated),
         Command::LoadDmInbox => match (app.dm_incoming().await, app.dm_ready().await) {
@@ -2107,35 +2082,36 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         }
         Command::DmConnect { info } => ev(app.dm_connect(&info).await, |_| Event::DmConnected),
         Command::LoadDmConversations => ev(app.dm_conversations().await, Event::DmConversations),
-        Command::LoadDmMessages { session_id } => {
-            ev(app.dm_messages(&session_id).await, |rows| Event::DmMessages { session_id, rows })
-        }
+        Command::LoadDmMessages { session_id } => ev(app.dm_messages(&session_id).await, |rows| Event::DmMessages {
+            session_id,
+            rows,
+        }),
         Command::DmSend { session_id, text } => {
             ev(app.dm_send(&session_id, &text).await, |_| Event::DmSent { session_id })
         }
-        Command::DmSync { session_id } => {
-            ev(app.dm_sync(&session_id).await, |new_count| Event::DmSynced { session_id, new_count })
-        }
+        Command::DmSync { session_id } => ev(app.dm_sync(&session_id).await, |new_count| Event::DmSynced {
+            session_id,
+            new_count,
+        }),
         Command::LoadRecruitmentInvitations => ev(app.recruitment_invitations().await, Event::RecruitmentInvitations),
         Command::RespondRecruitment { campaign_id, accept } => {
-            ev(app.recruitment_respond(campaign_id, accept).await, |_| Event::RecruitmentResponded)
+            ev(app.recruitment_respond(campaign_id, accept).await, |_| {
+                Event::RecruitmentResponded
+            })
         }
         Command::BackfillLabs => ev(app.backfill_run_labs().await, Event::LabsResolved),
         Command::AuthStatus => Event::Authenticated(app.current_account()),
         Command::SyncStatus => Event::SyncOnline(app.is_online()),
-        Command::PullSync => ev(
-            app.pull_sync().await,
-            |o| Event::PullDone {
-                in_sync: o.in_sync,
-                applied: o.applied,
-                adopted: o.adopted,
-                repushed: o.repushed,
-                conflicts: o.conflicts,
-            },
-        ),
-        Command::VerifySourceFiles => {
-            ev(app.verify_source_files().await, |missing| Event::SourceFilesVerified { missing })
-        }
+        Command::PullSync => ev(app.pull_sync().await, |o| Event::PullDone {
+            in_sync: o.in_sync,
+            applied: o.applied,
+            adopted: o.adopted,
+            repushed: o.repushed,
+            conflicts: o.conflicts,
+        }),
+        Command::VerifySourceFiles => ev(app.verify_source_files().await, |missing| Event::SourceFilesVerified {
+            missing,
+        }),
         Command::Login { handle } => ev(app.login(&handle).await, |did| Event::Authenticated(Some(did))),
         Command::Logout => ev(app.logout().await, |_| Event::Authenticated(None)),
         // Publishes enqueue to the durable outbox then drain — handled in the spawn loop (they emit
@@ -2170,74 +2146,65 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 Err(e) => Event::Error(format!("write {}: {e}", path.display())),
             }
         }
-        Command::LoadPcaReference => ev(
-            app.ancestry_pca_reference().await,
-            |points| Event::PcaReference {
-                alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
-                points,
-            },
-        ),
+        Command::LoadPcaReference => ev(app.ancestry_pca_reference().await, |points| Event::PcaReference {
+            alignment_id: navigator_app::CONSENSUS_SOURCE_ID,
+            points,
+        }),
         Command::SetHaploOverride {
             biosample_guid,
             dna_type,
             haplogroup,
             reason,
-        } => {
-            ev(
-                app.set_manual_override(biosample_guid, dna_type, &haplogroup, reason.as_deref())
-                    .await,
-                |_| Event::ReconciliationChanged {
-                    biosample_guid,
-                    dna_type,
-                },
-            )
-        }
-        Command::ClearHaploOverride {
-            biosample_guid,
-            dna_type,
         } => ev(
-            app.clear_manual_override(biosample_guid, dna_type).await,
+            app.set_manual_override(biosample_guid, dna_type, &haplogroup, reason.as_deref())
+                .await,
             |_| Event::ReconciliationChanged {
                 biosample_guid,
                 dna_type,
             },
         ),
+        Command::ClearHaploOverride {
+            biosample_guid,
+            dna_type,
+        } => ev(app.clear_manual_override(biosample_guid, dna_type).await, |_| {
+            Event::ReconciliationChanged {
+                biosample_guid,
+                dna_type,
+            }
+        }),
         Command::LoadAudit {
             biosample_guid,
             dna_type,
-        } => ev(
-            app.reconciliation_audit(biosample_guid, dna_type).await,
-            |entries| Event::Audit {
+        } => ev(app.reconciliation_audit(biosample_guid, dna_type).await, |entries| {
+            Event::Audit {
                 biosample_guid,
                 dna_type,
                 entries,
-            },
-        ),
-        Command::LoadHeteroplasmy { alignment_id } => {
-            ev(app.mtdna_heteroplasmy(alignment_id).await, |sites| Event::Heteroplasmy { alignment_id, sites })
-        }
+            }
+        }),
+        Command::LoadHeteroplasmy { alignment_id } => ev(app.mtdna_heteroplasmy(alignment_id).await, |sites| {
+            Event::Heteroplasmy { alignment_id, sites }
+        }),
         Command::PublishReconciliation { biosample_guid, .. } => {
             Event::Error(format!("internal: unrouted PublishReconciliation {biosample_guid:?}"))
         }
         // ---- social (Community tab) ----------------------------------------
         Command::LoadSupportThreads => ev(app.support_threads().await, Event::SupportThreads),
-        Command::LoadSupportThread { conversation_id } => ev(
-            app.support_thread(&conversation_id).await,
-            |messages| Event::SupportThread {
+        Command::LoadSupportThread { conversation_id } => ev(app.support_thread(&conversation_id).await, |messages| {
+            Event::SupportThread {
                 conversation_id,
                 messages,
-            },
-        ),
-        Command::OpenSupportThread { subject, body } => ev(
-            app.open_support_thread(&subject, &body).await,
+            }
+        }),
+        Command::OpenSupportThread { subject, body } => {
+            ev(app.open_support_thread(&subject, &body).await, |conversation_id| {
+                Event::SupportThreadPosted { conversation_id }
+            })
+        }
+        Command::ReplySupportThread { conversation_id, body } => ev(
+            app.reply_support_thread(&conversation_id, &body).await,
             |conversation_id| Event::SupportThreadPosted { conversation_id },
         ),
-        Command::ReplySupportThread { conversation_id, body } => {
-            ev(
-                app.reply_support_thread(&conversation_id, &body).await,
-                |conversation_id| Event::SupportThreadPosted { conversation_id },
-            )
-        }
         Command::LoadCommunityFeed => ev(app.community_feed().await, Event::CommunityFeed),
         Command::PostCommunity {
             content,
@@ -2248,23 +2215,22 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             // `feed.post` record; a publish failure is surfaced but the post itself is not lost.
             Ok(_) => {
                 if publish_pds {
-                    ev(app.publish_feed_post(&content, topic.as_deref()).await, |_| Event::CommunityPosted)
+                    ev(app.publish_feed_post(&content, topic.as_deref()).await, |_| {
+                        Event::CommunityPosted
+                    })
                 } else {
                     Event::CommunityPosted
                 }
             }
             Err(e) => Event::Error(e.to_string()),
         },
-        Command::LoadNotifications => ev(
-            app.notifications().await,
-            |n| Event::Notifications {
-                items: n.items,
-                unread: n.unread,
-            },
-        ),
-        Command::MarkNotificationRead { id } => {
-            ev(app.mark_notification_read(id.as_deref()).await, |_| Event::NotificationsMarked)
-        }
+        Command::LoadNotifications => ev(app.notifications().await, |n| Event::Notifications {
+            items: n.items,
+            unread: n.unread,
+        }),
+        Command::MarkNotificationRead { id } => ev(app.mark_notification_read(id.as_deref()).await, |_| {
+            Event::NotificationsMarked
+        }),
     }
 }
 
@@ -2293,7 +2259,9 @@ async fn resolve_reference_streaming(
             wake();
         }
     };
-    let event = ev(app.resolve_reference(&build, &mut progress).await, |path| Event::ReferenceReady { build, path });
+    let event = ev(app.resolve_reference(&build, &mut progress).await, |path| {
+        Event::ReferenceReady { build, path }
+    });
     let _ = evt_tx.send(event);
     wake();
 }
@@ -2323,12 +2291,7 @@ async fn ensure_references_streaming(
 /// (else they error or degrade to a whole-file scan); building it eagerly — with a visible bar —
 /// keeps a freshly imported file from looking stuck on its first analysis. A file that already has
 /// an index returns instantly with `built: None` (no progress noise).
-async fn ensure_index_streaming(
-    app: &App,
-    alignment_id: i64,
-    evt_tx: &Sender<Event>,
-    wake: &(dyn Fn() + Send + Sync),
-) {
+async fn ensure_index_streaming(app: &App, alignment_id: i64, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send + Sync)) {
     // Progress runs on a blocking thread, so the callback must be Send — capture owned clones, not
     // borrows. Throttling already happens in the analysis layer (per ~32 MB); forward each tick.
     let tx = evt_tx.clone();
@@ -2428,19 +2391,23 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                 // be Fn + Sync; the event Sender is !Sync, so guard it with a Mutex.
                 let evt = Arc::new(Mutex::new(evt_tx.clone()));
                 let wk = wake.clone();
-                app.run_unified_metrics_with_progress(alignment_id, move |done, tot| {
-                    let within = if tot > 0 { done as f32 / tot as f32 } else { 0.0 };
-                    if let Ok(tx) = evt.lock() {
-                        let _ = tx.send(Event::AnalysisProgress {
-                            step: 1,
-                            total,
-                            label: "Quality metrics".into(),
-                            detail: format!("scanning genome — {:.0}%", within * 100.0),
-                            fraction: within / total as f32,
-                        });
-                    }
-                    wk();
-                }, cancel.clone())
+                app.run_unified_metrics_with_progress(
+                    alignment_id,
+                    move |done, tot| {
+                        let within = if tot > 0 { done as f32 / tot as f32 } else { 0.0 };
+                        if let Ok(tx) = evt.lock() {
+                            let _ = tx.send(Event::AnalysisProgress {
+                                step: 1,
+                                total,
+                                label: "Quality metrics".into(),
+                                detail: format!("scanning genome — {:.0}%", within * 100.0),
+                                fraction: within / total as f32,
+                            });
+                        }
+                        wk();
+                    },
+                    cancel.clone(),
+                )
                 .await
                 .map(|r| (r.coverage, r.read_metrics, r.sex))
             }
@@ -2831,7 +2798,12 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             // visible progress bar — a first CRAM/BAM that needs a multi-GB reference
                             // download otherwise looks like it didn't register (§ ensure_references_streaming).
                             Command::AddDataBatch { biosample_guid, paths } => {
-                                let event = handle(&app, Command::AddDataBatch { biosample_guid, paths }, &CancelToken::none()).await;
+                                let event = handle(
+                                    &app,
+                                    Command::AddDataBatch { biosample_guid, paths },
+                                    &CancelToken::none(),
+                                )
+                                .await;
                                 let imported = matches!(event, Event::DataBatchImported { .. });
                                 let _ = evt_tx.send(event);
                                 wake();
@@ -2878,7 +2850,12 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                 }
                                 ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::BuildAutosomalProfile { biosample_guid }, &CancelToken::none()).await;
+                                let event = handle(
+                                    &app,
+                                    Command::BuildAutosomalProfile { biosample_guid },
+                                    &CancelToken::none(),
+                                )
+                                .await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2887,73 +2864,125 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                 }
                                 ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::StrConcordance { biosample_guid }, &CancelToken::none()).await;
+                                let event =
+                                    handle(&app, Command::StrConcordance { biosample_guid }, &CancelToken::none())
+                                        .await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
                             Command::RunSv(alignment_id) => {
                                 if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
-                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake)
+                                        .await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
                                 let (gen, token) = cancels.begin();
-                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::RunSv(alignment_id), &token).await).await;
+                                let event = settle_alignment_command(
+                                    &app,
+                                    alignment_id,
+                                    handle(&app, Command::RunSv(alignment_id), &token).await,
+                                )
+                                .await;
                                 cancels.end(gen);
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
                             Command::LoadHeteroplasmy { alignment_id } => {
                                 if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
-                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake)
+                                        .await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::LoadHeteroplasmy { alignment_id }, &CancelToken::none()).await).await;
+                                let event = settle_alignment_command(
+                                    &app,
+                                    alignment_id,
+                                    handle(&app, Command::LoadHeteroplasmy { alignment_id }, &CancelToken::none())
+                                        .await,
+                                )
+                                .await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
                             Command::AssignYHaplogroup { alignment_id } => {
                                 if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
-                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake)
+                                        .await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::AssignYHaplogroup { alignment_id }, &CancelToken::none()).await).await;
+                                let event = settle_alignment_command(
+                                    &app,
+                                    alignment_id,
+                                    handle(&app, Command::AssignYHaplogroup { alignment_id }, &CancelToken::none())
+                                        .await,
+                                )
+                                .await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
                             Command::YHaploReport { alignment_id } => {
                                 if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
-                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake)
+                                        .await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::YHaploReport { alignment_id }, &CancelToken::none()).await).await;
+                                let event = settle_alignment_command(
+                                    &app,
+                                    alignment_id,
+                                    handle(&app, Command::YHaploReport { alignment_id }, &CancelToken::none()).await,
+                                )
+                                .await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
                             Command::AssignMtdnaHaplogroupFromAlignment { alignment_id } => {
                                 if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
-                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake)
+                                        .await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::AssignMtdnaHaplogroupFromAlignment { alignment_id }, &CancelToken::none()).await).await;
+                                let event = settle_alignment_command(
+                                    &app,
+                                    alignment_id,
+                                    handle(
+                                        &app,
+                                        Command::AssignMtdnaHaplogroupFromAlignment { alignment_id },
+                                        &CancelToken::none(),
+                                    )
+                                    .await,
+                                )
+                                .await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
                             Command::FindPrivateY { alignment_id, mask } => {
                                 if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
-                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake)
+                                        .await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
-                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::FindPrivateY { alignment_id, mask }, &CancelToken::none()).await).await;
+                                let event = settle_alignment_command(
+                                    &app,
+                                    alignment_id,
+                                    handle(&app, Command::FindPrivateY { alignment_id, mask }, &CancelToken::none())
+                                        .await,
+                                )
+                                .await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
                             Command::RunDenovo { alignment_id, contig } => {
                                 if let Ok(Some(build)) = app.reference_build_of_alignment(alignment_id).await {
-                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                    ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake)
+                                        .await;
                                 }
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
                                 let (gen, token) = cancels.begin();
-                                let event = settle_alignment_command(&app, alignment_id, handle(&app, Command::RunDenovo { alignment_id, contig }, &token).await).await;
+                                let event = settle_alignment_command(
+                                    &app,
+                                    alignment_id,
+                                    handle(&app, Command::RunDenovo { alignment_id, contig }, &token).await,
+                                )
+                                .await;
                                 cancels.end(gen);
                                 let _ = evt_tx.send(event);
                                 wake();
@@ -2962,12 +2991,19 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 for src in [a, b] {
                                     if let navigator_app::IbdSource::Alignment(aln) = src {
                                         if let Ok(Some(build)) = app.reference_build_of_alignment(aln).await {
-                                            ensure_references_streaming(&app, std::slice::from_ref(&build), &evt_tx, &*wake).await;
+                                            ensure_references_streaming(
+                                                &app,
+                                                std::slice::from_ref(&build),
+                                                &evt_tx,
+                                                &*wake,
+                                            )
+                                            .await;
                                         }
                                         ensure_index_streaming(&app, aln, &evt_tx, &*wake).await;
                                     }
                                 }
-                                let event = handle(&app, Command::CompareIbdSources { a, b }, &CancelToken::none()).await;
+                                let event =
+                                    handle(&app, Command::CompareIbdSources { a, b }, &CancelToken::none()).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2976,7 +3012,8 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                 }
                                 ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::BuildYProfile { biosample_guid }, &CancelToken::none()).await;
+                                let event =
+                                    handle(&app, Command::BuildYProfile { biosample_guid }, &CancelToken::none()).await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -2985,7 +3022,9 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
                                 }
                                 ensure_indexes_for_subject_streaming(&app, biosample_guid, &evt_tx, &*wake).await;
-                                let event = handle(&app, Command::BuildMtProfile { biosample_guid }, &CancelToken::none()).await;
+                                let event =
+                                    handle(&app, Command::BuildMtProfile { biosample_guid }, &CancelToken::none())
+                                        .await;
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
@@ -3007,8 +3046,15 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                         ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
                                         // Simple one-click: include the autosomal ancestry step.
                                         let (gen, cancel) = cancels.begin();
-                                        run_full_analysis_streaming(&app, alignment_id, true, cancel, &evt_tx, wake.clone())
-                                            .await;
+                                        run_full_analysis_streaming(
+                                            &app,
+                                            alignment_id,
+                                            true,
+                                            cancel,
+                                            &evt_tx,
+                                            wake.clone(),
+                                        )
+                                        .await;
                                         cancels.end(gen);
                                     }
                                     Ok(None) => {
@@ -3177,8 +3223,21 @@ mod tests {
         }
 
         // Delete both → empty genealogy.
-        let _ = handle(&app, Command::DeleteMdka { guid, lineage: "Y".into() }, &CancelToken::none()).await;
-        let ev = handle(&app, Command::DeleteExternalId { guid, id: kit_id }, &CancelToken::none()).await;
+        let _ = handle(
+            &app,
+            Command::DeleteMdka {
+                guid,
+                lineage: "Y".into(),
+            },
+            &CancelToken::none(),
+        )
+        .await;
+        let ev = handle(
+            &app,
+            Command::DeleteExternalId { guid, id: kit_id },
+            &CancelToken::none(),
+        )
+        .await;
         match ev {
             Event::Genealogy { data, .. } => assert!(data.is_empty(), "all genealogy removed"),
             other => panic!("expected Genealogy, got {other:?}"),
@@ -3211,7 +3270,9 @@ mod tests {
                 name: "Trio".into(),
                 description: None,
                 administrator: "jk".into(),
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await;
         let pid = match created {
             Event::ProjectCreated(p) => p.id,
@@ -3359,7 +3420,9 @@ mod tests {
                 name: "P".into(),
                 description: None,
                 administrator: "jk".into(),
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::ProjectCreated(p) => p.id,
@@ -3374,7 +3437,9 @@ mod tests {
                 donor_identifier: "HG002".into(),
                 sample_accession: None,
                 sex: Some("male".into()),
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::BiosamplesChanged => {}
@@ -3398,7 +3463,9 @@ mod tests {
                 donor_identifier: "NA12878".into(),
                 sample_accession: None,
                 sex: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::BiosamplesChanged => {}
@@ -3422,7 +3489,9 @@ mod tests {
                 pf_reads_aligned: None,
                 mean_read_length: None,
                 mean_insert_size: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::RunsChanged(g) => assert_eq!(g, guid),
@@ -3444,7 +3513,9 @@ mod tests {
                 bam_path: None,
                 reference_path: None,
                 content_sha256: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::AlignmentsChanged(r) => assert_eq!(r, run_id),
@@ -3466,7 +3537,9 @@ mod tests {
                 donor_identifier: "draft".into(),
                 sample_accession: None,
                 sex: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::BiosamplesChanged => {}
@@ -3520,7 +3593,9 @@ mod tests {
                 pf_reads_aligned: None,
                 mean_read_length: None,
                 mean_insert_size: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::RunsChanged(_) => {}
@@ -3572,7 +3647,9 @@ mod tests {
                 donor_identifier: "spare".into(),
                 sample_accession: None,
                 sex: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::BiosamplesChanged => {}
@@ -3601,7 +3678,9 @@ mod tests {
                 name: "P".into(),
                 description: None,
                 administrator: "jk".into(),
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::ProjectCreated(p) => p.id,
@@ -3614,7 +3693,9 @@ mod tests {
                 donor_identifier: "loose".into(),
                 sample_accession: None,
                 sex: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::BiosamplesChanged => {}
@@ -3660,7 +3741,13 @@ mod tests {
         }
 
         // clearing the project (None) removes it from the project list
-        match handle(&app, Command::AssignBiosampleProject { guid, project_id: None }, &CancelToken::none()).await {
+        match handle(
+            &app,
+            Command::AssignBiosampleProject { guid, project_id: None },
+            &CancelToken::none(),
+        )
+        .await
+        {
             Event::BiosamplesChanged => {}
             other => panic!("got {other:?}"),
         }
@@ -3679,7 +3766,9 @@ mod tests {
                 name: "Old".into(),
                 description: None,
                 administrator: "jk".into(),
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::ProjectCreated(p) => p.id,
@@ -3721,7 +3810,9 @@ mod tests {
                 donor_identifier: "member".into(),
                 sample_accession: None,
                 sex: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::BiosamplesChanged => {}
@@ -3759,7 +3850,9 @@ mod tests {
                 donor_identifier: "subj".into(),
                 sample_accession: None,
                 sex: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::BiosamplesChanged => {}
@@ -3781,7 +3874,9 @@ mod tests {
                 pf_reads_aligned: None,
                 mean_read_length: None,
                 mean_insert_size: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::RunsChanged(_) => {}
@@ -3833,7 +3928,9 @@ mod tests {
                 bam_path: None,
                 reference_path: None,
                 content_sha256: None,
-            }), &CancelToken::none())
+            }),
+            &CancelToken::none(),
+        )
         .await
         {
             Event::AlignmentsChanged(_) => {}

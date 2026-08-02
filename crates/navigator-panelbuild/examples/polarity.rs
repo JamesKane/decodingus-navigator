@@ -6,7 +6,9 @@ use navigator_analysis::ancestry::AncestryPanel;
 use std::collections::HashMap;
 
 fn main() -> anyhow::Result<()> {
-    let a = std::env::args().nth(1).expect("usage: polarity <ancient.bin> <super.bin>");
+    let a = std::env::args()
+        .nth(1)
+        .expect("usage: polarity <ancient.bin> <super.bin>");
     let s = std::env::args().nth(2).expect("super.bin");
     let ancient = AncestryPanel::from_bytes(&std::fs::read(&a)?).map_err(|e| anyhow::anyhow!("{e}"))?;
     let sup = AncestryPanel::from_bytes(&std::fs::read(&s)?).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -17,9 +19,12 @@ fn main() -> anyhow::Result<()> {
         .sites
         .iter()
         .filter_map(|x| {
-            x.freqs
-                .get(eur)
-                .map(|&f| ((x.contig.clone(), x.position), (x.reference_allele, x.alternate_allele, (f as f64).min(1.0 - f as f64))))
+            x.freqs.get(eur).map(|&f| {
+                (
+                    (x.contig.clone(), x.position),
+                    (x.reference_allele, x.alternate_allele, (f as f64).min(1.0 - f as f64)),
+                )
+            })
         })
         .collect();
 
@@ -29,7 +34,9 @@ fn main() -> anyhow::Result<()> {
     let (mut aligned, mut swapped, mut other) = (vec![0usize; nb], vec![0usize; nb], vec![0usize; nb]);
 
     for x in &ancient.sites {
-        let Some(&(sr, sa, m)) = sup_idx.get(&(x.contig.clone(), x.position)) else { continue };
+        let Some(&(sr, sa, m)) = sup_idx.get(&(x.contig.clone(), x.position)) else {
+            continue;
+        };
         let b = bin(m);
         let (ar, aa) = (x.reference_allele, x.alternate_allele);
         if ar == sr && aa == sa {
@@ -41,7 +48,10 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("{:<14}{:>8}{:>9}{:>9}{:>9}", "EUR MAF bin", "aligned", "SWAPPED", "other", "%swap");
+    println!(
+        "{:<14}{:>8}{:>9}{:>9}{:>9}",
+        "EUR MAF bin", "aligned", "SWAPPED", "other", "%swap"
+    );
     for b in 0..nb {
         let tot = (aligned[b] + swapped[b] + other[b]).max(1);
         println!(
@@ -57,6 +67,9 @@ fn main() -> anyhow::Result<()> {
     let ta: usize = aligned.iter().sum();
     let ts: usize = swapped.iter().sum();
     let to: usize = other.iter().sum();
-    println!("\ntotal: aligned={ta} swapped={ts} other={to}  ({:.1}% swapped)", 100.0 * ts as f64 / (ta + ts + to).max(1) as f64);
+    println!(
+        "\ntotal: aligned={ta} swapped={ts} other={to}  ({:.1}% swapped)",
+        100.0 * ts as f64 / (ta + ts + to).max(1) as f64
+    );
     Ok(())
 }

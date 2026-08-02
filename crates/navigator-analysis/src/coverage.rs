@@ -24,8 +24,8 @@ use noodles::fasta;
 
 use serde::{Deserialize, Serialize};
 
-use crate::contig;
 use crate::cancel::CancelToken;
+use crate::contig;
 use crate::error::AnalysisError;
 use crate::reader;
 use crate::readview::AlnRead;
@@ -399,7 +399,14 @@ pub fn collect_coverage_callable(
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
 ) -> Result<CoverageResult, AnalysisError> {
-    collect_coverage_callable_with_progress(bam_path, reference_path, params, contig_allowlist, &mut |_, _| {}, &CancelToken::none())
+    collect_coverage_callable_with_progress(
+        bam_path,
+        reference_path,
+        params,
+        contig_allowlist,
+        &mut |_, _| {},
+        &CancelToken::none(),
+    )
 }
 
 /// Like [`collect_coverage_callable`], reporting `progress(contigs_done, contigs_total)` as each

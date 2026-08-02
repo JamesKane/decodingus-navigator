@@ -27,7 +27,8 @@ fn main() {
         &contig,
         &params,
         &navigator_analysis::CancelToken::none(),
-    ).expect("call_denovo");
+    )
+    .expect("call_denovo");
     eprintln!(
         "call_denovo({contig}): {} variants in {:.1}s (realign={})",
         calls.len(),

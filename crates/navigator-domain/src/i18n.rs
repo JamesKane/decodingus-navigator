@@ -173,7 +173,11 @@ mod tests {
     fn brief_prose_is_translated_in_every_language() {
         let en = catalog(Lang::En);
         let brief_keys: Vec<&&str> = en.keys().filter(|k| k.starts_with("brief.")).collect();
-        assert!(brief_keys.len() > 20, "expected the brief catalog, found {}", brief_keys.len());
+        assert!(
+            brief_keys.len() > 20,
+            "expected the brief catalog, found {}",
+            brief_keys.len()
+        );
         for lang in Lang::all() {
             for key in &brief_keys {
                 assert!(

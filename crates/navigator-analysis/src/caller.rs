@@ -494,14 +494,16 @@ pub fn call_indels_at(
 
     // Parse + left-normalize each target's expected allele. proc_lo = 1 (full-contig reference).
     struct PTarget {
-        pos: i64,        // VCF POS (anchor), 1-based
-        n_anchor: i64,   // normalized CIGAR anchor (= pos+1 canonically)
+        pos: i64,      // VCF POS (anchor), 1-based
+        n_anchor: i64, // normalized CIGAR anchor (= pos+1 canonically)
         n_allele: IndelAllele,
-        span_end: i64,   // last ref base the ref-spanning read must cover
+        span_end: i64, // last ref base the ref-spanning read must cover
     }
     let mut ptargets: Vec<PTarget> = Vec::new();
     for (pos, anc, der) in targets {
-        let Some(al) = expected_indel_allele(anc, der) else { continue };
+        let Some(al) = expected_indel_allele(anc, der) else {
+            continue;
+        };
         let (n_anchor, n_allele) = left_normalize(pos + 1, &al, &refbytes, 1);
         let del_len = match &al {
             IndelAllele::Del(l) => *l as i64,
@@ -534,10 +536,14 @@ pub fn call_indels_at(
         if !passes(&record, params) {
             continue;
         }
-        let Some(start) = record.alignment_start().map(|p| p.get() as i64) else { continue };
+        let Some(start) = record.alignment_start().map(|p| p.get() as i64) else {
+            continue;
+        };
         let (raw, ref_end) = read_indel_events(&record, start);
-        let events: Vec<(i64, IndelAllele)> =
-            raw.into_iter().map(|(a, al)| left_normalize(a, &al, &refbytes, 1)).collect();
+        let events: Vec<(i64, IndelAllele)> = raw
+            .into_iter()
+            .map(|(a, al)| left_normalize(a, &al, &refbytes, 1))
+            .collect();
         // Targets whose anchor this read could inform: pos in [start, ref_end].
         let lo = positions.partition_point(|&p| p < start);
         let hi = positions.partition_point(|&p| p <= ref_end);
@@ -545,10 +551,7 @@ pub fn call_indels_at(
             let t = &ptargets[i];
             if events.iter().any(|(a, al)| *a == t.n_anchor && *al == t.n_allele) {
                 matched[i] += 1;
-            } else if start <= t.pos
-                && ref_end >= t.span_end
-                && !events.iter().any(|(a, _)| *a == t.n_anchor)
-            {
+            } else if start <= t.pos && ref_end >= t.span_end && !events.iter().any(|(a, _)| *a == t.n_anchor) {
                 refspan[i] += 1;
             }
         }
@@ -1160,7 +1163,12 @@ fn denovo_chunk(
 
 /// A reassembly candidate for a paralog-gated position: the top **non-reference** base, kept only if
 /// it carries at least `min_paralog_minor_reads` reads (a real alternate, not a lone error).
-fn active_candidate(pos: i64, counts: &[u32; 4], ref_base: u8, params: &HaploidCallerParams) -> Option<reassembly::Candidate> {
+fn active_candidate(
+    pos: i64,
+    counts: &[u32; 4],
+    ref_base: u8,
+    params: &HaploidCallerParams,
+) -> Option<reassembly::Candidate> {
     let ref_bi = base_index(ref_base)?;
     let (alt_bi, &alt_count) = counts
         .iter()
@@ -1319,7 +1327,13 @@ fn extract_window_reads(
             }
         }
         if wseq.len() >= 30 {
-            reads.push(reassembly::WindowRead { name, seq: wseq, quals: wq, mapq, site_obs });
+            reads.push(reassembly::WindowRead {
+                name,
+                seq: wseq,
+                quals: wq,
+                mapq,
+                site_obs,
+            });
         }
     }
     Ok(reads)
@@ -2167,11 +2181,14 @@ mod tests {
         assert!(!para([11, 0, 0, 0]));
         // One discordant read at low depth — a sequencing error, kept.
         assert!(!para([3, 1, 0, 0])); // second=1 (< 2 reads)
-                                      // Scattered errors across other bases, none reaching 2 reads — kept.
+
+        // Scattered errors across other bases, none reaching 2 reads — kept.
         assert!(!para([18, 1, 1, 0])); // second=1
-                                       // Genuine bi-allelic pileup (7 derived / 4 ancestral) — paralog, dropped.
+
+        // Genuine bi-allelic pileup (7 derived / 4 ancestral) — paralog, dropped.
         assert!(para([7, 4, 0, 0])); // second=4, 0.36 > 0.20
-                                     // Boundary: 2/10 = 0.20 is not strictly above the threshold — kept.
+
+        // Boundary: 2/10 = 0.20 is not strictly above the threshold — kept.
         assert!(!para([8, 2, 0, 0]));
         // 3/10 = 0.30 > 0.20 with 3 reads — dropped.
         assert!(para([7, 3, 0, 0]));

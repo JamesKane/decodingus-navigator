@@ -306,10 +306,8 @@ impl ArchaicMarkerResult {
 /// *base*. Reading dosage directly as "archaic copies" would invert every site where CHM13
 /// orientation left the derived allele on REF — 3 % of the panel.
 pub fn count_archaic_markers(genotypes: &[SiteGenotype], panel: &ArchaicMarkerPanel) -> ArchaicMarkerResult {
-    let by_pos: std::collections::HashMap<(&str, i64), &SiteGenotype> = genotypes
-        .iter()
-        .map(|g| ((g.contig.as_str(), g.position), g))
-        .collect();
+    let by_pos: std::collections::HashMap<(&str, i64), &SiteGenotype> =
+        genotypes.iter().map(|g| ((g.contig.as_str(), g.position), g)).collect();
 
     let (mut total, mut nea, mut den, mut shared) = (0u32, 0u32, 0u32, 0u32);
     let mut called = 0usize;
@@ -652,7 +650,13 @@ mod tests {
         }
     }
 
-    fn site(position: i64, reference_allele: char, alternate_allele: char, derived: char, class: DiagnosticClass) -> ArchaicSite {
+    fn site(
+        position: i64,
+        reference_allele: char,
+        alternate_allele: char,
+        derived: char,
+        class: DiagnosticClass,
+    ) -> ArchaicSite {
         ArchaicSite {
             contig: "chr1".into(),
             position,
@@ -741,11 +745,11 @@ mod tests {
                 site(400, 'A', 'G', 'G', DiagnosticClass::Neanderthal),
             ],
         };
+        // Panel site 400 is absent from the genotypes entirely — the fourth way a site goes uncalled.
         let genotypes = vec![
-            gt("chr1", 100, "A", "G", 2),   // counted
-            gt("chr1", 200, "A", "G", -1),  // explicit no-call
-            gt("chr1", 300, "C", "T", 2),   // alleles disagree with the panel
-            // 400 absent entirely
+            gt("chr1", 100, "A", "G", 2),  // counted
+            gt("chr1", 200, "A", "G", -1), // explicit no-call
+            gt("chr1", 300, "C", "T", 2),  // alleles disagree with the panel
         ];
         let r = count_archaic_markers(&genotypes, &panel);
         assert_eq!(r.called_sites, 1, "only the usable site counts");
@@ -768,7 +772,10 @@ mod tests {
         let dense: Vec<i64> = (0..10_000).map(|i| i * 40).collect();
         let ds = PositionStream::encode("chr21", &dense);
         assert_eq!(ds.iter().collect::<Vec<_>>(), dense);
-        assert!(ds.deltas.len() < dense.len() * 2, "delta encoding should stay ~1 byte/site here");
+        assert!(
+            ds.deltas.len() < dense.len() * 2,
+            "delta encoding should stay ~1 byte/site here"
+        );
     }
 
     #[test]
@@ -779,7 +786,10 @@ mod tests {
             contigs: vec![PositionStream::encode("chr21", &[100, 200, 300, 400])],
         };
         // 200 and 400 are shared with Africans -> stripped; the rest are private.
-        assert_eq!(og.retain_private("chr21", &[50, 200, 250, 400, 500]), vec![50, 250, 500]);
+        assert_eq!(
+            og.retain_private("chr21", &[50, 200, 250, 400, 500]),
+            vec![50, 250, 500]
+        );
         // Exact-boundary behaviour: first and last outgroup entries.
         assert_eq!(og.retain_private("chr21", &[100, 400]), Vec::<i64>::new());
         // A contig with no outgroup data yields NOTHING rather than everything — stripping nothing
@@ -823,7 +833,9 @@ mod tests {
         let called: Vec<u32> = (0..1000).collect();
 
         // Expected copies over 1000 sites at f=0.5 is 1000; landing exactly there is the median.
-        let p = dist.percentile_for_called("HIGH", &called, 1000, "fp").expect("percentile");
+        let p = dist
+            .percentile_for_called("HIGH", &called, 1000, "fp")
+            .expect("percentile");
         assert!((p - 50.0).abs() < 2.0, "expected ~50th percentile, got {p}");
 
         // Well above expectation ranks high, well below ranks low.

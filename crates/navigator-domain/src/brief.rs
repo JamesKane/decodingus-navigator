@@ -565,8 +565,14 @@ mod tests {
 
     #[test]
     fn age_rounding_is_friendly() {
-        assert_eq!(age_phrase(Lang::En, Some(4237)).unwrap(), "formed roughly 4,200 years ago");
-        assert_eq!(age_phrase(Lang::En, Some(63500)).unwrap(), "formed roughly 64,000 years ago");
+        assert_eq!(
+            age_phrase(Lang::En, Some(4237)).unwrap(),
+            "formed roughly 4,200 years ago"
+        );
+        assert_eq!(
+            age_phrase(Lang::En, Some(63500)).unwrap(),
+            "formed roughly 64,000 years ago"
+        );
         assert_eq!(age_phrase(Lang::En, Some(842)).unwrap(), "formed roughly 850 years ago");
         assert_eq!(age_phrase(Lang::En, None), None);
         assert_eq!(age_phrase(Lang::En, Some(0)), None);
@@ -574,7 +580,10 @@ mod tests {
 
     #[test]
     fn origin_phrasing() {
-        assert_eq!(origin_phrase(Lang::En, Some("the steppe")).unwrap(), "associated with the steppe");
+        assert_eq!(
+            origin_phrase(Lang::En, Some("the steppe")).unwrap(),
+            "associated with the steppe"
+        );
         assert_eq!(origin_phrase(Lang::En, None), None);
         assert_eq!(origin_phrase(Lang::En, Some("  ")), None);
     }
@@ -598,7 +607,10 @@ mod tests {
         let mixed = roh_brief(Lang::En, RohPattern::Mixed, 0.05, 30, 150.0, 18.0);
         assert_eq!(mixed.pattern, "Mixed shared ancestry");
         // No runs at all always reads as outbred, whatever the classifier says of an empty set.
-        assert_eq!(roh_brief(Lang::En, RohPattern::Mixed, 0.0, 0, 0.0, 0.0).pattern, "Outbred");
+        assert_eq!(
+            roh_brief(Lang::En, RohPattern::Mixed, 0.0, 0, 0.0, 0.0).pattern,
+            "Outbred"
+        );
     }
 
     #[test]
@@ -664,8 +676,14 @@ mod tests {
 
     #[test]
     fn ancestry_summary_framing() {
-        assert_eq!(ancestry_summary(Lang::En, &[]), "Ancestry composition not yet estimated");
-        assert_eq!(ancestry_summary(Lang::En, &[sp("European", 92.0)]), "Predominantly European");
+        assert_eq!(
+            ancestry_summary(Lang::En, &[]),
+            "Ancestry composition not yet estimated"
+        );
+        assert_eq!(
+            ancestry_summary(Lang::En, &[sp("European", 92.0)]),
+            "Predominantly European"
+        );
         // Unsorted input is sorted by share.
         assert_eq!(
             ancestry_summary(Lang::En, &[sp("African", 30.0), sp("European", 70.0)]),

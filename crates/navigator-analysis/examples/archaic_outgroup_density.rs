@@ -20,7 +20,9 @@ use navigator_analysis::archaic::ArchaicOutgroup;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut a = std::env::args().skip(1);
-    let path = a.next().expect("usage: archaic_outgroup_density <outgroup.bin> [window_bp] [contig ...]");
+    let path = a
+        .next()
+        .expect("usage: archaic_outgroup_density <outgroup.bin> [window_bp] [contig ...]");
     let window: i64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(1000);
     let want: Vec<String> = a.collect();
 

@@ -190,8 +190,25 @@ pub fn target_of(test_type: &str) -> Option<TargetType> {
         return Some(t.target);
     }
     let s = test_type.trim().to_ascii_lowercase();
-    const Y: &[&str] = &["big y", "big-y", "bigy", "y elite", "y-elite", "y prime", "y-prime", "targeted y"];
-    const MT: &[&str] = &["mt full", "mtfull", "mt-full", "full mtdna", "full mitochondrial", "mtdna", "targeted mt"];
+    const Y: &[&str] = &[
+        "big y",
+        "big-y",
+        "bigy",
+        "y elite",
+        "y-elite",
+        "y prime",
+        "y-prime",
+        "targeted y",
+    ];
+    const MT: &[&str] = &[
+        "mt full",
+        "mtfull",
+        "mt-full",
+        "full mtdna",
+        "full mitochondrial",
+        "mtdna",
+        "targeted mt",
+    ];
     if Y.iter().any(|p| s.contains(p)) {
         Some(TargetType::YChromosome)
     } else if MT.iter().any(|p| s.contains(p)) {

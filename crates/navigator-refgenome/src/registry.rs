@@ -217,9 +217,9 @@ impl UserConfig {
         // `read_atomic`, not `fs::read_to_string`: a save racing this read leaves the path briefly
         // delete-pending on Windows, and an unreadable config here means the user's overrides
         // silently vanish — the same disappearing-override symptom as issue #26, by another route.
-        let Ok(text) = crate::cache::read_atomic(path).and_then(|b| {
-            String::from_utf8(b).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-        }) else {
+        let Ok(text) = crate::cache::read_atomic(path)
+            .and_then(|b| String::from_utf8(b).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+        else {
             return Self::default(); // absent / unreadable → empty (the normal no-config case)
         };
         match serde_json::from_str(&text) {
@@ -312,7 +312,12 @@ impl Registry {
             }
             _ => return None,
         };
-        Some(ChainSource { from, to, url, sha256: None })
+        Some(ChainSource {
+            from,
+            to,
+            url,
+            sha256: None,
+        })
     }
 
     /// The UCSC `cytoBand` table URL for a build (gzipped) — the source for genome-region

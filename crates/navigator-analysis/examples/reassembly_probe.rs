@@ -26,9 +26,7 @@ use std::path::Path;
 use bio::alignment::pairwise::{Aligner as PwAligner, Scoring};
 use bio::alignment::poa::Aligner as PoaAligner;
 use bio::alignment::AlignmentOperation;
-use bio::stats::pairhmm::{
-    EmissionParameters, GapParameters, PairHMM, StartEndGapParameters, XYEmission,
-};
+use bio::stats::pairhmm::{EmissionParameters, GapParameters, PairHMM, StartEndGapParameters, XYEmission};
 use bio::stats::{LogProb, Prob};
 use navigator_analysis::reader::{open_indexed, read_contig_sequence};
 use noodles::core::Region;
@@ -124,7 +122,12 @@ fn window_reads(cram: &Path, refp: &Path, contig: &str, pos: i64, lo: i64, hi: i
         }
         // Keep reads that carry enough window sequence to anchor a realignment.
         if win.len() >= 30 {
-            reads.push(WinRead { bases: win, quals: winq, mapq, covers_pos });
+            reads.push(WinRead {
+                bases: win,
+                quals: winq,
+                mapq,
+                covers_pos,
+            });
         }
     }
     (reads, pile)
@@ -149,11 +152,23 @@ fn consensus_base_at(consensus: &[u8], win_ref: &[u8], win_start: i64, pos: i64)
     if std::env::var("PROBE_DEBUG").is_ok() {
         eprintln!(
             "DEBUG consensus.len={} win_ref.len={} xstart={} ystart={} xend={} yend={} score={}",
-            consensus.len(), win_ref.len(), aln.xstart, aln.ystart, aln.xend, aln.yend, aln.score
+            consensus.len(),
+            win_ref.len(),
+            aln.xstart,
+            aln.ystart,
+            aln.xend,
+            aln.yend,
+            aln.score
         );
         eprintln!("  consensus raw[..20]: {:?}", &consensus[..consensus.len().min(20)]);
-        eprintln!("  consensus str[..40]: {}", String::from_utf8_lossy(&consensus[..consensus.len().min(40)]));
-        eprintln!("  win_ref   str[..40]: {}", String::from_utf8_lossy(&win_ref[..win_ref.len().min(40)]));
+        eprintln!(
+            "  consensus str[..40]: {}",
+            String::from_utf8_lossy(&consensus[..consensus.len().min(40)])
+        );
+        eprintln!(
+            "  win_ref   str[..40]: {}",
+            String::from_utf8_lossy(&win_ref[..win_ref.len().min(40)])
+        );
     }
     let mut xi = aln.xstart; // consensus index
     let mut yi = aln.ystart; // win_ref index (ref coord = win_start + yi)
@@ -288,12 +303,13 @@ fn main() {
         let total: u32 = pile.iter().sum();
         // Candidate alt = the most common non-reference base at pos.
         let ref_i = base_index(ref_base as u8).unwrap_or(0);
-        let alt_i = (0..4)
-            .filter(|&i| i != ref_i)
-            .max_by_key(|&i| pile[i])
-            .unwrap_or(ref_i);
+        let alt_i = (0..4).filter(|&i| i != ref_i).max_by_key(|&i| pile[i]).unwrap_or(ref_i);
         let alt_base = charb(alt_i);
-        let alt_frac = if total > 0 { (total - pile[ref_i]) as f64 / total as f64 } else { 0.0 };
+        let alt_frac = if total > 0 {
+            (total - pile[ref_i]) as f64 / total as f64
+        } else {
+            0.0
+        };
 
         // Reference vs alternate haplotype over the window (alt = ref with the SNV at pos).
         let win_ref: Vec<u8> = refseq[(lo - 1) as usize..(hi as usize).min(refseq.len())].to_vec();

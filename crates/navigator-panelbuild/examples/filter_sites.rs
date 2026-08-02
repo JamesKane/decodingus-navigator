@@ -7,7 +7,9 @@ use navigator_analysis::ancestry::AncestryPanel;
 use std::collections::HashSet;
 
 fn main() -> anyhow::Result<()> {
-    let ancient = std::env::args().nth(1).expect("usage: filter_sites <ancient.bin> <sites.tsv> <out.bin>");
+    let ancient = std::env::args()
+        .nth(1)
+        .expect("usage: filter_sites <ancient.bin> <sites.tsv> <out.bin>");
     let sites_tsv = std::env::args().nth(2).expect("sites.tsv");
     let out = std::env::args().nth(3).expect("out.bin");
     let keep: HashSet<(String, i64)> = std::fs::read_to_string(&sites_tsv)?
@@ -25,6 +27,9 @@ fn main() -> anyhow::Result<()> {
     panel.sites.retain(|s| keep.contains(&(s.contig.clone(), s.position)));
     let after = panel.sites.len();
     std::fs::write(&out, panel.to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?)?;
-    println!("kept {after}/{before} sites (ascertainment set {}) -> {out}", keep.len());
+    println!(
+        "kept {after}/{before} sites (ascertainment set {}) -> {out}",
+        keep.len()
+    );
     Ok(())
 }

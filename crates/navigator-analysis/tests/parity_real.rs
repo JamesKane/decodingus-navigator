@@ -78,7 +78,7 @@ fn hg002_chrm_denovo_smoke() {
         &PathBuf::from(reference),
         "chrM",
         &HaploidCallerParams::default(),
-    &navigator_analysis::CancelToken::none(),
+        &navigator_analysis::CancelToken::none(),
     )
     .expect("de-novo should succeed on real data");
 
@@ -115,7 +115,7 @@ fn hg002_chry_denovo_streams() {
         &PathBuf::from(reference),
         "chrY",
         &HaploidCallerParams::default(),
-    &navigator_analysis::CancelToken::none(),
+        &navigator_analysis::CancelToken::none(),
     )
     .expect("chrY de-novo should succeed");
     eprintln!("chrY de-novo calls: {}", calls.len());
@@ -307,7 +307,7 @@ fn hg002_chrm_gatk_parity() {
         &PathBuf::from(&reference),
         "chrM",
         &HaploidCallerParams::default(),
-    &navigator_analysis::CancelToken::none(),
+        &navigator_analysis::CancelToken::none(),
     )
     .expect("de-novo should succeed");
 

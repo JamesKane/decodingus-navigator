@@ -371,7 +371,14 @@ impl App {
         };
         // Don't downgrade a full deep walk on reimport — keep it if it's already equal-or-fuller.
         let wrote = self
-            .save_analysis_no_downgrade(alignment_id, "read_metrics", "1", &metrics, "pipeline-sidecar", completeness)
+            .save_analysis_no_downgrade(
+                alignment_id,
+                "read_metrics",
+                "1",
+                &metrics,
+                "pipeline-sidecar",
+                completeness,
+            )
             .await?;
         Ok(wrote)
     }
@@ -601,7 +608,11 @@ impl App {
             canonical_build(&aln.reference_build),
             Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
         );
-        let regions = if is_chm13 { self.y_structural_regions().await } else { None };
+        let regions = if is_chm13 {
+            self.y_structural_regions().await
+        } else {
+            None
+        };
         // L2: the cohort **callable mask** (Poznik-style, CALLABLE in ≥90% of a ~3k-male cohort) —
         // only ~25% of non-PAR chrY is reliably callable cohort-wide. L3: a **cohort-shared-sites**
         // blocklist — every position that varies with ≥2 carriers across the cohort (plus homoplasy

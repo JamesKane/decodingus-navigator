@@ -423,8 +423,14 @@ chr1\t246193\t.\tG\tA\t225\t.\tDP=29\tGT\t1/1
                     >locus\tploidy\tallele\tchromosome\tbegin\tend\tvarType\treference\talleleSeq\tvarScoreVAF\tvarScoreEAF\tvarQuality\thapLink\txRef\n\
                     1\t2\tall\tchr1\t0\t10000\tno-ref\t=\t?\t\t\t\t\t\n";
         // Both the raw name and a `.tsv.bz2` (extension isn't consulted for this format) detect.
-        assert_eq!(detect("var-GS00253-DNA_A01_200_37-ASM.tsv", head), DetectedData::CompleteGenomicsVar);
-        assert_eq!(detect("var-GS00253-DNA_A01_200_37-ASM.tsv.bz2", head), DetectedData::CompleteGenomicsVar);
+        assert_eq!(
+            detect("var-GS00253-DNA_A01_200_37-ASM.tsv", head),
+            DetectedData::CompleteGenomicsVar
+        );
+        assert_eq!(
+            detect("var-GS00253-DNA_A01_200_37-ASM.tsv.bz2", head),
+            DetectedData::CompleteGenomicsVar
+        );
     }
 
     #[test]

@@ -13,7 +13,9 @@ use navigator_analysis::archaic::ArchaicCallable;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut a = std::env::args().skip(1);
-    let path = a.next().expect("usage: archaic_callable_dump <callable.bin> [min_frac] [contig ...]");
+    let path = a
+        .next()
+        .expect("usage: archaic_callable_dump <callable.bin> [min_frac] [contig ...]");
     let min_frac: f64 = a.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
     let want: Vec<String> = a.collect();
 

@@ -55,10 +55,7 @@ fn autosome_contig(chr: &str) -> Option<String> {
 /// Select the target individual's column index in the `.ind` file (0-based, matching the `.geno`
 /// character position). `sample` names it; a single-individual file needs no name.
 fn select_individual(ind_text: &str, sample: Option<&str>) -> Result<usize, AnalysisError> {
-    let ids: Vec<&str> = ind_text
-        .lines()
-        .filter_map(|l| l.split_whitespace().next())
-        .collect();
+    let ids: Vec<&str> = ind_text.lines().filter_map(|l| l.split_whitespace().next()).collect();
     if ids.is_empty() {
         return Err(AnalysisError::Message("EIGENSTRAT .ind has no individuals".into()));
     }
@@ -191,10 +188,7 @@ rs3 22 0.0 4000 T C
         // SAMPLE_B: rs1=0→(G,G); rs2=9→missing; rsX skipped (chr23); rs3=1→(T,C).
         assert_eq!(
             cs.calls,
-            vec![
-                ("1".to_string(), 1000, 'G', 'G'),
-                ("22".to_string(), 4000, 'T', 'C'),
-            ]
+            vec![("1".to_string(), 1000, 'G', 'G'), ("22".to_string(), 4000, 'T', 'C'),]
         );
         assert_eq!(cs.missing, 1);
         assert_eq!(cs.build, "GRCh37");

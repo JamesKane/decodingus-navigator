@@ -265,9 +265,19 @@ mod tests {
     }
 
     async fn full_coverage(pool: &SqlitePool, aln: i64) {
-        upsert(pool, aln, "coverage", "coverage-1", Utc::now(), "{}", "navigator-walk", "full", None)
-            .await
-            .unwrap();
+        upsert(
+            pool,
+            aln,
+            "coverage",
+            "coverage-1",
+            Utc::now(),
+            "{}",
+            "navigator-walk",
+            "full",
+            None,
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -289,9 +299,19 @@ mod tests {
         // C: one alignment with only a *partial* (sidecar) coverage → does not count → Pending.
         let c = subject(pool, "C").await;
         let c_aln = alignment(pool, c).await;
-        upsert(pool, c_aln, "coverage", "coverage-1", Utc::now(), "{}", "pipeline-sidecar", "partial", None)
-            .await
-            .unwrap();
+        upsert(
+            pool,
+            c_aln,
+            "coverage",
+            "coverage-1",
+            Utc::now(),
+            "{}",
+            "pipeline-sidecar",
+            "partial",
+            None,
+        )
+        .await
+        .unwrap();
 
         // D: a subject with no alignments → absent from the census.
         let _d = subject(pool, "D").await;

@@ -268,7 +268,17 @@ pub fn call_archaic_segments(
             continue;
         }
         segments.extend(call_contig(
-            contig, positions, lo, hi, gmap, cfg, background, archaic_rate, classify, callable, &alleles,
+            contig,
+            positions,
+            lo,
+            hi,
+            gmap,
+            cfg,
+            background,
+            archaic_rate,
+            classify,
+            callable,
+            &alleles,
         ));
     }
 
@@ -582,7 +592,14 @@ mod tests {
             build: "chm13v2.0".into(),
             contigs: Vec::new(),
         };
-        let r = call_archaic_segments(&calls, &og, &classify, &callable_all(), &GeneticMap::from_markers(Vec::new()), &ArchaicConfig::default());
+        let r = call_archaic_segments(
+            &calls,
+            &og,
+            &classify,
+            &callable_all(),
+            &GeneticMap::from_markers(Vec::new()),
+            &ArchaicConfig::default(),
+        );
         assert_eq!(r.segments.len(), 1, "exactly the dense block should call");
         let s = &r.segments[0];
         assert!(s.start >= 950_000 && s.start <= 1_050_000, "start {} off", s.start);
@@ -610,7 +627,14 @@ mod tests {
             build: "chm13v2.0".into(),
             contigs: Vec::new(),
         };
-        let r = call_archaic_segments(&calls, &og, &classify, &callable_all(), &GeneticMap::from_markers(Vec::new()), &ArchaicConfig::default());
+        let r = call_archaic_segments(
+            &calls,
+            &og,
+            &classify,
+            &callable_all(),
+            &GeneticMap::from_markers(Vec::new()),
+            &ArchaicConfig::default(),
+        );
         assert!(r.segments.is_empty(), "outgroup-shared density must not call archaic");
     }
 

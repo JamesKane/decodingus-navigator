@@ -446,9 +446,15 @@ mod tests {
 
         let sample = scan_sample(&dir);
         let sc = &sample.sidecars;
-        assert!(sc.has_haplogroup_gvcf(), "bare chrY.g.vcf.gz must be detected as the Y GVCF");
+        assert!(
+            sc.has_haplogroup_gvcf(),
+            "bare chrY.g.vcf.gz must be detected as the Y GVCF"
+        );
         assert!(sc.chr_y_gvcf.as_ref().unwrap().ends_with("chrY.g.vcf.gz"));
-        assert!(sc.callable_bed.as_ref().is_some_and(|p| p.ends_with("callable_status.bed")));
+        assert!(sc
+            .callable_bed
+            .as_ref()
+            .is_some_and(|p| p.ends_with("callable_status.bed")));
         assert!(sc.coverage.is_some() && sc.stats.is_some());
         assert_eq!(sample.alignment_files.len(), 1, "the chrYM.cram");
 

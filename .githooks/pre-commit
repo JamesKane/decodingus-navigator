@@ -1,0 +1,39 @@
+#!/bin/sh
+# Reject a commit that would (re)introduce rustfmt drift.
+#
+# `cargo fmt` clean is a per-commit gate for this repo, but nothing enforced it, and the drift that
+# accumulated once reached 116 files — at which point every feature branch either carried a pile of
+# unrelated reformatting into review or had to be de-noised by hand. This is the enforcement.
+#
+# It runs `--check` only: it never rewrites your working tree mid-commit, because a hook that edits
+# files behind you produces a commit whose contents you did not read. It tells you what is wrong and
+# lets you fix it.
+#
+# Deliberately local rather than CI: the point is to catch drift before it is committed, not to fail
+# a build after the fact.
+#
+# Enable (once per clone):   git config core.hooksPath .githooks
+# Bypass for one commit:     git commit --no-verify
+
+# No toolchain (docs-only checkout, CI image without rust) — do not block the commit.
+command -v cargo >/dev/null 2>&1 || exit 0
+
+# Nothing Rust-shaped staged → nothing this hook has an opinion about. Also covers the merge/revert
+# case, where the tree is whatever the other side committed and blocking is unhelpful.
+staged_rs=$(git diff --cached --name-only --diff-filter=ACMR -- '*.rs')
+[ -n "$staged_rs" ] || exit 0
+
+out=$(cargo fmt --all --check 2>&1)
+[ $? -eq 0 ] && exit 0
+
+# `--check` reports "Diff in <abs path>:<line>:" per hunk; collapse to the file list.
+files=$(printf '%s\n' "$out" | sed -n 's|^Diff in \(.*\):[0-9]*:$|\1|p' | sort -u)
+
+echo "rustfmt: the working tree is not formatted." >&2
+echo >&2
+printf '%s\n' "$files" | sed 's|^|  |' >&2
+echo >&2
+echo "  Fix:    cargo fmt --all" >&2
+echo "  Review: cargo fmt --all --check" >&2
+echo "  Skip:   git commit --no-verify   (leaves the drift for someone else)" >&2
+exit 1

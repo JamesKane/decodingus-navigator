@@ -43,10 +43,7 @@ pub async fn upsert(pool: &SqlitePool, row: &StoredPanelDosage) -> Result<(), St
 }
 
 /// All external panel-dosage rows for a biosample (each a distinct source).
-pub async fn list_for_biosample(
-    pool: &SqlitePool,
-    guid: SampleGuid,
-) -> Result<Vec<StoredPanelDosage>, StoreError> {
+pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<StoredPanelDosage>, StoreError> {
     let rows: Vec<StoredPanelDosage> = sqlx::query_as(
         "SELECT biosample_guid, source_label, provenance, panel_sig, site_count, dosages, created_at \
          FROM external_panel_dosage WHERE biosample_guid = ? ORDER BY id",

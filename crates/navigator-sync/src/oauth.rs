@@ -204,7 +204,10 @@ async fn post_with_dpop(
     let Some(nonce) = nonce else {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(SyncError::Oauth(format!("{post_url}: {status} {}", truncate_body(&body))));
+        return Err(SyncError::Oauth(format!(
+            "{post_url}: {status} {}",
+            truncate_body(&body)
+        )));
     };
     let proof = dpop_proof(key, "POST", htu, now(), Some(&nonce), None);
     let retry = http.post(post_url).header("DPoP", proof).form(form).send().await?;
@@ -213,7 +216,10 @@ async fn post_with_dpop(
     } else {
         let status = retry.status();
         let body = retry.text().await.unwrap_or_default();
-        Err(SyncError::Oauth(format!("{post_url}: {status} {}", truncate_body(&body))))
+        Err(SyncError::Oauth(format!(
+            "{post_url}: {status} {}",
+            truncate_body(&body)
+        )))
     }
 }
 

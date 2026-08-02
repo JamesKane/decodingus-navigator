@@ -7,7 +7,9 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
-    let bed = std::env::args().nth(1).expect("usage: genotype_bed <sites.bed> <bam> <out.tsv> [ref.fa]");
+    let bed = std::env::args()
+        .nth(1)
+        .expect("usage: genotype_bed <sites.bed> <bam> <out.tsv> [ref.fa]");
     let bam = PathBuf::from(std::env::args().nth(2).expect("bam"));
     let out = std::env::args().nth(3).expect("out.tsv");
     let reference = std::env::args().nth(4).map(PathBuf::from);
@@ -25,7 +27,11 @@ fn main() -> anyhow::Result<()> {
         let contig = f[0].to_string();
         let pos: i64 = f[2].parse()?; // BED end = 1-based position
         let name: Vec<&str> = f[3].split('|').collect();
-        let (rsid, r, a) = (name[0], name.get(1).copied().unwrap_or("N"), name.get(2).copied().unwrap_or("N"));
+        let (rsid, r, a) = (
+            name[0],
+            name.get(1).copied().unwrap_or("N"),
+            name.get(2).copied().unwrap_or("N"),
+        );
         rsids.push(rsid.to_string());
         sites.push(Site {
             name: rsid.to_string(),
@@ -37,7 +43,15 @@ fn main() -> anyhow::Result<()> {
     }
     eprintln!("genotyping {} sites from {} ...", sites.len(), bam.display());
     let params = HaploidCallerParams::default();
-    let gts = genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref(), &navigator_analysis::CancelToken::none()).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let gts = genotype_sites_all_contigs(
+        &bam,
+        &sites,
+        2,
+        &params,
+        reference.as_deref(),
+        &navigator_analysis::CancelToken::none(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // genotype_sites_all_contigs returns genotypes REORDERED (per-contig), so we must key each
     // returned genotype to its rsID by (contig,position) — NOT by input order. Zipping with `rsids`

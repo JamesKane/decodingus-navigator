@@ -157,7 +157,9 @@ pub(crate) fn draw_roh(ui: &mut egui::Ui, result: &RohResult, regions: Option<&G
             .unwrap_or_else(|| segs.iter().map(|s| s.end_bp).max().unwrap_or(1))
             .max(1) as f32;
         ui.horizontal(|ui| {
-            ui.allocate_ui(egui::vec2(label_w, bar_h), |ui| ui.label(egui::RichText::new(chr).small()));
+            ui.allocate_ui(egui::vec2(label_w, bar_h), |ui| {
+                ui.label(egui::RichText::new(chr).small())
+            });
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
             let painter = ui.painter_at(rect);
             painter.rect_filled(rect, 2.0, egui::Color32::from_gray(30));
@@ -173,8 +175,14 @@ pub(crate) fn draw_roh(ui: &mut egui::Ui, result: &RohResult, regions: Option<&G
                     if hx >= block.left() && hx <= block.right() {
                         hover = Some(format!(
                             "{}:{}–{} · {:.1} Mb ({:.2} cM) · {} sites ({} het) · conf {:.2}",
-                            seg.chromosome, seg.start_bp, seg.end_bp, seg.length_mb, seg.length_cm, seg.n_sites,
-                            seg.n_het, seg.mean_posterior
+                            seg.chromosome,
+                            seg.start_bp,
+                            seg.end_bp,
+                            seg.length_mb,
+                            seg.length_cm,
+                            seg.n_sites,
+                            seg.n_het,
+                            seg.mean_posterior
                         ));
                     }
                 }
@@ -213,7 +221,10 @@ pub(crate) fn top_populations_for_side(segments: &[AncestrySegment], side: u8, k
     use std::collections::HashMap;
     let mut bp: HashMap<String, i64> = HashMap::new();
     for s in segments.iter().filter(|s| s.copy == side) {
-        let code = s.fine_population_code.clone().unwrap_or_else(|| s.population_code.clone());
+        let code = s
+            .fine_population_code
+            .clone()
+            .unwrap_or_else(|| s.population_code.clone());
         *bp.entry(code).or_insert(0) += (s.end - s.start + 1).max(0);
     }
     let mut v: Vec<(String, i64)> = bp.into_iter().collect();
@@ -250,7 +261,9 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
     let hovered: Option<String> = ui.data(|d| d.get_temp(hover_id));
     let mut next_hovered: Option<String> = None;
     let seg_code = |s: &AncestrySegment| -> String {
-        s.fine_population_code.clone().unwrap_or_else(|| s.population_code.clone())
+        s.fine_population_code
+            .clone()
+            .unwrap_or_else(|| s.population_code.clone())
     };
 
     // Header: which stacked track is which side (▲ top, ▼ bottom).
@@ -278,8 +291,7 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
             ui.allocate_ui(egui::vec2(label_w, copy_h * 2.0 + gap), |ui| {
                 ui.label(format!("chr{n}"))
             });
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(bar_w, copy_h * 2.0 + gap), egui::Sense::hover());
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(bar_w, copy_h * 2.0 + gap), egui::Sense::hover());
             let painter = ui.painter_at(rect);
             for (c, segs) in copies.iter().enumerate() {
                 let top = rect.top() + c as f32 * (copy_h + gap);
@@ -302,7 +314,11 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
             }
             // Per-segment hover: highlight that population + show side / population / Mb-range tooltip.
             if let Some(pos) = response.hover_pos() {
-                let c = if pos.y < rect.top() + copy_h + gap * 0.5 { 0usize } else { 1usize };
+                let c = if pos.y < rect.top() + copy_h + gap * 0.5 {
+                    0usize
+                } else {
+                    1usize
+                };
                 let bp = lo + (((pos.x - rect.left()) / rect.width().max(1.0)) * span) as i64;
                 if let Some(s) = copies[c].iter().find(|s| bp >= s.start && bp <= s.end) {
                     next_hovered = Some(seg_code(s));
@@ -336,7 +352,11 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
             let active = hovered.as_deref() == Some(code.as_str());
             let inner = ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                let swatch = if active || hovered.is_none() { *color } else { color.gamma_multiply(0.5) };
+                let swatch = if active || hovered.is_none() {
+                    *color
+                } else {
+                    color.gamma_multiply(0.5)
+                };
                 ui.painter().circle_filled(r.center(), 4.0, swatch);
                 let mut txt = egui::RichText::new(population_name(code)).small();
                 if active {
@@ -346,7 +366,9 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
                 }
                 ui.label(txt);
             });
-            let over = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| inner.response.rect.contains(p));
+            let over = ui
+                .input(|i| i.pointer.hover_pos())
+                .is_some_and(|p| inner.response.rect.contains(p));
             if over {
                 next_hovered = Some(code.clone());
             }
@@ -467,7 +489,8 @@ pub(crate) fn draw_population_components(ui: &mut egui::Ui, result: &AncestryRes
             for (name, code, pct) in shown {
                 ui.horizontal(|ui| {
                     let (sw, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                    ui.painter().rect_filled(sw, 2.0, parse_hex_color(&population_color(code)));
+                    ui.painter()
+                        .rect_filled(sw, 2.0, parse_hex_color(&population_color(code)));
                     ui.add_space(2.0);
                     ui.label(egui::RichText::new(format!("{pct:.1}%")).strong());
                     ui.label(*name);
@@ -749,11 +772,7 @@ pub(crate) fn draw_archaic_segments(ui: &mut egui::Ui, result: &navigator_app::A
     // chr1, chr10, chr11 … chr19, chr2, chr20 — which reads as a bug to anyone scanning the track.
     let mut by_chr: BTreeMap<(u32, &str), Vec<&navigator_app::ArchaicSegment>> = BTreeMap::new();
     for s in &result.segments {
-        let n = s
-            .contig
-            .trim_start_matches("chr")
-            .parse::<u32>()
-            .unwrap_or(u32::MAX); // non-numeric contigs sort last, keeping their own order
+        let n = s.contig.trim_start_matches("chr").parse::<u32>().unwrap_or(u32::MAX); // non-numeric contigs sort last, keeping their own order
         by_chr.entry((n, s.contig.as_str())).or_default().push(s);
     }
     if by_chr.is_empty() {

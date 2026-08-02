@@ -395,12 +395,12 @@ impl NavigatorApp {
     /// (ancient) breakdown is a frequency model and has no position in PC space.
     fn sample_pca(&self) -> Option<(f64, f64)> {
         [self.donor_ancestry.as_ref().map(|(_, r)| r)]
-        .into_iter()
-        .flatten()
-        .find_map(|r| {
-            let c = r.pca_coordinates.as_ref()?;
-            (c.len() >= 2).then(|| (c[0], c[1]))
-        })
+            .into_iter()
+            .flatten()
+            .find_map(|r| {
+                let c = r.pca_coordinates.as_ref()?;
+                (c.len() >= 2).then(|| (c[0], c[1]))
+            })
     }
 
     /// PCA scatter: the donor's PC1×PC2 against the reference population centroids. The donor's
@@ -625,7 +625,14 @@ impl NavigatorApp {
         };
         let mut filter = self.auto_profile_filter;
         let mut query = std::mem::take(&mut self.auto_profile_query);
-        draw_diploid_profile(ui, profile, &mut filter, &mut query, self.data_epoch, &mut self.auto_profile_rows);
+        draw_diploid_profile(
+            ui,
+            profile,
+            &mut filter,
+            &mut query,
+            self.data_epoch,
+            &mut self.auto_profile_rows,
+        );
         self.auto_profile_filter = filter;
         self.auto_profile_query = query;
     }
@@ -887,7 +894,11 @@ impl NavigatorApp {
                 .weak()
                 .small(),
             );
-            self.publish_row(ui, "Publish subject to PDS", Command::PublishBiosample { biosample_guid: guid });
+            self.publish_row(
+                ui,
+                "Publish subject to PDS",
+                Command::PublishBiosample { biosample_guid: guid },
+            );
         });
         self.genealogy_card(ui, guid);
     }
@@ -1012,7 +1023,11 @@ impl NavigatorApp {
                         if ui.small_button("✎").on_hover_text(self.tr("geneal.editMdka")).clicked() {
                             want_edit_mdka = Some(edit_from(mk));
                         }
-                        if ui.small_button("✕").on_hover_text(self.tr("geneal.removeMdka")).clicked() {
+                        if ui
+                            .small_button("✕")
+                            .on_hover_text(self.tr("geneal.removeMdka"))
+                            .clicked()
+                        {
                             want_del_mdka = Some(lineage.to_string());
                         }
                     });
@@ -1136,9 +1151,10 @@ impl NavigatorApp {
         let q = self.private_y_query.to_ascii_lowercase();
         let bucket = self.donor_private_y.as_ref().unwrap();
         let names = &self.y_snp_names; // catalogued Y-SNP name at a novel call's site, if any
-                                       // Filter to matching variants (position, off-path name, "novel", or the catalogued name); the
-                                       // table is bounded to a fixed-height scroll pane (a WGS bucket runs to thousands of rows). A
-                                       // hard cap keeps a pathological bucket from flooding even the pane.
+
+        // Filter to matching variants (position, off-path name, "novel", or the catalogued name); the
+        // table is bounded to a fixed-height scroll pane (a WGS bucket runs to thousands of rows). A
+        // hard cap keeps a pathological bucket from flooding even the pane.
         const CAP: usize = 1000;
         let matched: Vec<_> = bucket
             .variants

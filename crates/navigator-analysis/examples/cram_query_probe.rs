@@ -34,15 +34,24 @@ fn main() {
 
     let t = Instant::now();
     let n: usize = reader.query(&header, &one(pos)).expect("q1").count();
-    println!("first 1bp query ({n:>4} rec) : {:>8.2?}   <- includes any lazy setup", t.elapsed());
+    println!(
+        "first 1bp query ({n:>4} rec) : {:>8.2?}   <- includes any lazy setup",
+        t.elapsed()
+    );
 
     let t = Instant::now();
     let n: usize = reader.query(&header, &one(pos)).expect("q2").count();
-    println!("same query again ({n:>4} rec): {:>8.2?}   <- warm: is the cost per-query or one-off?", t.elapsed());
+    println!(
+        "same query again ({n:>4} rec): {:>8.2?}   <- warm: is the cost per-query or one-off?",
+        t.elapsed()
+    );
 
     let t = Instant::now();
     let n: usize = reader.query(&header, &one(pos + 5_000_000)).expect("q3").count();
-    println!("distant 1bp query ({n:>4} rec): {:>8.2?}   <- new container: does it re-decode?", t.elapsed());
+    println!(
+        "distant 1bp query ({n:>4} rec): {:>8.2?}   <- new container: does it re-decode?",
+        t.elapsed()
+    );
 
     let region: Region = format!("{contig}:{pos}-{}", pos + span).parse().expect("region");
     let t = Instant::now();
@@ -70,7 +79,11 @@ fn main() {
                 r.sequence().as_ref().to_vec(),
             )
         };
-        let mine: Vec<_> = reader.query(&header, &region).expect("mine").map(|r| key(&r.expect("rec"))).collect();
+        let mine: Vec<_> = reader
+            .query(&header, &region)
+            .expect("mine")
+            .map(|r| key(&r.expect("rec")))
+            .collect();
 
         let repo = navigator_analysis::reader::build_repository(refp).expect("repo");
         let mut oracle = cram::io::indexed_reader::Builder::default()
@@ -84,7 +97,10 @@ fn main() {
             .expect("noodles query")
             .map(|r| key(&r.expect("rec")))
             .collect();
-        println!("\nVERIFY: noodles' own Query took {:?} for the same region", t.elapsed());
+        println!(
+            "\nVERIFY: noodles' own Query took {:?} for the same region",
+            t.elapsed()
+        );
         println!("        ours {} records, noodles {} records", mine.len(), theirs.len());
         assert_eq!(mine, theirs, "container skipping changed the records returned");
         println!("        IDENTICAL — container skipping is lossless");

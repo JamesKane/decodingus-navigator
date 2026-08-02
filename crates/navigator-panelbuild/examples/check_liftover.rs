@@ -14,11 +14,16 @@ fn base_at<R: std::io::BufRead + std::io::Seek>(
 ) -> Option<char> {
     let region: Region = format!("{contig}:{pos}-{pos}").parse().ok()?;
     let rec = reader.query(&region).ok()?;
-    rec.sequence().as_ref().first().map(|&b| (b as char).to_ascii_uppercase())
+    rec.sequence()
+        .as_ref()
+        .first()
+        .map(|&b| (b as char).to_ascii_uppercase())
 }
 
 fn main() -> anyhow::Result<()> {
-    let panel_path = std::env::args().nth(1).expect("usage: check_liftover <ibd_panel.bin> <chm13.fa> <grch38.fa>");
+    let panel_path = std::env::args()
+        .nth(1)
+        .expect("usage: check_liftover <ibd_panel.bin> <chm13.fa> <grch38.fa>");
     let chm13_fa = std::env::args().nth(2).expect("chm13.fa");
     let grch38_fa = std::env::args().nth(3).expect("grch38.fa");
     let panel = IbdPanel::from_bytes(&std::fs::read(&panel_path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -60,8 +65,16 @@ fn main() -> anyhow::Result<()> {
                     if examples.len() < 12 {
                         examples.push(format!(
                             "{} chm13 {}:{} {}/{}  ->  grch38 {}:{} REF={} ALT={}  genome={}",
-                            s.rsid, s.chm13.contig, s.chm13.position, s.chm13.reference, s.chm13.alternate,
-                            l.contig, l.position, l.reference, l.alternate, b
+                            s.rsid,
+                            s.chm13.contig,
+                            s.chm13.position,
+                            s.chm13.reference,
+                            s.chm13.alternate,
+                            l.contig,
+                            l.position,
+                            l.reference,
+                            l.alternate,
+                            b
                         ));
                     }
                 }
@@ -72,11 +85,19 @@ fn main() -> anyhow::Result<()> {
     println!("sampled every {step}th of {} sites\n", panel.sites.len());
     println!(
         "CHM13 control : genome base == panel REF|ALT at {}/{} ({:.1}%)",
-        chm_ok, chm_n, 100.0 * chm_ok as f64 / chm_n.max(1) as f64
+        chm_ok,
+        chm_n,
+        100.0 * chm_ok as f64 / chm_n.max(1) as f64
     );
     println!("GRCh38 locus  : n={g38_n}");
-    println!("  genome == build REF : {g38_ref} ({:.1}%)", 100.0 * g38_ref as f64 / g38_n.max(1) as f64);
-    println!("  genome == build ALT : {g38_alt} ({:.1}%)", 100.0 * g38_alt as f64 / g38_n.max(1) as f64);
+    println!(
+        "  genome == build REF : {g38_ref} ({:.1}%)",
+        100.0 * g38_ref as f64 / g38_n.max(1) as f64
+    );
+    println!(
+        "  genome == build ALT : {g38_alt} ({:.1}%)",
+        100.0 * g38_alt as f64 / g38_n.max(1) as f64
+    );
     println!(
         "  genome == NEITHER   : {g38_other} ({:.1}%)  <- wrong coordinate",
         100.0 * g38_other as f64 / g38_n.max(1) as f64

@@ -11,7 +11,9 @@ use navigator_analysis::caller::{genotype_sites_all_contigs, HaploidCallerParams
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
-    let panel_path = std::env::args().nth(1).expect("usage: qpadm_check <qpadm_panel.bin> <bam> [ref.fa]");
+    let panel_path = std::env::args()
+        .nth(1)
+        .expect("usage: qpadm_check <qpadm_panel.bin> <bam> [ref.fa]");
     let bam = PathBuf::from(std::env::args().nth(2).expect("bam"));
     let reference = std::env::args().nth(3).map(PathBuf::from);
     let panel = AncestryPanel::from_bytes(&std::fs::read(&panel_path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -20,14 +22,23 @@ fn main() -> anyhow::Result<()> {
     let src_codes = ["WHG", "EEF", "Steppe"];
     let sources: Vec<usize> = src_codes
         .iter()
-        .map(|c| panel.populations.iter().position(|p| p == c).unwrap_or_else(|| panic!("panel missing source {c}")))
+        .map(|c| {
+            panel
+                .populations
+                .iter()
+                .position(|p| p == c)
+                .unwrap_or_else(|| panic!("panel missing source {c}"))
+        })
         .collect();
     let outgroups: Vec<usize> = (0..panel.populations.len()).filter(|i| !sources.contains(i)).collect();
     eprintln!(
         "panel: {} sites, sources {:?}, outgroups {:?}",
         panel.sites.len(),
         src_codes,
-        outgroups.iter().map(|&i| panel.populations[i].as_str()).collect::<Vec<_>>()
+        outgroups
+            .iter()
+            .map(|&i| panel.populations[i].as_str())
+            .collect::<Vec<_>>()
     );
 
     let sites: Vec<Site> = panel
@@ -44,7 +55,15 @@ fn main() -> anyhow::Result<()> {
 
     eprintln!("genotyping {} sites from {} ...", sites.len(), bam.display());
     let params = HaploidCallerParams::default();
-    let gts = genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref(), &navigator_analysis::CancelToken::none()).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let gts = genotype_sites_all_contigs(
+        &bam,
+        &sites,
+        2,
+        &params,
+        reference.as_deref(),
+        &navigator_analysis::CancelToken::none(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     let called = gts.iter().filter(|g| g.dosage >= 0).count();
     eprintln!("genotyped: {called} of {} sites called", gts.len());
 
@@ -52,14 +71,25 @@ fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("qpadm_fit returned None (too few sites/blocks or singular system)"))?;
 
     println!("\n(reference: chip ~58% Steppe · old frequency-EM on WGS ~80% Steppe · NW-Eur band 40–55)\n");
-    println!("sites {}  blocks {}  dof {}  chi2 {:.2}  p {:.4}", fit.n_sites, fit.n_blocks, fit.dof, fit.chi2, fit.p_value);
+    println!(
+        "sites {}  blocks {}  dof {}  chi2 {:.2}  p {:.4}",
+        fit.n_sites, fit.n_blocks, fit.dof, fit.chi2, fit.p_value
+    );
     for (code, i) in src_codes.iter().zip(0..) {
-        println!("  {code:<8} {:>6.1} %   (SE {:.1})", fit.weights[i] * 100.0, fit.std_errors[i] * 100.0);
+        println!(
+            "  {code:<8} {:>6.1} %   (SE {:.1})",
+            fit.weights[i] * 100.0,
+            fit.std_errors[i] * 100.0
+        );
     }
     println!(
         "\nmodel {} at p=0.05; weights {}",
         if fit.p_value >= 0.05 { "ACCEPTED" } else { "REJECTED" },
-        if fit.weights_feasible(0.02) { "feasible" } else { "INFEASIBLE (outside [0,1])" }
+        if fit.weights_feasible(0.02) {
+            "feasible"
+        } else {
+            "INFEASIBLE (outside [0,1])"
+        }
     );
     Ok(())
 }

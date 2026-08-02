@@ -65,7 +65,14 @@ impl IdSource {
     pub fn is_public(source: &str) -> bool {
         matches!(
             source,
-            Self::PGP | Self::IGSR | Self::THOUSAND_GENOMES | Self::ENA | Self::SRA | Self::BIOSAMPLE | Self::HGDP | Self::SGDP
+            Self::PGP
+                | Self::IGSR
+                | Self::THOUSAND_GENOMES
+                | Self::ENA
+                | Self::SRA
+                | Self::BIOSAMPLE
+                | Self::HGDP
+                | Self::SGDP
         )
     }
 }
@@ -116,7 +123,10 @@ fn is_hgdp_name(s: &str) -> bool {
 /// Used both by [`catalog_ids_from_provenance`] and by the API-driven accession backfill.
 pub fn insdc_sample_namespace(acc: &str) -> Option<&'static str> {
     let u = acc.to_ascii_uppercase();
-    let digits_after = |p: &str| u.strip_prefix(p).is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()));
+    let digits_after = |p: &str| {
+        u.strip_prefix(p)
+            .is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
+    };
     if u.starts_with("SAMN") || u.starts_with("SAMEA") || u.starts_with("SAMD") {
         Some(IdSource::BIOSAMPLE)
     } else if digits_after("ERS") {

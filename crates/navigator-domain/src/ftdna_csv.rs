@@ -38,7 +38,9 @@ const CONTIG: &str = "chrY";
 
 /// Split a CSV line into trimmed, unquoted cells.
 fn cells(line: &str) -> Vec<String> {
-    line.split(',').map(|s| s.trim().trim_matches('"').to_string()).collect()
+    line.split(',')
+        .map(|s| s.trim().trim_matches('"').to_string())
+        .collect()
 }
 
 /// Recognize the report flavor from a header row's columns, or `None` if it isn't an FTDNA Big Y
@@ -71,8 +73,8 @@ pub fn parse(text: &str) -> Result<(FtdnaReport, Vec<VariantCall>), String> {
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
     let header = lines.next().ok_or("empty FTDNA variant CSV")?;
     let hcols = cells(header);
-    let report = report_of_header(&hcols)
-        .ok_or("not an FTDNA Big Y Named/Private Variants CSV (unrecognized header)")?;
+    let report =
+        report_of_header(&hcols).ok_or("not an FTDNA Big Y Named/Private Variants CSV (unrecognized header)")?;
 
     let col = |name: &str| hcols.iter().position(|c| c.eq_ignore_ascii_case(name));
     let i_name = col("SNP_Name");
@@ -84,7 +86,9 @@ pub fn parse(text: &str) -> Result<(FtdnaReport, Vec<VariantCall>), String> {
     for line in lines {
         let c = cells(line);
         let get = |i: usize| c.get(i).map(String::as_str).unwrap_or("");
-        let Ok(position) = get(i_pos).parse::<i64>() else { continue };
+        let Ok(position) = get(i_pos).parse::<i64>() else {
+            continue;
+        };
         let name = i_name.map(|i| get(i).to_string()).filter(|s| !s.is_empty());
         // Each row is a derived (positive) call: ref = ancestral, alt = derived, gt = "1".
         if let Some(call) = variants::snp_call(CONTIG, position, get(i_anc), get(i_der), name, Some("1".into())) {

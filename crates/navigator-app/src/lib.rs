@@ -28,29 +28,26 @@ pub use navigator_analysis::haplo::{BranchEvidence, CallState, NodeEvidence, Sco
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::mask::YRegionClass;
 pub use navigator_analysis::mtvariants::{MtRegion, MtVariant, MtVariantKind};
-pub use navigator_analysis::CancelToken;
 pub use navigator_analysis::preflight::{
     Check as PreflightCheck, Report as PreflightReport, Status as PreflightStatus,
 };
+pub use navigator_analysis::CancelToken;
 
 /// Diagnose a BAM/CRAM **path** with no workspace record behind it — the case that matters when a
 /// user is reporting a file the app refuses to read and we need the answer before deciding whether
 /// importing it is even possible. Blocking; call it off the async runtime.
-pub fn diagnose_alignment_file(
-    alignment: &std::path::Path,
-    reference: Option<&std::path::Path>,
-) -> PreflightReport {
+pub fn diagnose_alignment_file(alignment: &std::path::Path, reference: Option<&std::path::Path>) -> PreflightReport {
     navigator_analysis::preflight::diagnose(alignment, reference)
 }
-pub use navigator_analysis::probe::AlignmentProbe;
-pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
-pub use navigator_analysis::archaic_segments::{
-    ArchaicConfig, ArchaicSegment, ArchaicSegmentResult, ArchaicSource, ArchaicSummary,
-};
 pub use navigator_analysis::archaic::{
     ArchaicCallable, ArchaicClassify, ArchaicCountDistribution, ArchaicMarkerPanel, ArchaicMarkerResult,
     ArchaicOutgroup, DiagnosticClass,
 };
+pub use navigator_analysis::archaic_segments::{
+    ArchaicConfig, ArchaicSegment, ArchaicSegmentResult, ArchaicSource, ArchaicSummary,
+};
+pub use navigator_analysis::probe::AlignmentProbe;
+pub use navigator_analysis::read_metrics::{PairOrientation, ReadMetrics};
 pub use navigator_analysis::roh::{RohConfig, RohPattern, RohResult, RohSegment, RohSummary};
 pub use navigator_analysis::sex::{Confidence as SexConfidence, InferredSex, SexInferenceResult};
 pub use navigator_analysis::sv::types::{SvAnalysisResult, SvCall, SvType};
@@ -304,6 +301,7 @@ mod publish_gate_tests {
     #[test]
     fn publish_gate_admits_only_confident_unique_novels() {
         let g = PublishGate::default(); // af >= 0.9, alt_depth >= 10
+
         // The one that should publish: novel, unique, homozygous, deep.
         assert!(g.admits(&var(PrivateClass::Novel, None, 30, 1.0)));
         // Off-path-known is informational, never a novel-branch claim.
@@ -329,7 +327,7 @@ mod publish_gate_tests {
         let bucket = PrivateBucket {
             terminal: "R-FGC29071".into(),
             variants: vec![
-                var(PrivateClass::Novel, None, 30, 1.0),                        // publishable
+                var(PrivateClass::Novel, None, 30, 1.0),                         // publishable
                 var(PrivateClass::Novel, Some(YRegionClass::Amplicon), 30, 1.0), // structural → no
                 var(PrivateClass::OffPathKnown("Z".into()), None, 30, 1.0),      // off-path → no
                 var(PrivateClass::Novel, None, 2, 1.0),                          // shallow → no
@@ -370,9 +368,9 @@ use navigator_sync::{
 /// assert they are *not* on the real keychain.
 pub use navigator_sync::{os_keychain_enabled, use_os_keychain};
 pub use navigator_sync::{
-    AlignmentRecord, BiosampleRecord, ContigMetrics, FeedPostRecord, PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord,
-    RecordRef, SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE, NS_FEED_POST, NS_POPULATION_BREAKDOWN,
-    NS_SEQUENCERUN, PRIVATE_VARIANTS_COLLECTION,
+    AlignmentRecord, BiosampleRecord, ContigMetrics, FeedPostRecord, PdsClient, PopulationBreakdownRecord,
+    PrivateVariantsRecord, RecordRef, SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE, NS_FEED_POST,
+    NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN, PRIVATE_VARIANTS_COLLECTION,
 };
 use navigator_sync::{
     AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord, IdentityVerificationRecord,
@@ -803,10 +801,10 @@ pub use navigator_store::ibd_exchange::StoredIbdExchange;
 pub use navigator_store::ibd_request::StoredIbdRequest;
 pub use navigator_store::source_file::SourceFile;
 use navigator_store::{
-    alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_painting,
-    consensus_archaic, consensus_archaic_segments, consensus_profile, consensus_roh, haplogroup_call, mtdna as mtdna_store, project, reconciliation as recon_store,
-    sequence_run,
-    source_file, str_profile, sync_history, sync_outbox, sync_state, variant_set, Store, StoreError,
+    alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_archaic,
+    consensus_archaic_segments, consensus_painting, consensus_profile, consensus_roh, haplogroup_call,
+    mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, source_file, str_profile, sync_history,
+    sync_outbox, sync_state, variant_set, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -832,9 +830,7 @@ fn tree_cache_path(file: &str) -> PathBuf {
     let dir = std::env::var("NAVIGATOR_TREE_DIR")
         .ok()
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            navigator_domain::paths::decodingus_dir().join("trees")
-        });
+        .unwrap_or_else(|| navigator_domain::paths::decodingus_dir().join("trees"));
     dir.join(file)
 }
 
@@ -909,7 +905,11 @@ where
                 // Highest weight wins; on a tie break by the allele itself so the pooled call is
                 // deterministic (a `HashMap` iteration order otherwise picked the winner at random,
                 // which flipped the placed terminal between runs over identical genotypes).
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)))
+                .max_by(|a, b| {
+                    a.1.partial_cmp(&b.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(a.0.cmp(&b.0))
+                })
                 .map(|(v, _)| (k, v))
         })
         .collect()
@@ -1426,10 +1426,10 @@ fn bundled_masks_dir() -> Option<PathBuf> {
     let dir = exe.parent()?;
     [
         dir.join("../Resources/masks"),         // macOS .app/Contents/MacOS → ../Resources
-        dir.join("masks"),                       // Windows (alongside) / portable
-        dir.join("../lib/DUNavigator/masks"),    // Linux .deb/AppImage usr/bin → usr/lib/<app>
-        dir.join("../share/DUNavigator/masks"),  // Linux usr/share/<app>
-        dir.join("resources/masks"),             // generic
+        dir.join("masks"),                      // Windows (alongside) / portable
+        dir.join("../lib/DUNavigator/masks"),   // Linux .deb/AppImage usr/bin → usr/lib/<app>
+        dir.join("../share/DUNavigator/masks"), // Linux usr/share/<app>
+        dir.join("resources/masks"),            // generic
     ]
     .into_iter()
     .find(|c| c.is_dir())
@@ -1461,9 +1461,9 @@ fn bundled_str_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     [
-        dir.join("../Resources/str"),        // macOS .app/Contents/MacOS → ../Resources
-        dir.join("str"),                     // Windows (alongside) / portable
-        dir.join("../lib/DUNavigator/str"),  // Linux .deb/AppImage usr/bin → usr/lib/<app>
+        dir.join("../Resources/str"),       // macOS .app/Contents/MacOS → ../Resources
+        dir.join("str"),                    // Windows (alongside) / portable
+        dir.join("../lib/DUNavigator/str"), // Linux .deb/AppImage usr/bin → usr/lib/<app>
         dir.join("../share/DUNavigator/str"),
         dir.join("resources/str"),
     ]
@@ -2928,7 +2928,6 @@ fn ibd_panel_cache_kind() -> String {
 /// Cache kind for per-alignment archaic-panel genotypes.
 const ARCHAIC_PANEL_KIND: &str = "archaic_panel_genotypes";
 
-
 /// The archaic-panel genotype cache kind, salted with the panel asset's manifest sha256 exactly as
 /// [`ibd_panel_cache_kind`] is — the archaic panel's site list changes whenever its thresholds are
 /// recalibrated, and serving genotypes taken over an older site set would silently corrupt the count.
@@ -3782,7 +3781,8 @@ mod placement_tests {
         let mut called = gvcf::CalledBases::default();
         called.variant_bases.extend([(146, 'G'), (263, 'G'), (1000, 'A')]);
         called.callable.extend([146, 263, 750, 1000]); // 750 hom-ref → its reference base
-                                                       // The reference carries the *derived* T at 750 (shared backbone the sample also has).
+
+        // The reference carries the *derived* T at 750 (shared backbone the sample also has).
         let ref_base: HashMap<i64, char> = [(750, 'T')].into_iter().collect();
         let calls = gvcf::assemble_calls(&called, &ref_base);
         assert_eq!(
@@ -3870,14 +3870,18 @@ mod external_precedence_tests {
             .unwrap();
 
         // No clobber: both rows survive under their distinct keys.
-        assert!(haplogroup_call::get_one(app.store.pool(), bio.guid, DnaType::Y, &external_y_source_key(1))
-            .await
-            .unwrap()
-            .is_some());
-        assert!(haplogroup_call::get_one(app.store.pool(), bio.guid, DnaType::Y, "aln:1")
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            haplogroup_call::get_one(app.store.pool(), bio.guid, DnaType::Y, &external_y_source_key(1))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            haplogroup_call::get_one(app.store.pool(), bio.guid, DnaType::Y, "aln:1")
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         // Default policy prefers external → external terminal wins despite the walk's higher score.
         let c = app.haplogroup_consensus(bio.guid, DnaType::Y).await.unwrap().unwrap();
@@ -3927,9 +3931,17 @@ mod publish_tests {
         .await
         .unwrap();
         // Exact yield → the standardized label's Gbases figure.
-        sequence_run::set_read_stats(app.store.pool(), run.id, Some(300_000_000), Some(150.0), None, None, Some(45_000_000_000))
-            .await
-            .unwrap();
+        sequence_run::set_read_stats(
+            app.store.pool(),
+            run.id,
+            Some(300_000_000),
+            Some(150.0),
+            None,
+            None,
+            Some(45_000_000_000),
+        )
+        .await
+        .unwrap();
         sequence_run::set_facility(app.store.pool(), run.id, "Dante Labs")
             .await
             .unwrap();
@@ -3939,7 +3951,10 @@ mod publish_tests {
         assert_eq!(value.get("instrumentId").and_then(|v| v.as_str()), Some("A00182"));
         // The known sequencing lab is published so the AppView can display it (its instrument→lab
         // map doesn't cover every serial, e.g. PacBio).
-        assert_eq!(value.get("sequencingFacility").and_then(|v| v.as_str()), Some("Dante Labs"));
+        assert_eq!(
+            value.get("sequencingFacility").and_then(|v| v.as_str()),
+            Some("Dante Labs")
+        );
         // Read-profile fields backing the standardized label are published.
         assert_eq!(value.get("totalBases").and_then(|v| v.as_i64()), Some(45_000_000_000));
         assert_eq!(value.get("readType").and_then(|v| v.as_str()), Some("SHORT"));
@@ -3962,12 +3977,18 @@ mod publish_tests {
         app.add_external_id(b.guid, "PGP", "huF98AFD").await.unwrap();
 
         let value = app.biosample_record("did:plc:test", b.guid).await.unwrap();
-        let ids = value.get("externalIds").and_then(|v| v.as_array()).expect("externalIds present");
+        let ids = value
+            .get("externalIds")
+            .and_then(|v| v.as_array())
+            .expect("externalIds present");
         let mut pairs: Vec<(String, String)> = ids
             .iter()
             .map(|e| {
                 (
-                    e.get("namespace").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                    e.get("namespace")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
                     e.get("value").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
                 )
             })
@@ -4191,7 +4212,9 @@ mod ibd_attest_tests {
 
         // The ledger adopts a conversation it never saw opened, so the completed exchange still
         // reads as one entry with its result attached rather than an orphan row.
-        app.mark_matching_exchanged(b.guid, &session, "exchange:r").await.unwrap();
+        app.mark_matching_exchanged(b.guid, &session, "exchange:r")
+            .await
+            .unwrap();
         let entries = app.matching_entries().await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, MatchingStatus::Exchanged);
@@ -4212,9 +4235,13 @@ mod ibd_attest_tests {
             partner_did: "did:key:zC".into(),
             key: [0u8; 32],
         };
-        app.mark_matching_exchanged(b.guid, &session, "exchange:f").await.unwrap();
+        app.mark_matching_exchanged(b.guid, &session, "exchange:f")
+            .await
+            .unwrap();
 
-        app.record_matching_failure("exchange:f", "relay timeout").await.unwrap();
+        app.record_matching_failure("exchange:f", "relay timeout")
+            .await
+            .unwrap();
         let e = app.matching_entry("exchange:f").await.unwrap();
         assert_eq!(e.status, MatchingStatus::Failed);
         assert_eq!(e.last_error.as_deref(), Some("relay timeout"));
@@ -4267,7 +4294,9 @@ mod ibd_attest_tests {
         app.record_ibd_exchange(b.guid, &session, "exchange:a", &result)
             .await
             .unwrap();
-        app.mark_matching_exchanged(b.guid, &session, "exchange:a").await.unwrap();
+        app.mark_matching_exchanged(b.guid, &session, "exchange:a")
+            .await
+            .unwrap();
 
         // No sample handles (a direct request never carries them) → nothing to attest, no network.
         assert!(!app.attest_exchange_if_possible("exchange:a").await.unwrap());
@@ -4387,7 +4416,11 @@ mod ibd_federated_tests {
         assert_eq!(at(0.49), MatchStrength::Possible);
         assert_eq!(at(0.0), MatchStrength::Possible);
         // A missing score parses as 0.0, which must read as the weakest claim, never the strongest.
-        assert_eq!(at(f64::NAN), MatchStrength::Possible, "an unusable score must not overstate");
+        assert_eq!(
+            at(f64::NAN),
+            MatchStrength::Possible,
+            "an unusable score must not overstate"
+        );
     }
 }
 
@@ -4538,10 +4571,16 @@ mod settings_tests {
         let prod = resolve_oauth_config(None);
         assert_eq!(prod.client_id(redirect), DEFAULT_OAUTH_CLIENT_ID);
         assert_eq!(prod.scope, OAUTH_SCOPE);
-        assert!(prod.scope.contains("transition:generic"), "publishing needs write scope");
+        assert!(
+            prod.scope.contains("transition:generic"),
+            "publishing needs write scope"
+        );
 
         // Blank is ignored → still the hosted default.
-        assert_eq!(resolve_oauth_config(Some("  ".into())).client_id(redirect), DEFAULT_OAUTH_CLIENT_ID);
+        assert_eq!(
+            resolve_oauth_config(Some("  ".into())).client_id(redirect),
+            DEFAULT_OAUTH_CLIENT_ID
+        );
 
         // `loopback` selects the dev client (client_id derived from the loopback redirect).
         let dev = resolve_oauth_config(Some("loopback".into()));

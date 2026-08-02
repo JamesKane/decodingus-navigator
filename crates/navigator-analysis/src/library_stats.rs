@@ -153,8 +153,16 @@ pub fn scan_library_stats(
 /// read platforms are `SHORT`. `None` when the platform is unknown (contributes no vote).
 fn detect_read_type_from_qname(qname: &str, platform: &str) -> Option<&'static str> {
     match platform {
-        "PacBio" => Some(if qname.rsplit('/').next() == Some("ccs") { "HIFI" } else { "CLR" }),
-        "Nanopore" => Some(if qname.contains(';') { "ONT_DUPLEX" } else { "ONT_SIMPLEX" }),
+        "PacBio" => Some(if qname.rsplit('/').next() == Some("ccs") {
+            "HIFI"
+        } else {
+            "CLR"
+        }),
+        "Nanopore" => Some(if qname.contains(';') {
+            "ONT_DUPLEX"
+        } else {
+            "ONT_SIMPLEX"
+        }),
         "Illumina" | "MGI" => Some("SHORT"),
         _ => None,
     }
@@ -387,12 +395,21 @@ mod tests {
             Some("ONT_SIMPLEX")
         );
         assert_eq!(
-            detect_read_type_from_qname("abcdef01-2345-6789-abcd-ef0123456789;01234567-89ab-cdef-0123-456789abcdef", "Nanopore"),
+            detect_read_type_from_qname(
+                "abcdef01-2345-6789-abcd-ef0123456789;01234567-89ab-cdef-0123-456789abcdef",
+                "Nanopore"
+            ),
             Some("ONT_DUPLEX")
         );
         // Short-read platforms.
-        assert_eq!(detect_read_type_from_qname("A00123:45:H7TJ2DSXX:1:1101:1000:1996", "Illumina"), Some("SHORT"));
-        assert_eq!(detect_read_type_from_qname("V300012345L1C001R0010000123", "MGI"), Some("SHORT"));
+        assert_eq!(
+            detect_read_type_from_qname("A00123:45:H7TJ2DSXX:1:1101:1000:1996", "Illumina"),
+            Some("SHORT")
+        );
+        assert_eq!(
+            detect_read_type_from_qname("V300012345L1C001R0010000123", "MGI"),
+            Some("SHORT")
+        );
         // Unknown platform ⇒ no vote.
         assert_eq!(detect_read_type_from_qname("totally random name", "Unknown"), None);
     }

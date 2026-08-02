@@ -5,7 +5,12 @@ fn main() -> anyhow::Result<()> {
     let path = std::env::args().nth(1).expect("usage: inspect_panel <panel.bin>");
     let bytes = std::fs::read(&path)?;
     let panel = AncestryPanel::from_bytes(&bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("build={} sites={} pops={}", panel.build, panel.sites.len(), panel.populations.len());
+    println!(
+        "build={} sites={} pops={}",
+        panel.build,
+        panel.sites.len(),
+        panel.populations.len()
+    );
     println!("populations: {:?}", panel.populations);
 
     let k = panel.populations.len();
@@ -38,7 +43,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Pairwise Nei Fst between a few populations of interest.
-    let want = ["WHG", "ANF", "Steppe", "EHG", "CHG", "Iran_N", "GBR", "CEU", "TSI", "YRI", "Han"];
+    let want = [
+        "WHG", "ANF", "Steppe", "EHG", "CHG", "Iran_N", "GBR", "CEU", "TSI", "YRI", "Han",
+    ];
     let idx: Vec<(usize, &str)> = want
         .iter()
         .filter_map(|w| panel.populations.iter().position(|p| p == w).map(|i| (i, *w)))

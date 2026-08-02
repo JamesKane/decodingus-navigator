@@ -53,7 +53,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             contig,
             &classify,
             pos_map,
-            |p| seq.get((p - 1).max(0) as usize).copied().map(|b| b.to_ascii_uppercase()),
+            |p| {
+                seq.get((p - 1).max(0) as usize)
+                    .copied()
+                    .map(|b| b.to_ascii_uppercase())
+            },
             &callable,
             0.5,
         );
@@ -61,7 +65,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!(
             "{contig}: {} informative diagnostic sites, {carried} carried ({:.1}%)",
             obs.len(),
-            if obs.is_empty() { 0.0 } else { carried as f64 * 100.0 / obs.len() as f64 }
+            if obs.is_empty() {
+                0.0
+            } else {
+                carried as f64 * 100.0 / obs.len() as f64
+            }
         );
         lengths.push((contig.clone(), seq.len() as i32));
         observations.insert(contig.clone(), obs);

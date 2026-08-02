@@ -568,10 +568,7 @@ fn fallback_test_text(lang: Lang, target: TargetType) -> (String, Option<String>
         TargetType::Autosomal | TargetType::Mixed => ("brief.testAutosomal", None),
         TargetType::XChromosome => ("brief.testX", Some("brief.testXLimits")),
     };
-    (
-        tr(lang, what).to_string(),
-        limits.map(|k| tr(lang, k).to_string()),
-    )
+    (tr(lang, what).to_string(), limits.map(|k| tr(lang, k).to_string()))
 }
 
 /// The one-line "who you are" headline summary.
@@ -582,11 +579,7 @@ fn headline_summary(
     maternal: Option<&LineageBrief>,
 ) -> String {
     match (paternal, maternal) {
-        (Some(p), Some(m)) => tr_fmt(
-            lang,
-            "brief.headlineBoth",
-            &[name, &p.haplogroup, &m.haplogroup],
-        ),
+        (Some(p), Some(m)) => tr_fmt(lang, "brief.headlineBoth", &[name, &p.haplogroup, &m.haplogroup]),
         (Some(p), None) => tr_fmt(lang, "brief.headlinePaternal", &[name, &p.haplogroup]),
         (None, Some(m)) => tr_fmt(lang, "brief.headlineMaternal", &[name, &m.haplogroup]),
         (None, None) => tr(lang, "brief.headlineNone").to_string(),

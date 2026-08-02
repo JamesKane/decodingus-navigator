@@ -115,7 +115,10 @@ pub fn narrate_fact_sheet(b: &SubjectBrief) -> String {
         s.push_str("\nAncestry:\n");
         s.push_str(&format!("- summary: {}\n", a.summary_phrase));
         for sp in a.super_populations.iter().filter(|p| p.percentage >= 0.5) {
-            s.push_str(&format!("- continental: {}: {:.1}%\n", sp.super_population, sp.percentage));
+            s.push_str(&format!(
+                "- continental: {}: {:.1}%\n",
+                sp.super_population, sp.percentage
+            ));
         }
         // Fine/modern populations (present-day reference groups the person most resembles). Without
         // these the story leans entirely on the ancient components — this is the recent-ancestry layer.
@@ -138,7 +141,10 @@ pub fn narrate_fact_sheet(b: &SubjectBrief) -> String {
         // Shared ancestry between the parents' lines (genealogical relatedness) — NOT a health signal.
         s.push_str("\nShared ancestry (runs of homozygosity):\n");
         s.push_str(&format!("- pattern: {}\n", r.pattern));
-        s.push_str(&format!("- F_ROH: {:.4} (share of DNA in long identical runs)\n", r.f_roh));
+        s.push_str(&format!(
+            "- F_ROH: {:.4} (share of DNA in long identical runs)\n",
+            r.f_roh
+        ));
         s.push_str(&format!(
             "- {} run(s), about {:.0} Mb in total, longest {:.0} Mb\n",
             r.n_segments, r.total_mb, r.longest_mb
@@ -269,7 +275,10 @@ mod tests {
         assert!(s.contains("Predominantly European"));
         assert!(s.contains("Western Hunter-Gatherer"));
         // Modern/fine populations must reach the model too — not only the ancient sources.
-        assert!(s.contains("closest modern population: British (55.0%)"), "fine pops missing: {s}");
+        assert!(
+            s.contains("closest modern population: British (55.0%)"),
+            "fine pops missing: {s}"
+        );
         assert!(s.contains("Iberian (12.0%)"));
         assert!(s.contains("high-quality (30× average depth)"));
     }

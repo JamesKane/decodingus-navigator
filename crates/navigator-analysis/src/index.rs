@@ -187,7 +187,6 @@ fn multi_reference_panic(text: &str) -> bool {
     text.contains(MULTI_REFERENCE_PANIC) && !text.contains("slice reference sequence name")
 }
 
-
 fn is_coordinate_sorted(header: &sam::Header) -> bool {
     header
         .header()
@@ -197,9 +196,7 @@ fn is_coordinate_sorted(header: &sam::Header) -> bool {
 }
 
 #[allow(clippy::type_complexity)]
-fn alignment_context(
-    record: &bam::Record,
-) -> std::io::Result<(Option<usize>, Option<Position>, Option<Position>)> {
+fn alignment_context(record: &bam::Record) -> std::io::Result<(Option<usize>, Option<Position>, Option<Position>)> {
     Ok((
         record.reference_sequence_id().transpose()?,
         record.alignment_start().transpose()?,
@@ -228,7 +225,10 @@ mod tests {
         let known = index_panic_error(path, &"invalid reference sequence name");
         let known = known.to_string();
         assert!(known.contains("multi-reference slices"), "names the cause: {known}");
-        assert!(known.contains("samtools index /data/sample.cram"), "gives the command: {known}");
+        assert!(
+            known.contains("samtools index /data/sample.cram"),
+            "gives the command: {known}"
+        );
 
         // An unclassified panic reports its own text rather than borrowing the known diagnosis.
         let other = index_panic_error(path, &String::from("not yet implemented")).to_string();

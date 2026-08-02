@@ -613,6 +613,9 @@ mod tests {
         // which path component is absent, so key on the message rather than a Unix errno.
         assert!(first.detail.starts_with("not found"), "{}", first.detail);
         // The reference check must not run — the report stops at the first real blocker.
-        assert!(!report.checks.iter().any(|c| c.id == CheckId::ReferenceFasta), "{report}");
+        assert!(
+            !report.checks.iter().any(|c| c.id == CheckId::ReferenceFasta),
+            "{report}"
+        );
     }
 }

@@ -10,7 +10,9 @@ use std::io::{BufRead, BufReader};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let ancient_path = args.next().expect("usage: ascertain_chip <ancient.bin> <ibd.bin> <out.bin> <chip...>");
+    let ancient_path = args
+        .next()
+        .expect("usage: ascertain_chip <ancient.bin> <ibd.bin> <out.bin> <chip...>");
     let ibd_path = args.next().expect("ibd.bin");
     let out_path = args.next().expect("out.bin");
     let chip_files: Vec<String> = args.collect();
@@ -44,7 +46,9 @@ fn main() -> anyhow::Result<()> {
 
     let mut ancient = AncestryPanel::from_bytes(&std::fs::read(&ancient_path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
     let before = ancient.sites.len();
-    ancient.sites.retain(|s| chip_loci.contains(&(s.contig.clone(), s.position)));
+    ancient
+        .sites
+        .retain(|s| chip_loci.contains(&(s.contig.clone(), s.position)));
     let after = ancient.sites.len();
     std::fs::write(&out_path, ancient.to_bytes().map_err(|e| anyhow::anyhow!("{e}"))?)?;
 

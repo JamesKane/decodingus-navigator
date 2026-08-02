@@ -43,7 +43,13 @@ fn parse_real_master_var() {
 
     // chrY / chrM must be hemizygous (genotype "1") — never diploid.
     for c in out.calls.iter().filter(|c| c.contig == "chrY" || c.contig == "chrM") {
-        assert_eq!(c.genotype.as_deref(), Some("1"), "{}:{} should be hemizygous", c.contig, c.position);
+        assert_eq!(
+            c.genotype.as_deref(),
+            Some("1"),
+            "{}:{} should be hemizygous",
+            c.contig,
+            c.position
+        );
     }
     // Every call is a clean single-base biallelic SNP.
     for c in &out.calls {

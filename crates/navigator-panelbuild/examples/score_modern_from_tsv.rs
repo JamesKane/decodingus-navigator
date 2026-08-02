@@ -13,7 +13,9 @@ use navigator_analysis::caller::SiteGenotype;
 use std::collections::HashMap;
 
 fn main() -> anyhow::Result<()> {
-    let fine_path = std::env::args().nth(1).expect("usage: score_modern_from_tsv <fine_panel.bin> <dosage.tsv> [pca.bin]");
+    let fine_path = std::env::args()
+        .nth(1)
+        .expect("usage: score_modern_from_tsv <fine_panel.bin> <dosage.tsv> [pca.bin]");
     let tsv = std::env::args().nth(2).expect("dosage.tsv");
     let pca_path = std::env::args().nth(3).filter(|s| !s.is_empty());
 
@@ -32,7 +34,9 @@ fn main() -> anyhow::Result<()> {
             3 => (f[0], f[1], f[2]),
             _ => continue,
         };
-        let (Ok(p), Ok(d)) = (p.trim().parse::<i64>(), d.trim().parse::<i32>()) else { continue };
+        let (Ok(p), Ok(d)) = (p.trim().parse::<i64>(), d.trim().parse::<i32>()) else {
+            continue;
+        };
         dosage.insert((c.to_string(), p), d);
     }
 
@@ -81,7 +85,10 @@ fn main() -> anyhow::Result<()> {
     let mut comps = result.components.clone();
     comps.sort_by(|a, b| b.percentage.total_cmp(&a.percentage));
     for c in comps.iter().filter(|c| c.percentage >= 0.5) {
-        println!("  {:<5} {:<22} {:>6.1} %", c.population_code, c.population_name, c.percentage);
+        println!(
+            "  {:<5} {:<22} {:>6.1} %",
+            c.population_code, c.population_name, c.percentage
+        );
     }
 
     if let Some(pca_path) = pca_path {

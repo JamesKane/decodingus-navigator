@@ -290,7 +290,9 @@ pub fn branch_report_tsv(report: &BranchReport) -> String {
         "# DUNavigator {dna} branch report — node {} ({}); {d} derived / {a} ancestral / {n} no-call\n",
         report.root, report.contig
     );
-    out.push_str("node\tparent\tmarker\tchrom\tpos\tancestral\tderived\tobserved_base\tstatus\tGT\tAD\tDP\tGQ\tsource\tnote\n");
+    out.push_str(
+        "node\tparent\tmarker\tchrom\tpos\tancestral\tderived\tobserved_base\tstatus\tGT\tAD\tDP\tGQ\tsource\tnote\n",
+    );
     for r in &report.rows {
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
@@ -849,11 +851,16 @@ mod tests {
             ],
         };
         let tsv = branch_report_tsv(&report);
-        assert!(tsv.lines().next().unwrap().starts_with("# DUNavigator Y-DNA branch report — node R-FGC29071"));
-        assert!(tsv.contains("node\tparent\tmarker\tchrom\tpos\tancestral\tderived\tobserved_base\tstatus\tGT\tAD\tDP\tGQ\tsource\tnote"));
         assert!(tsv
             .lines()
-            .any(|l| l == "R-FGC29071\tR-FGC29067\tFGC29069\tchrY\t14583465\tG\tT\tT\tderived\t1\t0,11\t11\t99\tgvcf_variant\t"));
+            .next()
+            .unwrap()
+            .starts_with("# DUNavigator Y-DNA branch report — node R-FGC29071"));
+        assert!(tsv.contains(
+            "node\tparent\tmarker\tchrom\tpos\tancestral\tderived\tobserved_base\tstatus\tGT\tAD\tDP\tGQ\tsource\tnote"
+        ));
+        assert!(tsv.lines().any(|l| l
+            == "R-FGC29071\tR-FGC29067\tFGC29069\tchrY\t14583465\tG\tT\tT\tderived\t1\t0,11\t11\t99\tgvcf_variant\t"));
         // Ref-block row: AD/DP omitted (.), GQ kept, ancestral, hom-ref note.
         assert!(tsv
             .lines()

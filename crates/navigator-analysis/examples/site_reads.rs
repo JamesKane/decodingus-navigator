@@ -30,7 +30,10 @@ fn main() {
     let region: Region = format!("{contig}:{lo}-{hi}").parse().expect("region");
 
     println!("site chrY:{pos} ref={ref_base}  window ±{win}");
-    println!("{:<32} {:>4} {:>4} {:>5} {:>4} {:>3} {:>8}", "qname", "pair", "mapq", "site", "bq", "nm", "flags");
+    println!(
+        "{:<32} {:>4} {:>4} {:>5} {:>4} {:>3} {:>8}",
+        "qname", "pair", "mapq", "site", "bq", "nm", "flags"
+    );
     let mut base_tally: HashMap<char, u32> = HashMap::new();
     for result in reader.query(&header, &region).expect("query") {
         let rec = result.expect("rec");
@@ -38,11 +41,16 @@ fn main() {
         if f.is_secondary() || f.is_supplementary() || f.is_duplicate() || f.is_unmapped() {
             continue;
         }
-        let Some(start) = rec.alignment_start().map(|p| p.get() as i64) else { continue };
+        let Some(start) = rec.alignment_start().map(|p| p.get() as i64) else {
+            continue;
+        };
         let seq = rec.sequence();
         let quals = rec.quality_scores();
         let qb = quals.as_ref();
-        let name = rec.name().map(|n| String::from_utf8_lossy(n).into_owned()).unwrap_or_default();
+        let name = rec
+            .name()
+            .map(|n| String::from_utf8_lossy(n).into_owned())
+            .unwrap_or_default();
         let mapq = rec.mapping_quality().map_or(255, |m| m.get());
 
         // Walk the CIGAR: capture the base at `pos` and count mismatches vs ref (excluding `pos`).
@@ -84,9 +92,18 @@ fn main() {
             continue; // doesn't span the site
         }
         *base_tally.entry(site_base).or_default() += 1;
-        let pair = if f.is_first_segment() { "R1" } else if f.is_last_segment() { "R2" } else { "?" };
+        let pair = if f.is_first_segment() {
+            "R1"
+        } else if f.is_last_segment() {
+            "R2"
+        } else {
+            "?"
+        };
         let mm: Vec<String> = mm_pos.iter().map(|p| (p - pos).to_string()).collect();
-        println!("{name:<38} {pair:>4} {mapq:>4} {site_base:>5} {site_bq:>4} {nm:>3}  mm@[{}]", mm.join(","));
+        println!(
+            "{name:<38} {pair:>4} {mapq:>4} {site_base:>5} {site_bq:>4} {nm:>3}  mm@[{}]",
+            mm.join(",")
+        );
     }
     let mut keys: Vec<_> = base_tally.keys().copied().collect();
     keys.sort();

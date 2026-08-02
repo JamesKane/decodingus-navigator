@@ -341,7 +341,11 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
             let mean = vals.iter().sum::<f64>() / vals.len() as f64;
             let observed = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (vals.len() - 1) as f64;
             // Actual density realised by the hash, not the nominal target.
-            let realised = site_freqs[pi].iter().enumerate().filter(|(si, _)| in_rung(*si, r)).count() as f32
+            let realised = site_freqs[pi]
+                .iter()
+                .enumerate()
+                .filter(|(si, _)| in_rung(*si, r))
+                .count() as f32
                 / panel.len().max(1) as f32;
             ladder.push((realised, (observed / predicted).max(1.0) as f32));
         }
@@ -386,7 +390,10 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
             ladder = kept;
         }
         ladder.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let shown: Vec<String> = ladder.iter().map(|(d, i)| format!("{:.1}%:{:.1}x", d * 100.0, i)).collect();
+        let shown: Vec<String> = ladder
+            .iter()
+            .map(|(d, i)| format!("{:.1}%:{:.1}x", d * 100.0, i))
+            .collect();
         eprintln!("  {sup:<5} variance inflation by density  {}", shown.join("  "));
         variance_inflation.push(ladder);
     }

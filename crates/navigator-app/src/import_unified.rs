@@ -343,7 +343,11 @@ impl App {
                 .iter()
                 .filter(|f| f.kind != navigator_analysis::scan::DiscoveredFileType::Index)
             {
-                let name = f.path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let name = f
+                    .path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 match self.add_data(biosample_guid, &f.path).await {
                     Ok(d) => summary.imported.push((name, d.description().to_string())),
                     Err(e) => summary.skipped.push((name, e.to_string())),
@@ -380,13 +384,19 @@ impl App {
         let existing = alignment::list_for_run(self.store.pool(), run.id).await?;
         for aln_path in &sample.alignment_files {
             let path_str = aln_path.to_string_lossy().into_owned();
-            if existing.iter().any(|a| a.bam_path.as_deref() == Some(path_str.as_str())) {
+            if existing
+                .iter()
+                .any(|a| a.bam_path.as_deref() == Some(path_str.as_str()))
+            {
                 summary.alignments_skipped += 1;
                 continue;
             }
             let probe_path = aln_path.clone();
             let (build, _source) = tokio::task::spawn_blocking(move || detect_build_for(&probe_path)).await?;
-            let reference_path = self.gateway.cached_reference(&build).map(|p| p.to_string_lossy().into_owned());
+            let reference_path = self
+                .gateway
+                .cached_reference(&build)
+                .map(|p| p.to_string_lossy().into_owned());
             self.record_alignment(NewAlignment {
                 sequence_run_id: run.id,
                 reference_build: build,
@@ -409,14 +419,19 @@ impl App {
         // also lists as variant files — the guard keeps them out of this loop too.
         if !sample.sidecars.has_haplogroup_gvcf() {
             for vcf in &sample.variant_files {
-                let name = vcf.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let name = vcf
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 match self
                     .import_variants_from_file(biosample_guid, vcf, variants::SourceType::Imported)
                     .await
                 {
                     Ok(_) => {
                         summary.variants_imported += 1;
-                        summary.imported.push((name, DetectedData::Variants.description().to_string()));
+                        summary
+                            .imported
+                            .push((name, DetectedData::Variants.description().to_string()));
                     }
                     Err(e) => summary.skipped.push((name, e.to_string())),
                 }
@@ -490,7 +505,10 @@ impl App {
     /// the CRAM. The external calls land on their own `:ext` keys (they cannot clobber, and with the
     /// "prefer external caller" policy they win the consensus). Returns `(y_placed, mt_placed)`.
     /// This is the operational fix for a workspace imported before external-caller precedence.
-    pub async fn reingest_external_for_biosample(&self, biosample_guid: SampleGuid) -> Result<(usize, usize), AppError> {
+    pub async fn reingest_external_for_biosample(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<(usize, usize), AppError> {
         let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         let (mut y_placed, mut mt_placed) = (0usize, 0usize);
         for a in &alns {
@@ -554,7 +572,13 @@ impl App {
             .flat_map(|s| s.alignment_files.iter().cloned())
             .collect();
         let detected: HashMap<PathBuf, (String, &'static str)> = tokio::task::spawn_blocking(move || {
-            all_paths.into_iter().map(|p| { let d = detect_build_for(&p); (p, d) }).collect()
+            all_paths
+                .into_iter()
+                .map(|p| {
+                    let d = detect_build_for(&p);
+                    (p, d)
+                })
+                .collect()
         })
         .await?;
 
@@ -580,13 +604,12 @@ impl App {
             // Effective build: keep the detected one when the gateway recognizes it (or an explicit
             // FASTA overrides everything); otherwise fall back to the default so unlabeled files
             // still import instead of killing the batch.
-            let (effective, defaulted) = if explicit.is_some()
-                || !matches!(self.gateway.reference_status(detected_build), RefStatus::Unknown)
-            {
-                (detected_build.clone(), false)
-            } else {
-                (DEFAULT_IMPORT_BUILD.to_string(), true)
-            };
+            let (effective, defaulted) =
+                if explicit.is_some() || !matches!(self.gateway.reference_status(detected_build), RefStatus::Unknown) {
+                    (detected_build.clone(), false)
+                } else {
+                    (DEFAULT_IMPORT_BUILD.to_string(), true)
+                };
             effective_of.insert(detected_build.clone(), effective.clone());
 
             // Resolve the effective build to a FASTA once (explicit > already-resolved > cache >
@@ -603,7 +626,11 @@ impl App {
                     RefStatus::Cached(p) | RefStatus::LocalOverride(p) => Some(p.to_string_lossy().into_owned()),
                     RefStatus::NeedsDownload { url, est_bytes } => {
                         if !needs.iter().any(|n| n.build == effective) {
-                            needs.push(BuildNeed { build: effective.clone(), url, est_bytes });
+                            needs.push(BuildNeed {
+                                build: effective.clone(),
+                                url,
+                                est_bytes,
+                            });
                         }
                         None
                     }
@@ -669,7 +696,15 @@ impl App {
         for (i, sample) in discovered.samples.iter().enumerate() {
             progress(i, total, &sample.sample_id);
             if let Err(e) = self
-                .import_project_sample(sample, &project, fast_path, &detected, &effective_of, &resolved, &mut summary)
+                .import_project_sample(
+                    sample,
+                    &project,
+                    fast_path,
+                    &detected,
+                    &effective_of,
+                    &resolved,
+                    &mut summary,
+                )
                 .await
             {
                 eprintln!(
@@ -716,8 +751,14 @@ impl App {
         };
         // Ensure the subject is a member of this project (idempotent on the (guid, project) PK).
         // A reused subject whose *home* project is another one still joins this project's roster.
-        biosample_project::add(self.store.pool(), biosample.guid, project.id, None, &Utc::now().to_rfc3339())
-            .await?;
+        biosample_project::add(
+            self.store.pool(),
+            biosample.guid,
+            project.id,
+            None,
+            &Utc::now().to_rfc3339(),
+        )
+        .await?;
 
         // SequenceRun: reuse the first existing run, else create one (defaults to WGS).
         let run = match sequence_run::list_for_biosample(self.store.pool(), biosample.guid)
@@ -937,13 +978,19 @@ impl App {
             let previous = std::fs::read(&manifest_path).ok();
             let _ = std::fs::remove_file(&manifest_path); // else the gateway serves the cached copy
             let url = format!("{base}/{manifest_name}");
-            match self.gateway.resolve_ancestry_asset(&manifest_name, &url, &mut |_, _| {}).await {
+            match self
+                .gateway
+                .resolve_ancestry_asset(&manifest_name, &url, &mut |_, _| {})
+                .await
+            {
                 Ok(_) => manifest = load_asset_manifest(build),
                 Err(e) => {
                     if let Some(bytes) = previous {
                         let _ = std::fs::write(&manifest_path, bytes);
                     }
-                    eprintln!("ancestry assets: could not fetch {manifest_name} ({e}) — leaving {name} to on-disk state");
+                    eprintln!(
+                        "ancestry assets: could not fetch {manifest_name} ({e}) — leaving {name} to on-disk state"
+                    );
                     return Ok(());
                 }
             }
@@ -1114,7 +1161,11 @@ impl App {
     /// **no CRAM decode**, re-keys to canonical CHM13 (`resolve_chip`), stores the dosages as an
     /// `external` source, and refreshes the autosomal consensus. Build is auto-detected from the VCF
     /// header (`NAVIGATOR_CALLSET_BUILD` overrides). Returns the number of resolved panel sites.
-    pub async fn import_gvcf_callset_from_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<usize, AppError> {
+    pub async fn import_gvcf_callset_from_file(
+        &self,
+        biosample_guid: SampleGuid,
+        path: &Path,
+    ) -> Result<usize, AppError> {
         let build = callset_build_for(path);
 
         let panel = self.load_ibd_panel().await?;
@@ -1166,9 +1217,12 @@ impl App {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "external VCF".into());
-        self.store_external_dosages(biosample_guid, &format!("{label} (1240K call set, {build})"), dosages, || {
-            format!("the VCF genotyped 0 panel sites on {build} ({called} calls) — check the build/VCF")
-        })
+        self.store_external_dosages(
+            biosample_guid,
+            &format!("{label} (1240K call set, {build})"),
+            dosages,
+            || format!("the VCF genotyped 0 panel sites on {build} ({called} calls) — check the build/VCF"),
+        )
         .await
     }
 
@@ -1186,11 +1240,14 @@ impl App {
         if site_count == 0 {
             return Err(AppError::Import(on_empty()));
         }
-        let json = serde_json::to_string(&dosages).map_err(|e| AppError::Import(format!("serializing dosages: {e}")))?;
+        let json =
+            serde_json::to_string(&dosages).map_err(|e| AppError::Import(format!("serializing dosages: {e}")))?;
         let row = navigator_store::external_panel_dosage::StoredPanelDosage {
             biosample_guid: biosample_guid.0.to_string(),
             source_label: source_label.to_string(),
-            provenance: navigator_domain::reconciliation::CallProvenance::External.as_str().to_string(),
+            provenance: navigator_domain::reconciliation::CallProvenance::External
+                .as_str()
+                .to_string(),
             panel_sig: Some(ibd_panel_cache_kind()),
             site_count: site_count as i64,
             dosages: json,
@@ -1419,7 +1476,10 @@ pub(crate) enum AssetAction {
     Skip,
 }
 
-pub(crate) fn asset_action(entry: Option<&navigator_analysis::manifest::AssetEntry>, on_disk: Option<u64>) -> AssetAction {
+pub(crate) fn asset_action(
+    entry: Option<&navigator_analysis::manifest::AssetEntry>,
+    on_disk: Option<u64>,
+) -> AssetAction {
     match (entry, on_disk) {
         (None, _) => AssetAction::Skip,
         (Some(_), None) => AssetAction::Download,
@@ -1434,7 +1494,10 @@ mod asset_tests {
     use navigator_analysis::manifest::AssetEntry;
 
     fn entry(bytes: u64) -> AssetEntry {
-        AssetEntry { sha256: "deadbeef".into(), bytes }
+        AssetEntry {
+            sha256: "deadbeef".into(),
+            bytes,
+        }
     }
 
     #[test]
@@ -1446,7 +1509,10 @@ mod asset_tests {
         assert_eq!(asset_action(Some(&entry(100)), None), AssetAction::Download);
         assert_eq!(asset_action(Some(&entry(100)), Some(100)), AssetAction::Ready);
         // The case a plain existence check misses: a locally-present asset the release has revised.
-        assert_eq!(asset_action(Some(&entry(139_815_581)), Some(13_774_065)), AssetAction::Replace);
+        assert_eq!(
+            asset_action(Some(&entry(139_815_581)), Some(13_774_065)),
+            AssetAction::Replace
+        );
         // …and a truncated download.
         assert_eq!(asset_action(Some(&entry(100)), Some(41)), AssetAction::Replace);
     }

@@ -238,11 +238,19 @@ impl NavigatorApp {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(self.tr("mdka.birth"));
-                    ui.add(egui::TextEdit::singleline(&mut edit.birth_year).hint_text("e.g. 1830").desired_width(150.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut edit.birth_year)
+                            .hint_text("e.g. 1830")
+                            .desired_width(150.0),
+                    );
                 });
                 ui.vertical(|ui| {
                     ui.label(self.tr("mdka.death"));
-                    ui.add(egui::TextEdit::singleline(&mut edit.death_year).hint_text("e.g. 1908").desired_width(150.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut edit.death_year)
+                            .hint_text("e.g. 1908")
+                            .desired_width(150.0),
+                    );
                 });
             });
             ui.add_space(4.0);
@@ -251,11 +259,19 @@ impl NavigatorApp {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.label(self.tr("mdka.lat"));
-                    ui.add(egui::TextEdit::singleline(&mut edit.latitude).hint_text("e.g. 52.75").desired_width(150.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut edit.latitude)
+                            .hint_text("e.g. 52.75")
+                            .desired_width(150.0),
+                    );
                 });
                 ui.vertical(|ui| {
                     ui.label(self.tr("mdka.lon"));
-                    ui.add(egui::TextEdit::singleline(&mut edit.longitude).hint_text("e.g. -9.43").desired_width(150.0));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut edit.longitude)
+                            .hint_text("e.g. -9.43")
+                            .desired_width(150.0),
+                    );
                 });
             });
             ui.add_space(4.0);
@@ -332,11 +348,7 @@ impl NavigatorApp {
         // modals here.
         let (mut close, mut copy) = (false, false);
         modal_frame(ctx, "diagnosis_modal", 640.0, |ui| {
-            ui.label(
-                egui::RichText::new(self.tr("diagnosis.title"))
-                    .strong()
-                    .size(16.0),
-            );
+            ui.label(egui::RichText::new(self.tr("diagnosis.title")).strong().size(16.0));
             ui.label(egui::RichText::new(self.tr("diagnosis.subtitle")).weak());
             ui.separator();
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
@@ -413,340 +425,364 @@ impl NavigatorApp {
             settings_tab = self.sub_bar(ui, settings_tab, &SettingsTab::ALL);
             egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
                 match settings_tab {
-                SettingsTab::General => {
-                // --- Appearance ---
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.theme"));
-                    ui.selectable_value(&mut theme_dark, true, self.tr("settings.dark"));
-                    ui.selectable_value(&mut theme_dark, false, self.tr("settings.light"));
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.uiScale"));
-                    let scale_resp = ui.add(
-                        egui::Slider::new(&mut form.ui_scale, 0.8..=2.5)
-                            .step_by(0.05)
-                            .fixed_decimals(2),
-                    );
-                    scale_dragging = scale_resp.dragged();
-                    if ui.small_button("100%").clicked() {
-                        form.ui_scale = 1.0;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.language"));
-                    egui::ComboBox::from_id_salt("settings_lang")
-                        .selected_text(lang.label())
-                        .show_ui(ui, |ui| {
-                            for &l in crate::i18n::Lang::all() {
-                                ui.selectable_value(&mut lang, l, l.label());
+                    SettingsTab::General => {
+                        // --- Appearance ---
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.theme"));
+                            ui.selectable_value(&mut theme_dark, true, self.tr("settings.dark"));
+                            ui.selectable_value(&mut theme_dark, false, self.tr("settings.light"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.uiScale"));
+                            let scale_resp = ui.add(
+                                egui::Slider::new(&mut form.ui_scale, 0.8..=2.5)
+                                    .step_by(0.05)
+                                    .fixed_decimals(2),
+                            );
+                            scale_dragging = scale_resp.dragged();
+                            if ui.small_button("100%").clicked() {
+                                form.ui_scale = 1.0;
                             }
                         });
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.interfaceMode"));
-                    ui.selectable_value(&mut ui_mode, UiMode::Simple, self.tr("settings.modeSimple"));
-                    ui.selectable_value(&mut ui_mode, UiMode::Advanced, self.tr("settings.modeAdvanced"));
-                });
-                }
-
-                SettingsTab::Connection => {
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.appviewUrl"));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut form.appview_url)
-                            .hint_text("https://decoding-us.org")
-                            .desired_width(320.0),
-                    );
-                });
-                ui.label(
-                    egui::RichText::new(self.tr("settings.appviewUrlHint"))
-                        .weak()
-                        .small(),
-                );
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.yTreeProvider"));
-                    let cur = if form.y_tree_provider.eq_ignore_ascii_case("ftdna") {
-                        "FTDNA"
-                    } else {
-                        "Decoding-Us"
-                    };
-                    egui::ComboBox::from_id_salt("settings_y_provider")
-                        .selected_text(cur)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut form.y_tree_provider, "decodingus".to_string(), "Decoding-Us");
-                            ui.selectable_value(&mut form.y_tree_provider, "ftdna".to_string(), "FTDNA");
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.language"));
+                            egui::ComboBox::from_id_salt("settings_lang")
+                                .selected_text(lang.label())
+                                .show_ui(ui, |ui| {
+                                    for &l in crate::i18n::Lang::all() {
+                                        ui.selectable_value(&mut lang, l, l.label());
+                                    }
+                                });
                         });
-                });
-                ui.horizontal(|ui| {
-                    if ui.button(self.tr("settings.refreshTrees")).clicked() {
-                        refresh_trees = true;
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.interfaceMode"));
+                            ui.selectable_value(&mut ui_mode, UiMode::Simple, self.tr("settings.modeSimple"));
+                            ui.selectable_value(&mut ui_mode, UiMode::Advanced, self.tr("settings.modeAdvanced"));
+                        });
                     }
-                    ui.label(egui::RichText::new(self.tr("settings.refreshTreesHint")).weak().small());
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.treeTtl"));
-                    ui.add(egui::TextEdit::singleline(&mut form.tree_ttl_days).desired_width(60.0));
-                });
-                }
 
-                SettingsTab::Ancestry => {
-                // --- Chromosome painter (copying-LAI) calibration ---
-                // Reset buttons restore the painter's calibrated defaults (see `lai_knob_defaults`).
-                let lai = navigator_app::lai_knob_defaults();
-                ui.label(egui::RichText::new(self.tr("settings.painterHint")).small().weak());
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.painter.recomb"));
-                    ui.add(egui::Slider::new(&mut form.lai_recomb_per_cm, 0.02..=3.0).step_by(0.01).fixed_decimals(2));
-                    if ui.small_button(format!("{:.2}", lai.recomb_per_cm)).clicked() {
-                        form.lai_recomb_per_cm = lai.recomb_per_cm;
+                    SettingsTab::Connection => {
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.appviewUrl"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut form.appview_url)
+                                    .hint_text("https://decoding-us.org")
+                                    .desired_width(320.0),
+                            );
+                        });
+                        ui.label(egui::RichText::new(self.tr("settings.appviewUrlHint")).weak().small());
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.yTreeProvider"));
+                            let cur = if form.y_tree_provider.eq_ignore_ascii_case("ftdna") {
+                                "FTDNA"
+                            } else {
+                                "Decoding-Us"
+                            };
+                            egui::ComboBox::from_id_salt("settings_y_provider")
+                                .selected_text(cur)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut form.y_tree_provider,
+                                        "decodingus".to_string(),
+                                        "Decoding-Us",
+                                    );
+                                    ui.selectable_value(&mut form.y_tree_provider, "ftdna".to_string(), "FTDNA");
+                                });
+                        });
+                        ui.horizontal(|ui| {
+                            if ui.button(self.tr("settings.refreshTrees")).clicked() {
+                                refresh_trees = true;
+                            }
+                            ui.label(egui::RichText::new(self.tr("settings.refreshTreesHint")).weak().small());
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.treeTtl"));
+                            ui.add(egui::TextEdit::singleline(&mut form.tree_ttl_days).desired_width(60.0));
+                        });
                     }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.painter.cap"));
-                    ui.add(egui::Slider::new(&mut form.lai_max_ref_haps, 10..=400));
-                    if ui.small_button(lai.max_ref_haps.to_string()).clicked() {
-                        form.lai_max_ref_haps = lai.max_ref_haps;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.painter.gate"));
-                    ui.add(egui::Slider::new(&mut form.lai_min_ancestry, 0.0..=0.20).step_by(0.005).fixed_decimals(3));
-                    if ui.small_button(format!("{:.2}", lai.min_ancestry)).clicked() {
-                        form.lai_min_ancestry = lai.min_ancestry;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.painter.switch"));
-                    ui.add(egui::Slider::new(&mut form.lai_switch_per_cm, 0.01..=0.5).step_by(0.01).fixed_decimals(2));
-                    if ui.small_button(format!("{:.2}", lai.switch_per_cm)).clicked() {
-                        form.lai_switch_per_cm = lai.switch_per_cm;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.painter.minSeg"));
-                    ui.add(egui::Slider::new(&mut form.lai_min_segment_cm, 0.5..=12.0).step_by(0.5).fixed_decimals(1));
-                    if ui.small_button(format!("{:.1}", lai.min_segment_cm)).clicked() {
-                        form.lai_min_segment_cm = lai.min_segment_cm;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.painter.sizeNorm"));
-                    ui.add(egui::Slider::new(&mut form.lai_size_normalize, 0.0..=1.0).step_by(0.05).fixed_decimals(2));
-                    if ui.small_button(format!("{:.2}", lai.size_normalize)).clicked() {
-                        form.lai_size_normalize = lai.size_normalize;
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("settings.painter.mismatch"));
-                    ui.add(egui::Slider::new(&mut form.lai_mismatch, 0.005..=0.10).step_by(0.005).fixed_decimals(3));
-                    if ui.small_button(format!("{:.3}", lai.mismatch)).clicked() {
-                        form.lai_mismatch = lai.mismatch;
-                    }
-                });
-                ui.label(egui::RichText::new(self.tr("settings.painterApply")).small().weak());
-                }
 
-                SettingsTab::Ai => {
-                // --- AI assistant (local LLM) ---
-                ui.checkbox(&mut form.llm_enabled, self.tr("settings.ai.enable"));
-                ui.add_enabled_ui(form.llm_enabled, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(self.tr("settings.ai.baseUrl"));
-                        ui.add(
-                            egui::TextEdit::singleline(&mut form.llm_base_url)
-                                .hint_text(navigator_app::llm::DEFAULT_LLM_BASE_URL)
-                                .desired_width(300.0),
-                        );
-                    });
-                    // Quick-pick host ports.
-                    ui.horizontal(|ui| {
-                        ui.label(self.tr("settings.ai.presets"));
-                        if ui.small_button("LM Studio").clicked() {
-                            form.llm_base_url = "http://localhost:1234/v1".into();
+                    SettingsTab::Ancestry => {
+                        // --- Chromosome painter (copying-LAI) calibration ---
+                        // Reset buttons restore the painter's calibrated defaults (see `lai_knob_defaults`).
+                        let lai = navigator_app::lai_knob_defaults();
+                        ui.label(egui::RichText::new(self.tr("settings.painterHint")).small().weak());
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.painter.recomb"));
+                            ui.add(
+                                egui::Slider::new(&mut form.lai_recomb_per_cm, 0.02..=3.0)
+                                    .step_by(0.01)
+                                    .fixed_decimals(2),
+                            );
+                            if ui.small_button(format!("{:.2}", lai.recomb_per_cm)).clicked() {
+                                form.lai_recomb_per_cm = lai.recomb_per_cm;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.painter.cap"));
+                            ui.add(egui::Slider::new(&mut form.lai_max_ref_haps, 10..=400));
+                            if ui.small_button(lai.max_ref_haps.to_string()).clicked() {
+                                form.lai_max_ref_haps = lai.max_ref_haps;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.painter.gate"));
+                            ui.add(
+                                egui::Slider::new(&mut form.lai_min_ancestry, 0.0..=0.20)
+                                    .step_by(0.005)
+                                    .fixed_decimals(3),
+                            );
+                            if ui.small_button(format!("{:.2}", lai.min_ancestry)).clicked() {
+                                form.lai_min_ancestry = lai.min_ancestry;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.painter.switch"));
+                            ui.add(
+                                egui::Slider::new(&mut form.lai_switch_per_cm, 0.01..=0.5)
+                                    .step_by(0.01)
+                                    .fixed_decimals(2),
+                            );
+                            if ui.small_button(format!("{:.2}", lai.switch_per_cm)).clicked() {
+                                form.lai_switch_per_cm = lai.switch_per_cm;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.painter.minSeg"));
+                            ui.add(
+                                egui::Slider::new(&mut form.lai_min_segment_cm, 0.5..=12.0)
+                                    .step_by(0.5)
+                                    .fixed_decimals(1),
+                            );
+                            if ui.small_button(format!("{:.1}", lai.min_segment_cm)).clicked() {
+                                form.lai_min_segment_cm = lai.min_segment_cm;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.painter.sizeNorm"));
+                            ui.add(
+                                egui::Slider::new(&mut form.lai_size_normalize, 0.0..=1.0)
+                                    .step_by(0.05)
+                                    .fixed_decimals(2),
+                            );
+                            if ui.small_button(format!("{:.2}", lai.size_normalize)).clicked() {
+                                form.lai_size_normalize = lai.size_normalize;
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("settings.painter.mismatch"));
+                            ui.add(
+                                egui::Slider::new(&mut form.lai_mismatch, 0.005..=0.10)
+                                    .step_by(0.005)
+                                    .fixed_decimals(3),
+                            );
+                            if ui.small_button(format!("{:.3}", lai.mismatch)).clicked() {
+                                form.lai_mismatch = lai.mismatch;
+                            }
+                        });
+                        ui.label(egui::RichText::new(self.tr("settings.painterApply")).small().weak());
+                    }
+
+                    SettingsTab::Ai => {
+                        // --- AI assistant (local LLM) ---
+                        ui.checkbox(&mut form.llm_enabled, self.tr("settings.ai.enable"));
+                        ui.add_enabled_ui(form.llm_enabled, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(self.tr("settings.ai.baseUrl"));
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut form.llm_base_url)
+                                        .hint_text(navigator_app::llm::DEFAULT_LLM_BASE_URL)
+                                        .desired_width(300.0),
+                                );
+                            });
+                            // Quick-pick host ports.
+                            ui.horizontal(|ui| {
+                                ui.label(self.tr("settings.ai.presets"));
+                                if ui.small_button("LM Studio").clicked() {
+                                    form.llm_base_url = "http://localhost:1234/v1".into();
+                                }
+                                if ui.small_button("Ollama").clicked() {
+                                    form.llm_base_url = "http://localhost:11434/v1".into();
+                                }
+                                if ui.small_button("llama.cpp").clicked() {
+                                    form.llm_base_url = "http://localhost:8080/v1".into();
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_enabled(!self.llm_testing, egui::Button::new(self.tr("settings.ai.test")))
+                                    .clicked()
+                                {
+                                    test_llm = Some(form.llm_base_url.trim().to_string());
+                                }
+                                if self.llm_testing {
+                                    ui.spinner();
+                                }
+                                if let Some(msg) = &self.llm_test_msg {
+                                    ui.label(egui::RichText::new(msg).weak().small());
+                                }
+                            });
+                            // Model picker — populated by a successful Test connection.
+                            ui.horizontal(|ui| {
+                                ui.label(self.tr("settings.ai.model"));
+                                let current = if form.llm_model.is_empty() {
+                                    self.tr("settings.ai.modelAuto").to_string()
+                                } else {
+                                    form.llm_model.clone()
+                                };
+                                egui::ComboBox::from_id_salt("settings_llm_model")
+                                    .selected_text(current)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut form.llm_model,
+                                            String::new(),
+                                            self.tr("settings.ai.modelAuto"),
+                                        );
+                                        for m in &self.llm_models {
+                                            ui.selectable_value(&mut form.llm_model, m.clone(), m);
+                                        }
+                                    });
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(self.tr("settings.ai.maxTokens"));
+                                ui.add(egui::TextEdit::singleline(&mut form.llm_max_tokens).desired_width(80.0));
+                                ui.label(egui::RichText::new(self.tr("settings.ai.maxTokensHint")).weak().small());
+                            });
+                            // Privacy line — turns to a warning for a non-loopback URL.
+                            if navigator_app::llm::is_loopback_url(&form.llm_base_url) {
+                                ui.label(egui::RichText::new(self.tr("settings.ai.local")).weak().small());
+                            } else {
+                                ui.label(
+                                    egui::RichText::new(self.tr("settings.ai.remoteWarn"))
+                                        .small()
+                                        .color(egui::Color32::from_rgb(230, 170, 80)),
+                                );
+                            }
+                        });
+                    }
+
+                    SettingsTab::References => {
+                        // --- Reference genomes ---
+                        ui.checkbox(&mut form.prompt_before_download, self.tr("settings.promptDownload"));
+                        egui::Grid::new("settings_refs")
+                            .striped(true)
+                            .num_columns(5)
+                            .show(ui, |ui| {
+                                for h in [
+                                    "settings.build",
+                                    "settings.status",
+                                    "settings.localFasta",
+                                    "settings.autoDownload",
+                                    "settings.integrity",
+                                ] {
+                                    ui.strong(self.tr(h));
+                                }
+                                ui.end_row();
+                                for row in &mut form.references {
+                                    ui.label(&row.build);
+                                    ui.label(egui::RichText::new(&row.status).weak());
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut row.local_path)
+                                                .hint_text("(none)")
+                                                .desired_width(180.0),
+                                        );
+                                        if ui.button("📂").on_hover_text(self.tr("settings.browse")).clicked() {
+                                            if let Some(p) = rfd::FileDialog::new()
+                                                .add_filter("FASTA", &["fa", "fasta", "fna", "gz"])
+                                                .pick_file()
+                                            {
+                                                row.local_path = p.display().to_string();
+                                            }
+                                        }
+                                    });
+                                    ui.checkbox(&mut row.auto_download, "");
+                                    ui.horizontal(|ui| {
+                                        if ui.small_button(self.tr("settings.verify")).clicked() {
+                                            verify_build = Some(row.build.clone());
+                                        }
+                                        if !row.verify.is_empty() {
+                                            ui.label(egui::RichText::new(&row.verify).small().weak());
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                            });
+                        if form.references.is_empty() {
+                            ui.label(egui::RichText::new(self.tr("settings.loadingRefs")).weak());
                         }
-                        if ui.small_button("Ollama").clicked() {
-                            form.llm_base_url = "http://localhost:11434/v1".into();
-                        }
-                        if ui.small_button("llama.cpp").clicked() {
-                            form.llm_base_url = "http://localhost:8080/v1".into();
-                        }
-                    });
-                    ui.horizontal(|ui| {
+                    }
+
+                    SettingsTab::Tools => {
+                        // --- Tools: VCF liftover ---
+                        ui.label(egui::RichText::new(self.tr("liftvcf.title")).strong());
+                        ui.label(egui::RichText::new(self.tr("liftvcf.hint")).weak().small());
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("liftvcf.input"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut form.lift_in)
+                                    .hint_text("input.vcf[.gz]")
+                                    .desired_width(260.0),
+                            );
+                            if ui.button("📂").clicked() {
+                                if let Some(p) = rfd::FileDialog::new().add_filter("VCF", &["vcf", "gz"]).pick_file() {
+                                    form.lift_in = p.display().to_string();
+                                }
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("liftvcf.target"));
+                            egui::ComboBox::from_id_salt("liftvcf_target")
+                                .selected_text(&form.lift_target)
+                                .show_ui(ui, |ui| {
+                                    for b in ["chm13v2.0", "GRCh38", "GRCh37"] {
+                                        ui.selectable_value(&mut form.lift_target, b.to_string(), b);
+                                    }
+                                });
+                            ui.checkbox(&mut form.lift_filter_par, self.tr("liftvcf.filterPar"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(self.tr("liftvcf.output"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut form.lift_out)
+                                    .hint_text("lifted.vcf[.gz]")
+                                    .desired_width(260.0),
+                            );
+                            if ui.button("📂").clicked() {
+                                if let Some(p) = rfd::FileDialog::new()
+                                    .add_filter("VCF", &["vcf", "gz"])
+                                    .set_file_name("lifted.vcf")
+                                    .save_file()
+                                {
+                                    form.lift_out = p.display().to_string();
+                                }
+                            }
+                        });
+                        let lift_ready = !form.lift_in.trim().is_empty() && !form.lift_out.trim().is_empty();
                         if ui
-                            .add_enabled(!self.llm_testing, egui::Button::new(self.tr("settings.ai.test")))
+                            .add_enabled(lift_ready, egui::Button::new(self.tr("liftvcf.run")))
                             .clicked()
                         {
-                            test_llm = Some(form.llm_base_url.trim().to_string());
+                            lift_request = true;
                         }
-                        if self.llm_testing {
-                            ui.spinner();
-                        }
-                        if let Some(msg) = &self.llm_test_msg {
-                            ui.label(egui::RichText::new(msg).weak().small());
-                        }
-                    });
-                    // Model picker — populated by a successful Test connection.
-                    ui.horizontal(|ui| {
-                        ui.label(self.tr("settings.ai.model"));
-                        let current = if form.llm_model.is_empty() {
-                            self.tr("settings.ai.modelAuto").to_string()
-                        } else {
-                            form.llm_model.clone()
-                        };
-                        egui::ComboBox::from_id_salt("settings_llm_model")
-                            .selected_text(current)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut form.llm_model,
-                                    String::new(),
-                                    self.tr("settings.ai.modelAuto"),
-                                );
-                                for m in &self.llm_models {
-                                    ui.selectable_value(&mut form.llm_model, m.clone(), m);
-                                }
-                            });
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(self.tr("settings.ai.maxTokens"));
-                        ui.add(egui::TextEdit::singleline(&mut form.llm_max_tokens).desired_width(80.0));
-                        ui.label(egui::RichText::new(self.tr("settings.ai.maxTokensHint")).weak().small());
-                    });
-                    // Privacy line — turns to a warning for a non-loopback URL.
-                    if navigator_app::llm::is_loopback_url(&form.llm_base_url) {
-                        ui.label(egui::RichText::new(self.tr("settings.ai.local")).weak().small());
-                    } else {
+                    }
+
+                    SettingsTab::Advanced => {
+                        ui.checkbox(&mut form.prefer_external_calls, self.tr("settings.preferExternalCalls"));
                         ui.label(
-                            egui::RichText::new(self.tr("settings.ai.remoteWarn"))
-                                .small()
-                                .color(egui::Color32::from_rgb(230, 170, 80)),
+                            egui::RichText::new(self.tr("settings.preferExternalCallsHint"))
+                                .weak()
+                                .small(),
                         );
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}: {}",
+                                self.tr("settings.cacheDir"),
+                                AppSettings::cache_base_dir().display()
+                            ))
+                            .weak(),
+                        );
+                        ui.label(egui::RichText::new(self.tr("settings.advancedEnv")).weak());
                     }
-                });
-                }
-
-                SettingsTab::References => {
-                // --- Reference genomes ---
-                ui.checkbox(&mut form.prompt_before_download, self.tr("settings.promptDownload"));
-                egui::Grid::new("settings_refs")
-                    .striped(true)
-                    .num_columns(5)
-                    .show(ui, |ui| {
-                        for h in [
-                            "settings.build",
-                            "settings.status",
-                            "settings.localFasta",
-                            "settings.autoDownload",
-                            "settings.integrity",
-                        ] {
-                            ui.strong(self.tr(h));
-                        }
-                        ui.end_row();
-                        for row in &mut form.references {
-                            ui.label(&row.build);
-                            ui.label(egui::RichText::new(&row.status).weak());
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut row.local_path)
-                                        .hint_text("(none)")
-                                        .desired_width(180.0),
-                                );
-                                if ui.button("📂").on_hover_text(self.tr("settings.browse")).clicked() {
-                                    if let Some(p) = rfd::FileDialog::new()
-                                        .add_filter("FASTA", &["fa", "fasta", "fna", "gz"])
-                                        .pick_file()
-                                    {
-                                        row.local_path = p.display().to_string();
-                                    }
-                                }
-                            });
-                            ui.checkbox(&mut row.auto_download, "");
-                            ui.horizontal(|ui| {
-                                if ui.small_button(self.tr("settings.verify")).clicked() {
-                                    verify_build = Some(row.build.clone());
-                                }
-                                if !row.verify.is_empty() {
-                                    ui.label(egui::RichText::new(&row.verify).small().weak());
-                                }
-                            });
-                            ui.end_row();
-                        }
-                    });
-                if form.references.is_empty() {
-                    ui.label(egui::RichText::new(self.tr("settings.loadingRefs")).weak());
-                }
-                }
-
-                SettingsTab::Tools => {
-                // --- Tools: VCF liftover ---
-                ui.label(egui::RichText::new(self.tr("liftvcf.title")).strong());
-                ui.label(egui::RichText::new(self.tr("liftvcf.hint")).weak().small());
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("liftvcf.input"));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut form.lift_in)
-                            .hint_text("input.vcf[.gz]")
-                            .desired_width(260.0),
-                    );
-                    if ui.button("📂").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().add_filter("VCF", &["vcf", "gz"]).pick_file() {
-                            form.lift_in = p.display().to_string();
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("liftvcf.target"));
-                    egui::ComboBox::from_id_salt("liftvcf_target")
-                        .selected_text(&form.lift_target)
-                        .show_ui(ui, |ui| {
-                            for b in ["chm13v2.0", "GRCh38", "GRCh37"] {
-                                ui.selectable_value(&mut form.lift_target, b.to_string(), b);
-                            }
-                        });
-                    ui.checkbox(&mut form.lift_filter_par, self.tr("liftvcf.filterPar"));
-                });
-                ui.horizontal(|ui| {
-                    ui.label(self.tr("liftvcf.output"));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut form.lift_out)
-                            .hint_text("lifted.vcf[.gz]")
-                            .desired_width(260.0),
-                    );
-                    if ui.button("📂").clicked() {
-                        if let Some(p) = rfd::FileDialog::new()
-                            .add_filter("VCF", &["vcf", "gz"])
-                            .set_file_name("lifted.vcf")
-                            .save_file()
-                        {
-                            form.lift_out = p.display().to_string();
-                        }
-                    }
-                });
-                let lift_ready = !form.lift_in.trim().is_empty() && !form.lift_out.trim().is_empty();
-                if ui
-                    .add_enabled(lift_ready, egui::Button::new(self.tr("liftvcf.run")))
-                    .clicked()
-                {
-                    lift_request = true;
-                }
-                }
-
-                SettingsTab::Advanced => {
-                    ui.checkbox(&mut form.prefer_external_calls, self.tr("settings.preferExternalCalls"));
-                    ui.label(
-                        egui::RichText::new(self.tr("settings.preferExternalCallsHint"))
-                            .weak()
-                            .small(),
-                    );
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}: {}",
-                        self.tr("settings.cacheDir"),
-                        AppSettings::cache_base_dir().display()
-                    ))
-                    .weak(),
-                );
-                ui.label(egui::RichText::new(self.tr("settings.advancedEnv")).weak());
-                }
                 }
             });
             ui.separator();
@@ -1042,7 +1078,10 @@ impl NavigatorApp {
             ui.add_space(12.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add(egui::Button::new(egui::RichText::new(self.tr("update.download")).color(egui::Color32::WHITE)).fill(ACCENT))
+                    .add(
+                        egui::Button::new(egui::RichText::new(self.tr("update.download")).color(egui::Color32::WHITE))
+                            .fill(ACCENT),
+                    )
                     .clicked()
                 {
                     let url = info.download_url.clone().unwrap_or_else(|| info.release_url.clone());
@@ -1816,23 +1855,36 @@ impl NavigatorApp {
     /// the encrypted channel. Neither is undoable. The three headings below are the whole point of
     /// the dialog — what we send, what they learn, and what never leaves the device.
     pub(crate) fn consent_modal(&mut self, ctx: &egui::Context) {
-        let Some(entry) = self.consent_prompt.clone() else { return };
+        let Some(entry) = self.consent_prompt.clone() else {
+            return;
+        };
         let mut decision: Option<bool> = None;
         let mut close = false;
         modal_frame(ctx, "matching_consent_modal", 480.0, |ui| {
-            ui.label(egui::RichText::new(self.tr("matching.consent.title")).strong().size(16.0));
+            ui.label(
+                egui::RichText::new(self.tr("matching.consent.title"))
+                    .strong()
+                    .size(16.0),
+            );
             ui.separator();
             ui.add_space(8.0);
             ui.label(self.tr("matching.consent.body"));
             ui.add_space(8.0);
-            egui::Grid::new("consent_facts").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                ui.strong(self.tr("matching.col.purpose"));
-                ui.label(if entry.purpose.is_empty() { "—" } else { &entry.purpose });
-                ui.end_row();
-                ui.strong(self.tr("matching.consent.request"));
-                ui.label(egui::RichText::new(&entry.request_uri).small());
-                ui.end_row();
-            });
+            egui::Grid::new("consent_facts")
+                .num_columns(2)
+                .spacing([12.0, 4.0])
+                .show(ui, |ui| {
+                    ui.strong(self.tr("matching.col.purpose"));
+                    ui.label(if entry.purpose.is_empty() {
+                        "—"
+                    } else {
+                        &entry.purpose
+                    });
+                    ui.end_row();
+                    ui.strong(self.tr("matching.consent.request"));
+                    ui.label(egui::RichText::new(&entry.request_uri).small());
+                    ui.end_row();
+                });
             ui.add_space(10.0);
             for (title, body) in [
                 ("matching.consent.sendTitle", "matching.consent.sendBody"),

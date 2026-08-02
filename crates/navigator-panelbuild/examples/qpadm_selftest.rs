@@ -12,7 +12,10 @@ use navigator_analysis::caller::SiteGenotype;
 struct Lcg(u64);
 impl Lcg {
     fn f(&mut self) -> f64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 11) as f64 / (1u64 << 53) as f64
     }
     fn dosage(&mut self, p: f64) -> i32 {
@@ -64,7 +67,11 @@ fn run(panel: &AncestryPanel, label: &str, truth: [f64; 3], seed: u64) {
                 f.std_errors[1] * 100.0,
                 f.std_errors[2] * 100.0,
                 f.p_value,
-                if f.weights_feasible(0.02) { "feasible" } else { "INFEASIBLE" },
+                if f.weights_feasible(0.02) {
+                    "feasible"
+                } else {
+                    "INFEASIBLE"
+                },
             );
         }
         None => println!("{label:<28} qpadm_fit -> None"),
@@ -72,7 +79,9 @@ fn run(panel: &AncestryPanel, label: &str, truth: [f64; 3], seed: u64) {
 }
 
 fn main() -> anyhow::Result<()> {
-    let path = std::env::args().nth(1).expect("usage: qpadm_selftest <qpadm_panel.bin>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: qpadm_selftest <qpadm_panel.bin>");
     let panel = AncestryPanel::from_bytes(&std::fs::read(&path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!(
         "panel {} sites, outgroups {:?}\ntruth order [WHG, ANF, Steppe]:\n",

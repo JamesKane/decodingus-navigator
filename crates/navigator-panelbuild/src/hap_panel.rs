@@ -133,7 +133,11 @@ fn allele(s: Option<&str>) -> (u8, bool) {
 
 /// A biallelic SNV has single-base ref and alt over `{A,C,G,T}` (skips indels / multiallelic).
 fn is_biallelic_snv(ref_s: &str, alt_s: &str) -> bool {
-    let single = |s: &str| s.len() == 1 && s.chars().all(|c| matches!(c.to_ascii_uppercase(), 'A' | 'C' | 'G' | 'T'));
+    let single = |s: &str| {
+        s.len() == 1
+            && s.chars()
+                .all(|c| matches!(c.to_ascii_uppercase(), 'A' | 'C' | 'G' | 'T'))
+    };
     single(ref_s) && single(alt_s)
 }
 
@@ -171,7 +175,10 @@ pub fn build_hap_panel(args: HapPanelArgs) -> Result<()> {
         .map(|((c, p), (rf, alt, _))| (c.clone(), *p, *rf, *alt))
         .collect();
     site_keys.sort_by(|a, b| (a.0.as_str(), a.1).cmp(&(b.0.as_str(), b.1)));
-    anyhow::ensure!(!site_keys.is_empty(), "no shared biallelic SNV sites across the sources");
+    anyhow::ensure!(
+        !site_keys.is_empty(),
+        "no shared biallelic SNV sites across the sources"
+    );
     let sites: Vec<HapSite> = site_keys
         .iter()
         .map(|(c, p, r, a)| HapSite {
@@ -191,7 +198,10 @@ pub fn build_hap_panel(args: HapPanelArgs) -> Result<()> {
     let mut per_source_labelled = vec![0usize; sources.len()];
     for (src_i, src) in sources.iter().enumerate() {
         // Per-site aligned genotype vectors for this source (one map lookup per site, not per sample).
-        let aligned: Vec<&Vec<(u8, u8)>> = site_keys.iter().map(|(c, p, _, _)| &src.sites[&(c.clone(), *p)].2).collect();
+        let aligned: Vec<&Vec<(u8, u8)>> = site_keys
+            .iter()
+            .map(|(c, p, _, _)| &src.sites[&(c.clone(), *p)].2)
+            .collect();
         for (si, sample) in src.samples.iter().enumerate() {
             let Some(pop) = fine.get(sample) else {
                 continue;
@@ -215,7 +225,11 @@ pub fn build_hap_panel(args: HapPanelArgs) -> Result<()> {
             per_source_labelled[src_i] += 1;
         }
     }
-    anyhow::ensure!(!rows.is_empty(), "no labelled samples across the sources (check {})", args.pops.display());
+    anyhow::ensure!(
+        !rows.is_empty(),
+        "no labelled samples across the sources (check {})",
+        args.pops.display()
+    );
 
     let reference = HaplotypeReference::from_rows(BUILD.to_string(), sites, populations, hap_pop, &rows);
     eprintln!(

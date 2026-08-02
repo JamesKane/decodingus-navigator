@@ -441,7 +441,9 @@ fn smooth_viterbi(
             bp[i][b] = arg;
         }
     }
-    let mut last = (0..n_labels).max_by(|&a, &b| v[n - 1][a].total_cmp(&v[n - 1][b])).unwrap_or(0);
+    let mut last = (0..n_labels)
+        .max_by(|&a, &b| v[n - 1][a].total_cmp(&v[n - 1][b]))
+        .unwrap_or(0);
     let mut path = vec![0usize; n];
     path[n - 1] = last;
     for i in (1..n).rev() {
@@ -496,8 +498,13 @@ fn collapse_labels(
         .map(|(l, lo, hi)| {
             let code = labels[l].as_str();
             let super_pop = population_super(code).unwrap_or(code);
-            let fine = if super_pop != code { Some(code.to_string()) } else { None };
-            let mean_post = (lo..=hi).map(|i| post[i].get(l).copied().unwrap_or(0.0)).sum::<f64>() / (hi - lo + 1) as f64;
+            let fine = if super_pop != code {
+                Some(code.to_string())
+            } else {
+                None
+            };
+            let mean_post =
+                (lo..=hi).map(|i| post[i].get(l).copied().unwrap_or(0.0)).sum::<f64>() / (hi - lo + 1) as f64;
             AncestrySegment {
                 contig: contig.to_string(),
                 start: positions[lo],
@@ -648,7 +655,10 @@ mod tests {
         );
         let map = GeneticMap::uniform(1.0, &[("chr1", 250_000_000)]);
         let phased = phased_side(&pat);
-        let params = CopyingLaiParams { min_segment_cm: 5.0, ..CopyingLaiParams::default() };
+        let params = CopyingLaiParams {
+            min_segment_cm: 5.0,
+            ..CopyingLaiParams::default()
+        };
         // Empty prior → gate disabled (keep all haplotypes), so the folding path is exercised.
         let segs = paint_copying_lai(&phased, &reference, &map, &[], &params);
         // The folded tiny pop must never surface as a fine call.
@@ -799,7 +809,10 @@ mod tests {
         let map = GeneticMap::uniform(1.0, &[("chr1", 700_000_000)]);
         let prior = vec![("EUR".to_string(), 1.0)];
         let paint = |params: &CopyingLaiParams| {
-            call_shares(&paint_copying_lai(&phased, &reference, &map, &prior, params), &positions)
+            call_shares(
+                &paint_copying_lai(&phased, &reference, &map, &prior, params),
+                &positions,
+            )
         };
         let previous = CopyingLaiParams {
             recomb_per_cm: 0.1,

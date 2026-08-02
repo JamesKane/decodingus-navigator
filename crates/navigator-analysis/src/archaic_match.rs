@@ -291,9 +291,9 @@ pub fn observations_for_contig(
         if callable.callable_fraction(contig, pos) < min_callable_fraction {
             continue;
         }
-        let carries = calls_by_pos.get(&pos).is_some_and(|g| {
-            g.dosage > 0 && g.alternate_allele.as_bytes().first() == Some(&derived)
-        });
+        let carries = calls_by_pos
+            .get(&pos)
+            .is_some_and(|g| g.dosage > 0 && g.alternate_allele.as_bytes().first() == Some(&derived));
         let class = match c.classes.get(i).copied().unwrap_or(2) {
             0 => DiagnosticClass::Neanderthal,
             1 => DiagnosticClass::Denisovan,
@@ -327,7 +327,14 @@ fn ln_sum_exp(a: f64, b: f64) -> f64 {
 ///
 /// Log-space forward/backward with recombination-scaled transitions, as in [`crate::roh`]. Exposed
 /// so the decoding can be tested against hand-computed posteriors without constructing assets.
-pub fn posteriors(obs: &[SiteObs], contig: &str, gmap: &GeneticMap, p_bg: f64, p_arch: f64, switches_per_cm: f64) -> Vec<f64> {
+pub fn posteriors(
+    obs: &[SiteObs],
+    contig: &str,
+    gmap: &GeneticMap,
+    p_bg: f64,
+    p_arch: f64,
+    switches_per_cm: f64,
+) -> Vec<f64> {
     let n = obs.len();
     if n == 0 {
         return Vec::new();
@@ -477,7 +484,11 @@ pub fn call_from_observations(
     let total_mb: f64 = segments.iter().map(|s| s.length_mb()).sum();
     let summary = ArchaicSummary {
         total_mb,
-        pct_callable: if callable_mb > 0.0 { total_mb * 100.0 / callable_mb } else { 0.0 },
+        pct_callable: if callable_mb > 0.0 {
+            total_mb * 100.0 / callable_mb
+        } else {
+            0.0
+        },
         callable_mb,
         neanderthal_mb: 0.0,
         denisovan_mb: 0.0,
@@ -537,7 +548,9 @@ pub fn carried_panel_sites<'a>(
         calls.iter().map(|c| ((c.contig.as_str(), c.position), c)).collect();
     let mut out = BTreeMap::new();
     for s in &panel.sites {
-        let Some((k, g)) = by_pos.get_key_value(&(s.contig.as_str(), s.position)) else { continue };
+        let Some((k, g)) = by_pos.get_key_value(&(s.contig.as_str(), s.position)) else {
+            continue;
+        };
         let carries = g.dosage > 0 && g.alternate_allele.starts_with(s.archaic_derived_allele);
         out.insert(*k, carries);
     }
@@ -567,19 +580,23 @@ pub fn filter_by_concordance(
     let kept: Vec<ArchaicSegment> = result
         .segments
         .into_iter()
-        .filter(|seg| {
-            match segment_concordance(panel, &seg.contig, seg.start, seg.end, &carried, min_sites) {
+        .filter(
+            |seg| match segment_concordance(panel, &seg.contig, seg.start, seg.end, &carried, min_sites) {
                 Some(c) => c >= min_concordance,
                 None => true,
-            }
-        })
+            },
+        )
         .collect();
     let total_mb: f64 = kept.iter().map(|s| s.length_mb()).sum();
     let callable_mb = result.summary.callable_mb;
     ArchaicSegmentResult {
         summary: ArchaicSummary {
             total_mb,
-            pct_callable: if callable_mb > 0.0 { total_mb * 100.0 / callable_mb } else { 0.0 },
+            pct_callable: if callable_mb > 0.0 {
+                total_mb * 100.0 / callable_mb
+            } else {
+                0.0
+            },
             callable_mb,
             neanderthal_mb: 0.0,
             denisovan_mb: 0.0,
@@ -670,7 +687,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(r.segments.is_empty(), "background should call nothing, got {:?}", r.segments);
+        assert!(
+            r.segments.is_empty(),
+            "background should call nothing, got {:?}",
+            r.segments
+        );
     }
 
     /// Scattered carried sites at the background rate must not accumulate into a tract — the
@@ -691,7 +712,11 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(r.segments.is_empty(), "background-rate carriers formed {:?}", r.segments);
+        assert!(
+            r.segments.is_empty(),
+            "background-rate carriers formed {:?}",
+            r.segments
+        );
     }
 
     /// A site whose derived allele IS the reference base separates nothing, and a no-call there
@@ -765,7 +790,10 @@ mod tests {
         // Altai is derived at all 4 sites; Denisova at only the first.
         let panel = ArchaicMarkerPanel {
             build: "chm13v2.0".into(),
-            thresholds: ArchaicPanelThresholds { max_afr_freq: 0.01, min_non_afr_freq: 0.0005 },
+            thresholds: ArchaicPanelThresholds {
+                max_afr_freq: 0.01,
+                min_non_afr_freq: 0.0005,
+            },
             sites: vec![
                 panel_site(1_000, 'A', [D, A, A, D]),
                 panel_site(2_000, 'A', [D, A, A, A]),
@@ -793,7 +821,10 @@ mod tests {
     fn filter_keeps_segments_it_cannot_judge() {
         let panel = ArchaicMarkerPanel {
             build: "chm13v2.0".into(),
-            thresholds: ArchaicPanelThresholds { max_afr_freq: 0.01, min_non_afr_freq: 0.0005 },
+            thresholds: ArchaicPanelThresholds {
+                max_afr_freq: 0.01,
+                min_non_afr_freq: 0.0005,
+            },
             sites: vec![panel_site(1_000, 'A', [ArchaicCall::HomDerived; 4])],
         };
         let seg = ArchaicSegment {
@@ -836,7 +867,10 @@ mod tests {
         }
         let panel = ArchaicMarkerPanel {
             build: "chm13v2.0".into(),
-            thresholds: ArchaicPanelThresholds { max_afr_freq: 0.01, min_non_afr_freq: 0.0005 },
+            thresholds: ArchaicPanelThresholds {
+                max_afr_freq: 0.01,
+                min_non_afr_freq: 0.0005,
+            },
             sites,
         };
         // Carries 9/10 in the first span, 1/10 in the second.
@@ -868,7 +902,10 @@ mod tests {
         let out = filter_by_concordance(r, &panel, &calls, 0.7, 3);
         assert_eq!(out.segments.len(), 1, "the poorly-matching segment should go");
         assert_eq!(out.segments[0].start, 900);
-        assert_eq!(out.summary.n_segments, 1, "the summary must be recomputed, not carried over");
+        assert_eq!(
+            out.summary.n_segments, 1,
+            "the summary must be recomputed, not carried over"
+        );
     }
 
     /// A no-call is hom-reference, i.e. NOT carrying. Conditioning on "has a call" instead is what

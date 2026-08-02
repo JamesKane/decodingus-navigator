@@ -183,7 +183,13 @@ impl HaplotypeReference {
 
     /// Pack per-haplotype allele rows (`rows[h][s]` = 0/1) into the bit-packed form. `hap_pop[h]`
     /// is the population index of haplotype `h`. Used by the offline builder and by tests.
-    pub fn from_rows(build: String, sites: Vec<HapSite>, populations: Vec<String>, hap_pop: Vec<u16>, rows: &[Vec<u8>]) -> Self {
+    pub fn from_rows(
+        build: String,
+        sites: Vec<HapSite>,
+        populations: Vec<String>,
+        hap_pop: Vec<u16>,
+        rows: &[Vec<u8>],
+    ) -> Self {
         let n_sites = sites.len();
         let n_haplotypes = rows.len();
         let total_bits = n_sites * n_haplotypes;
@@ -658,7 +664,12 @@ pub fn paint_local_ancestry_phased(
         .sites
         .iter()
         .filter(|s| s.freqs.len() == panel.populations.len())
-        .map(|s| ((s.contig.as_str(), s.position), per_state_af(&s.freqs, &pop_state, &states)))
+        .map(|s| {
+            (
+                (s.contig.as_str(), s.position),
+                per_state_af(&s.freqs, &pop_state, &states),
+            )
+        })
         .collect();
 
     let contigs: std::collections::BTreeSet<&str> = phased.sites.iter().map(|s| s.contig.as_str()).collect();
@@ -684,7 +695,14 @@ pub fn paint_local_ancestry_phased(
             // collapse_copy needs (pos, _, dosage-ish); the AF/allele payload is unused there.
             let collapse_sites: Vec<(i64, Vec<f64>, i32)> =
                 sites.iter().map(|s| (s.0, Vec::new(), s.2 as i32)).collect();
-            segments.extend(collapse_copy(contig, &collapse_sites, &path, &states, params.min_segment_sites, side));
+            segments.extend(collapse_copy(
+                contig,
+                &collapse_sites,
+                &path,
+                &states,
+                params.min_segment_sites,
+                side,
+            ));
         }
     }
     segments
@@ -1365,7 +1383,13 @@ pub struct F4Estimate {
 impl F4Estimate {
     /// Standard error of statistic `i` from the jackknife covariance diagonal.
     pub fn se(&self, i: usize) -> f64 {
-        self.cov.get(i).and_then(|r| r.get(i)).copied().unwrap_or(0.0).max(0.0).sqrt()
+        self.cov
+            .get(i)
+            .and_then(|r| r.get(i))
+            .copied()
+            .unwrap_or(0.0)
+            .max(0.0)
+            .sqrt()
     }
 }
 
@@ -1393,7 +1417,10 @@ pub fn f4_vector(
     }
     // Reject out-of-range population indices up front — a mis-built quartet must not panic mid-scan.
     let ref_ok = |p: Pop| matches!(p, Pop::Target) || matches!(p, Pop::Ref(i) if i < k);
-    if !quartets.iter().all(|q| ref_ok(q.a) && ref_ok(q.b) && ref_ok(q.c) && ref_ok(q.d)) {
+    if !quartets
+        .iter()
+        .all(|q| ref_ok(q.a) && ref_ok(q.b) && ref_ok(q.c) && ref_ok(q.d))
+    {
         return None;
     }
 
@@ -1889,14 +1916,10 @@ mod tests {
                 alternate_allele: 'G',
             })
             .collect();
-        let rows: Vec<Vec<u8>> = (0..3).map(|h| (0..9).map(|s| ((s + h) % 2 == 0) as u8).collect()).collect();
-        let full = HaplotypeReference::from_rows(
-            "t".to_string(),
-            sites,
-            vec!["GBR".to_string()],
-            vec![0, 0, 0],
-            &rows,
-        );
+        let rows: Vec<Vec<u8>> = (0..3)
+            .map(|h| (0..9).map(|s| ((s + h) % 2 == 0) as u8).collect())
+            .collect();
+        let full = HaplotypeReference::from_rows("t".to_string(), sites, vec!["GBR".to_string()], vec![0, 0, 0], &rows);
         let thin = full.thin_sites(3);
         assert_eq!(thin.n_sites, 3);
         assert_eq!(thin.n_haplotypes, 3);
@@ -2215,7 +2238,13 @@ mod tests {
         let panel = two_pop_panel(n);
         // Hom-alt (→ A) everywhere except a 15-site hom-ref run (→ B) in the middle.
         let genos: Vec<SiteGenotype> = (0..n)
-            .map(|i| sg("chr1", 1 + i as i64 * 1_000_000, if (40..55).contains(&i) { 0 } else { 2 }))
+            .map(|i| {
+                sg(
+                    "chr1",
+                    1 + i as i64 * 1_000_000,
+                    if (40..55).contains(&i) { 0 } else { 2 },
+                )
+            })
             .collect();
         let prior = vec![("A".to_string(), 0.99), ("B".to_string(), 0.01)];
 
@@ -2224,7 +2253,10 @@ mod tests {
             &genos,
             &panel,
             &prior,
-            &PaintParams { min_ancestry: 0.0, ..PaintParams::default() },
+            &PaintParams {
+                min_ancestry: 0.0,
+                ..PaintParams::default()
+            },
         );
         assert!(
             ungated.iter().any(|s| s.population_code == "B"),
@@ -2355,7 +2387,10 @@ mod tests {
     struct Lcg(u64);
     impl Lcg {
         fn next_f64(&mut self) -> f64 {
-            self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (self.0 >> 11) as f64 / (1u64 << 53) as f64
         }
         /// A diploid dosage drawn under HWE at alt-frequency `f`.
@@ -2575,9 +2610,15 @@ mod tests {
             F4_BLOCK_BP,
         )
         .expect("f4 vector");
-        assert!(est.values[1].abs() > 0.02, "denominator f4 must be firmly non-degenerate");
+        assert!(
+            est.values[1].abs() > 0.02,
+            "denominator f4 must be firmly non-degenerate"
+        );
         let recovered = 1.0 - est.values[0] / est.values[1];
-        assert!((recovered - alpha).abs() < 1e-4, "f4-ratio recovered α={recovered:.6}, want {alpha}");
+        assert!(
+            (recovered - alpha).abs() < 1e-4,
+            "f4-ratio recovered α={recovered:.6}, want {alpha}"
+        );
     }
 
     /// f4's exact symmetries (pure f64 arithmetic over one fixed site set): swapping either pair
@@ -2623,7 +2664,12 @@ mod tests {
                 let cab = 0.5 + 0.3 * (rng.next_f64() - 0.5); // drift shared by A,B
                 let ccd = 0.5 + 0.3 * (rng.next_f64() - 0.5); // drift shared by C,D
                 let tip = |rng: &mut Lcg, c: f64| (c + 0.15 * (rng.next_f64() - 0.5)) as f32;
-                vec![tip(&mut rng, cab), tip(&mut rng, cab), tip(&mut rng, ccd), tip(&mut rng, ccd)]
+                vec![
+                    tip(&mut rng, cab),
+                    tip(&mut rng, cab),
+                    tip(&mut rng, ccd),
+                    tip(&mut rng, ccd),
+                ]
             })
             .collect();
         let (panel, genos) = f4_panel(&["A", "B", "C", "D"], &freqs);
@@ -2637,8 +2683,14 @@ mod tests {
         .expect("f4 vector");
         let z_null = est.values[0] / est.se(0);
         let z_edge = est.values[1] / est.se(1);
-        assert!(z_null.abs() < 4.0, "symmetric tree: f4(A,B;C,D) must sit near 0, z={z_null:.2}");
-        assert!(z_edge.abs() > 8.0, "real internal edge: f4(A,C;B,D) must be many SE from 0, z={z_edge:.2}");
+        assert!(
+            z_null.abs() < 4.0,
+            "symmetric tree: f4(A,B;C,D) must sit near 0, z={z_null:.2}"
+        );
+        assert!(
+            z_edge.abs() > 8.0,
+            "real internal edge: f4(A,C;B,D) must be many SE from 0, z={z_edge:.2}"
+        );
         assert!(
             est.values[0].abs() * 5.0 < est.values[1].abs(),
             "the null statistic must be far smaller than the real edge"
@@ -2721,10 +2773,22 @@ mod tests {
         let fit = qpadm_fit(&genos, &panel, &[0, 1, 2], &outgroups, F4_BLOCK_BP).expect("3-source fit");
         assert_eq!(fit.dof, 3, "dof = #outgroups − #sources = 6 − 3");
         for (i, &want) in truth.iter().enumerate() {
-            assert!((fit.weights[i] - want).abs() < 0.08, "w{i} = {:.3}, want {want}", fit.weights[i]);
+            assert!(
+                (fit.weights[i] - want).abs() < 0.08,
+                "w{i} = {:.3}, want {want}",
+                fit.weights[i]
+            );
         }
-        assert!(fit.weights_feasible(0.02), "weights must be valid proportions: {:?}", fit.weights);
-        assert!(fit.p_value > 0.01, "well-specified model must not be rejected, p = {:.4}", fit.p_value);
+        assert!(
+            fit.weights_feasible(0.02),
+            "weights must be valid proportions: {:?}",
+            fit.weights
+        );
+        assert!(
+            fit.p_value > 0.01,
+            "well-specified model must not be rejected, p = {:.4}",
+            fit.p_value
+        );
 
         // Drop a needed source (S3): the 2-source model can't express the target's cladeC affinity,
         // so its f4 residual with the cladeC outgroup is large → rejected.
@@ -2751,9 +2815,16 @@ mod tests {
         assert_eq!(r.panel_type, "ancient");
         // Recovered within the underlying qpAdm test's tolerance (~8 pts), and correctly ordered.
         for (code, want) in [("S1", 50.0), ("S2", 30.0), ("S3", 20.0)] {
-            assert!((pct(&r, code) - want).abs() < 9.0, "{code}: {:.1} vs {want}", pct(&r, code));
+            assert!(
+                (pct(&r, code) - want).abs() < 9.0,
+                "{code}: {:.1} vs {want}",
+                pct(&r, code)
+            );
         }
-        assert!(pct(&r, "S1") > pct(&r, "S2") && pct(&r, "S2") > pct(&r, "S3"), "order preserved");
+        assert!(
+            pct(&r, "S1") > pct(&r, "S2") && pct(&r, "S2") > pct(&r, "S3"),
+            "order preserved"
+        );
         let p = r.fit_distance.expect("p-value on fit_distance");
         assert!((0.0..=1.0).contains(&p), "p={p}");
 

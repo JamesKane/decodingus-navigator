@@ -422,12 +422,7 @@ mod tests {
     }
 
     // A panel site with an explicit build-locus contig (e.g. "chr1" for the b38 column vs bare "1").
-    fn site_b(
-        rsid: &str,
-        chm13: (i64, char, char),
-        build: (&str, i64, char, char),
-        which: &str,
-    ) -> IbdPanelSite {
+    fn site_b(rsid: &str, chm13: (i64, char, char), build: (&str, i64, char, char), which: &str) -> IbdPanelSite {
         let locus = Locus {
             contig: build.0.into(),
             position: build.1,
@@ -490,7 +485,10 @@ mod tests {
         assert!(!by_pos.contains_key(&300), "palindrome skipped");
         // Emitted at CHM13 loci with CHM13 alleles; depth preserved.
         let swap = out.iter().find(|s| s.position == 200).unwrap();
-        assert_eq!((swap.reference_allele.as_str(), swap.alternate_allele.as_str()), ("G", "T"));
+        assert_eq!(
+            (swap.reference_allele.as_str(), swap.alternate_allele.as_str()),
+            ("G", "T")
+        );
         assert_eq!(swap.depth, 20);
         assert!(out.iter().all(|s| s.contig == "chr1"));
     }
@@ -502,7 +500,10 @@ mod tests {
         let (panel, _) = IbdPanel::from_sites("chm13v2.0", sites);
         let out = panel.resolve_alignment("GRCh37", &[geno("rs1", "1", 500, "A", "G", 2)]);
         assert_eq!(out.len(), 1);
-        assert_eq!((out[0].position, out[0].dosage, out[0].contig.as_str()), (100, 2, "chr1"));
+        assert_eq!(
+            (out[0].position, out[0].dosage, out[0].contig.as_str()),
+            (100, 2, "chr1")
+        );
         // A no-call (dosage < 0) is dropped.
         assert!(panel
             .resolve_alignment("GRCh37", &[geno("rs1", "1", 500, "A", "G", -1)])
