@@ -152,30 +152,32 @@ impl NavigatorApp {
     /// Subject-level IBD: compare this subject's autosomal consensus against another subject's — the
     /// pooled-genotype path (no per-source genotyping). A near-complete match is the dedup/identity
     /// signal (read off the relationship).
+    /// The comparison target is picked with a *Change* reveal — current choice, then a filter over a
+    /// virtualized list — rather than a dropdown. A `ComboBox` builds a widget per entry every frame
+    /// its popup is open, and this list is every other subject in the workspace; at 10k that is a
+    /// stall on each frame. The same reason the Matching tab's subject picker is shaped this way.
     pub(crate) fn consensus_ibd_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        let others: Vec<(SampleGuid, String)> = self
-            .all_biosamples
-            .iter()
-            .filter(|b| b.guid != guid)
-            .map(|b| (b.guid, b.donor_identifier.clone()))
-            .collect();
-        if others.is_empty() {
+        if !self.all_biosamples.iter().any(|b| b.guid != guid) {
             ui.label(egui::RichText::new(self.tr("hint.ibdNoOtherSubjects")).weak());
             return;
         }
+        // A lookup, not a copy of every subject — the old build allocated the whole roster per frame.
         let sel = self
             .ibd_other_subject
-            .and_then(|g| others.iter().find(|(og, _)| *og == g).map(|(_, l)| l.clone()))
+            .and_then(|g| self.find_subject(g).map(|b| b.donor_identifier.clone()))
             .unwrap_or_else(|| "—".to_string());
+        let mut toggle_picker = false;
         ui.horizontal(|ui| {
             ui.label(self.tr("ibd.otherSubject"));
-            egui::ComboBox::from_id_salt("ibd_subject")
-                .selected_text(sel)
-                .show_ui(ui, |ui| {
-                    for (og, l) in &others {
-                        ui.selectable_value(&mut self.ibd_other_subject, Some(*og), l);
-                    }
-                });
+            ui.label(egui::RichText::new(sel).strong());
+            let label = if self.ibd_other_picking {
+                self.tr("common.cancel")
+            } else {
+                self.tr("common.change")
+            };
+            if ui.button(label).clicked() {
+                toggle_picker = true;
+            }
             let ready = self.ibd_other_subject.is_some() && !self.running_ibd;
             if ui
                 .add_enabled(ready, egui::Button::new(self.tr("ibd.compare")))
@@ -205,9 +207,65 @@ impl NavigatorApp {
                 ui.spinner();
             }
         });
+        if toggle_picker {
+            self.ibd_other_picking = !self.ibd_other_picking;
+            self.ibd_other_filter.clear();
+        }
+        self.ibd_other_picker(ui, guid);
         ui.label(egui::RichText::new(self.tr("hint.ibdConsensus")).weak().small());
         self.render_identity(ui);
         self.render_ibd_result(ui);
+    }
+
+    /// The revealed filter + virtualized subject list behind [`Self::consensus_ibd_section`]'s
+    /// *Change* button. Only the visible rows are built, so the cost is independent of workspace
+    /// size; the filtered `Vec` is assembled from immutable reads first so the scroll closure
+    /// borrows only locals.
+    fn ibd_other_picker(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
+        if !self.ibd_other_picking {
+            return;
+        }
+        ui.add_space(4.0);
+        let hint = self.tr("subjects.filter");
+        ui.add(
+            egui::TextEdit::singleline(&mut self.ibd_other_filter)
+                .hint_text(hint)
+                .desired_width(280.0),
+        );
+        let needle = self.ibd_other_filter.trim().to_lowercase();
+        let rows: Vec<(SampleGuid, String)> = self
+            .all_biosamples
+            .iter()
+            .filter(|b| b.guid != guid)
+            .filter(|b| needle.is_empty() || b.donor_identifier.to_lowercase().contains(&needle))
+            .map(|b| (b.guid, b.donor_identifier.clone()))
+            .collect();
+        ui.label(egui::RichText::new(format!("{}", rows.len())).weak().small());
+        if rows.is_empty() {
+            ui.label(egui::RichText::new(self.tr("subjects.noMatch")).weak());
+            return;
+        }
+
+        let selected = self.ibd_other_subject;
+        let mut pick = None;
+        let row_h = ui.spacing().interact_size.y;
+        egui::ScrollArea::vertical()
+            .id_salt("ibd_other_list")
+            .max_height(180.0)
+            .auto_shrink([false, false])
+            .show_rows(ui, row_h, rows.len(), |ui, range| {
+                for i in range {
+                    let (g, name) = &rows[i];
+                    if ui.selectable_label(selected == Some(*g), name).clicked() {
+                        pick = Some(*g);
+                    }
+                }
+            });
+        if let Some(g) = pick {
+            self.ibd_other_subject = Some(g);
+            self.ibd_other_picking = false;
+            self.ibd_other_filter.clear();
+        }
     }
 
     /// This subject's completed federated exchanges. Discovery and consent are **not** here — they

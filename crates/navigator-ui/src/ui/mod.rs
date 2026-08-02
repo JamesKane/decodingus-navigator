@@ -946,6 +946,10 @@ pub struct NavigatorApp {
     ibd_src_b: Option<navigator_app::IbdSource>,
     /// Subject-level (consensus) IBD compare: the other subject picked for comparison.
     ibd_other_subject: Option<SampleGuid>,
+    /// Whether the consensus-compare subject picker's filter + list is revealed.
+    ibd_other_picking: bool,
+    /// Filter text for that picker.
+    ibd_other_filter: String,
     ibd_result: Option<IbdComparison>,
     running_ibd: bool,
     /// Identity-verification result for the current IBD pair.
@@ -1397,6 +1401,8 @@ impl NavigatorApp {
             ibd_src_a: None,
             ibd_src_b: None,
             ibd_other_subject: None,
+            ibd_other_picking: false,
+            ibd_other_filter: String::new(),
             ibd_result: None,
             running_ibd: false,
             identity: None,
