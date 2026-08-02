@@ -21,7 +21,10 @@ Code exists or the design is settled; these are the near-term threads.
 
 ### 1.1 Archaic ancestry (Neanderthal / Denisovan)
 - **Design:** [`design/ArchaicAncestry_Design.md`](design/ArchaicAncestry_Design.md)
-- **Status:** Design draft, no code. The only design-only item that is a *new user-visible feature*.
+- **Status (corrected 2026-08-02):** **Tier A shipped** (`230353b`, `#34`) and reports a *count*,
+  never a % Neanderthal. **Tier B is built but gated OFF** (`#35`, `#40`) — the diagnosis is that it
+  measured the wrong observable, not that the HMM is broken; read `#41`/`#42` before reopening. The
+  "design draft, no code" status below was already stale when this file was written.
 - **Scope:** Phase 1 = compute our own marker panel (EVA archaic VCFs + Ensembl-75 ancestral alleles
   + 1kGP AFR outgroup) + Tier A `count_archaic_markers` + domain/store/UI card — the 23andMe
   equivalent, for chip *and* WGS, reusing the ancestry-panel machinery. Phase 2 = Tier B segment HMM
@@ -152,7 +155,11 @@ Verified 2026-07-26 to have no implementation in the tree.
   style, both Simple and Advanced densities) and `ui/branch.rs` gives a per-marker branch report with
   TSV export.
 - **Scope remaining:** a genuinely zoomable / searchable *whole-tree* view with the subject's
-  placement highlighted.
+  placement highlighted. **Now designed, cohort-scoped** — see
+  [`design/project-block-tree.md`](design/project-block-tree.md) (2026-08-02): a project Y **block
+  tree** (induced subtree over the members' terminals, equivalent-SNP blocks, private-variant blocks
+  with shared-private detection). Reuses `haplogroup_terminals`, `HaploTree`, `donor_private_y`; no
+  new analysis, asset, or migration. **This is the next feature to start.**
 
 ### 3.4 Cross-subject IBD network view
 - **Status:** **Partial.** Cross-subject Y ranking (`ymatch`), federated

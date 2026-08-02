@@ -24,7 +24,7 @@ use navigator_analysis::sidecar;
 // on navigator-app (ui -> app), not directly on navigator-analysis.
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
-pub use navigator_analysis::haplo::{BranchEvidence, CallState, NodeEvidence, ScoredHaplogroup, SnpEvidence};
+pub use navigator_analysis::haplo::{BranchEvidence, CallState, Locus, NodeEvidence, ScoredHaplogroup, SnpEvidence};
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::mask::YRegionClass;
 pub use navigator_analysis::mtvariants::{MtRegion, MtVariant, MtVariantKind};
@@ -83,6 +83,76 @@ pub struct DescentReport {
     pub terminal: String,
     /// Nodes root→terminal, each with its defining SNPs + the sample's state (`NodeEvidence`).
     pub nodes: Vec<NodeEvidence>,
+}
+
+/// A cohort **block tree** for one project: the induced subtree of the haplotree spanning the
+/// members' terminal haplogroups, each node a *block* of phylogenetically equivalent SNPs, with the
+/// members hanging off their own terminal. The group-project counterpart to [`DescentReport`] —
+/// where that draws one subject's root→terminal path, this draws where a whole cohort sits relative
+/// to each other. Built by [`App::project_block_tree`]; see
+/// `documents/design/project-block-tree.md`.
+///
+/// This view **reads** placements and never re-places, so it cannot introduce a placement error.
+#[derive(Debug, Clone)]
+pub struct ProjectBlockTree {
+    pub dna: DnaType,
+    /// Induced-subtree blocks in pre-order (a parent always precedes its children).
+    pub blocks: Vec<Block>,
+    /// Members with no placement, or whose terminal is absent from this tree. Reported rather than
+    /// dropped: on a multi-lab cohort provider/build skew is expected, and hiding it would
+    /// misrepresent how much of the project the tree actually accounts for.
+    pub unplaced: Vec<UnplacedMember>,
+    /// The tree the view was drawn on (`"decodingus"` / `"ftdna"`) — `Block::loci` belong to it.
+    pub provider: String,
+    /// The coordinate space `Block::loci` positions are in. Node names and topology are
+    /// build-independent; only the positions are, so the view is labelled with the one build key it
+    /// was parsed under (the cohort's modal build).
+    pub build_key: String,
+}
+
+/// One block of a [`ProjectBlockTree`]: a branch plus the run of defining SNPs that are
+/// phylogenetically equivalent on it — every member below carries all of them, and nothing observed
+/// in this cohort separates them.
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub node_id: i64,
+    pub name: String,
+    /// Parent within the induced subtree (`None` at a root).
+    pub parent: Option<i64>,
+    /// Depth within the induced subtree, root = 0 — the layout's x coordinate.
+    pub depth: usize,
+    /// The equivalent SNPs defining this block. After a collapse this is the concatenation of the
+    /// absorbed branches' loci, root-most first: within *this cohort* they are one undivided block.
+    pub loci: Vec<Locus>,
+    /// Members whose terminal *is* this block.
+    pub members: Vec<BlockMember>,
+    /// Members at or below this block — the count to badge on a collapsed branch.
+    pub subtree_members: usize,
+    /// Names of the member-less branches this block absorbed when collapsed (root-most first).
+    /// Empty for an ordinary block. Kept so the UI can still name what it folded away.
+    pub collapsed: Vec<String>,
+}
+
+/// A project member placed at a [`Block`].
+#[derive(Debug, Clone)]
+pub struct BlockMember {
+    pub guid: SampleGuid,
+    /// Display name (donor identifier, else the guid) — what the tree leaf is labelled with.
+    pub name: String,
+    /// Unnamed (private) variants below this member's terminal. `None` until private-Y has been
+    /// computed for the subject, which is distinct from `Some(0)` ("computed, none found").
+    /// Populated in phase 3 (`documents/design/project-block-tree.md` §9); `None` before that.
+    pub private_novel: Option<usize>,
+    pub private_total: Option<usize>,
+}
+
+/// A project member the block tree could not place.
+#[derive(Debug, Clone)]
+pub struct UnplacedMember {
+    pub guid: SampleGuid,
+    pub name: String,
+    /// The terminal that failed to resolve against this tree; `None` = no placement at all.
+    pub terminal: Option<String>,
 }
 
 /// A per-marker branch report: the sample's genotype at every defining marker of a chosen tree
@@ -2726,6 +2796,8 @@ pub struct RefBuildStatus {
 mod analysis;
 pub use analysis::AnalysisStep;
 mod auth;
+mod blocktree;
+pub use blocktree::COLLAPSE_MIN_RUN;
 mod brief;
 mod commands;
 mod dm;

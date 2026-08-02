@@ -2469,7 +2469,7 @@ impl App {
     /// straight into the existing rCRS mt pipeline (FASTA/chip sources and the `chrM` genotyper all
     /// speak rCRS) — and still fall back to FTDNA when the DecodingUs tree or the CHM13 `chrM` needed
     /// to build the remap is unavailable.
-    async fn mt_tree_rcrs(&self) -> Result<(navigator_analysis::haplo::HaploTree, &'static str), AppError> {
+    pub(crate) async fn mt_tree_rcrs(&self) -> Result<(navigator_analysis::haplo::HaploTree, &'static str), AppError> {
         if !matches!(y_tree_provider(), YTreeProvider::Ftdna) {
             if let Some(tree) = self.decodingus_mt_tree_rcrs().await {
                 return Ok((tree, "decodingus"));
