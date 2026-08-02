@@ -596,10 +596,18 @@ impl NavigatorApp {
                 }
                 ui.add_space(12.0);
             }
-            if let Some(guid) = introduce {
+            // Resolve back to the full suggestion: the introduction records both AppView sample
+            // handles in the matching ledger, and only the suggestion carries them.
+            if let Some(suggestion) = introduce.and_then(|g| {
+                self.ibd_suggestions
+                    .iter()
+                    .find(|s| s.suggested_sample_guid == g)
+                    .cloned()
+            }) {
                 self.status = self.tr("network.introducing").to_string();
-                let _ = self.tx.send(Command::IbdIntroduce {
-                    suggested_sample_guid: guid,
+                let _ = self.tx.send(Command::RequestIntroduction {
+                    suggestion,
+                    biosample_guid: Some(guid),
                 });
             }
             ui.add_space(4.0);

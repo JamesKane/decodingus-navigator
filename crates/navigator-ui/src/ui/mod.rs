@@ -73,6 +73,10 @@ enum Nav {
     Dashboard,
     Subjects,
     Projects,
+    /// Federated IBD discovery + consent. Top-level rather than a subject tab because a matching
+    /// conversation belongs to the *account* (it is keyed by our DID and the broker's request URI),
+    /// not to any one biosample — the subject is only chosen when it is time to exchange dosages.
+    Matching,
     Community,
 }
 
@@ -83,6 +87,7 @@ impl Nav {
             Nav::Dashboard => "dashboard",
             Nav::Subjects => "subjects",
             Nav::Projects => "projects",
+            Nav::Matching => "matching",
             Nav::Community => "community",
         }
     }
@@ -91,10 +96,28 @@ impl Nav {
             "dashboard" => Some(Nav::Dashboard),
             "subjects" => Some(Nav::Subjects),
             "projects" => Some(Nav::Projects),
+            "matching" => Some(Nav::Matching),
             "community" => Some(Nav::Community),
             _ => None,
         }
     }
+}
+
+/// Sub-tabs of the Matching panel, following one conversation's life: a ranked candidate becomes a
+/// request, a request becomes a result.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum MatchingTab {
+    #[default]
+    Suggestions,
+    Requests,
+    Results,
+}
+impl MatchingTab {
+    const ALL: [(MatchingTab, &'static str); 3] = [
+        (MatchingTab::Suggestions, "matching.tab.suggestions"),
+        (MatchingTab::Requests, "matching.tab.requests"),
+        (MatchingTab::Results, "matching.tab.results"),
+    ];
 }
 
 /// Sub-tabs of the Community panel (the signed-in account's social surface).
@@ -923,6 +946,10 @@ pub struct NavigatorApp {
     ibd_src_b: Option<navigator_app::IbdSource>,
     /// Subject-level (consensus) IBD compare: the other subject picked for comparison.
     ibd_other_subject: Option<SampleGuid>,
+    /// Whether the consensus-compare subject picker's filter + list is revealed.
+    ibd_other_picking: bool,
+    /// Filter text for that picker.
+    ibd_other_filter: String,
     ibd_result: Option<IbdComparison>,
     running_ibd: bool,
     /// Identity-verification result for the current IBD pair.
@@ -933,13 +960,27 @@ pub struct NavigatorApp {
     loading_ibd_suggestions: bool,
     /// Per-candidate introduction status, keyed by `suggested_sample_guid` (e.g. "PENDING").
     ibd_intros: std::collections::HashMap<String, String>,
-    /// Encrypted-exchange inbox: inbound requests awaiting consent + consent-ready sessions.
-    exchange_incoming: Vec<navigator_app::IncomingRequest>,
-    exchange_ready: Vec<navigator_app::ExchangeSessionInfo>,
     /// The selected subject's persisted IBD exchange results.
     exchange_results: Vec<navigator_app::StoredIbdExchange>,
     /// True while an inbox refresh / consent / exchange run is in flight.
     exchange_busy: bool,
+    /// The matching ledger: every conversation, whatever its stage. Replaces the per-card view of
+    /// the same data, and unlike `ibd_intros` it survives a restart because the app persists it.
+    matching: Vec<navigator_app::MatchingEntry>,
+    /// Which stage of the Matching panel is showing.
+    matching_tab: MatchingTab,
+    /// Candidates dismissed this session, hidden immediately rather than waiting for a refetch
+    /// (the AppView keeps the authoritative dismissal).
+    dismissed_candidates: std::collections::HashSet<String>,
+    /// The local subject whose dosages an exchange will use. Defaults to the selected subject.
+    matching_subject: Option<SampleGuid>,
+    /// Whether the subject picker's filter + list is revealed (it is a reveal, not a dropdown, so a
+    /// 10k-subject workspace costs only the rows on screen).
+    matching_subject_picking: bool,
+    /// Filter text for that picker.
+    matching_subject_filter: String,
+    /// Request URI whose consent decision is being confirmed, with what we know of the request.
+    consent_prompt: Option<navigator_app::MatchingEntry>,
     /// Signed-in account DID, or `None`. Gates the "Publish" actions.
     account: Option<String>,
     /// Whether the last PDS write reached the server (offline indicator).
@@ -1131,6 +1172,7 @@ mod descent;
 mod detail;
 mod events;
 mod ibd;
+mod matching;
 mod modals;
 mod rowcache;
 mod simple;
@@ -1359,16 +1401,23 @@ impl NavigatorApp {
             ibd_src_a: None,
             ibd_src_b: None,
             ibd_other_subject: None,
+            ibd_other_picking: false,
+            ibd_other_filter: String::new(),
             ibd_result: None,
             running_ibd: false,
             identity: None,
             ibd_suggestions: Vec::new(),
             loading_ibd_suggestions: false,
             ibd_intros: std::collections::HashMap::new(),
-            exchange_incoming: Vec::new(),
-            exchange_ready: Vec::new(),
             exchange_results: Vec::new(),
             exchange_busy: false,
+            matching: Vec::new(),
+            matching_tab: MatchingTab::default(),
+            dismissed_candidates: std::collections::HashSet::new(),
+            matching_subject: None,
+            matching_subject_picking: false,
+            matching_subject_filter: String::new(),
+            consent_prompt: None,
             account: None,
             online: true,
             sync_pending: 0,
@@ -1606,6 +1655,7 @@ impl eframe::App for NavigatorApp {
             Nav::Dashboard => self.dashboard_central(ui),
             Nav::Subjects => self.subjects_central(ui),
             Nav::Projects => self.projects_central(ui),
+            Nav::Matching => self.matching_central(ui),
             Nav::Community => self.community_central(ui),
         });
         self.analysis_modal(ctx);
@@ -1616,6 +1666,7 @@ impl eframe::App for NavigatorApp {
         self.edit_mdka_modal(ctx);
         self.delete_subject_modal(ctx);
         self.clear_subject_modal(ctx);
+        self.consent_modal(ctx);
         self.reset_haplo_modal(ctx);
         self.data_delete_modal(ctx);
         self.assign_project_modal(ctx);
@@ -2184,7 +2235,13 @@ mod nav_persistence_tests {
 
     #[test]
     fn nav_keys_round_trip() {
-        for nav in [Nav::Dashboard, Nav::Subjects, Nav::Projects, Nav::Community] {
+        for nav in [
+            Nav::Dashboard,
+            Nav::Subjects,
+            Nav::Projects,
+            Nav::Matching,
+            Nav::Community,
+        ] {
             assert_eq!(Nav::from_key(nav.as_key()), Some(nav));
         }
         assert_eq!(Nav::from_key("bogus"), None);
@@ -2256,7 +2313,7 @@ mod icon_glyph_tests {
             }
         }
         // The nav strip's icons, which live inline in `chrome::nav_bar`.
-        for icon in ['📊', '👤', '👥', '📁', '💬'] {
+        for icon in ['📊', '👤', '👥', '📁', '🔗', '💬'] {
             assert!(
                 renderable(icon),
                 "nav icon {icon:?} (U+{:04X}) has no glyph — it renders as a tofu box",

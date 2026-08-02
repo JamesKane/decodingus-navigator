@@ -100,7 +100,7 @@ impl NavigatorApp {
 
     /// Keep nav consistent with the mode: Simple hides Projects/Community, so snap off them.
     pub(crate) fn normalize_for_mode(&mut self) {
-        if self.ui_mode == UiMode::Simple && matches!(self.nav, Nav::Projects | Nav::Community) {
+        if self.ui_mode == UiMode::Simple && matches!(self.nav, Nav::Projects | Nav::Matching | Nav::Community) {
             self.nav = Nav::Subjects;
         }
     }
@@ -183,6 +183,7 @@ impl NavigatorApp {
                         (Nav::Dashboard, "📊", "nav.dashboard"),
                         (Nav::Subjects, "👥", "nav.subjects"),
                         (Nav::Projects, "📁", "nav.projects"),
+                        (Nav::Matching, "🔗", "nav.matching"),
                         (Nav::Community, "💬", "nav.community"),
                     ],
                 };
@@ -266,8 +267,8 @@ impl NavigatorApp {
     /// which needs a quarter of that and was taking half the window.
     pub(crate) fn left_panel(&mut self, ctx: &egui::Context) {
         match self.nav {
-            // Dashboard + Community are full-width (no side panel).
-            Nav::Dashboard | Nav::Community => {}
+            // Dashboard, Matching and Community are full-width (no side panel).
+            Nav::Dashboard | Nav::Matching | Nav::Community => {}
             Nav::Projects if self.projects_collapsed => {
                 // Collapsed: a thin strip with just an expand button, handing the detail panel
                 // the full width for the wide Y-STR chart.

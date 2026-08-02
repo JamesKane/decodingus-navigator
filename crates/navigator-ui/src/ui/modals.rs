@@ -1808,6 +1808,68 @@ impl NavigatorApp {
     }
 }
 
+impl NavigatorApp {
+    /// The consent decision for an inbound matching request.
+    ///
+    /// A modal rather than an Accept button in a table row, because consenting does two things the
+    /// row cannot say: it reveals our DID to the counterpart, and it puts our IBD-panel dosages on
+    /// the encrypted channel. Neither is undoable. The three headings below are the whole point of
+    /// the dialog — what we send, what they learn, and what never leaves the device.
+    pub(crate) fn consent_modal(&mut self, ctx: &egui::Context) {
+        let Some(entry) = self.consent_prompt.clone() else { return };
+        let mut decision: Option<bool> = None;
+        let mut close = false;
+        modal_frame(ctx, "matching_consent_modal", 480.0, |ui| {
+            ui.label(egui::RichText::new(self.tr("matching.consent.title")).strong().size(16.0));
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(self.tr("matching.consent.body"));
+            ui.add_space(8.0);
+            egui::Grid::new("consent_facts").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                ui.strong(self.tr("matching.col.purpose"));
+                ui.label(if entry.purpose.is_empty() { "—" } else { &entry.purpose });
+                ui.end_row();
+                ui.strong(self.tr("matching.consent.request"));
+                ui.label(egui::RichText::new(&entry.request_uri).small());
+                ui.end_row();
+            });
+            ui.add_space(10.0);
+            for (title, body) in [
+                ("matching.consent.sendTitle", "matching.consent.sendBody"),
+                ("matching.consent.learnTitle", "matching.consent.learnBody"),
+                ("matching.consent.neverTitle", "matching.consent.neverBody"),
+            ] {
+                ui.label(egui::RichText::new(self.tr(title)).strong());
+                ui.label(egui::RichText::new(self.tr(body)).small());
+                ui.add_space(6.0);
+            }
+            ui.add_space(6.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(self.tr("exchange.accept")).clicked() {
+                    decision = Some(true);
+                }
+                if ui.button(self.tr("exchange.decline")).clicked() {
+                    decision = Some(false);
+                }
+                if ui.button(self.tr("common.cancel")).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if let Some(given) = decision {
+            self.exchange_busy = true;
+            let _ = self.tx.send(Command::MatchingConsent {
+                request_uri: entry.request_uri,
+                given,
+                biosample_guid: self.matching_subject,
+            });
+            self.consent_prompt = None;
+        } else if close {
+            self.consent_prompt = None;
+        }
+    }
+}
+
 /// Shared modal scaffold: a dimmed full-screen backdrop + a centered `Frame::window` of `width`.
 /// `id` namespaces the dim layer + area; `add_contents` draws the modal body.
 fn modal_frame(ctx: &egui::Context, id: &str, width: f32, add_contents: impl FnOnce(&mut egui::Ui)) {

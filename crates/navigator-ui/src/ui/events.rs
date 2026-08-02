@@ -1004,33 +1004,20 @@ impl NavigatorApp {
                     self.ibd_suggestions = items;
                     self.loading_ibd_suggestions = false;
                 }
-                Event::IbdIntroduced {
-                    suggested_sample_guid,
-                    request_uri,
-                    status,
-                } => {
-                    self.status = format!("Introduction requested: {status} ({request_uri})");
-                    let label = if request_uri.is_empty() {
-                        status
-                    } else {
-                        format!("{status} · {request_uri}")
-                    };
-                    self.ibd_intros.insert(suggested_sample_guid, label);
-                }
-                Event::ExchangeInbox { incoming, ready } => {
+                Event::Matching(entries) => {
                     self.exchange_busy = false;
-                    self.status = format!(
-                        "Exchange inbox: {} request(s), {} ready session(s)",
-                        incoming.len(),
-                        ready.len()
-                    );
-                    self.exchange_incoming = incoming;
-                    self.exchange_ready = ready;
+                    self.consent_prompt = None;
+                    // A candidate that became a request is no longer a candidate.
+                    let requested: std::collections::HashSet<&str> =
+                        entries.iter().filter_map(|e| e.partner_sample_ref.as_deref()).collect();
+                    self.ibd_suggestions.retain(|s| !requested.contains(s.suggested_sample_guid.as_str()));
+                    self.matching = entries;
                 }
-                Event::ExchangeConsented => {
+                Event::CandidateDismissed { suggested_sample_guid } => {
                     self.exchange_busy = false;
-                    self.status = "Consent recorded".into();
-                    let _ = self.tx.send(Command::ExchangeInbox); // refresh
+                    self.status = self.tr("matching.dismissed").to_string();
+                    self.ibd_suggestions.retain(|s| s.suggested_sample_guid != suggested_sample_guid);
+                    self.dismissed_candidates.insert(suggested_sample_guid);
                 }
                 Event::IbdExchangeDone {
                     biosample_guid,
@@ -1045,6 +1032,8 @@ impl NavigatorApp {
                         if agreed { " · agreed" } else { " · NOT agreed" }
                     );
                     let _ = self.tx.send(Command::LoadIbdExchanges { biosample_guid });
+                    // The conversation is now complete — pick the result up in the ledger too.
+                    let _ = self.tx.send(Command::RefreshMatching);
                 }
                 Event::IbdExchanges { biosample_guid, rows } => {
                     if self.selected_sample == Some(biosample_guid) {

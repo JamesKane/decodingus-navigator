@@ -20,6 +20,7 @@ use navigator_app::{
     ExchangeSessionInfo,
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaResolution, HaploAssignment,
     HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion, IdentityVerification, IncomingRequest,
+    MatchingEntry,
     NarratedBrief, PaintingResult, PrivateBucket, ProjectImportSummary, ProjectOverview, ProjectSampleReport,
     ArchaicMarkerResult, ArchaicSegmentResult, ProjectStrChart, ReadMetrics, RecruitmentInvitation, RefBuildStatus, RohResult, SexInferenceResult,
     SignalKind,
@@ -369,18 +370,29 @@ pub enum Command {
     /// Federated IBD step 1: fetch the AppView's pseudonymous match suggestions for the
     /// signed-in account (registers the device key on first use).
     LoadIbdSuggestions,
-    /// Federated IBD step 2: request an introduction to a suggested candidate.
-    IbdIntroduce {
+    /// Ask to be introduced to a candidate, recording the conversation in the matching ledger.
+    RequestIntroduction {
+        suggestion: IbdSuggestion,
+        biosample_guid: Option<SampleGuid>,
+    },
+    /// Tell the AppView to stop suggesting a candidate.
+    DismissCandidate {
         suggested_sample_guid: String,
     },
     /// Adopt a local self-certifying did:key identity (desktop bootstrap — no PDS/OAuth).
     UseLocalIdentity,
-    /// Poll the AppView for inbound exchange requests + consent-ready sessions (the exchange inbox).
-    ExchangeInbox,
-    /// Consent to (or decline) an inbound exchange request.
-    ExchangeConsent {
+    /// Reconcile the matching ledger against the broker (inbound requests + consent-ready sessions)
+    /// and return every conversation.
+    RefreshMatching,
+    /// Consent to (or decline) an inbound exchange request, recording the decision durably.
+    MatchingConsent {
         request_uri: String,
         given: bool,
+        biosample_guid: Option<SampleGuid>,
+    },
+    /// Drop a conversation from the local ledger (forget, not cancel).
+    ForgetMatchingRequest {
+        request_uri: String,
     },
     /// Run a full IBD exchange for a subject over a consent-ready session (handshake → dosage
     /// exchange → signed attestations → persist). Long-running; needs the peer online.
@@ -1064,19 +1076,13 @@ pub enum Event {
     Ibd(IbdComparison),
     /// Federated IBD match suggestions from the AppView (may be empty in a single-user dev AppView).
     IbdSuggestions(Vec<IbdSuggestion>),
-    /// An introduction request was opened for a candidate (status initially `PENDING`).
-    IbdIntroduced {
+    /// The matching ledger — every conversation with its result attached. Emitted by the refresh
+    /// and by every mutation, so the panel never has to re-poll the broker to see its own action.
+    Matching(Vec<MatchingEntry>),
+    /// A candidate was dismissed; the UI drops its row.
+    CandidateDismissed {
         suggested_sample_guid: String,
-        request_uri: String,
-        status: String,
     },
-    /// The exchange inbox: inbound requests awaiting our consent + consent-ready sessions.
-    ExchangeInbox {
-        incoming: Vec<IncomingRequest>,
-        ready: Vec<ExchangeSessionInfo>,
-    },
-    /// A consent was recorded (the UI refreshes the inbox).
-    ExchangeConsented,
     /// A DM request was opened to a partner DID (the UI refreshes the inbox).
     DmInitiated,
     /// The DM inbox: inbound DM requests + consent-ready sessions to connect.
@@ -2034,37 +2040,55 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         }
         Command::VerifyIdentityConsensus { a, b } => ev(app.verify_identity_consensus(a, b).await, Event::Identity),
         Command::LoadIbdSuggestions => ev(app.ibd_suggestions().await, Event::IbdSuggestions),
-        Command::IbdIntroduce { suggested_sample_guid } => ev(
-            app.ibd_introduce(&suggested_sample_guid).await,
-            |r| Event::IbdIntroduced {
-                suggested_sample_guid,
-                request_uri: r.request_uri,
-                status: r.status,
-            },
+        Command::RequestIntroduction {
+            suggestion,
+            biosample_guid,
+        } => match app.request_introduction(&suggestion, biosample_guid).await {
+            Ok(_) => ev(app.matching_entries().await, Event::Matching),
+            Err(e) => Event::Error(e.to_string()),
+        },
+        Command::DismissCandidate { suggested_sample_guid } => ev(
+            app.ibd_dismiss(&suggested_sample_guid).await,
+            |_| Event::CandidateDismissed { suggested_sample_guid },
         ),
         Command::UseLocalIdentity => ev(app.use_local_identity(), |did| Event::Authenticated(Some(did))),
-        Command::ExchangeInbox => match (app.exchange_incoming().await, app.exchange_pending().await) {
-            (Ok(incoming), Ok(ready)) => Event::ExchangeInbox { incoming, ready },
-            (Err(e), _) | (_, Err(e)) => Event::Error(e.to_string()),
+        Command::RefreshMatching => ev(app.refresh_matching().await, Event::Matching),
+        Command::MatchingConsent {
+            request_uri,
+            given,
+            biosample_guid,
+        } => match app.matching_consent(&request_uri, given, biosample_guid).await {
+            Ok(_) => ev(app.matching_entries().await, Event::Matching),
+            Err(e) => Event::Error(e.to_string()),
         },
-        Command::ExchangeConsent { request_uri, given } => {
-            ev(app.exchange_consent(&request_uri, given).await, |_| Event::ExchangeConsented)
-        }
+        Command::ForgetMatchingRequest { request_uri } => match app.forget_matching_request(&request_uri).await {
+            Ok(()) => ev(app.matching_entries().await, Event::Matching),
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::RunIbdExchange { info, biosample_guid } => {
             let cfg = IbdDetectorConfig::default();
-            match app.open_exchange_session(&info).await {
-                Ok(session) => ev(
+            // A failure is recorded on the conversation rather than only surfaced as a transient
+            // toast — otherwise the request sits at READY and the user cannot tell it was tried.
+            let outcome = match app.open_exchange_session(&info).await {
+                Ok(session) => {
                     app.exchange_ibd_for_subject(&session, biosample_guid, &info.request_uri, None, cfg)
-                        .await,
-                    |r| Event::IbdExchangeDone {
-                        biosample_guid,
-                        total_shared_cm: r.summary.total_shared_cm,
-                        segment_count: r.summary.segment_count,
-                        relationship: format!("{:?}", r.summary.relationship),
-                        agreed: r.agreed,
-                    },
-                ),
-                Err(e) => Event::Error(e.to_string()),
+                        .await
+                }
+                Err(e) => Err(e),
+            };
+            match outcome {
+                Ok(r) => Event::IbdExchangeDone {
+                    biosample_guid,
+                    total_shared_cm: r.summary.total_shared_cm,
+                    segment_count: r.summary.segment_count,
+                    relationship: format!("{:?}", r.summary.relationship),
+                    agreed: r.agreed,
+                },
+                Err(e) => {
+                    let msg = e.to_string();
+                    let _ = app.record_matching_failure(&info.request_uri, &msg).await;
+                    Event::Error(msg)
+                }
             }
         }
         Command::LoadIbdExchanges { biosample_guid } => {

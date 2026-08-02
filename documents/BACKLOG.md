@@ -72,8 +72,20 @@ Code exists or the design is settled; these are the near-term threads.
   [`IBD_Matching_Implementation_Plan.md`](IBD_Matching_Implementation_Plan.md)
 - **Status:** Detection, identity math, the encrypted exchange channel (X3DH/AES-GCM), signed
   attestations, and the pairwise consensus-IBD chromosome browser are **all built and live-validated**.
-- **Scope:** the remaining surface is user-facing consent + discovery — deciding who to match
-  against, managing consent, and turning `network_suggestions_section` into a full discovery flow.
+  The consent/discovery surface landed 2026-08-02 (branch `feat/ibd-matching-ux`): a durable
+  `ibd_request` ledger (mig 0041) + `App::refresh_matching`, a top-level **Matching** tab
+  (Suggestions / Requests / Results) replacing the per-subject discovery cards, an informed-consent
+  modal, and the two previously unwired AppView endpoints (`/ibd/dismiss`, `/ibd/attest`).
+  Attest needed a companion AppView change — `/ibd/suggestions` now returns the caller's own
+  `target_sample_guid`, without which `owns_sample` could never be satisfied from the edge.
+- **Scope remaining:** background polling + an unread badge for inbound consent requests (the
+  Community 🔔 pattern); a Settings discoverability opt-in; a UI path for the *direct*
+  `exchange_request(partner_did, …)` initiator (still test-only); the segment ideogram for persisted
+  exchange results; and **live two-peer validation** of the whole flow against a running AppView.
+- **Note:** both subject pickers in this area (Matching, and `consensus_ibd_section` in `ui/ibd.rs`)
+  are now filter + virtualized `show_rows` rather than `ComboBox` — a workspace can hold 10k
+  subjects, and a `ComboBox` builds a widget per entry per frame. Follow that pattern for any new
+  roster-wide picker.
 
 ### 1.7 Packaging & release — open items
 - **Design:** [`design/packaging-and-release.md`](design/packaging-and-release.md)

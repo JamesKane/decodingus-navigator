@@ -436,8 +436,14 @@ pub struct AssetStatus {
 /// `suggested_sample_guid` is the AppView's opaque handle for the counterpart (not a DID,
 /// not PII) — used to request an introduction. `signals` names the sources that contributed
 /// (e.g. `POPULATION_OVERLAP`, `HAPLOGROUP`, `SHARED_MATCH`) behind the composite `score`.
+///
+/// `target_sample_guid` is the AppView's handle for **our own** sample the candidate was ranked
+/// against. We already own it, so it discloses nothing — but a self-publishing client has no other
+/// way to learn its server-side sample handle, and [`App::ibd_attest`] cannot report a completed
+/// comparison without it. `None` when talking to an AppView that predates that field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IbdSuggestion {
+    pub target_sample_guid: Option<String>,
     pub suggested_sample_guid: String,
     pub suggestion_type: String,
     pub score: f64,
@@ -481,10 +487,15 @@ impl IbdSuggestion {
 
 /// Result of requesting an introduction to a candidate: the AppView's request URI and its
 /// status (initially `PENDING`, awaiting the consent round-trip).
+///
+/// `purpose` is chosen server-side from the suggestion's dominant signal (`IBD_AUTOSOMAL` / `IBD_Y`
+/// / `IBD_MT`) — it decides which genomic region a later attestation is filed under, so it is worth
+/// recording at introduction rather than waiting for the session to reveal it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IbdIntroResult {
     pub request_uri: String,
     pub status: String,
+    pub purpose: String,
 }
 
 /// An inbound, **symmetric-blind** exchange request awaiting this account's consent (the initiator
@@ -513,6 +524,107 @@ pub struct ExchangeSessionInfo {
 pub struct ConsentOutcome {
     pub status: String,
     pub session_id: Option<String>,
+}
+
+/// Who opened a matching conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchingDirection {
+    /// We asked to be introduced.
+    Outbound,
+    /// Someone asked to be introduced to us.
+    Inbound,
+}
+
+impl MatchingDirection {
+    /// Stable ledger token (independent of display strings).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MatchingDirection::Outbound => "OUTBOUND",
+            MatchingDirection::Inbound => "INBOUND",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        match s {
+            "INBOUND" => MatchingDirection::Inbound,
+            _ => MatchingDirection::Outbound,
+        }
+    }
+}
+
+/// Where a matching conversation stands. Deliberately records only what this edge can *know*:
+/// the broker is symmetric-blind, so a partner declining is indistinguishable from a partner who
+/// has not answered yet — both stay [`MatchingStatus::Requested`], and [`MatchingStatus::Declined`]
+/// means **we** declined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchingStatus {
+    /// We asked; the counterpart has not consented (or has not answered).
+    Requested,
+    /// Inbound and awaiting our decision.
+    AwaitingConsent,
+    /// We declined.
+    Declined,
+    /// Both consented — a session is open and the encrypted exchange can run.
+    Ready,
+    /// The exchange ran and a result is stored.
+    Exchanged,
+    /// The exchange was attempted and failed; `last_error` says why.
+    Failed,
+}
+
+impl MatchingStatus {
+    /// Stable ledger token (independent of display strings).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MatchingStatus::Requested => "REQUESTED",
+            MatchingStatus::AwaitingConsent => "AWAITING_CONSENT",
+            MatchingStatus::Declined => "DECLINED",
+            MatchingStatus::Ready => "READY",
+            MatchingStatus::Exchanged => "EXCHANGED",
+            MatchingStatus::Failed => "FAILED",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        match s {
+            "AWAITING_CONSENT" => MatchingStatus::AwaitingConsent,
+            "DECLINED" => MatchingStatus::Declined,
+            "READY" => MatchingStatus::Ready,
+            "EXCHANGED" => MatchingStatus::Exchanged,
+            "FAILED" => MatchingStatus::Failed,
+            _ => MatchingStatus::Requested,
+        }
+    }
+    /// True once the conversation has nothing further to do — it either produced a result or we
+    /// turned it down. The UI files these away from the actionable list.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, MatchingStatus::Exchanged | MatchingStatus::Declined)
+    }
+}
+
+/// One matching conversation, as the UI reads it: the durable ledger row plus the exchange result
+/// once there is one. Assembled by [`App::matching_entries`].
+#[derive(Debug, Clone)]
+pub struct MatchingEntry {
+    pub request_uri: String,
+    pub direction: MatchingDirection,
+    pub purpose: String,
+    pub status: MatchingStatus,
+    /// Revealed only after mutual consent — `None` while the request is still blind.
+    pub partner_did: Option<String>,
+    pub session_id: Option<String>,
+    /// The local subject whose dosages this conversation exchanges.
+    pub biosample_guid: Option<SampleGuid>,
+    /// AppView sample handles (ours / theirs) — what an attestation is filed under.
+    pub my_sample_ref: Option<String>,
+    pub partner_sample_ref: Option<String>,
+    /// Our own consent decision; `None` until we make one.
+    pub consent_given: Option<bool>,
+    /// True once the AppView accepted our attestation for this comparison.
+    pub attested: bool,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    /// The stored exchange result, present once `status` is [`MatchingStatus::Exchanged`].
+    pub result: Option<StoredIbdExchange>,
 }
 
 /// A pulled relay envelope: the opaque ciphertext `blob` plus its routing (`from_did`/`seq`) and the
@@ -602,6 +714,13 @@ fn parse_ibd_suggestions(body: &serde_json::Value) -> Vec<IbdSuggestion> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
+            // Optional: older AppViews omit it, and the row is still usable for everything but
+            // attesting, so a missing value must not drop the candidate.
+            let target_sample_guid = it
+                .get("targetSampleGuid")
+                .or_else(|| it.get("target_sample_guid"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
             let score = it.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let signals = it
                 .get("metadata")
@@ -610,6 +729,7 @@ fn parse_ibd_suggestions(body: &serde_json::Value) -> Vec<IbdSuggestion> {
                 .map(parse_ibd_signals)
                 .unwrap_or_default();
             Some(IbdSuggestion {
+                target_sample_guid,
                 suggested_sample_guid,
                 suggestion_type,
                 score,
@@ -680,6 +800,7 @@ pub use navigator_domain::yprofile::{YProfileSummary, YProfileVariant, YSourceOb
 use navigator_domain::ysnp_dict::{self, YsnpDictionary};
 pub use navigator_store::dm::{DmConversationSummary, DmMessage};
 pub use navigator_store::ibd_exchange::StoredIbdExchange;
+pub use navigator_store::ibd_request::StoredIbdRequest;
 pub use navigator_store::source_file::SourceFile;
 use navigator_store::{
     alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_painting,
@@ -2617,6 +2738,7 @@ mod import_unified;
 pub mod llm;
 pub use llm::{ChatTurn, NarratedBrief};
 pub use navigator_domain::results_context::SignalKind;
+mod matching;
 mod publish;
 mod queries;
 mod recruitment;
@@ -4066,6 +4188,100 @@ mod ibd_attest_tests {
         assert_eq!(rows[0].total_shared_cm, 75.0);
         assert!(rows[0].agreed);
         assert_eq!(rows[0].partner_did, "did:key:zB");
+
+        // The ledger adopts a conversation it never saw opened, so the completed exchange still
+        // reads as one entry with its result attached rather than an orphan row.
+        app.mark_matching_exchanged(b.guid, &session, "exchange:r").await.unwrap();
+        let entries = app.matching_entries().await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, MatchingStatus::Exchanged);
+        assert_eq!(entries[0].partner_did.as_deref(), Some("did:key:zB"));
+        assert_eq!(entries[0].biosample_guid, Some(b.guid));
+        assert_eq!(entries[0].result.as_ref().map(|r| r.total_shared_cm), Some(75.0));
+    }
+
+    /// A failed exchange must read as failed with its reason, not sit at READY forever; and
+    /// forgetting a conversation drops it locally.
+    #[tokio::test]
+    async fn matching_failure_and_forget() {
+        use navigator_store::Store;
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let b = app.add_biosample(None, "S1", None, None).await.unwrap();
+        let session = EstablishedSession {
+            session_id: "sess-y".into(),
+            partner_did: "did:key:zC".into(),
+            key: [0u8; 32],
+        };
+        app.mark_matching_exchanged(b.guid, &session, "exchange:f").await.unwrap();
+
+        app.record_matching_failure("exchange:f", "relay timeout").await.unwrap();
+        let e = app.matching_entry("exchange:f").await.unwrap();
+        assert_eq!(e.status, MatchingStatus::Failed);
+        assert_eq!(e.last_error.as_deref(), Some("relay timeout"));
+        assert!(!e.status.is_terminal(), "a failure stays retryable");
+
+        // Recording against an unknown request is a no-op, not an error.
+        app.record_matching_failure("exchange:nope", "x").await.unwrap();
+        assert!(app.matching_entry("exchange:nope").await.is_err());
+
+        app.forget_matching_request("exchange:f").await.unwrap();
+        assert!(app.matching_entries().await.unwrap().is_empty());
+    }
+
+    /// Attestation is gated: without the AppView sample handles there is nothing to file, and a
+    /// disputed summary must not be reported as a match. Neither case is an error.
+    #[tokio::test]
+    async fn attest_is_skipped_without_handles_or_agreement() {
+        use navigator_store::Store;
+        let app = App::new(Store::open_in_memory().await.unwrap());
+        let b = app.add_biosample(None, "S1", None, None).await.unwrap();
+        let session = EstablishedSession {
+            session_id: "sess-z".into(),
+            partner_did: "did:key:zD".into(),
+            key: [0u8; 32],
+        };
+        let mut result = IbdExchangeResult {
+            summary: summary(75.0),
+            segments: vec![],
+            overlapping_sites: 100,
+            my_attestation: IbdAttestation::unsigned(
+                "exchange:a",
+                "sess-z",
+                "did:key:zA",
+                Some(b.guid.to_string()),
+                None,
+                &summary(75.0),
+                "t",
+            ),
+            partner_attestation: IbdAttestation::unsigned(
+                "exchange:a",
+                "sess-z",
+                "did:key:zD",
+                None,
+                Some(b.guid.to_string()),
+                &summary(75.0),
+                "t",
+            ),
+            agreed: true,
+        };
+        app.record_ibd_exchange(b.guid, &session, "exchange:a", &result)
+            .await
+            .unwrap();
+        app.mark_matching_exchanged(b.guid, &session, "exchange:a").await.unwrap();
+
+        // No sample handles (a direct request never carries them) → nothing to attest, no network.
+        assert!(!app.attest_exchange_if_possible("exchange:a").await.unwrap());
+
+        // With handles but a disputed summary, we still file nothing.
+        app.set_matching_sample_refs("exchange:a", Some("s-mine"), Some("s-theirs"))
+            .await
+            .unwrap();
+        result.agreed = false;
+        app.record_ibd_exchange(b.guid, &session, "exchange:a", &result)
+            .await
+            .unwrap();
+        assert!(!app.attest_exchange_if_possible("exchange:a").await.unwrap());
+        assert!(!app.matching_entry("exchange:a").await.unwrap().attested);
     }
 }
 
@@ -4155,6 +4371,7 @@ mod ibd_federated_tests {
     fn match_strength_tiers_are_conservative() {
         let at = |score: f64| {
             IbdSuggestion {
+                target_sample_guid: None,
                 suggested_sample_guid: "h".into(),
                 suggestion_type: "SHARED_MATCH".into(),
                 score,
