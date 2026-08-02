@@ -20,9 +20,24 @@ cargo test --workspace
 # Lint gate (must be clean per commit)
 cargo clippy --all-targets -- -D warnings
 
+# Format gate (must be clean per commit; enforced by the pre-commit hook below)
+cargo fmt --all
+
 # Run a single test
 cargo test -p navigator-analysis some_test_name
 ```
+
+**Enable the pre-commit hook once per clone** — it runs `cargo fmt --all --check` (~0.6s, no
+compilation) and rejects a commit that would reintroduce formatting drift:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Hooks are per-clone git config, so this is not automatic on checkout. Without it the gate is
+advisory: the drift once reached 116 files, at which point every feature branch either carried a
+pile of unrelated reformatting into review or had to be de-noised by hand. `git commit --no-verify`
+bypasses it when you genuinely need to.
 
 The built binary is named `navigator` (`target/debug/navigator` or `target/release/navigator`). Run with no subcommand to launch the GUI; run with `ingest` / `subjects` / `show` / `projects` for headless mode.
 
