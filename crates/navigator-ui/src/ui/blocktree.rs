@@ -29,6 +29,10 @@ const MEMBERS_PREVIEW: usize = 3;
 
 const BLOCK_BG: egui::Color32 = egui::Color32::from_rgb(46, 52, 60);
 const BLOCK_BG_PLACED: egui::Color32 = egui::Color32::from_rgb(50, 74, 58); // carries members
+/// A candidate branch reads as *provisional*: amber, not the green of a published branch. It is an
+/// inference from shared private variants, and must never be mistaken for a named haplogroup.
+const BLOCK_BG_CANDIDATE: egui::Color32 = egui::Color32::from_rgb(74, 62, 38);
+const CANDIDATE_STROKE: egui::Color32 = egui::Color32::from_rgb(200, 155, 70);
 const BLOCK_STROKE: egui::Color32 = egui::Color32::from_rgb(90, 100, 112);
 const EDGE: egui::Color32 = egui::Color32::from_rgb(80, 88, 98);
 const MEMBER_FG: egui::Color32 = egui::Color32::from_rgb(150, 200, 230);
@@ -190,13 +194,30 @@ impl NavigatorApp {
                 self.tr("blocktree.unplaced.hint")
             )
         });
+        // Candidate branches are the thing a published tree can't tell you, so they get their own
+        // line rather than being left for the user to notice in the canvas.
+        let candidates = tree.blocks.iter().filter(|b| b.candidate).count();
+        let candidate_msg = (candidates > 0).then(|| {
+            let mut s = format!("{candidates} {}", self.tr("blocktree.candidates"));
+            if tree.candidate_conflicts > 0 {
+                s.push_str(&format!(
+                    " · {} {}",
+                    tree.candidate_conflicts,
+                    self.tr("blocktree.conflicts")
+                ));
+            }
+            s
+        });
         // Every label is resolved before the closure: `self.tr` borrows `self`, and the zoom slider
         // needs `&mut` — the two can't coexist inside one closure.
-        let (zoom_label, no_placement) = (
+        let (zoom_label, no_placement, candidate_label, export_label) = (
             self.tr("blocktree.zoom").to_string(),
             self.tr("blocktree.none.placed").to_string(),
+            self.tr("blocktree.candidate").to_string(),
+            self.tr("blocktree.export").to_string(),
         );
         let mut zoom = self.blocktree_zoom;
+        let mut export = false;
 
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -206,6 +227,8 @@ impl NavigatorApp {
             ui.separator();
             ui.label(egui::RichText::new(zoom_label).weak().small());
             ui.add(egui::Slider::new(&mut zoom, 0.5..=2.0).show_value(false));
+            ui.separator();
+            export = ui.button(export_label).clicked();
         });
         if let Some(msg) = unplaced_msg {
             ui.label(
@@ -213,6 +236,9 @@ impl NavigatorApp {
                     .small()
                     .color(egui::Color32::from_rgb(210, 160, 90)),
             );
+        }
+        if let Some(msg) = candidate_msg {
+            ui.label(egui::RichText::new(msg).small().color(CANDIDATE_STROKE));
         }
         if tree.blocks.is_empty() {
             ui.add_space(8.0);
@@ -260,13 +286,13 @@ impl NavigatorApp {
                     continue;
                 }
 
-                let bg = if b.members.is_empty() {
-                    BLOCK_BG
-                } else {
-                    BLOCK_BG_PLACED
+                let (bg, stroke) = match (b.candidate, b.members.is_empty()) {
+                    (true, _) => (BLOCK_BG_CANDIDATE, egui::Stroke::new(1.5, CANDIDATE_STROKE)),
+                    (false, true) => (BLOCK_BG, egui::Stroke::new(1.0, BLOCK_STROKE)),
+                    (false, false) => (BLOCK_BG_PLACED, egui::Stroke::new(1.0, BLOCK_STROKE)),
                 };
                 painter.rect_filled(rect, 3.0, bg);
-                painter.rect_stroke(rect, 3.0, egui::Stroke::new(1.0, BLOCK_STROKE));
+                painter.rect_stroke(rect, 3.0, stroke);
 
                 let pad = PAD * zoom;
                 let row = ROW_H * zoom;
@@ -276,7 +302,13 @@ impl NavigatorApp {
                     painter.text(egui::pos2(left, y), egui::Align2::LEFT_TOP, text, f.clone(), color);
                 };
 
-                put(b.name.clone(), egui::Color32::from_gray(230), &font, y);
+                // A candidate has no published name — the view supplies the label, localized.
+                let (title, title_fg) = if b.candidate {
+                    (candidate_label.clone(), CANDIDATE_STROKE)
+                } else {
+                    (b.name.clone(), egui::Color32::from_gray(230))
+                };
+                put(title, title_fg, &font, y);
                 y += row;
 
                 // The block's own weight: equivalent SNPs, and how many branches it folded away.
@@ -294,7 +326,14 @@ impl NavigatorApp {
                 y += row;
 
                 for m in b.members.iter().take(p.shown_members) {
-                    put(m.name.clone(), MEMBER_FG, &small, y);
+                    // A member's own unshared private count, when private-Y has been computed for
+                    // them. `None` means never analyzed, which is not the same as zero — so it shows
+                    // nothing rather than "0".
+                    let label = match m.private_novel {
+                        Some(n) if n > 0 => format!("{}  ({n})", m.name),
+                        _ => m.name.clone(),
+                    };
+                    put(label, MEMBER_FG, &small, y);
                     y += row;
                 }
                 if p.shown_members < b.members.len() {
@@ -335,8 +374,44 @@ impl NavigatorApp {
             }
         });
 
+        // Formatted while the tree borrow is still live; written below, after it ends.
+        let export_bodies = export.then(|| {
+            let name = self
+                .overview
+                .iter()
+                .find(|o| o.project.id == pid)
+                .map(|o| o.project.name.clone())
+                .unwrap_or_else(|| format!("project-{pid}"));
+            let safe: String = name
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+                .collect();
+            (
+                navigator_app::export::block_tree_tsv(tree),
+                navigator_app::export::block_tree_html(tree, &name),
+                safe,
+            )
+        });
+
         // Deferred dispatch: mutate state after the closure, never inside it.
         self.blocktree_zoom = zoom;
+        if let Some((tsv, html, safe)) = export_bodies {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name(format!("blocktree_{safe}.tsv"))
+                .add_filter("TSV", &["tsv"])
+                .add_filter("HTML", &["html"])
+                .save_file()
+            {
+                // One button, either format — chosen by the extension the user typed, as the other
+                // two-format exports in this app do.
+                let html_wanted = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("html"));
+                let body = if html_wanted { html } else { tsv };
+                match std::fs::write(&path, body) {
+                    Ok(()) => self.status = format!("{} {}", self.tr("blocktree.exported"), path.display()),
+                    Err(e) => self.status = format!("write {}: {e}", path.display()),
+                }
+            }
+        }
         if let Some(id) = toggle {
             if !self.blocktree_expanded.remove(&id) {
                 self.blocktree_expanded.insert(id);
@@ -375,6 +450,7 @@ mod tests {
             members: members.iter().map(|m| member(m)).collect(),
             subtree_members: members.len(),
             collapsed: Vec::new(),
+            candidate: false,
         }
     }
 

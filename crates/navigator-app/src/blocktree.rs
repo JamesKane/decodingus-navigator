@@ -15,6 +15,8 @@
 //!
 //! Design: `documents/design/project-block-tree.md`.
 
+use std::collections::BTreeSet;
+
 use super::*;
 
 /// Collapse a run of member-less single-child branches only when it is at least this long. A lone
@@ -75,6 +77,7 @@ impl App {
                     YTreeProvider::Ftdna => "ftdna".to_string(),
                 },
                 build_key: String::new(),
+                candidate_conflicts: 0,
             }));
         }
 
@@ -106,19 +109,30 @@ impl App {
         // One name index for the whole cohort. The per-subject path scans the node map linearly for
         // its single terminal, which would be quadratic here.
         let index = navigator_analysis::haplo::name_index(&tree);
-        let mut at_node: HashMap<i64, Vec<BlockMember>> = HashMap::new();
+        // Resolve placement first, so the private-Y load below covers only members who actually
+        // appear on the tree — on a real cohort that is a fraction of the roster (243 of 1881 on
+        // R1b-CTS4466Plus), and an unplaced member's private variants can't be drawn anywhere.
+        let mut placed: Vec<(SampleGuid, String, i64)> = Vec::new();
         let mut unplaced = Vec::new();
         for (guid, name, terminal) in wanted {
             match terminal.as_deref().and_then(|t| index.get(t).copied()) {
-                Some(id) => at_node.entry(id).or_default().push(BlockMember {
-                    guid,
-                    name,
-                    // Phase 3 populates these from `donor_private_y`; `None` = not computed.
-                    private_novel: None,
-                    private_total: None,
-                }),
+                Some(id) => placed.push((guid, name, id)),
                 None => unplaced.push(UnplacedMember { guid, name, terminal }),
             }
+        }
+
+        // One bulk load for the placed members' private-Y. Absent = never computed (`None`), which
+        // the view must not confuse with "computed, none found" (`Some(0)`).
+        let placed_guids: Vec<SampleGuid> = placed.iter().map(|(g, _, _)| *g).collect();
+        let private = self.private_y_for_biosamples(&placed_guids).await?;
+        let mut at_node: HashMap<i64, Vec<BlockMember>> = HashMap::new();
+        for (guid, name, id) in placed {
+            at_node.entry(id).or_default().push(BlockMember {
+                guid,
+                name,
+                private_novel: private.get(&guid).map(|b| b.novel_in_unique_sequence()),
+                private_total: private.get(&guid).map(|b| b.variants.len()),
+            });
         }
 
         let terminal_ids: Vec<i64> = at_node.keys().copied().collect();
@@ -134,6 +148,7 @@ impl App {
                 loci: n.loci,
                 subtree_members: 0, // filled by `roll_up_subtree_members`
                 collapsed: Vec::new(),
+                candidate: false,
             })
             .collect();
         // Stable leaf order, so the layout doesn't reshuffle between opens.
@@ -142,6 +157,10 @@ impl App {
         }
         roll_up_subtree_members(&mut blocks);
         let blocks = collapse_blocks(blocks, COLLAPSE_MIN_RUN);
+        // Candidates go in *after* the collapse: they are leaves with members, so they could never
+        // be absorbed, and inserting them earlier would only make the collapse reason about
+        // synthetic nodes.
+        let (blocks, candidate_conflicts) = insert_candidate_branches(blocks, &private);
         unplaced.sort_by(|a, b| (&a.name, a.guid.0).cmp(&(&b.name, b.guid.0)));
 
         Ok(Some(ProjectBlockTree {
@@ -150,6 +169,7 @@ impl App {
             unplaced,
             provider: provider.to_string(),
             build_key: build_key.to_string(),
+            candidate_conflicts,
         }))
     }
 
@@ -188,6 +208,204 @@ fn roll_up_subtree_members(blocks: &mut [Block]) {
             *from_children.entry(p).or_default() += total;
         }
     }
+}
+
+/// Synthesize a [`Locus`] standing for a private (unnamed) variant, so a candidate branch's shared
+/// variants render through exactly the same path as a named branch's defining SNPs.
+fn private_locus(v: &PrivateVariant) -> Locus {
+    Locus {
+        position: v.position,
+        ancestral: v.reference.to_string(),
+        derived: v.alternate.to_string(),
+        name: format!("chrY:{}", v.position),
+    }
+}
+
+/// The positions a subject carries as **high-confidence new-branch candidates**: novel (not in the
+/// tree at all) *and* in unique sequence.
+///
+/// Off-path-*known* variants are excluded on purpose — those support an existing finer branch, which
+/// is a placement question, not a new one. Structural-region calls are excluded because chrY
+/// palindromes and amplicons are paralog-prone: two men "sharing" a call there are far more likely to
+/// share a mapping artefact than an ancestor. Sharing noise would manufacture branches, which is the
+/// one failure mode this feature must not have.
+fn candidate_positions(bucket: &PrivateBucket) -> BTreeSet<i64> {
+    bucket
+        .variants
+        .iter()
+        .filter(|v| v.class == PrivateClass::Novel && v.region.is_none())
+        .map(|v| v.position)
+        .collect()
+}
+
+/// Insert **candidate branches**: for every block, group its members by the private variants they
+/// share, and hang a synthetic child block off each group of two or more.
+///
+/// Variants shared by exactly the same set of members are phylogenetically equivalent within this
+/// cohort — the same reasoning that makes a named node's SNPs a block — so each distinct member set
+/// becomes one candidate block carrying all of them.
+///
+/// Groups are accepted greedily, largest first, and only while they stay **laminar**: any two
+/// accepted sets must be disjoint or nested. A set that partly overlaps an accepted one is a
+/// conflict (a recurrent call, or real phylogenetic disagreement) and is counted, not forced into a
+/// shape it doesn't fit. Returns the blocks plus that conflict count.
+///
+/// Each member then lands in the smallest accepted set containing it — unambiguous, because a
+/// laminar family is a tree — and members in no set stay on their named block.
+pub(crate) fn insert_candidate_branches(
+    blocks: Vec<Block>,
+    private: &HashMap<SampleGuid, PrivateBucket>,
+) -> (Vec<Block>, usize) {
+    let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
+    let mut conflicts = 0;
+    let mut next_id: i64 = -1;
+
+    for mut block in blocks {
+        if block.members.len() < 2 {
+            out.push(block);
+            continue;
+        }
+        // position → the members of *this block* carrying it, keyed by index into `block.members`.
+        let mut carriers: HashMap<i64, BTreeSet<usize>> = HashMap::new();
+        for (i, m) in block.members.iter().enumerate() {
+            let Some(bucket) = private.get(&m.guid) else { continue };
+            for pos in candidate_positions(bucket) {
+                carriers.entry(pos).or_default().insert(i);
+            }
+        }
+        // Equivalent variants = same carrier set. Sets of one carrier are private to that member and
+        // define no branch.
+        let mut groups: BTreeMap<BTreeSet<usize>, Vec<i64>> = BTreeMap::new();
+        for (pos, set) in carriers {
+            if set.len() >= 2 {
+                groups.entry(set).or_default().push(pos);
+            }
+        }
+        if groups.is_empty() {
+            out.push(block);
+            continue;
+        }
+
+        // Largest first, so a broader branch is accepted before the finer ones nested inside it.
+        // Ties broken deterministically: more shared variants, then lowest position.
+        let mut ordered: Vec<(BTreeSet<usize>, Vec<i64>)> = groups.into_iter().collect();
+        for (_, positions) in &mut ordered {
+            positions.sort_unstable();
+        }
+        ordered.sort_by(|a, b| {
+            b.0.len()
+                .cmp(&a.0.len())
+                .then(b.1.len().cmp(&a.1.len()))
+                .then(a.1.first().cmp(&b.1.first()))
+        });
+
+        let mut accepted: Vec<(BTreeSet<usize>, Vec<i64>, i64)> = Vec::new(); // (members, positions, id)
+        for (set, positions) in ordered {
+            let laminar = accepted.iter().all(|(other, _, _)| {
+                let shared = set.intersection(other).count();
+                shared == 0 || shared == set.len() || shared == other.len()
+            });
+            if !laminar {
+                conflicts += 1;
+                continue;
+            }
+            accepted.push((set, positions, next_id));
+            next_id -= 1;
+        }
+
+        // Parent = the smallest accepted strict superset; otherwise the named block itself.
+        let parent_of = |i: usize, accepted: &[(BTreeSet<usize>, Vec<i64>, i64)]| -> Option<i64> {
+            accepted
+                .iter()
+                .enumerate()
+                .filter(|(j, (other, _, _))| {
+                    *j != i && other.len() > accepted[i].0.len() && accepted[i].0.is_subset(other)
+                })
+                .min_by_key(|(_, (other, _, _))| other.len())
+                .map(|(_, (_, _, id))| *id)
+        };
+
+        // Each member goes to the smallest accepted set containing it.
+        let owner: HashMap<usize, i64> = (0..block.members.len())
+            .filter_map(|m| {
+                accepted
+                    .iter()
+                    .filter(|(set, _, _)| set.contains(&m))
+                    .min_by_key(|(set, _, _)| set.len())
+                    .map(|(_, _, id)| (m, *id))
+            })
+            .collect();
+
+        // Look up each shared position's variant for its alleles; any carrier's bucket will do,
+        // since they all carry the same call at that position.
+        let variant_at = |pos: i64, members: &BTreeSet<usize>| -> Option<PrivateVariant> {
+            members.iter().find_map(|&i| {
+                private
+                    .get(&block.members[i].guid)?
+                    .variants
+                    .iter()
+                    .find(|v| v.position == pos)
+                    .cloned()
+            })
+        };
+
+        let mut kids: Vec<Block> = Vec::with_capacity(accepted.len());
+        for (i, (set, positions, id)) in accepted.iter().enumerate() {
+            let parent = parent_of(i, &accepted).unwrap_or(block.node_id);
+            let members: Vec<BlockMember> = set
+                .iter()
+                .filter(|m| owner.get(m) == Some(id))
+                .map(|&m| block.members[m].clone())
+                .collect();
+            kids.push(Block {
+                node_id: *id,
+                name: String::new(), // the view localizes a candidate's label
+                parent: Some(parent),
+                depth: 0, // set below, once the parent chain is known
+                loci: positions
+                    .iter()
+                    .filter_map(|&p| variant_at(p, set))
+                    .map(|v| private_locus(&v))
+                    .collect(),
+                subtree_members: set.len(),
+                members,
+                collapsed: Vec::new(),
+                candidate: true,
+            });
+        }
+        // Depth: walk up the synthetic parents to the named block.
+        let depth_of: HashMap<i64, usize> = {
+            let by_id: HashMap<i64, &Block> = kids.iter().map(|k| (k.node_id, k)).collect();
+            kids.iter()
+                .map(|k| {
+                    let mut d = block.depth + 1;
+                    let mut cur = k.parent;
+                    while let Some(p) = cur.filter(|p| *p < 0) {
+                        d += 1;
+                        cur = by_id.get(&p).and_then(|b| b.parent);
+                    }
+                    (k.node_id, d)
+                })
+                .collect()
+        };
+        for k in &mut kids {
+            k.depth = depth_of[&k.node_id];
+        }
+        // Pre-order: shallowest first, so a parent always precedes its children.
+        kids.sort_by_key(|k| (k.depth, -k.node_id));
+
+        // Members that joined a candidate branch leave the named block; the rest stay.
+        block.members = block
+            .members
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !owner.contains_key(i))
+            .map(|(_, m)| m.clone())
+            .collect();
+        out.push(block);
+        out.extend(kids);
+    }
+    (out, conflicts)
 }
 
 /// Fold runs of **member-less single-child** branches into the branch below them, when the run is at
@@ -317,7 +535,39 @@ mod tests {
             members: members.iter().map(|m| member(m)).collect(),
             subtree_members: 0,
             collapsed: Vec::new(),
+            candidate: false,
         }
+    }
+
+    fn pvar(position: i64, class: PrivateClass, region: Option<YRegionClass>) -> PrivateVariant {
+        PrivateVariant {
+            position,
+            reference: 'A',
+            alternate: 'G',
+            depth: 30,
+            alt_depth: 30,
+            allele_fraction: 1.0,
+            class,
+            region,
+        }
+    }
+
+    /// A bucket of high-confidence (novel, unique-sequence) private calls at `positions`.
+    fn bucket(positions: &[i64]) -> PrivateBucket {
+        PrivateBucket {
+            terminal: "R-X".into(),
+            variants: positions.iter().map(|&p| pvar(p, PrivateClass::Novel, None)).collect(),
+        }
+    }
+
+    /// Map each of `block`'s members, in order, to a private bucket.
+    fn privates(block: &Block, buckets: &[PrivateBucket]) -> HashMap<SampleGuid, PrivateBucket> {
+        block
+            .members
+            .iter()
+            .zip(buckets)
+            .map(|(m, b)| (m.guid, b.clone()))
+            .collect()
     }
 
     /// ```text
@@ -433,6 +683,187 @@ mod tests {
         assert_eq!(b.parent, None, "B becomes the new root");
         assert_eq!(b.depth, 0);
         assert_eq!(out.iter().find(|b| b.name == "C").unwrap().depth, 1);
+    }
+
+    // ---- candidate branches (phase 3) ----------------------------------------
+
+    #[test]
+    fn two_members_sharing_a_novel_variant_become_a_candidate_branch() {
+        let b = block(1, "R-X", 0, &["kane", "smith", "jones"]);
+        // kane + smith share 100 and 200; jones shares nothing.
+        let p = privates(&b, &[bucket(&[100, 200]), bucket(&[100, 200]), bucket(&[900])]);
+        let (out, conflicts) = insert_candidate_branches(vec![b], &p);
+        assert_eq!(conflicts, 0);
+        assert_eq!(out.len(), 2, "the named block plus one candidate");
+
+        let cand = out.iter().find(|x| x.candidate).unwrap();
+        assert!(cand.node_id < 0, "candidate ids are synthetic and negative");
+        assert!(cand.name.is_empty(), "the view localizes a candidate's label");
+        assert_eq!(cand.parent, Some(1));
+        assert_eq!(cand.depth, 1);
+        // Both shared positions are equivalent on this branch — one block, two loci.
+        let mut pos: Vec<i64> = cand.loci.iter().map(|l| l.position).collect();
+        pos.sort_unstable();
+        assert_eq!(pos, vec![100, 200]);
+
+        let mut names: Vec<&str> = cand.members.iter().map(|m| m.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["kane", "smith"]);
+        // The two who moved down leave the named block; the third stays.
+        let named = out.iter().find(|x| !x.candidate).unwrap();
+        assert_eq!(
+            named.members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["jones"]
+        );
+    }
+
+    #[test]
+    fn a_variant_only_one_member_carries_defines_no_branch() {
+        let b = block(1, "R-X", 0, &["kane", "smith"]);
+        let p = privates(&b, &[bucket(&[100]), bucket(&[200])]);
+        let (out, _) = insert_candidate_branches(vec![b], &p);
+        assert_eq!(out.len(), 1, "no shared variant → no candidate");
+        assert!(!out[0].candidate);
+        assert_eq!(out[0].members.len(), 2, "members stay on the named block");
+    }
+
+    #[test]
+    fn structural_region_and_off_path_calls_never_form_a_branch() {
+        let b = block(1, "R-X", 0, &["kane", "smith"]);
+        // Both men "share" a palindrome call and a known off-path SNP. Neither is evidence of a
+        // shared ancestor — the first is a paralog artefact, the second an existing branch.
+        let shared = PrivateBucket {
+            terminal: "R-X".into(),
+            variants: vec![
+                pvar(100, PrivateClass::Novel, Some(YRegionClass::Palindrome)),
+                pvar(200, PrivateClass::OffPathKnown("M269".into()), None),
+            ],
+        };
+        let p = privates(&b, &[shared.clone(), shared]);
+        let (out, _) = insert_candidate_branches(vec![b], &p);
+        assert_eq!(out.len(), 1, "noise must not manufacture a branch");
+    }
+
+    #[test]
+    fn nested_sharing_nests_the_candidate_branches() {
+        let b = block(1, "R-X", 0, &["a", "b", "c"]);
+        // All three share 100; a and b additionally share 200 — a finer branch inside the broader one.
+        let p = privates(&b, &[bucket(&[100, 200]), bucket(&[100, 200]), bucket(&[100])]);
+        let (out, conflicts) = insert_candidate_branches(vec![b], &p);
+        assert_eq!(conflicts, 0);
+
+        let cands: Vec<&Block> = out.iter().filter(|x| x.candidate).collect();
+        assert_eq!(cands.len(), 2);
+        let broad = cands.iter().find(|x| x.depth == 1).unwrap();
+        let fine = cands.iter().find(|x| x.depth == 2).unwrap();
+        assert_eq!(broad.parent, Some(1), "the broad branch hangs off the named block");
+        assert_eq!(fine.parent, Some(broad.node_id), "the finer branch nests inside it");
+        assert_eq!(broad.loci[0].position, 100);
+        assert_eq!(fine.loci[0].position, 200);
+        // c sits on the broad branch; a and b moved down to the finer one.
+        assert_eq!(
+            broad.members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            vec!["c"]
+        );
+        let mut fine_names: Vec<&str> = fine.members.iter().map(|m| m.name.as_str()).collect();
+        fine_names.sort_unstable();
+        assert_eq!(fine_names, vec!["a", "b"]);
+        // Pre-order: a parent is emitted before its child.
+        let pos = |id: i64| out.iter().position(|x| x.node_id == id).unwrap();
+        assert!(pos(broad.node_id) < pos(fine.node_id));
+    }
+
+    #[test]
+    fn overlapping_non_nested_sharing_is_counted_as_a_conflict_not_forced() {
+        let b = block(1, "R-X", 0, &["a", "b", "c"]);
+        // {a,b} share 100; {b,c} share 200. Neither set contains the other, so they cannot both be
+        // branches of one tree — the smaller-ranked one is dropped and counted.
+        let p = privates(&b, &[bucket(&[100]), bucket(&[100, 200]), bucket(&[200])]);
+        let (out, conflicts) = insert_candidate_branches(vec![b], &p);
+        assert_eq!(conflicts, 1, "the conflicting group is reported, not silently dropped");
+        assert_eq!(
+            out.iter().filter(|x| x.candidate).count(),
+            1,
+            "only the laminar one survives"
+        );
+    }
+
+    #[test]
+    fn a_member_with_no_computed_private_y_is_simply_not_grouped() {
+        let b = block(1, "R-X", 0, &["kane", "smith"]);
+        // Only `kane` has a bucket at all — `smith` was never analyzed, which is not the same as
+        // having no private variants.
+        let p: HashMap<SampleGuid, PrivateBucket> = [(b.members[0].guid, bucket(&[100]))].into_iter().collect();
+        let (out, _) = insert_candidate_branches(vec![b], &p);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].members.len(), 2);
+    }
+
+    // ---- export ---------------------------------------------------------------
+
+    /// A two-block tree with one candidate branch and one unplaced member — enough to exercise
+    /// every column the export has to get right.
+    fn exportable() -> ProjectBlockTree {
+        let mut named = block(1, "R-X", 0, &["kane"]);
+        named.subtree_members = 3;
+        let mut cand = block(-1, "", 1, &["a", "b"]);
+        cand.name = String::new();
+        cand.candidate = true;
+        cand.depth = 1;
+        cand.subtree_members = 2;
+        cand.loci = vec![locus("chrY:100", 100)];
+        ProjectBlockTree {
+            dna: DnaType::Y,
+            blocks: vec![named, cand],
+            unplaced: vec![
+                UnplacedMember {
+                    guid: SampleGuid(uuid::Uuid::new_v4()),
+                    name: "nolabel".into(),
+                    terminal: None,
+                },
+                UnplacedMember {
+                    guid: SampleGuid(uuid::Uuid::new_v4()),
+                    name: "skewed".into(),
+                    terminal: Some("F-M89".into()),
+                },
+            ],
+            provider: "decodingus".into(),
+            build_key: "hs1".into(),
+            candidate_conflicts: 2,
+        }
+    }
+
+    #[test]
+    fn tsv_export_marks_candidates_and_keeps_the_unplaced() {
+        let tsv = crate::export::block_tree_tsv(&exportable());
+        assert!(tsv.contains("decodingus"), "header names the tree");
+        assert!(tsv.contains("hs1"), "header names the coordinate space");
+        assert!(
+            tsv.contains("2 shared-variant grouping(s) dropped"),
+            "conflicts reported"
+        );
+        // A candidate must never read as a published haplogroup name.
+        assert!(tsv.contains("\tcandidate\tcandidate\t"));
+        assert!(tsv.contains("\tbranch\tR-X\t"));
+        // Both unplaced members appear, each with why.
+        assert!(tsv.contains("nolabel\t\tno placement"));
+        assert!(tsv.contains("skewed\tF-M89\tterminal absent from this tree"));
+    }
+
+    #[test]
+    fn html_export_is_self_contained_and_escapes_names() {
+        let mut tree = exportable();
+        tree.blocks[0].name = "R-<script>".into();
+        let html = crate::export::block_tree_html(&tree, "Smith & Sons");
+        assert!(html.starts_with("<!doctype html>"));
+        assert!(
+            !html.contains("http://") && !html.contains("https://"),
+            "no external assets"
+        );
+        assert!(html.contains("Smith &amp; Sons"), "project name is escaped");
+        assert!(!html.contains("<script>"), "block names are escaped");
+        assert!(html.contains("candidate branch"));
+        assert!(html.contains("Not on this tree (2)"));
     }
 
     #[test]

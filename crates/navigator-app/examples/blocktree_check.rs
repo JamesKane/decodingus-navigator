@@ -36,6 +36,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tree.blocks.iter().map(|b| b.collapsed.len()).sum::<usize>(),
     );
 
+    // Phase 3: how many candidate branches the shared-private pass found, and how many members have
+    // private-Y computed at all (absent ≠ zero).
+    let candidates: Vec<_> = tree.blocks.iter().filter(|b| b.candidate).collect();
+    let with_private = tree
+        .blocks
+        .iter()
+        .flat_map(|b| &b.members)
+        .filter(|m| m.private_novel.is_some())
+        .count();
+    println!(
+        "candidates: {} branch(es) from shared private variants · {} conflict(s) dropped · {with_private}/{placed} members have private-Y computed",
+        candidates.len(),
+        tree.candidate_conflicts,
+    );
+    for c in candidates.iter().take(10) {
+        let names: Vec<&str> = c.members.iter().map(|m| m.name.as_str()).collect();
+        let pos: Vec<String> = c.loci.iter().take(6).map(|l| l.position.to_string()).collect();
+        println!(
+            "  candidate under depth {} · {} shared variant(s) at {} · members {}",
+            c.depth,
+            c.loci.len(),
+            pos.join(","),
+            names.join(", "),
+        );
+    }
+
     // Split the unplaced: "no placement at all" is expected (STR-only kits), but "has a terminal
     // this tree doesn't carry" is provider/build skew worth naming.
     let (skew, unplaced_none): (Vec<_>, Vec<_>) = tree.unplaced.iter().partition(|u| u.terminal.is_some());

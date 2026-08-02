@@ -172,6 +172,36 @@ pub async fn list_for_alignments(
     rows.into_iter().map(Row::into_domain).collect()
 }
 
+/// [`list_for_alignments`] narrowed to a single `(kind, version)`.
+///
+/// Use this whenever only one artifact kind is wanted. The unfiltered query selects `payload` for
+/// *every* artifact of every listed alignment, and some kinds are enormous — a `tree-genotype` row
+/// runs to megabytes — so fetching a cohort's worth to pick one small kind out reads gigabytes of
+/// JSON to no purpose.
+pub async fn list_for_alignments_of_kind(
+    pool: &SqlitePool,
+    alignment_ids: &[i64],
+    kind: &str,
+    version: &str,
+) -> Result<Vec<AnalysisArtifact>, StoreError> {
+    if alignment_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // As in `list_for_alignments`: placeholders are built from the id count, never interpolated
+    // text, and every value is bound.
+    let placeholders = vec!["?"; alignment_ids.len()].join(",");
+    let sql = format!(
+        "SELECT {COLS} FROM analysis_artifact \
+         WHERE kind = ? AND algorithm_version = ? AND alignment_id IN ({placeholders}) ORDER BY id"
+    );
+    let mut q = sqlx::query_as(&sql).bind(kind).bind(version);
+    for id in alignment_ids {
+        q = q.bind(id);
+    }
+    let rows: Vec<Row> = q.fetch_all(pool).await?;
+    rows.into_iter().map(Row::into_domain).collect()
+}
+
 /// Per-subject analysis coverage census, in one pass over the whole workspace: for each biosample
 /// that owns ≥1 alignment, `(total alignments, alignments with a present `(kind, version)` artifact)`.
 /// A NULL `completeness` counts as complete (legacy rows predate the column; the app treats absent

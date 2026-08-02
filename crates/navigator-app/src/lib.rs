@@ -108,6 +108,11 @@ pub struct ProjectBlockTree {
     /// build-independent; only the positions are, so the view is labelled with the one build key it
     /// was parsed under (the cohort's modal build).
     pub build_key: String,
+    /// Shared-private groupings that were **dropped** because they conflicted: their member sets
+    /// overlapped an accepted group without nesting inside it, so keeping both would not be a tree.
+    /// Surfaced rather than silently discarded — a non-zero count means recurrent calls or genuine
+    /// phylogenetic conflict in the cohort, which is worth knowing about.
+    pub candidate_conflicts: usize,
 }
 
 /// One block of a [`ProjectBlockTree`]: a branch plus the run of defining SNPs that are
@@ -131,6 +136,12 @@ pub struct Block {
     /// Names of the member-less branches this block absorbed when collapsed (root-most first).
     /// Empty for an ordinary block. Kept so the UI can still name what it folded away.
     pub collapsed: Vec<String>,
+    /// True when this is a **candidate branch** — not a node in the published tree, but a grouping
+    /// inferred from private (unnamed) variants that two or more members share. `node_id` is
+    /// synthetic and negative for these; `name` is empty, because the label is the view's to
+    /// localize. This is the thing a published tree cannot tell you and we can: a branch that is
+    /// real in the data but has not been named yet.
+    pub candidate: bool,
 }
 
 /// A project member placed at a [`Block`].

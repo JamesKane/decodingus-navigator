@@ -358,6 +358,80 @@ impl App {
         }))
     }
 
+    /// [`donor_private_y`](Self::donor_private_y) for **many** subjects at once, in two queries
+    /// rather than two per subject: the alignments, then the artifact rows, then per-subject merging
+    /// in memory. Subjects with no cached private-Y are simply absent from the map — that is "never
+    /// computed", not "none found".
+    ///
+    /// Deliberately **not** built on `AlignmentArtifacts`: that stats every alignment file up front
+    /// to check freshness, and private-Y is computed for only a small fraction of a typical cohort.
+    /// Statting the rest buys nothing and costs everything — on a collection living on an external
+    /// volume those stats dominated the whole block-tree build. Here only the alignments that
+    /// actually carry a `private_y` row are statted.
+    pub(crate) async fn private_y_for_biosamples(
+        &self,
+        guids: &[SampleGuid],
+    ) -> Result<HashMap<SampleGuid, PrivateBucket>, AppError> {
+        let mut by_subject: HashMap<SampleGuid, Vec<Alignment>> = HashMap::new();
+        for (guid, aln) in alignment::list_for_biosamples(self.store.pool(), guids).await? {
+            by_subject.entry(guid).or_default().push(aln);
+        }
+        let ids: Vec<i64> = by_subject.values().flatten().map(|a| a.id).collect();
+        let stored: HashMap<i64, AnalysisArtifact> =
+            artifact::list_for_alignments_of_kind(self.store.pool(), &ids, "private_y", "3")
+                .await?
+                .into_iter()
+                .map(|a| (a.alignment_id, a))
+                .collect();
+        if stored.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut out = HashMap::new();
+        for (guid, alignments) in &by_subject {
+            // Same union-by-position, keep-the-deepest merge as the single-subject path.
+            let mut by_pos: HashMap<i64, PrivateVariant> = HashMap::new();
+            let mut terminal: Option<String> = None;
+            let mut any = false;
+            for a in alignments {
+                let Some(row) = stored.get(&a.id) else { continue };
+                // Only now is a stat worth paying for.
+                let current = a.bam_path.as_deref().and_then(|p| file_signature(Path::new(p)));
+                if !artifact_is_fresh(row.source_sig.as_deref(), current.as_deref()) {
+                    continue;
+                }
+                let Ok(bucket) = serde_json::from_str::<PrivateBucket>(&row.payload) else {
+                    continue;
+                };
+                any = true;
+                terminal.get_or_insert(bucket.terminal);
+                for v in bucket.variants {
+                    by_pos
+                        .entry(v.position)
+                        .and_modify(|cur| {
+                            if v.depth > cur.depth {
+                                *cur = v.clone();
+                            }
+                        })
+                        .or_insert(v);
+                }
+            }
+            if !any {
+                continue;
+            }
+            let mut variants: Vec<PrivateVariant> = by_pos.into_values().collect();
+            variants.sort_by_key(|v| v.position);
+            out.insert(
+                *guid,
+                PrivateBucket {
+                    terminal: terminal.unwrap_or_default(),
+                    variants,
+                },
+            );
+        }
+        Ok(out)
+    }
+
     pub async fn list_alignments(&self, sequence_run_id: i64) -> Result<Vec<Alignment>, AppError> {
         Ok(alignment::list_for_run(self.store.pool(), sequence_run_id).await?)
     }

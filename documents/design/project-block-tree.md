@@ -1,9 +1,10 @@
 # Project Y block tree — design
 
-**Status:** **Phases 1–2 implemented** (2026-08-02, branch `feat/project-block-tree`) — the
-aggregate + builder + collapse (phase 1) and the `ProjectTab::Tree` canvas view (phase 2), 20 unit
-tests, validated live on two 1,900-member cohorts. Phase 3 (private-variant blocks + export) open.
-Drafted 2026-08-02.
+**Status:** **All three phases implemented** (2026-08-02, branch `feat/project-block-tree`) — the
+aggregate + collapse (1), the `ProjectTab::Tree` canvas view (2), and private-variant blocks +
+shared-private candidate branches + TSV/HTML export (3). 30 unit tests; validated live on two
+1,900-member cohorts. **Candidate detection is inert until private-Y is computed for more than one
+subject** — see §9 phase 3 and §11 Q4. Drafted 2026-08-02.
 **Closes:** `BACKLOG.md` §3.3 remaining scope ("a genuinely zoomable / searchable *whole-tree* view
 with the subject's placement highlighted") — reframed as **cohort-scoped**, which is the form that
 actually earns its keep.
@@ -210,9 +211,38 @@ following the one-view-per-module split, and keeping `central.rs` from growing a
   `F-M89` and `R-A1133` really are absent from the (fresh, 57 MB) DecodingUs tree while `R-A9426` is
   present; those terminals came from FTDNA-provenance calls. This is exactly what `unplaced` exists
   to surface.
-- **Phase 3** — private-variant blocks, including **shared-private detection** (two or more members
-  carrying the same unnamed variant = a candidate new branch), plus TSV/HTML export alongside the
-  existing branch/descent exports in `export.rs`.
+- **Phase 3** — ✅ **built.** Per-member private counts (`BlockMember.private_novel`/`private_total`,
+  from a new bulk `App::private_y_for_biosamples`), **shared-private detection** inserting candidate
+  branches, and `export::block_tree_tsv` / `block_tree_html`. 10 further tests.
+
+  **Candidate branches.** Within a block, variants carried by exactly the same set of members are
+  equivalent — the same reasoning that makes a named node's SNPs a block — so each distinct carrier
+  set becomes one candidate block, `candidate: true` with a synthetic negative `node_id` and an empty
+  `name` (the view localizes the label; the exports write `candidate`). They are amber, never green:
+  an inference, not a published branch.
+
+  Three rules keep it from manufacturing branches:
+  - **Only novel, unique-sequence calls count.** Off-path-*known* variants support an existing finer
+    branch (a placement question). Structural-region calls sit in chrY palindromes and amplicons,
+    where two men "sharing" a call are far likelier to share a mapping artefact than an ancestor.
+  - **Groups must stay laminar** — any two accepted carrier sets are disjoint or nested, so the
+    result is a tree. Nested sets nest as branches; a partial overlap is real conflict (recurrence or
+    genuine disagreement) and is **counted** in `candidate_conflicts`, not forced into a shape it
+    doesn't fit.
+  - **A member with no computed private-Y is not grouped**, and shows `None`, not `0`.
+
+  > **Inert on this workspace, and that is the finding.** Exactly **one** subject in the whole
+  > database has private-Y computed, so no block can contain two carriers and zero candidates appear.
+  > The logic is unit-tested against all of the above cases, but it cannot demonstrate on live data
+  > until private-Y exists for more members. This settles §11 Q4: the batch action is **required**,
+  > not optional — see the open question below for where it should live.
+
+  **Performance regression found and fixed while validating.** Adding the private-Y load took the
+  R1b-CTS4466Plus build from 1.5 s to 25 s. The cause was not the artifact freshness stats (the first
+  guess, and wrong) but `artifact::list_for_alignments` selecting `payload` for *every* artifact kind
+  — and `tree-genotype` alone is **2.9 GB across 680 rows**. It was reading gigabytes of JSON to find
+  one `private_y` row. Fixed with a new `artifact::list_for_alignments_of_kind`; back to **1.7 s**.
+  Note `project_report` still uses the unfiltered query and will have the same cost on such a project.
 
 ## 10. Out of scope
 
@@ -231,9 +261,11 @@ following the one-view-per-module split, and keeping `central.rs` from growing a
 3. **Terminals query cost** — `haplogroup_terminals()` is workspace-wide. On a 10k-subject workspace
    that is one large query per view open; cache the result on the aggregate rather than re-querying
    on redraw.
-4. **Private-Y coverage** — `donor_private_y` reads *cached* results, so members who have never had
-   private-Y computed show `None`, not `0`. Should Phase 3 offer a batch "compute private-Y for this
-   project" action, or leave it to the per-subject path?
+4. **Private-Y coverage** — **answered by phase-3 validation: a batch action is required.** Exactly
+   one subject in the workspace has private-Y computed, so shared-private detection can never fire.
+   The open part is *where it lives*: a bespoke "compute private-Y for this project" button, or
+   folded into the existing project-wide analyze / deep-analyze streaming flow — which is the same
+   choice `BACKLOG.md` §1.2 already faces for panel genotyping, and probably wants the same answer.
 5. **Suffixed terminal names** (found in phase-2 validation) — some unresolved terminals are a real
    node name plus a suffix, e.g. `R-A9426:n0` where `R-A9426` *is* in the tree. Stripping the suffix
    and matching the parent node would recover those members, but only if the suffix means what it
