@@ -210,186 +210,24 @@ impl NavigatorApp {
         self.render_ibd_result(ui);
     }
 
-    /// Federated IBD: the AppView's pseudonymous "people who may share DNA with you" list,
-    /// mined from the records we've published. Distinct from the local 1:1 compare above —
-    /// these are network candidates we haven't exchanged any genotypes with. Requesting an
-    /// introduction opens a PENDING request; the consent round-trip and encrypted segment exchange
-    /// then run over the edge channel (see the exchange section and `App::exchange_*`).
-    pub(crate) fn network_suggestions_section(&mut self, ui: &mut egui::Ui) {
-        if self.account.is_none() {
-            ui.label(self.tr("network.signInRequired"));
-            return;
-        }
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !self.loading_ibd_suggestions,
-                    egui::Button::new(self.tr("network.find")),
-                )
-                .clicked()
-            {
-                self.loading_ibd_suggestions = true;
-                self.status = self.tr("network.finding").to_string();
-                let _ = self.tx.send(Command::LoadIbdSuggestions);
-            }
-            if self.loading_ibd_suggestions {
-                ui.spinner();
-            }
-        });
-        ui.label(self.tr("network.note"));
-
-        if self.ibd_suggestions.is_empty() {
-            if !self.loading_ibd_suggestions {
-                ui.add_space(4.0);
-                ui.weak(self.tr("network.empty"));
-            }
-            return;
-        }
-
-        ui.add_space(6.0);
-        // Collect the rows first so the table closure doesn't borrow `self` immutably while we
-        // also need `self.tx` / `self.ibd_intros` (and to send commands without a borrow clash).
-        let rows: Vec<(String, String, f64, String, Option<String>)> = self
-            .ibd_suggestions
-            .iter()
-            .map(|s| {
-                let signals = s.signals.join(", ");
-                (
-                    s.suggested_sample_guid.clone(),
-                    s.suggestion_type.clone(),
-                    s.score,
-                    signals,
-                    self.ibd_intros.get(&s.suggested_sample_guid).cloned(),
-                )
-            })
-            .collect();
-
-        let mut introduce: Option<String> = None;
-        egui::Grid::new("ibd_suggestions")
-            .striped(true)
-            .num_columns(5)
-            .show(ui, |ui| {
-                ui.strong(self.tr("network.col.candidate"));
-                ui.strong(self.tr("network.col.type"));
-                ui.strong(self.tr("network.col.score"));
-                ui.strong(self.tr("network.col.signals"));
-                ui.strong("");
-                ui.end_row();
-                for (guid, ty, score, signals, intro) in &rows {
-                    // Pseudonymous guid, shown truncated (it's an opaque AppView handle, not PII).
-                    let short: String = guid.chars().take(12).collect();
-                    ui.label(short).on_hover_text(guid);
-                    ui.label(ty);
-                    ui.label(format!("{score:.2}"));
-                    ui.label(signals);
-                    if let Some(status) = intro {
-                        ui.label(status);
-                    } else if ui.button(self.tr("network.introduce")).clicked() {
-                        introduce = Some(guid.clone());
-                    }
-                    ui.end_row();
-                }
-            });
-        if let Some(guid) = introduce {
-            self.status = self.tr("network.introducing").to_string();
-            let _ = self.tx.send(Command::IbdIntroduce {
-                suggested_sample_guid: guid,
-            });
-        }
-    }
-
-    /// The encrypted edge-to-edge exchange (gap §4): inbound requests awaiting consent, consent-ready
-    /// sessions to run an IBD exchange over, and this subject's saved results. Requires an active
-    /// account (real PDS or did:key). Flows into the page scroll (no nested ScrollArea).
+    /// This subject's completed federated exchanges. Discovery and consent are **not** here — they
+    /// are account-scoped and live in the top-level Matching tab; what this card answers is "what
+    /// did the network find for *this person*". Flows into the page scroll (no nested ScrollArea).
     pub(crate) fn exchange_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if self.account.is_none() {
             ui.label(self.tr("network.signInRequired"));
             return;
         }
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(!self.exchange_busy, egui::Button::new(self.tr("exchange.refresh")))
-                .clicked()
-            {
-                self.exchange_busy = true;
-                let _ = self.tx.send(Command::ExchangeInbox);
-            }
-            if self.exchange_busy {
-                ui.spinner();
-            }
             ui.label(egui::RichText::new(self.tr("hint.encryptedExchange")).weak().small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button(self.tr("matching.openTab")).clicked() {
+                    self.nav = Nav::Matching;
+                    self.matching_subject = Some(guid);
+                    let _ = self.tx.send(Command::RefreshMatching);
+                }
+            });
         });
-
-        // Inbound requests awaiting our consent (symmetric-blind: no initiator DID until consent).
-        let incoming: Vec<(String, String, String)> = self
-            .exchange_incoming
-            .iter()
-            .map(|r| (r.request_uri.clone(), r.purpose.clone(), r.created_at.clone()))
-            .collect();
-        if !incoming.is_empty() {
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(self.tr("exchange.incoming")).strong());
-            let mut consent: Option<(String, bool)> = None;
-            egui::Grid::new(("exchange_incoming", guid))
-                .striped(true)
-                .num_columns(4)
-                .spacing([12.0, 2.0])
-                .show(ui, |ui| {
-                    for (req, purpose, created) in &incoming {
-                        let short: String = req.chars().take(16).collect();
-                        ui.label(short).on_hover_text(req);
-                        ui.label(purpose);
-                        ui.label(egui::RichText::new(created).weak().small());
-                        ui.horizontal(|ui| {
-                            if ui.button(self.tr("exchange.accept")).clicked() {
-                                consent = Some((req.clone(), true));
-                            }
-                            if ui.button(self.tr("exchange.decline")).clicked() {
-                                consent = Some((req.clone(), false));
-                            }
-                        });
-                        ui.end_row();
-                    }
-                });
-            if let Some((request_uri, given)) = consent {
-                self.exchange_busy = true;
-                let _ = self.tx.send(Command::ExchangeConsent { request_uri, given });
-            }
-        }
-
-        // Consent-ready sessions → run the IBD exchange (handshake + dosage exchange + attestation).
-        let ready: Vec<navigator_app::ExchangeSessionInfo> = self.exchange_ready.clone();
-        if !ready.is_empty() {
-            ui.add_space(6.0);
-            ui.label(egui::RichText::new(self.tr("exchange.ready")).strong());
-            let mut run: Option<navigator_app::ExchangeSessionInfo> = None;
-            egui::Grid::new(("exchange_ready", guid))
-                .striped(true)
-                .num_columns(3)
-                .spacing([12.0, 2.0])
-                .show(ui, |ui| {
-                    for info in &ready {
-                        let short: String = info.partner_did.chars().take(20).collect();
-                        ui.label(short).on_hover_text(&info.partner_did);
-                        ui.label(&info.purpose);
-                        if ui
-                            .add_enabled(!self.exchange_busy, egui::Button::new(self.tr("exchange.run")))
-                            .clicked()
-                        {
-                            run = Some(info.clone());
-                        }
-                        ui.end_row();
-                    }
-                });
-            if let Some(info) = run {
-                self.exchange_busy = true;
-                self.status = self.tr("exchange.running").to_string();
-                let _ = self.tx.send(Command::RunIbdExchange {
-                    info,
-                    biosample_guid: guid,
-                });
-            }
-        }
 
         // This subject's saved results.
         ui.add_space(6.0);

@@ -467,6 +467,15 @@ impl App {
             .and_then(|x| x.as_str())
             .unwrap_or("PENDING")
             .to_string();
-        Ok(IbdIntroResult { request_uri, status })
+        let purpose = v
+            .get("purpose")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
+        Ok(IbdIntroResult {
+            request_uri,
+            status,
+            purpose,
+        })
     }
 }

@@ -26,6 +26,7 @@ pub mod external_panel_dosage;
 pub mod ftdna_member;
 pub mod haplogroup_call;
 pub mod ibd_exchange;
+pub mod ibd_request;
 pub mod mdka;
 pub mod mtdna;
 pub mod project;

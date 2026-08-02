@@ -2,6 +2,14 @@
 
 Last updated: 2026-03-07
 
+> **Status header added 2026-08-02: this is a SCALA-ERA document and its library section is
+> obsolete.** The dual-computation mutual-attestation architecture below was built and still holds,
+> but it was built in Rust: crypto is `ed25519-dalek` / `x25519-dalek` / `aes-gcm` (not JDK 17),
+> transport is a signed HTTP relay via `reqwest` (not STTP WebSocket), and the detector reads
+> noodles/IBD-panel dosages (not HTSJDK VCFs). The consent/discovery surface shipped on
+> `feat/ibd-matching-ux` — see `documents/BACKLOG.md` §1.6 and agent memory
+> `ibd-matching-ledger` for the current shape. Read this doc for the *model*, not the *stack*.
+
 ## Overview
 
 Implements backlog item 2.1 (IBD Matching System) in Navigator, coordinating with the

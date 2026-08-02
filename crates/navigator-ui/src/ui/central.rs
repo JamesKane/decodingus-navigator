@@ -690,8 +690,8 @@ impl NavigatorApp {
                     // Subject-level IBD over the pooled consensus is the primary path.
                     card(ui, self.tr("card.consensusIbd"), |ui| self.consensus_ibd_section(ui, guid));
                     ui.add_space(10.0);
-                    card(ui, self.tr("card.networkSuggestions"), |ui| self.network_suggestions_section(ui));
-                    ui.add_space(10.0);
+                    // Discovery + consent live in the top-level Matching tab (they are
+                    // account-scoped); what belongs to *this* subject is the results it produced.
                     card(ui, self.tr("card.encryptedExchange"), |ui| self.exchange_section(ui, guid));
                     // Per-source compare + within-subject identity (the QC gate) — advanced.
                     if self.selected_alignment.is_some() {

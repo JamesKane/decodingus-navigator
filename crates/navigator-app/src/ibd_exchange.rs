@@ -513,8 +513,14 @@ impl App {
             )
             .await?;
         self.record_ibd_exchange(guid, session, request_uri, &result).await?;
+        // Advance the ledger before either publish: the comparison is done and persisted, so the
+        // conversation is complete whether or not the network steps below succeed.
+        self.mark_matching_exchanged(guid, session, request_uri).await?;
         // Best-effort: publish our attestation to the PDS (skipped for did:key; never fails the exchange).
         let _ = self.publish_ibd_attestation(&result.my_attestation).await;
+        // Best-effort: report the outcome to the AppView so the match feeds discovery. A no-op
+        // unless both sides agreed and we know both AppView sample handles.
+        let _ = self.attest_exchange_if_possible(request_uri).await;
         Ok(result)
     }
 
