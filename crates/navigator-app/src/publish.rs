@@ -30,7 +30,9 @@ impl App {
         );
         if is_wgs
             && navigator_analysis::sex::is_y_scoped(
-                cov.contig_coverage_stats.iter().map(|s| (s.contig.as_str(), s.num_reads)),
+                cov.contig_coverage_stats
+                    .iter()
+                    .map(|s| (s.contig.as_str(), s.num_reads)),
             )
         {
             return Err(AppError::Conflict(format!(
@@ -279,7 +281,9 @@ impl App {
         biosample_guid: SampleGuid,
     ) -> Result<RecordRef, AppError> {
         let value = self.biosample_record(client.did(), biosample_guid).await?;
-        Ok(client.create_record(NS_BIOSAMPLE, value, Some(&biosample_rkey(biosample_guid))).await?)
+        Ok(client
+            .create_record(NS_BIOSAMPLE, value, Some(&biosample_rkey(biosample_guid)))
+            .await?)
     }
 
     /// Publish a sequence-run characterization using an explicit `client`.
@@ -289,7 +293,9 @@ impl App {
         run: &SequenceRun,
     ) -> Result<RecordRef, AppError> {
         let value = self.sequence_run_record(client.did(), run).await?;
-        Ok(client.create_record(NS_SEQUENCERUN, value, Some(&seqrun_rkey(run.id))).await?)
+        Ok(client
+            .create_record(NS_SEQUENCERUN, value, Some(&seqrun_rkey(run.id)))
+            .await?)
     }
 
     /// Publish an alignment's cached de-novo calls for `contig` using an explicit `client`
@@ -433,7 +439,9 @@ mod tests {
             ],
             ..Default::default()
         };
-        app.save_analysis(aln, "coverage", COVERAGE_VERSION, &wgs).await.unwrap();
+        app.save_analysis(aln, "coverage", COVERAGE_VERSION, &wgs)
+            .await
+            .unwrap();
         app.coverage_record("did:plc:test", aln)
             .await
             .expect("normal WGS coverage should publish");

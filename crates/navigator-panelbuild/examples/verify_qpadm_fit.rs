@@ -24,7 +24,15 @@ fn main() -> anyhow::Result<()> {
     let (traw, ind, rschm, rsba, james) = (&a[1], &a[2], &a[3], &a[4], &a[5]);
 
     // Population order: sources first, then outgroups.
-    let pops = ["WHG", "EEF", "Steppe", "AnatoliaOG", "Afanasievo", "IronGates", "African"];
+    let pops = [
+        "WHG",
+        "EEF",
+        "Steppe",
+        "AnatoliaOG",
+        "Afanasievo",
+        "IronGates",
+        "African",
+    ];
     let pop_idx: HashMap<&str, usize> = pops.iter().enumerate().map(|(i, &p)| (p, i)).collect();
 
     // .ind → label per traw sample column (skip the appended Target row).
@@ -68,7 +76,9 @@ fn main() -> anyhow::Result<()> {
         }
         let f: Vec<&str> = line.split('\t').collect();
         let rsid = f[1];
-        let Some(&(ref contig, pos)) = chm.get(rsid) else { continue };
+        let Some(&(ref contig, pos)) = chm.get(rsid) else {
+            continue;
+        };
         let Some(&ba) = bedalt.get(rsid) else { continue };
         let counted = f[4].as_bytes()[0];
         let alt = f[5].as_bytes()[0];
@@ -142,14 +152,25 @@ fn main() -> anyhow::Result<()> {
     let fit = qpadm_fit(&genos, &panel, &sources, &outgroups, F4_BLOCK_BP)
         .ok_or_else(|| anyhow::anyhow!("qpadm_fit returned None"))?;
     println!("\n== our qpadm_fit — James (Patterson config) ==");
-    println!("sites {}  blocks {}  dof {}  chi2 {:.2}  p {:.4}", fit.n_sites, fit.n_blocks, fit.dof, fit.chi2, fit.p_value);
+    println!(
+        "sites {}  blocks {}  dof {}  chi2 {:.2}  p {:.4}",
+        fit.n_sites, fit.n_blocks, fit.dof, fit.chi2, fit.p_value
+    );
     for (c, i) in ["WHG", "EEF", "Steppe"].iter().zip(0..) {
-        println!("  {c:<8} {:>6.1} %  (SE {:.1})", fit.weights[i] * 100.0, fit.std_errors[i] * 100.0);
+        println!(
+            "  {c:<8} {:>6.1} %  (SE {:.1})",
+            fit.weights[i] * 100.0,
+            fit.std_errors[i] * 100.0
+        );
     }
     println!(
         "model {} at p=0.05; weights {}",
         if fit.p_value >= 0.05 { "ACCEPTED" } else { "REJECTED" },
-        if fit.weights_feasible(0.02) { "feasible" } else { "INFEASIBLE" }
+        if fit.weights_feasible(0.02) {
+            "feasible"
+        } else {
+            "INFEASIBLE"
+        }
     );
     Ok(())
 }

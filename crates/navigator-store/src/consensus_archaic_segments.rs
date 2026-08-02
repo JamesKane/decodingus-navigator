@@ -44,10 +44,11 @@ pub async fn upsert(
 
 /// The cached segments marker count result for a biosample, if one exists (caller checks the signature for staleness).
 pub async fn get(pool: &SqlitePool, guid: SampleGuid) -> Result<Option<StoredArchaicSegments>, StoreError> {
-    let row: Option<StoredArchaicSegments> = sqlx::query_as("SELECT * FROM consensus_archaic_segments WHERE biosample_guid = ?")
-        .bind(guid.0.to_string())
-        .fetch_optional(pool)
-        .await?;
+    let row: Option<StoredArchaicSegments> =
+        sqlx::query_as("SELECT * FROM consensus_archaic_segments WHERE biosample_guid = ?")
+            .bind(guid.0.to_string())
+            .fetch_optional(pool)
+            .await?;
     Ok(row)
 }
 

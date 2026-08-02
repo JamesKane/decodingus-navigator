@@ -51,7 +51,12 @@ impl NavigatorApp {
             };
             self.branch_reports.retain(|(g, d, _)| !(*g == guid && *d == dna));
             self.branch_loading.push((guid, dna));
-            let _ = self.tx.send(Command::LoadBranchReport { guid, dna, node, depth: None });
+            let _ = self.tx.send(Command::LoadBranchReport {
+                guid,
+                dna,
+                node,
+                depth: None,
+            });
         }
 
         if self.branch_loading.iter().any(|(g, d)| *g == guid && *d == dna) {
@@ -72,7 +77,11 @@ impl NavigatorApp {
                 .iter()
                 .any(|(g, d, r)| *g == guid && *d == dna && r.is_none());
             ui.add_space(4.0);
-            let key = if no_alignment { "branch.noAlignment" } else { "branch.hint" };
+            let key = if no_alignment {
+                "branch.noAlignment"
+            } else {
+                "branch.hint"
+            };
             ui.label(egui::RichText::new(self.tr(key)).weak());
             return;
         }
@@ -173,7 +182,11 @@ impl NavigatorApp {
                         cell(ui, W_NODE, egui::RichText::new(&r.node));
                         cell(ui, W_MARKER, egui::RichText::new(&r.marker));
                         cell(ui, W_POS, egui::RichText::new(r.position.to_string()));
-                        cell(ui, W_ALLELES, egui::RichText::new(format!("{}>{}", r.ancestral, r.derived)));
+                        cell(
+                            ui,
+                            W_ALLELES,
+                            egui::RichText::new(format!("{}>{}", r.ancestral, r.derived)),
+                        );
                         cell(
                             ui,
                             W_OBS,

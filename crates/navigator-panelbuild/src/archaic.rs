@@ -257,9 +257,7 @@ pub fn build_archaic_candidates(args: ArchaicCandidatesArgs) -> Result<()> {
         // reference-confident record states only the REF base and cannot define the pair. At least
         // one genome must vary, otherwise the site is invariant across all four and carries no
         // information regardless of polarity.
-        let Some((reference_allele, alternate_allele)) = present
-            .iter()
-            .find_map(|(r, a, _)| a.map(|alt| (*r, alt)))
+        let Some((reference_allele, alternate_allele)) = present.iter().find_map(|(r, a, _)| a.map(|alt| (*r, alt)))
         else {
             continue;
         };
@@ -520,7 +518,11 @@ fn derived_freq(derived: char, og_ref: char, og_alt: char, af_alt: f32) -> Optio
 ///
 /// Same discipline as the CHM13 pass: `CrossMap bed` is not allele-aware, so each site is oriented
 /// against the hg38 reference base (swap ref/alt where reversed, drop where neither matches).
-fn build_hg38_loci(bed: &Path, reference: &Path, candidates: &HashMap<usize, Candidate>) -> Result<HashMap<usize, Locus>> {
+fn build_hg38_loci(
+    bed: &Path,
+    reference: &Path,
+    candidates: &HashMap<usize, Candidate>,
+) -> Result<HashMap<usize, Locus>> {
     let lifted = load_lifted(bed)?;
     let mut rows: Vec<(usize, String, i64)> = lifted.into_iter().map(|(i, (c, p))| (i, c, p)).collect();
     rows.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));

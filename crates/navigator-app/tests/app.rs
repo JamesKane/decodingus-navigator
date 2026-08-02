@@ -952,7 +952,14 @@ async fn save_analysis_no_downgrade_keeps_the_fuller_result() {
 
     // No artifact yet → the sidecar write goes through.
     let wrote = app
-        .save_analysis_no_downgrade(aln, "coverage", "v1", &serde_json::json!({"m": 1}), "pipeline-sidecar", "partial")
+        .save_analysis_no_downgrade(
+            aln,
+            "coverage",
+            "v1",
+            &serde_json::json!({"m": 1}),
+            "pipeline-sidecar",
+            "partial",
+        )
         .await
         .unwrap();
     assert!(wrote, "first sidecar write with nothing present");
@@ -964,7 +971,14 @@ async fn save_analysis_no_downgrade_keeps_the_fuller_result() {
 
     // Reimport: a partial sidecar must NOT clobber the full deep walk.
     let wrote = app
-        .save_analysis_no_downgrade(aln, "coverage", "v1", &serde_json::json!({"m": 3}), "pipeline-sidecar", "partial")
+        .save_analysis_no_downgrade(
+            aln,
+            "coverage",
+            "v1",
+            &serde_json::json!({"m": 3}),
+            "pipeline-sidecar",
+            "partial",
+        )
         .await
         .unwrap();
     assert!(!wrote, "partial must not downgrade a full result");
@@ -1198,7 +1212,11 @@ async fn add_data_imports_completegenomics_master_var() {
     assert_eq!(sets.len(), 1);
     let set = &sets[0];
     assert_eq!(set.reference_build.as_deref(), Some("GRCh37"));
-    assert_eq!(set.calls.len(), 3, "two SNP loci on chr1 + one on chrY; the no-ref span is dropped");
+    assert_eq!(
+        set.calls.len(),
+        3,
+        "two SNP loci on chr1 + one on chrY; the no-ref span is dropped"
+    );
     let hom = set.calls.iter().find(|c| c.position == 21580).unwrap();
     assert_eq!((hom.reference.as_str(), hom.alternate.as_str()), ("C", "T"));
     assert_eq!(hom.genotype.as_deref(), Some("1/1"));
@@ -1472,7 +1490,8 @@ async fn diploid_alignment(app: &App) -> i64 {
 async fn publish_coverage_summary_requires_cached_coverage() {
     let app = app().await;
     let aln = diploid_alignment(&app).await; // has a BAM but no coverage run
-                                             // Bearer client is never reached — the missing-coverage check fails first.
+
+    // Bearer client is never reached — the missing-coverage check fails first.
     let client = navigator_app::PdsClient::bearer(reqwest::Client::new(), "http://127.0.0.1:1", "did:plc:x", "tok");
     let err = app.publish_coverage_summary(&client, aln).await;
     assert!(
@@ -1681,13 +1700,22 @@ async fn reimport_under_different_project_name_reuses_subject() {
     };
 
     let a = stage("a");
-    let s1 = app.import_project_dir(&a, Some(reference.clone()), "t".into(), false).await.unwrap();
+    let s1 = app
+        .import_project_dir(&a, Some(reference.clone()), "t".into(), false)
+        .await
+        .unwrap();
     assert_eq!(s1.samples_created, 1);
 
     // Same sample, different folder name → a distinct project, but the SAME person.
     let b = stage("b");
-    let s2 = app.import_project_dir(&b, Some(reference), "t".into(), false).await.unwrap();
-    assert_ne!(s2.project.id, s1.project.id, "a different folder name is a different project");
+    let s2 = app
+        .import_project_dir(&b, Some(reference), "t".into(), false)
+        .await
+        .unwrap();
+    assert_ne!(
+        s2.project.id, s1.project.id,
+        "a different folder name is a different project"
+    );
     assert_eq!(s2.samples_created, 0, "the subject is reused, not duplicated");
 
     // Exactly one subject in the workspace, and it's a roster member of BOTH projects.
@@ -1705,7 +1733,11 @@ async fn delete_project_detaches_members_and_keeps_subjects() {
     // not refuse ("N subjects still belong to it"). The subjects themselves survive.
     let app = app().await;
     let p = app
-        .create_project(NewProject { name: "P".into(), description: None, administrator: "t".into() })
+        .create_project(NewProject {
+            name: "P".into(),
+            description: None,
+            administrator: "t".into(),
+        })
         .await
         .unwrap();
     let b = app.add_biosample(Some(p.id), "S1", None, None).await.unwrap();
@@ -1713,9 +1745,20 @@ async fn delete_project_detaches_members_and_keeps_subjects() {
 
     app.delete_project(p.id).await.unwrap();
 
-    assert!(app.project_overview().await.unwrap().iter().all(|o| o.project.id != p.id), "project removed");
     assert!(
-        app.list_all_biosamples().await.unwrap().iter().any(|x| x.guid == b.guid),
+        app.project_overview()
+            .await
+            .unwrap()
+            .iter()
+            .all(|o| o.project.id != p.id),
+        "project removed"
+    );
+    assert!(
+        app.list_all_biosamples()
+            .await
+            .unwrap()
+            .iter()
+            .any(|x| x.guid == b.guid),
         "subject survives the project deletion"
     );
 }
@@ -1959,7 +2002,10 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
     .await
     .unwrap();
 
-    let s = app.analyze_project(p.id, navigator_app::CancelToken::none()).await.unwrap();
+    let s = app
+        .analyze_project(p.id, navigator_app::CancelToken::none())
+        .await
+        .unwrap();
     assert_eq!(s.samples, 1);
     assert_eq!(s.coverage_done, 1, "coverage computed on the CRAM");
     // Y was attempted: recorded, or (here) errored on the chrM-only fixture lacking chrY.
@@ -2826,8 +2872,16 @@ async fn branch_report_genotypes_the_mt_subtree_end_to_end() {
     // no-call, and the asymmetric SNV test would have mislabeled the empty allele as a clean SNV.
     let ins = row("41.1A");
     assert_eq!(ins.state, CallState::NoCall);
-    assert!(ins.note.contains("indel/MNV"), "insertion must be flagged as an indel: {:?}", ins.note);
-    assert!(ins.note.contains("no call"), "and still surface the no-call: {:?}", ins.note);
+    assert!(
+        ins.note.contains("indel/MNV"),
+        "insertion must be flagged as an indel: {:?}",
+        ins.note
+    );
+    assert!(
+        ins.note.contains("no call"),
+        "and still surface the no-call: {:?}",
+        ins.note
+    );
 
     // The tallies match the rows (the insertion is a no-call).
     let (d, a, n) = report.counts();
@@ -2844,7 +2898,10 @@ async fn mt_alignment_pick_skips_a_y_only_run() {
     use navigator_app::DnaType;
 
     let app = app().await;
-    let b = app.add_biosample(None, "S-pick", None, Some("male".into())).await.unwrap();
+    let b = app
+        .add_biosample(None, "S-pick", None, Some("male".into()))
+        .await
+        .unwrap();
 
     // A Big-Y (Y-only) run, recorded first so it's a candidate for both pickers.
     let y_run = app
@@ -2915,7 +2972,10 @@ async fn mt_alignment_pick_skips_a_y_only_run() {
         "Y still prefers the CHM13/pbmm2 Big-Y alignment"
     );
     // Dispatch helper routes each DNA type to its picker.
-    assert_eq!(app.pick_alignment_for(b.guid, DnaType::Mt).await.unwrap(), Some(wgs_aln));
+    assert_eq!(
+        app.pick_alignment_for(b.guid, DnaType::Mt).await.unwrap(),
+        Some(wgs_aln)
+    );
     assert_eq!(app.pick_alignment_for(b.guid, DnaType::Y).await.unwrap(), Some(y_aln));
 }
 
@@ -2935,7 +2995,10 @@ async fn add_sample_dir_records_alignment_from_header_no_decode_and_is_idempoten
     std::fs::copy(fx.join("coverage.cram.crai"), dir.join("s.chm13.chrYM.cram.crai")).unwrap();
     std::fs::write(dir.join("coverage.txt"), "#rname\tstartpos\tendpos\tnumreads\n").unwrap();
 
-    let subject = app.add_biosample(None, "S-KIT", None, Some("male".into())).await.unwrap();
+    let subject = app
+        .add_biosample(None, "S-KIT", None, Some("male".into()))
+        .await
+        .unwrap();
 
     let s = app.add_sample_dir(subject.guid, &dir, false).await.unwrap();
     assert_eq!(s.alignments_created, 1);
@@ -3000,11 +3063,17 @@ async fn add_sample_dir_skips_called_vcf_when_gvcf_present() {
     std::fs::write(dir.join("gatk4/chrY.g.vcf.gz"), b"not-a-real-gvcf").unwrap();
     std::fs::write(dir.join("gatk4/chrY.vcf.gz"), b"##fileformat=VCFv4.2\n").unwrap();
 
-    let subject = app.add_biosample(None, "S-GVCF", None, Some("male".into())).await.unwrap();
+    let subject = app
+        .add_biosample(None, "S-GVCF", None, Some("male".into()))
+        .await
+        .unwrap();
     let s = app.add_sample_dir(subject.guid, &dir, true).await.unwrap();
 
     assert_eq!(s.alignments_created, 1);
-    assert_eq!(s.variants_imported, 0, "called chrY.vcf.gz must be skipped when a GVCF is present");
+    assert_eq!(
+        s.variants_imported, 0,
+        "called chrY.vcf.gz must be skipped when a GVCF is present"
+    );
     assert!(s.sidecars_ingested, "the GVCF fast path was attempted");
     assert_eq!(app.list_variant_sets(subject.guid).await.unwrap().len(), 0);
 

@@ -17,8 +17,12 @@ use navigator_analysis::caller::SiteGenotype;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut a = std::env::args().skip(1);
-    let calls_path = a.next().expect("usage: archaic_private_dump <calls.json> <outgroup.bin>");
-    let og_path = a.next().expect("usage: archaic_private_dump <calls.json> <outgroup.bin>");
+    let calls_path = a
+        .next()
+        .expect("usage: archaic_private_dump <calls.json> <outgroup.bin>");
+    let og_path = a
+        .next()
+        .expect("usage: archaic_private_dump <calls.json> <outgroup.bin>");
 
     let calls: Vec<SiteGenotype> = serde_json::from_str(&std::fs::read_to_string(&calls_path)?)?;
     let og = ArchaicOutgroup::from_bytes(&std::fs::read(&og_path)?).map_err(|e| e.to_string())?;

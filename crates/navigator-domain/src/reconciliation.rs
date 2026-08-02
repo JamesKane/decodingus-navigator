@@ -332,9 +332,10 @@ pub fn reconcile_with_provenance(
     lower.sort_unstable();
     lower.dedup();
     if !lower.is_empty() {
-        consensus
-            .warnings
-            .push(format!("lower-precedence sources place elsewhere: {} (external caller preferred)", lower.join(", ")));
+        consensus.warnings.push(format!(
+            "lower-precedence sources place elsewhere: {} (external caller preferred)",
+            lower.join(", ")
+        ));
     }
     Some(consensus)
 }
@@ -436,7 +437,10 @@ mod tests {
         let external = call("gatk4 gvcf", 0.60, &["root", "R", "R-M269", "R-L21"]);
         let walk = call("cram walk", 0.95, &["root", "R", "R-M269", "R-L2"]);
         let c = reconcile_with_provenance(
-            &[(CallProvenance::External, external), (CallProvenance::NavigatorWalk, walk)],
+            &[
+                (CallProvenance::External, external),
+                (CallProvenance::NavigatorWalk, walk),
+            ],
             true,
         )
         .unwrap();
@@ -450,7 +454,10 @@ mod tests {
         let external = call("gatk4 gvcf", 0.60, &["root", "R", "R-M269"]);
         let walk = call("cram walk", 0.95, &["root", "R", "R-M269", "R-L21", "R-DF13"]);
         let c = reconcile_with_provenance(
-            &[(CallProvenance::External, external), (CallProvenance::NavigatorWalk, walk)],
+            &[
+                (CallProvenance::External, external),
+                (CallProvenance::NavigatorWalk, walk),
+            ],
             false,
         )
         .unwrap();

@@ -137,7 +137,10 @@ impl SignalKind {
 
 fn sex_section(sex: &Option<SexFact>) -> Option<String> {
     let sex = sex.as_ref()?;
-    Some(format!("\nGenetic sex:\n- {} ({} confidence)\n", sex.label, sex.confidence))
+    Some(format!(
+        "\nGenetic sex:\n- {} ({} confidence)\n",
+        sex.label, sex.confidence
+    ))
 }
 
 fn ystr_section(ystr: &[YStrPanelFact]) -> Option<String> {
@@ -219,7 +222,10 @@ fn roh_section(brief: &SubjectBrief) -> Option<String> {
     let r = brief.roh.as_ref()?;
     let mut s = String::from("\nShared ancestry (runs of homozygosity):\n");
     s.push_str(&format!("- pattern: {}\n", r.pattern));
-    s.push_str(&format!("- F_ROH: {:.4} (share of the genome in long identical runs)\n", r.f_roh));
+    s.push_str(&format!(
+        "- F_ROH: {:.4} (share of the genome in long identical runs)\n",
+        r.f_roh
+    ));
     s.push_str(&format!(
         "- {} run(s), about {:.0} Mb in total, longest {:.0} Mb\n",
         r.n_segments, r.total_mb, r.longest_mb
@@ -388,10 +394,20 @@ mod tests {
                 confidence: "high".into(),
             }),
             ystr: vec![
-                YStrPanelFact { panel: "Y-111".into(), markers: 111 },
-                YStrPanelFact { panel: "Y-37".into(), markers: 37 },
+                YStrPanelFact {
+                    panel: "Y-111".into(),
+                    markers: 111,
+                },
+                YStrPanelFact {
+                    panel: "Y-37".into(),
+                    markers: 37,
+                },
             ],
-            private_y: Some(PrivateYFact { novel_unique: 12, off_path: 3, structural: 2 }),
+            private_y: Some(PrivateYFact {
+                novel_unique: 12,
+                off_path: 3,
+                structural: 2,
+            }),
             mt_mutations: Some(MtMutationsFact {
                 total: 41,
                 hvr1: 5,
@@ -460,7 +476,10 @@ mod tests {
 
         // The grounding must actively steer the model off the two framings the design forbids:
         // restating a count as a percent-Neanderthal, and reporting a Denisovan finding.
-        assert!(section.contains("not a percentage"), "must warn against percent framing");
+        assert!(
+            section.contains("not a percentage"),
+            "must warn against percent framing"
+        );
         assert!(section.contains("no Denisovan result is reported"));
         assert!(!mentions_health(&section), "archaic must not read as a health result");
 
@@ -517,7 +536,11 @@ mod tests {
     #[test]
     fn structural_line_only_when_nonzero() {
         let mut ctx = full_context();
-        ctx.private_y = Some(PrivateYFact { novel_unique: 4, off_path: 1, structural: 0 });
+        ctx.private_y = Some(PrivateYFact {
+            novel_unique: 4,
+            off_path: 1,
+            structural: 0,
+        });
         let s = results_fact_sheet(&ctx);
         assert!(!s.contains("structural/paralog-prone"));
     }

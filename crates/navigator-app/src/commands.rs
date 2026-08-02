@@ -490,8 +490,13 @@ impl App {
     pub async fn record_analysis_error(&self, alignment_id: i64, step: &str, message: &str) {
         let mut message = message.to_string();
         message.truncate(500); // keep the payload small; the head carries the cause
-        let marker = AnalysisError { step: step.to_string(), message };
-        let _ = self.save_analysis(alignment_id, ERROR_KIND, ERROR_VERSION, &marker).await;
+        let marker = AnalysisError {
+            step: step.to_string(),
+            message,
+        };
+        let _ = self
+            .save_analysis(alignment_id, ERROR_KIND, ERROR_VERSION, &marker)
+            .await;
     }
 
     /// Clear any persisted [`record_analysis_error`] marker for this alignment (no-op when absent).

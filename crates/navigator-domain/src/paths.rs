@@ -49,7 +49,11 @@ pub fn decodingus_dir() -> PathBuf {
 /// than the fallback.
 // Compiled on every platform so its precedence stays under test anywhere; only *called* on Windows.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn windows_home(userprofile: Option<OsString>, homedrive: Option<OsString>, homepath: Option<OsString>) -> Option<PathBuf> {
+fn windows_home(
+    userprofile: Option<OsString>,
+    homedrive: Option<OsString>,
+    homepath: Option<OsString>,
+) -> Option<PathBuf> {
     if let Some(p) = userprofile.filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(p));
     }

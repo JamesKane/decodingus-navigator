@@ -44,7 +44,10 @@ fn cancelling_a_whole_genome_walk_returns_promptly() {
     let elapsed = started.elapsed();
     eprintln!("returned after {elapsed:.1?}: {result:?}");
 
-    assert!(result.is_err(), "a cancelled walk must not return a partial result as success");
+    assert!(
+        result.is_err(),
+        "a cancelled walk must not return a partial result as success"
+    );
     assert!(
         matches!(result, Err(navigator_analysis::AnalysisError::Cancelled)),
         "must report cancellation, not a generic failure"

@@ -224,7 +224,8 @@ mod tests {
         // [10,20) and [15,25) coalesce to [10,25); [40,50) separate.
         let m = RegionMask::from_intervals(vec![(40, 50), (10, 20), (15, 25)]);
         assert_eq!(m.covered(), 15 + 10); // [10,25)=15, [40,50)=10
-                                          // 1-based positions: base0 = pos-1.
+
+        // 1-based positions: base0 = pos-1.
         assert!(!m.contains(10)); // base0 9 < 10
         assert!(m.contains(11)); // base0 10 in [10,25)
         assert!(m.contains(25)); // base0 24 in [10,25)
@@ -240,10 +241,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dun-maskgz-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("m.bed.gz");
-        let mut enc = flate2::write::GzEncoder::new(
-            std::fs::File::create(&path).unwrap(),
-            flate2::Compression::default(),
-        );
+        let mut enc =
+            flate2::write::GzEncoder::new(std::fs::File::create(&path).unwrap(), flate2::Compression::default());
         // chrX ignored; two chrY intervals, one of them coalescing.
         enc.write_all(b"chrY\t100\t200\nchrX\t0\t50\nchrY\t150\t260\n").unwrap();
         enc.finish().unwrap();

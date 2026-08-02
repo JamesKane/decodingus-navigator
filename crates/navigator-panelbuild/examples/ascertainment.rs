@@ -7,16 +7,28 @@ use navigator_analysis::ancestry::AncestryPanel;
 use std::collections::HashMap;
 
 fn main() -> anyhow::Result<()> {
-    let ancient_path = std::env::args().nth(1).expect("usage: ascertainment <ancient.bin> <super.bin>");
-    let super_path = std::env::args().nth(2).expect("usage: ascertainment <ancient.bin> <super.bin>");
+    let ancient_path = std::env::args()
+        .nth(1)
+        .expect("usage: ascertainment <ancient.bin> <super.bin>");
+    let super_path = std::env::args()
+        .nth(2)
+        .expect("usage: ascertainment <ancient.bin> <super.bin>");
     let ancient = AncestryPanel::from_bytes(&std::fs::read(&ancient_path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
     let sup = AncestryPanel::from_bytes(&std::fs::read(&super_path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let eur = sup.populations.iter().position(|p| p == "EUR").expect("super panel has no EUR");
+    let eur = sup
+        .populations
+        .iter()
+        .position(|p| p == "EUR")
+        .expect("super panel has no EUR");
     let eur_maf: HashMap<(String, i64), f64> = sup
         .sites
         .iter()
-        .filter_map(|s| s.freqs.get(eur).map(|&f| ((s.contig.clone(), s.position), (f as f64).min(1.0 - f as f64))))
+        .filter_map(|s| {
+            s.freqs
+                .get(eur)
+                .map(|&f| ((s.contig.clone(), s.position), (f as f64).min(1.0 - f as f64)))
+        })
         .collect();
 
     // Bin edges on EUR MAF. Last bin captures the "common" (chip-like) sites.
@@ -30,7 +42,9 @@ fn main() -> anyhow::Result<()> {
     let mut joined = 0usize;
 
     for s in &ancient.sites {
-        let Some(&m) = eur_maf.get(&(s.contig.clone(), s.position)) else { continue };
+        let Some(&m) = eur_maf.get(&(s.contig.clone(), s.position)) else {
+            continue;
+        };
         joined += 1;
         let b = bin_of(m);
         n[b] += 1;

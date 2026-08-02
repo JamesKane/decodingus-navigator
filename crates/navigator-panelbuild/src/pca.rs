@@ -567,7 +567,10 @@ pub fn build_fine_panel(args: FinePanelArgs) -> Result<()> {
 /// floor — not the diploid coding — is what matters.
 pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
     let parse_list = |s: &str| -> Vec<String> {
-        s.split(',').map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect()
+        s.split(',')
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect()
     };
     let sources: Vec<String> = parse_list(&args.components);
     let outgroup_comps: Vec<String> = parse_list(&args.outgroups);
@@ -582,7 +585,13 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
     );
     // Per-population call floor: sources use --min-called, outgroups the lower --outgroup-min-called.
     let floor: Vec<usize> = (0..comps.len())
-        .map(|i| if i < n_src { args.min_called } else { args.outgroup_min_called })
+        .map(|i| {
+            if i < n_src {
+                args.min_called
+            } else {
+                args.outgroup_min_called
+            }
+        })
         .collect();
 
     let pop_of = load_fine_map(&args.pops)?;
@@ -618,7 +627,11 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
                     (!contig.eq_ignore_ascii_case("contig")).then(|| (contig.to_string(), pos))
                 })
                 .collect();
-            anyhow::ensure!(!set.is_empty(), "ascertainment file {} had no usable contig<TAB>pos rows", p.display());
+            anyhow::ensure!(
+                !set.is_empty(),
+                "ascertainment file {} had no usable contig<TAB>pos rows",
+                p.display()
+            );
             eprintln!("ascertainment floor: {} sites from {}", set.len(), p.display());
             Some(set)
         }
@@ -734,7 +747,10 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
             oriented.len()
         );
         sites = oriented;
-        anyhow::ensure!(!sites.is_empty(), "no site survived CHM13 orientation — wrong reference?");
+        anyhow::ensure!(
+            !sites.is_empty(),
+            "no site survived CHM13 orientation — wrong reference?"
+        );
     }
 
     let panel = AncestryPanel {

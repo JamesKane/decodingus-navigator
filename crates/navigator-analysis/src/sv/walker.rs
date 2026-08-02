@@ -189,12 +189,7 @@ fn is_expected_orientation(record: &impl AlnRead, pos1: i64, mate_pos: i64) -> b
 
 /// Parse the first SA-tag alignment into a [`SplitRead`]; clip length is the read's own
 /// soft/hard-clip total.
-fn extract_split_read(
-    record: &impl AlnRead,
-    contig: &str,
-    mapq: u8,
-    config: &SvCallerConfig,
-) -> Option<SplitRead> {
+fn extract_split_read(record: &impl AlnRead, contig: &str, mapq: u8, config: &SvCallerConfig) -> Option<SplitRead> {
     let sa = record.string_tag(SA_TAG)?;
     if sa.is_empty() {
         return None;

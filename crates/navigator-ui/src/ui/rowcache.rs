@@ -318,7 +318,10 @@ mod tests {
 
         let before = seen.get();
         cache.get(2, Some(YVariantStatus::Conflict), "rs1", &data, |v| v % 2 == 0);
-        assert!(seen.get() == before, "the status filter is part of the key, not the predicate here");
+        assert!(
+            seen.get() == before,
+            "the status filter is part of the key, not the predicate here"
+        );
     }
 
     /// Indices are only ever handed back for a collection of the length they were derived from —

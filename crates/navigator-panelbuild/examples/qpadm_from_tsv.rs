@@ -10,7 +10,9 @@ use navigator_analysis::caller::SiteGenotype;
 use std::collections::HashMap;
 
 fn main() -> anyhow::Result<()> {
-    let panel_path = std::env::args().nth(1).expect("usage: qpadm_from_tsv <panel.bin> <dosage.tsv>");
+    let panel_path = std::env::args()
+        .nth(1)
+        .expect("usage: qpadm_from_tsv <panel.bin> <dosage.tsv>");
     let tsv = std::env::args().nth(2).expect("dosage.tsv");
     let panel = AncestryPanel::from_bytes(&std::fs::read(&panel_path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -18,8 +20,12 @@ fn main() -> anyhow::Result<()> {
     let mut dosage: HashMap<(String, i64), i32> = HashMap::new();
     for line in std::fs::read_to_string(&tsv)?.lines() {
         let mut it = line.split('\t');
-        let (Some(c), Some(p), Some(d)) = (it.next(), it.next(), it.next()) else { continue };
-        let (Ok(p), Ok(d)) = (p.trim().parse::<i64>(), d.trim().parse::<i32>()) else { continue };
+        let (Some(c), Some(p), Some(d)) = (it.next(), it.next(), it.next()) else {
+            continue;
+        };
+        let (Ok(p), Ok(d)) = (p.trim().parse::<i64>(), d.trim().parse::<i32>()) else {
+            continue;
+        };
         dosage.insert((c.to_string(), p), d);
     }
 
@@ -46,26 +52,44 @@ fn main() -> anyhow::Result<()> {
         })
         .collect();
     let called = gts.iter().filter(|g| g.dosage >= 0).count();
-    eprintln!("{} panel sites, {} matched in TSV, {called} called", panel.sites.len(), gts.len());
+    eprintln!(
+        "{} panel sites, {} matched in TSV, {called} called",
+        panel.sites.len(),
+        gts.len()
+    );
 
     // Source codes: 3rd arg (comma-separated), else the default frequency-EM sources.
     let src_codes: Vec<String> = std::env::args()
         .nth(3)
         .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
         .unwrap_or_else(|| vec!["WHG".into(), "ANF".into(), "Steppe".into()]);
-    let sources: Vec<usize> = src_codes.iter().map(|c| panel.populations.iter().position(|p| p == c).unwrap()).collect();
+    let sources: Vec<usize> = src_codes
+        .iter()
+        .map(|c| panel.populations.iter().position(|p| p == c).unwrap())
+        .collect();
     let outgroups: Vec<usize> = (0..panel.populations.len()).filter(|i| !sources.contains(i)).collect();
 
     let fit = qpadm_fit(&gts, &panel, &sources, &outgroups, F4_BLOCK_BP)
         .ok_or_else(|| anyhow::anyhow!("qpadm_fit returned None"))?;
-    println!("\nsites {}  blocks {}  dof {}  chi2 {:.2}  p {:.4}", fit.n_sites, fit.n_blocks, fit.dof, fit.chi2, fit.p_value);
+    println!(
+        "\nsites {}  blocks {}  dof {}  chi2 {:.2}  p {:.4}",
+        fit.n_sites, fit.n_blocks, fit.dof, fit.chi2, fit.p_value
+    );
     for (code, i) in src_codes.iter().zip(0..) {
-        println!("  {code:<8} {:>6.1} %   (SE {:.1})", fit.weights[i] * 100.0, fit.std_errors[i] * 100.0);
+        println!(
+            "  {code:<8} {:>6.1} %   (SE {:.1})",
+            fit.weights[i] * 100.0,
+            fit.std_errors[i] * 100.0
+        );
     }
     println!(
         "\nmodel {} at p=0.05; weights {}",
         if fit.p_value >= 0.05 { "ACCEPTED" } else { "REJECTED" },
-        if fit.weights_feasible(0.02) { "feasible" } else { "INFEASIBLE" }
+        if fit.weights_feasible(0.02) {
+            "feasible"
+        } else {
+            "INFEASIBLE"
+        }
     );
     Ok(())
 }

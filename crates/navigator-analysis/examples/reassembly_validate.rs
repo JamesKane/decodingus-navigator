@@ -26,7 +26,10 @@ fn main() {
         let hi = (pos + 5) as usize;
 
         let called = |reassembly: bool| -> Option<(char, char, u32, u32, Option<f64>)> {
-            let params = HaploidCallerParams { reassembly, ..HaploidCallerParams::default() };
+            let params = HaploidCallerParams {
+                reassembly,
+                ..HaploidCallerParams::default()
+            };
             let calls = call_denovo_region(bam, refp, contig, lo, hi, &params).expect("call_denovo_region");
             calls
                 .into_iter()

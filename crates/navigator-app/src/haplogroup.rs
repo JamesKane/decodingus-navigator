@@ -15,7 +15,10 @@ fn parse_painting_json(s: &str) -> Result<PaintingResult, AppError> {
         Ok(r) => Ok(r),
         Err(_) => {
             let segments: Vec<AncestrySegment> = serde_json::from_str(s)?;
-            Ok(PaintingResult { segments, ..Default::default() })
+            Ok(PaintingResult {
+                segments,
+                ..Default::default()
+            })
         }
     }
 }
@@ -169,7 +172,10 @@ impl App {
                 let per_contig = self.callable_intervals_all(*id).await?;
                 Ok(export::callable_bed(&per_contig))
             }
-            ExportRequest::DiploidVcf(id) => self.diploid_vcf_genome(*id, navigator_analysis::CancelToken::none()).await,
+            ExportRequest::DiploidVcf(id) => {
+                self.diploid_vcf_genome(*id, navigator_analysis::CancelToken::none())
+                    .await
+            }
             ExportRequest::ConsensusDiploidVcf(guid) => self.consensus_diploid_vcf(*guid).await,
             ExportRequest::SubjectBriefHtml(guid) => {
                 let brief = self.subject_brief(*guid).await?;
@@ -294,8 +300,15 @@ impl App {
         source_key: &str,
         call: &RunHaplogroupCall,
     ) -> Result<(), AppError> {
-        self.record_haplogroup_call_fp(biosample_guid, dna_type, source_key, call, CallProvenance::NavigatorWalk, None)
-            .await
+        self.record_haplogroup_call_fp(
+            biosample_guid,
+            dna_type,
+            source_key,
+            call,
+            CallProvenance::NavigatorWalk,
+            None,
+        )
+        .await
     }
 
     /// Like [`record_haplogroup_call`](Self::record_haplogroup_call) but stamps the input
@@ -406,7 +419,10 @@ impl App {
         let Ok(bio) = self.biosample_of_alignment(alignment_id).await else {
             return Ok(false);
         };
-        Ok(self.preferred_external_call(bio, dna_type, alignment_id).await?.is_some())
+        Ok(self
+            .preferred_external_call(bio, dna_type, alignment_id)
+            .await?
+            .is_some())
     }
 
     /// "Compare callers": the trusted external caller vs Navigator's internal caller for one
@@ -425,9 +441,11 @@ impl App {
         };
         if y_bearing {
             let external = match bio {
-                Some(g) => haplogroup_call::get_one(self.store.pool(), g, DnaType::Y, &external_y_source_key(alignment_id))
-                    .await?
-                    .map(|c| c.haplogroup),
+                Some(g) => {
+                    haplogroup_call::get_one(self.store.pool(), g, DnaType::Y, &external_y_source_key(alignment_id))
+                        .await?
+                        .map(|c| c.haplogroup)
+                }
                 None => None,
             };
             let navigator = self
@@ -443,9 +461,11 @@ impl App {
         }
 
         let external_mt = match bio {
-            Some(g) => haplogroup_call::get_one(self.store.pool(), g, DnaType::Mt, &external_mt_source_key(alignment_id))
-                .await?
-                .map(|c| c.haplogroup),
+            Some(g) => {
+                haplogroup_call::get_one(self.store.pool(), g, DnaType::Mt, &external_mt_source_key(alignment_id))
+                    .await?
+                    .map(|c| c.haplogroup)
+            }
             None => None,
         };
         let navigator_mt = self
@@ -730,7 +750,12 @@ impl App {
     /// tree is unavailable (interpret then falls back to each variant's stored ref/alt).
     async fn current_y_polarity(&self) -> std::collections::BTreeMap<String, (String, String)> {
         match y_tree_provider() {
-            YTreeProvider::DecodingUs => self.decodingus_y_polarity().await.unwrap_or_default().into_iter().collect(),
+            YTreeProvider::DecodingUs => self
+                .decodingus_y_polarity()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
             YTreeProvider::Ftdna => self
                 .fetch_ftdna_y_tree()
                 .await
@@ -1009,8 +1034,14 @@ impl App {
         profile.terminal = terminal;
 
         // Persist observations (keyed dna_type='Mt') with the tree provider actually used.
-        self.persist_observed_profile(biosample_guid, DnaType::Mt, &observed, &profile.summary, Some(provider.to_string()))
-            .await?;
+        self.persist_observed_profile(
+            biosample_guid,
+            DnaType::Mt,
+            &observed,
+            &profile.summary,
+            Some(provider.to_string()),
+        )
+        .await?;
         Ok(profile)
     }
 
@@ -1054,7 +1085,11 @@ impl App {
                     .gvcf_base_calls(a.id, "chrY", &gvcf, &tree, tree_build_for_contig("chrY"))
                     .await
                     .ok(),
-                _ => self.assign_haplogroup_detail(a.id, "chrY", &tree_json).await.ok().map(|(_, _, c)| c),
+                _ => self
+                    .assign_haplogroup_detail(a.id, "chrY", &tree_json)
+                    .await
+                    .ok()
+                    .map(|(_, _, c)| c),
             };
             let Some(calls) = calls else { continue };
             if !calls.is_empty() {
@@ -1082,7 +1117,10 @@ impl App {
     /// DecodingUs-provider genome consensus (the default): genotype every WGS alignment against the
     /// DecodingUs Y tree in each source's *native* build, group by build, pool by position, and place
     /// on the build carrying the most evidence.
-    async fn place_y_consensus_decodingus(&self, biosample_guid: SampleGuid) -> Result<Option<HaploAssignment>, AppError> {
+    async fn place_y_consensus_decodingus(
+        &self,
+        biosample_guid: SampleGuid,
+    ) -> Result<Option<HaploAssignment>, AppError> {
         // Genotype every WGS alignment against the **DecodingUs** Y tree — the workspace's configured
         // provider, served from the local cache — in each source's *native* build (`hs1` for CHM13,
         // `GRCh38`, `GRCh37`). No liftover and no FTDNA dependency: the per-alignment genotype is
@@ -1097,12 +1135,18 @@ impl App {
 
         // Parse the DecodingUs tree once per distinct build the sources use (cheap — the JSON is
         // memoized). Built up front so the async genotyping loop holds only shared borrows of `trees`.
-        let mut builds: std::collections::HashSet<&'static str> =
-            alignments.iter().filter_map(|a| decodingus_build_key(&a.reference_build)).collect();
+        let mut builds: std::collections::HashSet<&'static str> = alignments
+            .iter()
+            .filter_map(|a| decodingus_build_key(&a.reference_build))
+            .collect();
         for set in &vsets {
             if set.source_type != SourceType::Chip {
                 // Unknown vendor build → GRCh38 (the vendor-Y-VCF import default).
-                if let Some(bk) = set.reference_build.as_deref().map_or(Some("GRCh38"), decodingus_build_key) {
+                if let Some(bk) = set
+                    .reference_build
+                    .as_deref()
+                    .map_or(Some("GRCh38"), decodingus_build_key)
+                {
                     builds.insert(bk);
                 }
             }
@@ -1116,11 +1160,15 @@ impl App {
 
         let mut by_build: HashMap<&'static str, YSourceCalls> = HashMap::new();
         for a in &alignments {
-            let Some(bk) = decodingus_build_key(&a.reference_build) else { continue };
+            let Some(bk) = decodingus_build_key(&a.reference_build) else {
+                continue;
+            };
             let Some(tree) = trees.get(bk) else { continue };
             // Native build → no liftover; the cache-key matches the Y assignment's, so a CRAM walk is
             // a hit — but a preferred-external alignment is genotyped from its GVCF instead (no decode).
-            let Ok(calls) = self.consensus_base_calls(a, "chrY", tree, None).await else { continue };
+            let Ok(calls) = self.consensus_base_calls(a, "chrY", tree, None).await else {
+                continue;
+            };
             if !calls.is_empty() {
                 by_build.entry(bk).or_default().push((SourceType::WgsShortRead, calls));
             }
@@ -1133,11 +1181,20 @@ impl App {
             if set.source_type == SourceType::Chip {
                 continue;
             }
-            let Some(bk) = set.reference_build.as_deref().map_or(Some("GRCh38"), decodingus_build_key) else { continue };
+            let Some(bk) = set
+                .reference_build
+                .as_deref()
+                .map_or(Some("GRCh38"), decodingus_build_key)
+            else {
+                continue;
+            };
             let Some(tree) = trees.get(bk) else { continue };
             let calls = Self::vset_chr_y_calls(set);
             if !calls.is_empty() {
-                by_build.entry(bk).or_default().push((set.source_type, strand_reconcile_to_tree(tree, calls)));
+                by_build
+                    .entry(bk)
+                    .or_default()
+                    .push((set.source_type, strand_reconcile_to_tree(tree, calls)));
             }
         }
 
@@ -1203,7 +1260,9 @@ impl App {
                 ));
             }
         }
-        out.push_str(&format!("\ntotals: derived={derived} ancestral={ancestral} nocall={nocall}\n"));
+        out.push_str(&format!(
+            "\ntotals: derived={derived} ancestral={ancestral} nocall={nocall}\n"
+        ));
         Ok(out)
     }
 
@@ -1236,12 +1295,18 @@ impl App {
         // Localize the BAM/CRAM and resolve its reference exactly as `base_calls` does, then tally the
         // raw reads at the lineage positions and read the reference base there.
         let bam = self
-            .localize(Path::new(&aln.bam_path.clone().ok_or(AppError::MissingPaths(alignment_id))?))
+            .localize(Path::new(
+                &aln.bam_path.clone().ok_or(AppError::MissingPaths(alignment_id))?,
+            ))
             .await;
         let is_cram = bam.extension().is_some_and(|e| e.eq_ignore_ascii_case("cram"));
         let reference = match aln.reference_path.clone() {
             Some(p) => Some(PathBuf::from(p)),
-            None if is_cram => Some(self.gateway.resolve_reference(&aln.reference_build, &mut |_, _| {}).await?),
+            None if is_cram => Some(
+                self.gateway
+                    .resolve_reference(&aln.reference_build, &mut |_, _| {})
+                    .await?,
+            ),
             None => self.gateway.cached_reference(&aln.reference_build),
         };
         let targets: HashSet<i64> = assignment.lineage.iter().map(|e| e.position).collect();
@@ -1300,7 +1365,9 @@ impl App {
                 e.state,
             ));
         }
-        out.push_str(&format!("\ntotals: derived={derived} ancestral={ancestral} nocall={nocall}\n"));
+        out.push_str(&format!(
+            "\ntotals: derived={derived} ancestral={ancestral} nocall={nocall}\n"
+        ));
         Ok(out)
     }
 
@@ -1315,7 +1382,11 @@ impl App {
                 decodingus_build_key(&a.reference_build) == Some("hs1")
                     && a.aligner.to_ascii_lowercase().contains("pbmm2")
             })
-            .or_else(|| alignments.iter().find(|a| decodingus_build_key(&a.reference_build) == Some("hs1")))
+            .or_else(|| {
+                alignments
+                    .iter()
+                    .find(|a| decodingus_build_key(&a.reference_build) == Some("hs1"))
+            })
             .or_else(|| alignments.first());
         Ok(pick.map(|a| a.id))
     }
@@ -1330,8 +1401,10 @@ impl App {
         for a in &alignments {
             let y_only = match sequence_run::get(self.store.pool(), a.sequence_run_id).await? {
                 // `target_of` is tolerant of unknown codes (→ None), which stay eligible.
-                Some(run) => navigator_domain::testtype::target_of(&run.test_type)
-                    == Some(navigator_domain::testtype::TargetType::YChromosome),
+                Some(run) => {
+                    navigator_domain::testtype::target_of(&run.test_type)
+                        == Some(navigator_domain::testtype::TargetType::YChromosome)
+                }
                 None => false,
             };
             if !y_only {
@@ -1364,11 +1437,17 @@ impl App {
         let tree_json = self.fetch_decodingus_y_tree().await?;
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         let vsets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
-        let mut builds: std::collections::HashSet<&'static str> =
-            alignments.iter().filter_map(|a| decodingus_build_key(&a.reference_build)).collect();
+        let mut builds: std::collections::HashSet<&'static str> = alignments
+            .iter()
+            .filter_map(|a| decodingus_build_key(&a.reference_build))
+            .collect();
         for set in &vsets {
             if set.source_type != SourceType::Chip {
-                if let Some(bk) = set.reference_build.as_deref().map_or(Some("GRCh38"), decodingus_build_key) {
+                if let Some(bk) = set
+                    .reference_build
+                    .as_deref()
+                    .map_or(Some("GRCh38"), decodingus_build_key)
+                {
                     builds.insert(bk);
                 }
             }
@@ -1381,7 +1460,9 @@ impl App {
         }
         let mut by_build: HashMap<&'static str, YSourceCalls> = HashMap::new();
         for a in &alignments {
-            let Some(bk) = decodingus_build_key(&a.reference_build) else { continue };
+            let Some(bk) = decodingus_build_key(&a.reference_build) else {
+                continue;
+            };
             let Some(tree) = trees.get(bk) else { continue };
             if let Ok(calls) = self.base_calls(a.id, "chrY", tree, None).await {
                 if !calls.is_empty() {
@@ -1393,13 +1474,20 @@ impl App {
             if set.source_type == SourceType::Chip {
                 continue;
             }
-            let Some(bk) = set.reference_build.as_deref().map_or(Some("GRCh38"), decodingus_build_key) else {
+            let Some(bk) = set
+                .reference_build
+                .as_deref()
+                .map_or(Some("GRCh38"), decodingus_build_key)
+            else {
                 continue;
             };
             let Some(tree) = trees.get(bk) else { continue };
             let calls = Self::vset_chr_y_calls(set);
             if !calls.is_empty() {
-                by_build.entry(bk).or_default().push((set.source_type, strand_reconcile_to_tree(tree, calls)));
+                by_build
+                    .entry(bk)
+                    .or_default()
+                    .push((set.source_type, strand_reconcile_to_tree(tree, calls)));
             }
         }
         let Some(bk) = by_build
@@ -1589,7 +1677,11 @@ impl App {
                 continue;
             };
             if !calls.is_empty() {
-                sources.push((format!("aln #{} · {}", a.id, a.aligner), SourceType::WgsShortRead, calls));
+                sources.push((
+                    format!("aln #{} · {}", a.id, a.aligner),
+                    SourceType::WgsShortRead,
+                    calls,
+                ));
             }
         }
 
@@ -1650,7 +1742,11 @@ impl App {
             .filter_map(|c| c.alternate.chars().next().map(|b| (c.position, b.to_ascii_uppercase())))
             .collect();
         if !chip_mt.is_empty() {
-            sources.push(("Chip mtDNA panel".to_string(), SourceType::Chip, strand_reconcile_to_tree(tree, chip_mt)));
+            sources.push((
+                "Chip mtDNA panel".to_string(),
+                SourceType::Chip,
+                strand_reconcile_to_tree(tree, chip_mt),
+            ));
         }
 
         Ok(sources)
@@ -1701,7 +1797,9 @@ impl App {
             DnaType::Mt => self.cached_mt_profile(biosample_guid).await?,
         };
         let Some(profile) = profile else { return Ok(None) };
-        let Some(terminal) = profile.terminal.clone() else { return Ok(None) };
+        let Some(terminal) = profile.terminal.clone() else {
+            return Ok(None);
+        };
 
         // Render on the configured provider's tree so the node names + defining SNPs line up with the
         // profile's placement (which followed the same provider). Y: DecodingUs in the subject's
@@ -1902,7 +2000,9 @@ impl App {
         let Some(alignment_id) = self.pick_alignment_for(guid, dna).await? else {
             return Ok(None);
         };
-        Ok(Some(self.branch_report(alignment_id, dna, node_query, max_depth).await?))
+        Ok(Some(
+            self.branch_report(alignment_id, dna, node_query, max_depth).await?,
+        ))
     }
 
     /// The persisted autosomal consensus-profile snapshot for a subject, if built — cheap (no
@@ -1939,11 +2039,14 @@ impl App {
         &self,
         biosample_guid: SampleGuid,
     ) -> Result<Option<DiploidProfile>, AppError> {
-        self.build_autosomal_profile_inner(biosample_guid, true).await.map(Some).or_else(|e| match e {
-            // "no source" isn't an error for a refresh — the subject just has nothing cached yet.
-            AppError::Import(_) => Ok(None),
-            other => Err(other),
-        })
+        self.build_autosomal_profile_inner(biosample_guid, true)
+            .await
+            .map(Some)
+            .or_else(|e| match e {
+                // "no source" isn't an error for a refresh — the subject just has nothing cached yet.
+                AppError::Import(_) => Ok(None),
+                other => Err(other),
+            })
     }
 
     /// **Panel batch-process mode** (progressive-consensus, docs §7.17): genotype one alignment at
@@ -2094,7 +2197,8 @@ impl App {
         // One source per imported **external autosomal call set** (a trusted 1240K EIGENSTRAT set —
         // GATK4 / pileupCaller). Resolved to CHM13 panel dosages at import and stored, so it pools in
         // with no CRAM decode (available to both the full build and the progressive refresh).
-        for row in navigator_store::external_panel_dosage::list_for_biosample(self.store.pool(), biosample_guid).await? {
+        for row in navigator_store::external_panel_dosage::list_for_biosample(self.store.pool(), biosample_guid).await?
+        {
             match serde_json::from_str::<Vec<SiteGenotype>>(&row.dosages) {
                 Ok(gts) => {
                     let obs = to_obs(gts);
@@ -2407,10 +2511,12 @@ impl App {
         }
         let reference = self.gateway.cached_reference("chm13v2.0")?;
         let pairs = tokio::task::spawn_blocking(move || {
-            navigator_analysis::reader::read_contig_sequence(&reference, "chrM").ok().map(|chrm| {
-                let chrm = String::from_utf8_lossy(&chrm).into_owned();
-                navigator_analysis::mtvariants::mt_position_map(navigator_analysis::mtvariants::rcrs(), &chrm)
-            })
+            navigator_analysis::reader::read_contig_sequence(&reference, "chrM")
+                .ok()
+                .map(|chrm| {
+                    let chrm = String::from_utf8_lossy(&chrm).into_owned();
+                    navigator_analysis::mtvariants::mt_position_map(navigator_analysis::mtvariants::rcrs(), &chrm)
+                })
         })
         .await
         .ok()
@@ -2574,9 +2680,7 @@ impl App {
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 for e in entries.flatten() {
                     let p = e.path();
-                    if p.extension().and_then(|x| x.to_str()) == Some("json")
-                        && std::fs::remove_file(&p).is_ok()
-                    {
+                    if p.extension().and_then(|x| x.to_str()) == Some("json") && std::fs::remove_file(&p).is_ok() {
                         removed += 1;
                     }
                 }
@@ -2810,7 +2914,9 @@ impl App {
         // required; PCA + fine frequencies are optional (best-effort — the feature degrades if absent).
         self.ensure_ancestry_asset(build, &ancestry_panel_path(build)).await?;
         let _ = self.ensure_ancestry_asset(build, &ancestry_pca_path(build)).await;
-        let _ = self.ensure_ancestry_asset(build, &ancestry_freq_global_path(build)).await;
+        let _ = self
+            .ensure_ancestry_asset(build, &ancestry_freq_global_path(build))
+            .await;
         let panel_path = ancestry_panel_path(build);
         let panel_bytes = read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
@@ -2878,10 +2984,7 @@ impl App {
     /// no autosomal calls, or the deep model does not apply (non-European / model rejected / infeasible
     /// weights). `None` persists nothing — keeping an inapplicable breakdown off the UI *and* out of
     /// the PDS.
-    pub async fn estimate_deep_ancestry(
-        &self,
-        biosample_guid: SampleGuid,
-    ) -> Result<Option<AncestryResult>, AppError> {
+    pub async fn estimate_deep_ancestry(&self, biosample_guid: SampleGuid) -> Result<Option<AncestryResult>, AppError> {
         if !crate::ANCIENT_ANCESTRY_ENABLED {
             return Ok(None);
         }
@@ -2907,7 +3010,9 @@ impl App {
         // Both the scope gate and the qpAdm fit read the *same* genotypes; every panel here is
         // CHM13-canonical (§7.16), so no per-site re-keying is needed.
         let profile = self.cached_autosomal_profile(biosample_guid).await?.ok_or_else(|| {
-            AppError::Import("build the autosomal consensus first (Autosomal tab) before estimating deep ancestry".into())
+            AppError::Import(
+                "build the autosomal consensus first (Autosomal tab) before estimating deep ancestry".into(),
+            )
         })?;
         let genotypes = consensus_genotypes(&profile);
         if genotypes.is_empty() {
@@ -2957,10 +3062,7 @@ impl App {
     ///
     /// Every row reports its dispersion even when the applicability gate rejects it, so a rejection
     /// can be read as a magnitude rather than taken on faith.
-    pub async fn ancient_ancestry_stability(
-        &self,
-        biosample_guid: SampleGuid,
-    ) -> Result<Vec<AncientFitRow>, AppError> {
+    pub async fn ancient_ancestry_stability(&self, biosample_guid: SampleGuid) -> Result<Vec<AncientFitRow>, AppError> {
         // Build the consensus on demand — this is a diagnostic, and requiring the caller to have
         // clicked through the GUI first would make it useless from the CLI.
         let profile = match self.cached_autosomal_profile(biosample_guid).await? {
@@ -2969,8 +3071,7 @@ impl App {
         };
         let build = ReferenceBuild::Chm13v2;
         let path = ancestry_freq_ancient_path(build);
-        let bytes =
-            read_verified_asset(build, &path)?.ok_or_else(|| AppError::AncestryPanelMissing(path.clone()))?;
+        let bytes = read_verified_asset(build, &path)?.ok_or_else(|| AppError::AncestryPanelMissing(path.clone()))?;
         let panel = AncestryPanel::from_bytes(&bytes)?;
         // The super-pop panel too: deep ancestry is scoped by the modern estimate, so each view has
         // to be scored by both models or the diagnostic wouldn't be reproducing the shipped policy.
@@ -3041,11 +3142,16 @@ impl App {
             // (MAF/strand/polarity/ts-tv) has been ruled out.
             if let Ok(dump_path) = std::env::var("NAVIGATOR_ANCIENT_DUMP") {
                 let want = std::env::var("NAVIGATOR_ANCIENT_ALN").unwrap_or_else(|_| "#9".into());
-                let freq: std::collections::HashMap<(&str, i64), &Vec<f32>> =
-                    panel.sites.iter().map(|s| ((s.contig.as_str(), s.position), &s.freqs)).collect();
+                let freq: std::collections::HashMap<(&str, i64), &Vec<f32>> = panel
+                    .sites
+                    .iter()
+                    .map(|s| ((s.contig.as_str(), s.position), &s.freqs))
+                    .collect();
                 let mut out = String::from("chip\taln_dosage\twhg\tanf\tsteppe\n");
                 for v in &profile.variants {
-                    let Some(f) = freq.get(&(v.contig.as_str(), v.position)) else { continue };
+                    let Some(f) = freq.get(&(v.contig.as_str(), v.position)) else {
+                        continue;
+                    };
                     if f.len() != 3 {
                         continue;
                     }
@@ -3077,33 +3183,34 @@ impl App {
             };
 
             // One source's own observed dosages, restricted to the variants the predicate keeps.
-            let build_single =
-                |label: &str, keep: &dyn Fn(&navigator_domain::consensus::DiploidVariant) -> bool| -> Vec<SiteGenotype> {
-                    profile
-                        .variants
-                        .iter()
-                        .filter(|v| keep(v))
-                        .filter_map(|v| {
-                            let obs = v.sources.iter().find(|s| s.label.as_str() == label)?;
-                            (obs.dosage >= 0).then(|| SiteGenotype {
-                                name: v.name.clone(),
-                                contig: v.contig.clone(),
-                                position: v.position,
-                                reference_allele: v.reference.clone(),
-                                alternate_allele: v.alternate.clone(),
-                                ploidy: 2,
-                                dosage: obs.dosage as i32,
-                                gq: 0,
-                                depth: 0,
-                                ref_depth: 0,
-                                alt_depth: 0,
-                                pls: Vec::new(),
-                                gt: None,
-                                allele_depths: None,
-                            })
+            let build_single = |label: &str,
+                                keep: &dyn Fn(&navigator_domain::consensus::DiploidVariant) -> bool|
+             -> Vec<SiteGenotype> {
+                profile
+                    .variants
+                    .iter()
+                    .filter(|v| keep(v))
+                    .filter_map(|v| {
+                        let obs = v.sources.iter().find(|s| s.label.as_str() == label)?;
+                        (obs.dosage >= 0).then(|| SiteGenotype {
+                            name: v.name.clone(),
+                            contig: v.contig.clone(),
+                            position: v.position,
+                            reference_allele: v.reference.clone(),
+                            alternate_allele: v.alternate.clone(),
+                            ploidy: 2,
+                            dosage: obs.dosage as i32,
+                            gq: 0,
+                            depth: 0,
+                            ref_depth: 0,
+                            alt_depth: 0,
+                            pls: Vec::new(),
+                            gt: None,
+                            allele_depths: None,
                         })
-                        .collect()
-                };
+                    })
+                    .collect()
+            };
 
             // Each source alone: take that source's own observed dosage at each site. For a WGS
             // source, also refit it three ways to localize the stability bias:
@@ -3118,17 +3225,25 @@ impl App {
                 });
                 fit(format!("source: {label}"), &build_single(label, &|_| true));
                 if !is_chip {
-                    fit(format!("source: {label} ∩chip"), &build_single(label, &|v| chip_sites.contains(&v.name)));
-                    fit(format!("source: {label} ∁chip"), &build_single(label, &|v| !chip_sites.contains(&v.name)));
-                    fit(format!("source: {label} ¬ambig"), &build_single(label, &|v| !is_ambiguous(v)));
+                    fit(
+                        format!("source: {label} ∩chip"),
+                        &build_single(label, &|v| chip_sites.contains(&v.name)),
+                    );
+                    fit(
+                        format!("source: {label} ∁chip"),
+                        &build_single(label, &|v| !chip_sites.contains(&v.name)),
+                    );
+                    fit(
+                        format!("source: {label} ¬ambig"),
+                        &build_single(label, &|v| !is_ambiguous(v)),
+                    );
                 }
             }
 
             // Density: deterministic thinning of the pooled consensus. A well-conditioned fit barely
             // moves when half the evidence is removed; an over-fit one lurches.
             for (keep, label) in [(2usize, "consensus ÷2 sites"), (4, "consensus ÷4 sites")] {
-                let thinned: Vec<SiteGenotype> =
-                    consensus.iter().step_by(keep).cloned().collect();
+                let thinned: Vec<SiteGenotype> = consensus.iter().step_by(keep).cloned().collect();
                 fit(label.to_string(), &thinned);
             }
             rows
@@ -3281,7 +3396,9 @@ impl App {
                     let phaser = ReferencePhaser::new(&hap, &gmap, PhaseParams::default());
                     let phased_g = phaser.phase(&genotypes);
                     let segs = navigator_analysis::lai::paint_copying_lai(&phased_g, &hap, &gmap, &prior, &lai_params);
-                    let anchor = parent_genos.as_ref().and_then(|pg| anchor_side_to_parent(&phased_g, pg));
+                    let anchor = parent_genos
+                        .as_ref()
+                        .and_then(|pg| anchor_side_to_parent(&phased_g, pg));
                     (segs, true, anchor)
                 }
                 None => {
@@ -3299,7 +3416,11 @@ impl App {
         .await?;
 
         let side_labels = build_side_labels(phased, anchor_side, parent_meta.as_ref());
-        let result = PaintingResult { segments, side_labels, phased };
+        let result = PaintingResult {
+            segments,
+            side_labels,
+            phased,
+        };
 
         // Cache keyed to the consensus signature so it's reused until the consensus is rebuilt.
         consensus_painting::upsert(
@@ -3461,7 +3582,9 @@ impl App {
         panel_fingerprint: &str,
     ) -> Result<Option<(f32, String)>, AppError> {
         let build = ReferenceBuild::Chm13v2;
-        let _ = self.ensure_ancestry_asset(build, &crate::archaic_marker_dist_path(build)).await;
+        let _ = self
+            .ensure_ancestry_asset(build, &crate::archaic_marker_dist_path(build))
+            .await;
         let Some(bytes) = crate::read_verified_asset(build, &crate::archaic_marker_dist_path(build))? else {
             return Ok(None);
         };
@@ -3643,7 +3766,10 @@ impl App {
         let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
         let gmap = crate::load_genetic_map(rb, &pairs);
 
-        eprintln!("archaic segments: {} calls over {contigs_present} autosome(s)", calls.len());
+        eprintln!(
+            "archaic segments: {} calls over {contigs_present} autosome(s)",
+            calls.len()
+        );
         let result = tokio::task::spawn_blocking(move || -> Result<_, AppError> {
             use navigator_analysis::archaic_match as am;
 
@@ -3661,7 +3787,11 @@ impl App {
                     contig,
                     &classify,
                     pos_map,
-                    |p| seq.get((p - 1).max(0) as usize).copied().map(|b| b.to_ascii_uppercase()),
+                    |p| {
+                        seq.get((p - 1).max(0) as usize)
+                            .copied()
+                            .map(|b| b.to_ascii_uppercase())
+                    },
                     &callable,
                     am::MatchConfig::default().min_callable_fraction,
                 );
@@ -3707,7 +3837,10 @@ impl App {
         panel: &ArchaicMarkerPanel,
     ) -> Result<Vec<SiteGenotype>, AppError> {
         let kind = crate::archaic_panel_cache_kind();
-        if let Some(g) = self.load_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION).await? {
+        if let Some(g) = self
+            .load_analysis(alignment_id, &kind, caller::GENOTYPE_VERSION)
+            .await?
+        {
             return Ok(g);
         }
         let build = self.alignment_or_err(alignment_id).await?.reference_build;
@@ -3756,7 +3889,9 @@ impl App {
             for s in &panel.sites {
                 let Some(l) = s.locus(&build) else { continue };
                 let key = navigator_analysis::contig::bare_upper(&l.contig);
-                let Some(contig) = index.get(&key).cloned() else { continue };
+                let Some(contig) = index.get(&key).cloned() else {
+                    continue;
+                };
                 targets.push((
                     s,
                     Site {
@@ -3783,10 +3918,8 @@ impl App {
             .await??;
 
             // Re-key onto CHM13: same position/alleles the counter expects, dosage re-expressed.
-            let by_pos: HashMap<(&str, i64), &SiteGenotype> = called
-                .iter()
-                .map(|g| ((g.contig.as_str(), g.position), g))
-                .collect();
+            let by_pos: HashMap<(&str, i64), &SiteGenotype> =
+                called.iter().map(|g| ((g.contig.as_str(), g.position), g)).collect();
             let mut out = Vec::with_capacity(targets.len());
             for (site, target) in &targets {
                 let Some(g) = by_pos.get(&(target.contig.as_str(), target.position)) else {
@@ -3836,16 +3969,17 @@ impl App {
         alignment_id: i64,
     ) -> Result<ArchaicMarkerResult, AppError> {
         let build = ReferenceBuild::Chm13v2;
-        self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build)).await?;
+        self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build))
+            .await?;
         let path = crate::archaic_markers_path(build);
-        let bytes = crate::read_verified_asset(build, &path)?
-            .ok_or_else(|| AppError::AncestryPanelMissing(path.clone()))?;
+        let bytes =
+            crate::read_verified_asset(build, &path)?.ok_or_else(|| AppError::AncestryPanelMissing(path.clone()))?;
         let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
         let genotypes = self.genotype_archaic_for_alignment(alignment_id, &panel).await?;
-        Ok(tokio::task::spawn_blocking(move || {
-            navigator_analysis::archaic::count_archaic_markers(&genotypes, &panel)
-        })
-        .await?)
+        Ok(
+            tokio::task::spawn_blocking(move || navigator_analysis::archaic::count_archaic_markers(&genotypes, &panel))
+                .await?,
+        )
     }
 
     /// The cached archaic (Tier A) marker count for a subject, if one was computed from the
@@ -3884,16 +4018,15 @@ impl App {
         let row = consensus_profile::get(self.store.pool(), biosample_guid, "Auto")
             .await?
             .ok_or_else(|| {
-                AppError::Import(
-                    "build the autosomal consensus first (Autosomal tab) before the archaic report".into(),
-                )
+                AppError::Import("build the autosomal consensus first (Autosomal tab) before the archaic report".into())
             })?;
         // Load the panel BEFORE the cache check: the cache signature is salted with the panel's
         // hash as well as the consensus signature, because rebuilding the panel changes the site
         // list and the per-class split, and keying on the consensus alone would serve a stale count
         // computed against a different panel.
         let build = ReferenceBuild::Chm13v2;
-        self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build)).await?;
+        self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build))
+            .await?;
         let panel_path = crate::archaic_markers_path(build);
         let bytes = crate::read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
@@ -3932,10 +4065,9 @@ impl App {
             }
         }
 
-        let mut result = tokio::task::spawn_blocking(move || {
-            navigator_analysis::archaic::count_archaic_markers(&genotypes, &panel)
-        })
-        .await?;
+        let mut result =
+            tokio::task::spawn_blocking(move || navigator_analysis::archaic::count_archaic_markers(&genotypes, &panel))
+                .await?;
 
         // Percentile — valid at ANY coverage now, because the cohort is scored over exactly the
         // sites this subject called rather than over the whole panel. A chip reaching ~3% of the
@@ -4520,8 +4652,8 @@ impl App {
     ) -> Result<Option<String>, AppError> {
         let bam = bam.to_path_buf();
         let reference = reference.map(|p| p.to_path_buf());
-        let names = tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, reference.as_deref()))
-            .await??;
+        let names =
+            tokio::task::spawn_blocking(move || caller::header_contig_names(&bam, reference.as_deref())).await??;
         // Candidate spellings for the requested contig, in preference order.
         let bare = navigator_analysis::contig::bare(contig);
         let mut candidates: Vec<String> = vec![contig.to_string(), bare.to_string()];
@@ -4571,7 +4703,9 @@ impl App {
                 chr_y_gvcf_for_alignment(aln)
             };
             if let Some(gvcf) = gvcf {
-                return self.gvcf_base_calls(aln.id, contig, &gvcf, tree, tree_source_build).await;
+                return self
+                    .gvcf_base_calls(aln.id, contig, &gvcf, tree, tree_source_build)
+                    .await;
             }
         }
         self.base_calls(aln.id, contig, tree, tree_source_build).await
@@ -4669,13 +4803,8 @@ impl App {
                         let mut calls =
                             caller::call_bases_at(&bam, &resolved, &targets, &params, reference.as_deref())?;
                         if !indel_targets.is_empty() {
-                            let indels = caller::call_indels_at(
-                                &bam,
-                                &resolved,
-                                &indel_targets,
-                                &params,
-                                reference.as_deref(),
-                            )?;
+                            let indels =
+                                caller::call_indels_at(&bam, &resolved, &indel_targets, &params, reference.as_deref())?;
                             calls.extend(indels); // sentinel overlays the anchor's base call
                         }
                         Ok(calls)
@@ -4687,7 +4816,8 @@ impl App {
 
         // Cache the genotypes (stamped with the BAM source_sig) so a rebuild skips the walk.
         let pairs: Vec<(i64, char)> = calls.iter().map(|(&p, &b)| (p, b)).collect();
-        self.save_analysis(alignment_id, GENOTYPE_KIND, &cache_key, &pairs).await?;
+        self.save_analysis(alignment_id, GENOTYPE_KIND, &cache_key, &pairs)
+            .await?;
         Ok(calls)
     }
 
@@ -4747,7 +4877,8 @@ impl App {
             })
             .await?;
             let Ok(pairs) = map else { return Ok(None) }; // chrM absent/unreadable → direct fallback
-                                                          // rcrs_idx/chrm_idx are 0-based; tree + query positions are 1-based.
+
+            // rcrs_idx/chrm_idx are 0-based; tree + query positions are 1-based.
             let by_rcrs: HashMap<i64, i64> = pairs.into_iter().map(|(r, c)| (r as i64 + 1, c as i64 + 1)).collect();
             let lifted = targets
                 .iter()
@@ -5025,13 +5156,13 @@ mod vset_autosomal_calls_tests {
     #[test]
     fn genotype_becomes_reference_forward_allele_pair() {
         let s = set(vec![
-            call("chr1", 100, "C", "T", "1/1"),  // hom-alt → (T, T)
-            call("chr1", 200, "A", "G", "0/1"),  // het → (A, G)
-            call("chr1", 300, "G", "A", "1/."),  // het w/ no-call partner → (G, A)
-            call("chr7", 400, "A", "C", ""),     // no genotype → assume het → (A, C)
-            call("chr2", 500, "A", "G", "1/2"),  // tri-allelic → dropped
-            call("chrY", 600, "A", "G", "1"),    // not autosomal → dropped
-            call("chrM", 700, "A", "G", "1"),    // not autosomal → dropped
+            call("chr1", 100, "C", "T", "1/1"), // hom-alt → (T, T)
+            call("chr1", 200, "A", "G", "0/1"), // het → (A, G)
+            call("chr1", 300, "G", "A", "1/."), // het w/ no-call partner → (G, A)
+            call("chr7", 400, "A", "C", ""),    // no genotype → assume het → (A, C)
+            call("chr2", 500, "A", "G", "1/2"), // tri-allelic → dropped
+            call("chrY", 600, "A", "G", "1"),   // not autosomal → dropped
+            call("chrM", 700, "A", "G", "1"),   // not autosomal → dropped
         ]);
         let mut got = App::vset_autosomal_calls(&s);
         got.sort_by_key(|(_, p, _, _)| *p);
@@ -5114,7 +5245,10 @@ mod painting_anchor_tests {
     #[test]
     fn side_labels_from_sex_and_anchor() {
         // Unphased → neutral Side A/B regardless of anchor.
-        assert_eq!(build_side_labels(false, Some(0), None), ["Side A".to_string(), "Side B".to_string()]);
+        assert_eq!(
+            build_side_labels(false, Some(0), None),
+            ["Side A".to_string(), "Side B".to_string()]
+        );
 
         // Phased, anchored to side 0, parent female → side 0 Mother, side 1 Father.
         let mother = (Some("female".to_string()), "Mum".to_string());
@@ -5135,7 +5269,10 @@ mod painting_anchor_tests {
             ["Parent: Kim".to_string(), "Other parent".to_string()]
         );
         // Phased but no anchor → neutral.
-        assert_eq!(build_side_labels(true, None, None), ["Side A".to_string(), "Side B".to_string()]);
+        assert_eq!(
+            build_side_labels(true, None, None),
+            ["Side A".to_string(), "Side B".to_string()]
+        );
     }
 
     #[test]

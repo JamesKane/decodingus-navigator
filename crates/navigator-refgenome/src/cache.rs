@@ -143,7 +143,10 @@ mod tests {
         atomic_write(&path, b"{\"x\":1}").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"x\":1}");
         // The rename consumes the temp, so only the target remains — no stray `*.tmp.*` files.
-        let entries: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(entries, vec![std::ffi::OsString::from("cfg.json")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -157,8 +160,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("atomicw_{}_conc", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = Arc::new(dir.join("cfg.json"));
-        let payloads: Arc<Vec<String>> =
-            Arc::new((0..8).map(|i| format!("[{i}{}]", ",0".repeat(i * 400))).collect());
+        let payloads: Arc<Vec<String>> = Arc::new((0..8).map(|i| format!("[{i}{}]", ",0".repeat(i * 400))).collect());
         atomic_write(&path, payloads[0].as_bytes()).unwrap();
         let mut handles = Vec::new();
         for _ in 0..24 {
@@ -191,7 +193,10 @@ mod tests {
         let started = std::time::Instant::now();
         let err = read_atomic(&path).expect_err("missing file must error");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
-        assert!(started.elapsed() < std::time::Duration::from_millis(100), "missing file was retried");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "missing file was retried"
+        );
         atomic_write(&path, b"{\"x\":1}").unwrap();
         assert_eq!(read_atomic(&path).unwrap(), b"{\"x\":1}");
         let _ = std::fs::remove_dir_all(&dir);

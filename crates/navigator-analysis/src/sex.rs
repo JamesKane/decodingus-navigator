@@ -304,7 +304,12 @@ mod tests {
     #[test]
     fn y_scoped_detects_y_only_extracts() {
         // chrY in the millions, autosomes only a few dozen mismapped reads, no chrX → Y-scoped.
-        assert!(is_y_scoped([("chrY", 3_000_000), ("chr1", 30), ("chr2", 24), ("chr7", 12)]));
+        assert!(is_y_scoped([
+            ("chrY", 3_000_000),
+            ("chr1", 30),
+            ("chr2", 24),
+            ("chr7", 12)
+        ]));
         // A pure chrY-only alignment (nothing elsewhere) → Y-scoped.
         assert!(is_y_scoped([("chrY", 2_000_000)]));
         // chrY + chrM only (the chrYM.cram shape) → Y-scoped (chrM is neither autosome nor chrX).
@@ -314,9 +319,17 @@ mod tests {
     #[test]
     fn y_scoped_rejects_wgs_and_females() {
         // Male WGS: autosomes dwarf chrY → not Y-scoped (the ratio walk handles these).
-        assert!(!is_y_scoped([("chr1", 200_000_000), ("chrX", 5_000_000), ("chrY", 3_000_000)]));
+        assert!(!is_y_scoped([
+            ("chr1", 200_000_000),
+            ("chrX", 5_000_000),
+            ("chrY", 3_000_000)
+        ]));
         // Female WGS: chrY only a trace of mismapping → not Y-scoped.
-        assert!(!is_y_scoped([("chr1", 200_000_000), ("chrX", 10_000_000), ("chrY", 300)]));
+        assert!(!is_y_scoped([
+            ("chr1", 200_000_000),
+            ("chrX", 10_000_000),
+            ("chrY", 300)
+        ]));
         // Near-empty alignment: a handful of chrY reads is not enough to judge.
         assert!(!is_y_scoped([("chrY", 50)]));
     }

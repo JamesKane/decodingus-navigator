@@ -201,7 +201,13 @@ fn span_cm(gmap: &GeneticMap, chr: &str, start_bp: i64, end_bp: i64) -> f64 {
 
 /// Log-space 2-state HMM (0 = Normal, 1 = Autozygous) over one chromosome's sorted sites; returns
 /// the stitched Autozygous runs (unfiltered).
-fn call_chromosome(chr: &str, sites: &[(i64, bool)], gmap: &GeneticMap, cfg: &RohConfig, baseline: f64) -> Vec<RohSegment> {
+fn call_chromosome(
+    chr: &str,
+    sites: &[(i64, bool)],
+    gmap: &GeneticMap,
+    cfg: &RohConfig,
+    baseline: f64,
+) -> Vec<RohSegment> {
     let n = sites.len();
     let ln = |x: f64| x.max(1e-300).ln();
 

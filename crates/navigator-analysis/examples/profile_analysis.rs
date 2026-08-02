@@ -36,16 +36,24 @@ fn main() {
         coverage::estimate_molecule_lengths(bam, Some(reference)).ok()
     });
     timed("coverage SEQUENTIAL  whole-genome", || {
-        coverage::collect_coverage_callable(bam, reference, &params, None).map(|_| ()).err()
+        coverage::collect_coverage_callable(bam, reference, &params, None)
+            .map(|_| ())
+            .err()
     });
     timed("coverage SEQUENTIAL  scoped chrY+chrM", || {
-        coverage::collect_coverage_callable(bam, reference, &params, Some(&ym)).map(|_| ()).err()
+        coverage::collect_coverage_callable(bam, reference, &params, Some(&ym))
+            .map(|_| ())
+            .err()
     });
     timed("coverage PARALLEL    whole-genome", || {
-        unified::collect_unified_metrics_parallel(bam, reference, &params, None).map(|_| ()).err()
+        unified::collect_unified_metrics_parallel(bam, reference, &params, None)
+            .map(|_| ())
+            .err()
     });
     timed("coverage PARALLEL    scoped chrY+chrM", || {
-        unified::collect_unified_metrics_parallel(bam, reference, &params, Some(&ym)).map(|_| ()).err()
+        unified::collect_unified_metrics_parallel(bam, reference, &params, Some(&ym))
+            .map(|_| ())
+            .err()
     });
 
     // chrY haplogroup genotyping pass: a region query over chrY tallying ~200k target sites
@@ -53,6 +61,8 @@ fn main() {
     let hp = HaploidCallerParams::default();
     let targets: HashSet<i64> = (1..=200_000u32).map(|i| i as i64 * 300).collect();
     timed("chrY genotyping  call_bases_at (200k sites)", || {
-        caller::call_bases_at(bam, "chrY", &targets, &hp, Some(reference)).map(|_| ()).err()
+        caller::call_bases_at(bam, "chrY", &targets, &hp, Some(reference))
+            .map(|_| ())
+            .err()
     });
 }

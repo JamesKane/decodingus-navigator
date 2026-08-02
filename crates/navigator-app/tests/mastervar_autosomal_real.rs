@@ -52,9 +52,15 @@ async fn mastervar_feeds_autosomal_and_ancestry() {
         profile.variants.len()
     );
     for s in &profile.sources {
-        println!("    source: {} ({:?}) — {} sites", s.label, s.source_type, s.variant_count);
+        println!(
+            "    source: {} ({:?}) — {} sites",
+            s.label, s.source_type, s.variant_count
+        );
     }
-    assert!(!profile.sources.is_empty(), "the masterVar should be an autosomal source");
+    assert!(
+        !profile.sources.is_empty(),
+        "the masterVar should be an autosomal source"
+    );
     assert!(
         profile.variants.len() > 10_000,
         "a genome-wide source should densify to a large panel overlap, got {}",

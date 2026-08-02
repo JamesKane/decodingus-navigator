@@ -26,12 +26,12 @@ use noodles::core::Region;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::cancel::CancelToken;
 use crate::contig;
 use crate::coverage::{
     merge_coverage_partials, CallableLociParams, ContigCoverageAccum, ContigCoveragePartial, CoverageResult,
     CoverageState,
 };
-use crate::cancel::CancelToken;
 use crate::error::AnalysisError;
 use crate::read_metrics::{ReadMetrics, ReadMetricsState};
 use crate::reader::{self, RecordSink};
@@ -141,7 +141,14 @@ pub fn collect_unified_metrics(
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
 ) -> Result<UnifiedMetricsResult, AnalysisError> {
-    collect_unified_metrics_with_progress(bam_path, reference_path, params, contig_allowlist, &mut |_, _| {}, &CancelToken::none())
+    collect_unified_metrics_with_progress(
+        bam_path,
+        reference_path,
+        params,
+        contig_allowlist,
+        &mut |_, _| {},
+        &CancelToken::none(),
+    )
 }
 
 /// Like [`collect_unified_metrics`], reporting `progress(contigs_done, contigs_total)` as the
@@ -208,7 +215,14 @@ pub fn collect_unified_metrics_parallel(
     params: &CallableLociParams,
     contig_allowlist: Option<&HashSet<String>>,
 ) -> Result<UnifiedMetricsResult, AnalysisError> {
-    collect_unified_metrics_parallel_with_progress(bam_path, reference_path, params, contig_allowlist, &|_, _| {}, &CancelToken::none())
+    collect_unified_metrics_parallel_with_progress(
+        bam_path,
+        reference_path,
+        params,
+        contig_allowlist,
+        &|_, _| {},
+        &CancelToken::none(),
+    )
 }
 
 /// Worker threads for the per-contig fan-out. Defaults to all available cores capped at 12 —

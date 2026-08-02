@@ -250,17 +250,20 @@ impl App {
                 }
             }
             out.subjects_examined += 1;
-            let derived =
-                navigator_domain::identity::catalog_ids_from_provenance(&b.donor_identifier, b.sample_accession.as_deref());
+            let derived = navigator_domain::identity::catalog_ids_from_provenance(
+                &b.donor_identifier,
+                b.sample_accession.as_deref(),
+            );
             if derived.is_empty() {
                 continue;
             }
             out.subjects_matched += 1;
-            let existing: std::collections::HashSet<(String, String)> = external_id::list_for(self.store.pool(), b.guid)
-                .await?
-                .into_iter()
-                .map(|e| (e.source, e.external_id))
-                .collect();
+            let existing: std::collections::HashSet<(String, String)> =
+                external_id::list_for(self.store.pool(), b.guid)
+                    .await?
+                    .into_iter()
+                    .map(|e| (e.source, e.external_id))
+                    .collect();
             for (ns, val) in derived {
                 if existing.contains(&(ns.clone(), val.clone())) {
                     continue;
@@ -333,9 +336,7 @@ impl App {
                 }
             }
             // Skip samples whose name isn't a recognizable catalog alias unless `--all`.
-            if !all
-                && navigator_domain::identity::catalog_ids_from_provenance(&b.donor_identifier, None).is_empty()
-            {
+            if !all && navigator_domain::identity::catalog_ids_from_provenance(&b.donor_identifier, None).is_empty() {
                 continue;
             }
             if limit.is_some_and(|n| out.examined >= n) {
@@ -367,11 +368,12 @@ impl App {
                     out.examples.push(format!("{} → {acc}", b.donor_identifier));
                 }
             }
-            let existing: std::collections::HashSet<(String, String)> = external_id::list_for(self.store.pool(), b.guid)
-                .await?
-                .into_iter()
-                .map(|e| (e.source, e.external_id))
-                .collect();
+            let existing: std::collections::HashSet<(String, String)> =
+                external_id::list_for(self.store.pool(), b.guid)
+                    .await?
+                    .into_iter()
+                    .map(|e| (e.source, e.external_id))
+                    .collect();
             for (ns, val) in &ids {
                 if existing.contains(&(ns.clone(), val.clone())) {
                     continue;
@@ -705,9 +707,11 @@ impl App {
         source: &str,
         external_id: &str,
     ) -> Result<Option<SampleGuid>, AppError> {
-        Ok(navigator_store::external_id::find(self.store.pool(), source, external_id)
-            .await?
-            .map(|e| e.biosample_guid))
+        Ok(
+            navigator_store::external_id::find(self.store.pool(), source, external_id)
+                .await?
+                .map(|e| e.biosample_guid),
+        )
     }
 
     /// FTDNA-reported member labels for a Subject, if imported.

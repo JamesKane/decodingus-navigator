@@ -169,7 +169,10 @@ impl DuVariant {
         if let Some(p) = self.link_alleles() {
             return p;
         }
-        (coord.ancestral.clone().unwrap_or_default(), coord.derived.clone().unwrap_or_default())
+        (
+            coord.ancestral.clone().unwrap_or_default(),
+            coord.derived.clone().unwrap_or_default(),
+        )
     }
 }
 
@@ -299,7 +302,9 @@ pub fn normalize_polarity(tree: &mut HaploTree, reference: &HashMap<String, (Str
             if l.name.is_empty() {
                 continue;
             }
-            let Some((ra, rd)) = reference.get(&l.name) else { continue };
+            let Some((ra, rd)) = reference.get(&l.name) else {
+                continue;
+            };
             let la = l.ancestral.to_ascii_uppercase();
             let ld = l.derived.to_ascii_uppercase();
             let ra = ra.to_ascii_uppercase();
@@ -417,11 +422,7 @@ fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
     if b == d {
         return true;
     }
-    let ambiguous = locus
-        .ancestral
-        .chars()
-        .next()
-        .is_some_and(|a| strand_ambiguous(a, d));
+    let ambiguous = locus.ancestral.chars().next().is_some_and(|a| strand_ambiguous(a, d));
     !ambiguous && complement_base(b) == d
 }
 
@@ -803,7 +804,10 @@ fn node_counts(node: &HaploNode, calls: &HashMap<i64, char>) -> (usize, usize, u
 /// Public view of a node's `(derived, ancestral, no-call)` defining-SNP tally against `calls` — for
 /// diagnostics / tracing a placement path.
 pub fn node_call_counts(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64) -> (usize, usize, usize) {
-    tree.nodes.get(&node_id).map(|n| node_counts(n, calls)).unwrap_or((0, 0, 0))
+    tree.nodes
+        .get(&node_id)
+        .map(|n| node_counts(n, calls))
+        .unwrap_or((0, 0, 0))
 }
 
 /// Find a node by name for the branch-report tool: matches a **haplogroup name** (e.g. `R-FGC29071`)
@@ -1036,10 +1040,12 @@ mod tests {
     fn descent_by_node_buckets_path_with_state() {
         let t = parse_ftdna_json(TREE).unwrap();
         // Sample is derived at H (A146G) and H2 (A263G); H2a's SNP (C750T) was never called.
-        let state: HashMap<String, CallState> =
-            [("A146G".to_string(), CallState::Derived), ("A263G".to_string(), CallState::Derived)]
-                .into_iter()
-                .collect();
+        let state: HashMap<String, CallState> = [
+            ("A146G".to_string(), CallState::Derived),
+            ("A263G".to_string(), CallState::Derived),
+        ]
+        .into_iter()
+        .collect();
         let grouped = descent_by_node(&t, 4, &state); // terminal H2a
 
         // root → H → H2 → H2a, root carries no defining loci.
@@ -1321,11 +1327,26 @@ mod tests {
                 name: "CT".into(),
                 is_root: false,
                 loci: vec![
-                    Locus { position: 100, ancestral: "T".into(), derived: "C".into(), name: "PF1016".into() },
+                    Locus {
+                        position: 100,
+                        ancestral: "T".into(),
+                        derived: "C".into(),
+                        name: "PF1016".into(),
+                    },
                     // Already-aligned SNP — must be left untouched.
-                    Locus { position: 200, ancestral: "A".into(), derived: "G".into(), name: "M168".into() },
+                    Locus {
+                        position: 200,
+                        ancestral: "A".into(),
+                        derived: "G".into(),
+                        name: "M168".into(),
+                    },
                     // Strand-different alleles (G>A vs C>T) — not a pure swap, left untouched.
-                    Locus { position: 300, ancestral: "G".into(), derived: "A".into(), name: "S3".into() },
+                    Locus {
+                        position: 300,
+                        ancestral: "G".into(),
+                        derived: "A".into(),
+                        name: "S3".into(),
+                    },
                 ],
                 children: vec![],
             },
@@ -1479,7 +1500,15 @@ mod tests {
         let t = parse_ftdna_json(CONFIDENT_DIVERGENCE_TREE).unwrap();
         // Derived at H(146); ancestral at B(500) → carries none of B's derived (d == 0); but matches
         // all five of Bdeep's SNPs (a homoplasy block → 5 derived below B, past REDEEM_DERIVED).
-        let c = calls(&[(146, 'G'), (500, 'C'), (900, 'A'), (901, 'A'), (902, 'A'), (903, 'A'), (904, 'A')]);
+        let c = calls(&[
+            (146, 'G'),
+            (500, 'C'),
+            (900, 'A'),
+            (901, 'A'),
+            (902, 'A'),
+            (903, 'A'),
+            (904, 'A'),
+        ]);
         // Kulczynski is lured to Bdeep by the five coincidental matches...
         assert_eq!(score(&t, &c)[0].name, "Bdeep");
         // ...but B is a confident divergence (zero derived), never redeemed despite the derived block

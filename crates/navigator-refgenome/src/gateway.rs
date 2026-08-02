@@ -195,6 +195,7 @@ impl ReferenceGateway {
             })?;
         let sha = download::download(&self.http, &src.url, &path, progress).await?;
         verify_pinned(&path, src.sha256.as_deref(), &sha)?; // verify the artifact exactly as served
+
         // The cache stores chains as plain text (`load_liftover` reads them with `read_to_string`).
         // Every chain flows through the same path: if the downloaded artifact is gzipped (UCSC
         // serves `.over.chain.gz`; the curated bucket serves plain `.chain`), decompress it in place
@@ -770,7 +771,8 @@ mod tests {
         // Disk hit (any alias / the masked variant share CHM13's regions).
         let r = g.cached_genome_regions("hs1").expect("disk-cached regions");
         assert!(r.chromosome("chrY").unwrap().par.len() == 2); // PAR overlaid by the parser
-                                                               // Second call is an in-memory hit (same Arc).
+
+        // Second call is an in-memory hit (same Arc).
         let r2 = g.cached_genome_regions("chm13v2.0_maskedY_rCRS").unwrap();
         assert!(Arc::ptr_eq(&r, &r2));
 

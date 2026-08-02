@@ -666,7 +666,9 @@ impl App {
         }
         let kind = denovo_kind(&contig);
         let calls = tokio::task::spawn_blocking(move || {
-            navigator_analysis::guard_walk("de-novo calling", || caller::call_denovo(&bam, &reference, &contig, &params, &cancel))
+            navigator_analysis::guard_walk("de-novo calling", || {
+                caller::call_denovo(&bam, &reference, &contig, &params, &cancel)
+            })
         })
         .await??;
         self.save_analysis(alignment_id, &kind, caller::DENOVO_VERSION, &calls)
@@ -858,7 +860,8 @@ impl App {
     /// alignments (see [`consensus_diploid_calls`]), sample column `consensus`. Heavy; the export
     /// path runs it off the UI thread.
     pub async fn consensus_diploid_vcf(&self, biosample_guid: SampleGuid) -> Result<String, AppError> {
-        let calls = self.consensus_diploid_calls(biosample_guid, None, CancelToken::none())
+        let calls = self
+            .consensus_diploid_calls(biosample_guid, None, CancelToken::none())
             .await?;
         Ok(navigator_analysis::vcf::write_diploid_vcf("consensus", &calls))
     }
@@ -983,10 +986,10 @@ impl App {
             Some(p) => Some(PathBuf::from(p)),
             None => self.gateway.cached_reference(&aln.reference_build),
         };
-        Ok(tokio::task::spawn_blocking(move || {
-            navigator_analysis::preflight::diagnose(&bam, reference.as_deref())
-        })
-        .await?)
+        Ok(
+            tokio::task::spawn_blocking(move || navigator_analysis::preflight::diagnose(&bam, reference.as_deref()))
+                .await?,
+        )
     }
 
     pub async fn run_denovo_for_alignment(

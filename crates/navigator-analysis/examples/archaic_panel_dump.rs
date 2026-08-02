@@ -21,7 +21,9 @@ use navigator_analysis::archaic::{ArchaicMarkerPanel, ARCHAIC_GENOMES};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut a = std::env::args().skip(1);
-    let path = a.next().expect("usage: archaic_panel_dump <archaic_markers.bin> [contig ...]");
+    let path = a
+        .next()
+        .expect("usage: archaic_panel_dump <archaic_markers.bin> [contig ...]");
     let want: Vec<String> = a.collect();
 
     let panel = ArchaicMarkerPanel::from_bytes(&std::fs::read(&path)?).map_err(|e| e.to_string())?;

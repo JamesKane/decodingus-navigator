@@ -189,7 +189,10 @@ fn locus_call(rows: &[Row]) -> Option<VariantCall> {
     }
 
     // Diploid: reconstruct the two haplotypes. An `all` snp row means both alleles carry it.
-    if let Some(all) = rows.iter().find(|r| r.allele == Allele::All && r.var_type == VarType::Snp) {
+    if let Some(all) = rows
+        .iter()
+        .find(|r| r.allele == Allele::All && r.var_type == VarType::Snp)
+    {
         return snp_call(contig, position, reference, &all.allele_seq, rs_id, Some("1/1".into()));
     }
     let hap = |which: Allele| -> Hap {
@@ -277,9 +280,10 @@ pub fn parse_reader(reader: impl BufRead) -> Result<MasterVarImport, MasterVarEr
             continue;
         }
         if line.starts_with('>') {
-            columns = Some(Columns::from_header(&line).ok_or_else(|| {
-                MasterVarError::Format("column header is missing required masterVar fields".into())
-            })?);
+            columns =
+                Some(Columns::from_header(&line).ok_or_else(|| {
+                    MasterVarError::Format("column header is missing required masterVar fields".into())
+                })?);
             continue;
         }
         let Some(c) = columns.as_ref() else {
@@ -403,7 +407,10 @@ mod tests {
         );
         assert_eq!(out.calls.len(), 1);
         let c = &out.calls[0];
-        assert_eq!((c.position, c.reference.as_str(), c.alternate.as_str()), (9006, "T", "C"));
+        assert_eq!(
+            (c.position, c.reference.as_str(), c.alternate.as_str()),
+            (9006, "T", "C")
+        );
         assert_eq!(c.genotype.as_deref(), Some("0/1"));
     }
 
@@ -429,7 +436,10 @@ mod tests {
 
     #[test]
     fn first_rs_id_extracts_first_accession() {
-        assert_eq!(first_rs_id("dbsnp.100:rs2748067;dbsnp.131:rs76046194").as_deref(), Some("rs2748067"));
+        assert_eq!(
+            first_rs_id("dbsnp.100:rs2748067;dbsnp.131:rs76046194").as_deref(),
+            Some("rs2748067")
+        );
         assert_eq!(first_rs_id("").as_deref(), None);
         assert_eq!(first_rs_id("cosmic:COSM123").as_deref(), None);
     }

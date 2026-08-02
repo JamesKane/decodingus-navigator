@@ -16,8 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::Parser;
 use navigator_analysis::archaic::{
-    ArchaicCallable, ArchaicClassify, ArchaicOutgroup, CallableContig, ClassifyContig, DiagnosticClass,
-    PositionStream,
+    ArchaicCallable, ArchaicClassify, ArchaicOutgroup, CallableContig, ClassifyContig, DiagnosticClass, PositionStream,
 };
 
 use crate::pca::{open_maybe_gz, write_bin};
@@ -49,7 +48,9 @@ fn load_positions(path: &Path) -> Result<BTreeMap<String, Vec<i64>>> {
             continue;
         }
         let mut it = line.split_whitespace();
-        let (Some(c), Some(p)) = (it.next(), it.next()) else { continue };
+        let (Some(c), Some(p)) = (it.next(), it.next()) else {
+            continue;
+        };
         let Ok(pos) = p.parse::<i64>() else { continue };
         by_contig.entry(c.to_string()).or_default().push(pos);
     }
@@ -62,7 +63,11 @@ fn load_positions(path: &Path) -> Result<BTreeMap<String, Vec<i64>>> {
 
 pub fn build_archaic_outgroup(args: ArchaicOutgroupArgs) -> Result<()> {
     let by_contig = load_positions(&args.sites)?;
-    anyhow::ensure!(!by_contig.is_empty(), "no outgroup sites read from {}", args.sites.display());
+    anyhow::ensure!(
+        !by_contig.is_empty(),
+        "no outgroup sites read from {}",
+        args.sites.display()
+    );
 
     let mut contigs = Vec::with_capacity(by_contig.len());
     let mut total = 0usize;
@@ -167,7 +172,10 @@ pub fn build_archaic_classify(args: ArchaicClassifyArgs) -> Result<()> {
             }
         }
         if let Some(&(derived, class)) = payload.get(&idx) {
-            by_contig.entry(f[0].to_string()).or_default().push((end, derived, class));
+            by_contig
+                .entry(f[0].to_string())
+                .or_default()
+                .push((end, derived, class));
         }
     }
     anyhow::ensure!(!by_contig.is_empty(), "no classification sites survived the join");
@@ -249,7 +257,11 @@ pub fn build_archaic_callable(args: ArchaicCallableArgs) -> Result<()> {
             spans.entry(f[0].to_string()).or_default().push((s, e));
         }
     }
-    anyhow::ensure!(!spans.is_empty(), "no callable intervals read from {}", args.bed.display());
+    anyhow::ensure!(
+        !spans.is_empty(),
+        "no callable intervals read from {}",
+        args.bed.display()
+    );
 
     let mut contigs = Vec::with_capacity(spans.len());
     let mut total_bp = 0f64;
@@ -267,7 +279,9 @@ pub fn build_archaic_callable(args: ArchaicCallableArgs) -> Result<()> {
                 let win_end = start + (idx as i64 + 1) * args.window_bp;
                 let take = end.min(win_end) - cur;
                 if let Some(slot) = callable_bp.get_mut(idx) {
-                    *slot = slot.saturating_add(take.clamp(0, u16::MAX as i64) as u16).min(args.window_bp as u16);
+                    *slot = slot
+                        .saturating_add(take.clamp(0, u16::MAX as i64) as u16)
+                        .min(args.window_bp as u16);
                 }
                 cur = win_end;
             }

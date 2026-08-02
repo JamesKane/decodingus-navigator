@@ -15,7 +15,9 @@ use navigator_analysis::archaic::ArchaicClassify;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut a = std::env::args().skip(1);
-    let path = a.next().expect("usage: archaic_classify_dump <classify.bin> [contig ...]");
+    let path = a
+        .next()
+        .expect("usage: archaic_classify_dump <classify.bin> [contig ...]");
     let want: Vec<String> = a.collect();
 
     let cls = ArchaicClassify::from_bytes(&std::fs::read(&path)?).map_err(|e| e.to_string())?;

@@ -116,7 +116,10 @@ mod tests {
             Ok(())
         });
         canceller.cancel();
-        assert!(handle.join().unwrap().is_err(), "the loop must stop, not run to completion");
+        assert!(
+            handle.join().unwrap().is_err(),
+            "the loop must stop, not run to completion"
+        );
     }
 
     /// Cancellation must be reported as itself, never as a generic failure — the UI branches on

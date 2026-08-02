@@ -9,7 +9,13 @@ fn main() -> anyhow::Result<()> {
     println!("{} sites={} pops={:?}", a[0], p1.sites.len(), p1.populations);
     println!("{} sites={} pops={:?}", a[1], p2.sites.len(), p2.populations);
     println!("overlap = {}", s1.intersection(&s2).count());
-    println!("p1 sample contig: {:?}", p1.sites.first().map(|s| (&s.contig, s.position)));
-    println!("p2 sample contig: {:?}", p2.sites.first().map(|s| (&s.contig, s.position)));
+    println!(
+        "p1 sample contig: {:?}",
+        p1.sites.first().map(|s| (&s.contig, s.position))
+    );
+    println!(
+        "p2 sample contig: {:?}",
+        p2.sites.first().map(|s| (&s.contig, s.position))
+    );
     Ok(())
 }

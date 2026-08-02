@@ -65,11 +65,12 @@ impl App {
         let did = self.require_account()?;
         // Accounted-for rkeys: everything tracked in sync_state for the alignment collection, plus
         // the deterministic key for every live local alignment (so a not-yet-drained one isn't culled).
-        let mut keep: std::collections::HashSet<String> = sync_state::list_for_collection(self.store.pool(), &did, NS_ALIGNMENT)
-            .await?
-            .into_iter()
-            .map(|s| s.rkey)
-            .collect();
+        let mut keep: std::collections::HashSet<String> =
+            sync_state::list_for_collection(self.store.pool(), &did, NS_ALIGNMENT)
+                .await?
+                .into_iter()
+                .map(|s| s.rkey)
+                .collect();
         for a in alignment::list_all(self.store.pool()).await? {
             keep.insert(alignment_rkey(a.id));
         }

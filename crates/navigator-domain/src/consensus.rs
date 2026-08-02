@@ -896,9 +896,11 @@ mod tests {
         // Opposite-strand reads match via the complement (non-ambiguous A>C: comp T/G).
         assert_eq!(impute_state(Some('G'), "A", "C"), ConsensusState::Derived); // comp(G)=C=derived
         assert_eq!(impute_state(Some('T'), "A", "C"), ConsensusState::Ancestral); // comp(T)=A=ancestral
+
         // Strand-ambiguous C/G: complement of derived G is ancestral C → keep literal only.
         assert_eq!(impute_state(Some('C'), "C", "G"), ConsensusState::Ancestral);
         assert_eq!(impute_state(Some('A'), "C", "G"), ConsensusState::NoCall); // genuine third allele
+
         // No base → no call.
         assert_eq!(impute_state(None, "A", "G"), ConsensusState::NoCall);
     }
@@ -909,7 +911,8 @@ mod tests {
         // can't evaluate it — must be no-call, not a false derived.
         assert_eq!(impute_state(Some('G'), "G", "GAGC"), ConsensusState::NoCall); // insertion
         assert_eq!(impute_state(Some('G'), "GAGC", "G"), ConsensusState::NoCall); // deletion
-        assert_eq!(impute_state(Some('A'), "AT", "GC"), ConsensusState::NoCall); // MNP
+        assert_eq!(impute_state(Some('A'), "AT", "GC"), ConsensusState::NoCall);
+        // MNP
     }
 
     #[test]
@@ -937,8 +940,9 @@ mod tests {
         assert_eq!(v0[0].consensus_base.as_deref(), Some("T"));
 
         // Corrected polarity C>T → the same base is now Derived.
-        let polarity: BTreeMap<String, (String, String)> =
-            [("PF1016".to_string(), ("C".to_string(), "T".to_string()))].into_iter().collect();
+        let polarity: BTreeMap<String, (String, String)> = [("PF1016".to_string(), ("C".to_string(), "T".to_string()))]
+            .into_iter()
+            .collect();
         let (v1, _) = interpret(&observed, &polarity);
         assert_eq!(v1[0].consensus, ConsensusState::Derived);
         assert_eq!(v1[0].consensus_base.as_deref(), Some("T"));
@@ -953,8 +957,16 @@ mod tests {
         // A/G alleles, and comp(T)=A is ancestral — so T is treated as an opposite-strand ancestral
         // read here). A cleaner third-allele case: strand-ambiguous A/T with a C read stays C.
         let observed = to_observed(&[
-            ("a".into(), SourceType::WgsShortRead, vec![ConsensusObs::observed("S1", 1, "A", "T", Some('C'), true)]),
-            ("b".into(), SourceType::WgsShortRead, vec![ConsensusObs::observed("S1", 1, "A", "T", Some('C'), true)]),
+            (
+                "a".into(),
+                SourceType::WgsShortRead,
+                vec![ConsensusObs::observed("S1", 1, "A", "T", Some('C'), true)],
+            ),
+            (
+                "b".into(),
+                SourceType::WgsShortRead,
+                vec![ConsensusObs::observed("S1", 1, "A", "T", Some('C'), true)],
+            ),
         ]);
         let (v, _) = interpret(&observed, &BTreeMap::new());
         // A/T is strand-ambiguous, so a C read matches no allele and is kept as itself — the
@@ -1241,7 +1253,8 @@ mod tests {
         assert_eq!(s.total, 2);
         assert_eq!(s.confirmed, 1); // rs1 (both hom-alt)
         assert_eq!(s.conflict, 1); // rs2 (0 vs 2)
-                                   // (1 confirmed − 0.5·1 conflict) / 2 = 0.25
+
+        // (1 confirmed − 0.5·1 conflict) / 2 = 0.25
         assert!((s.overall_confidence - 0.25).abs() < 1e-9);
     }
 }

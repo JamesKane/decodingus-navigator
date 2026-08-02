@@ -16,14 +16,13 @@ use crate::widgets::{
 };
 use eframe::egui;
 use navigator_app::{
-    AncestryResult, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState, ChatTurn,
-    CompatibilityLevel, Consensus, Coverage, DenovoCall, DescentReport, DnaType, FtdnaGenealogy, FtdnaImportPlan,
-    FtdnaResolution,
+    AncestryResult, AppSettings, AuditEntry, BatchImportSummary, BuildNeed, CallState, ChatTurn, CompatibilityLevel,
+    Consensus, Coverage, DenovoCall, DescentReport, DnaType, FtdnaGenealogy, FtdnaImportPlan, FtdnaResolution,
     HaploAssignment, HeteroplasmySite, IbdComparison, IbdSuggestion, IdentityVerification, LineageBrief, LineageKind,
-    MatchKind, MatchStrength, MtRegion, MtVariant, NarratedBrief, PackStatus, PaintingResult, PrivateBucket, PrivateClass,
-    ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus, SexInferenceResult,
-    SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult,
-    UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
+    MatchKind, MatchStrength, MtRegion, MtVariant, NarratedBrief, PackStatus, PaintingResult, PrivateBucket,
+    PrivateClass, ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RefBuildStatus,
+    SexInferenceResult, SignalKind, SnpEvidence, SourceType, StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief,
+    SvAnalysisResult, UiMode, VerificationStatus, YMatch, YProfile, YSignal, YState, YVariantStatus, YstrClustering,
 };
 use navigator_domain::chipprofile::{self, ChipProfile};
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -1190,6 +1189,7 @@ impl NavigatorApp {
         let _ = tx.send(Command::BackfillLabs); // resolve labs for runs imported before D8 landed
         let _ = tx.send(Command::VerifySourceFiles); // flag any imported file that moved/disappeared
         let _ = tx.send(Command::LoadAssetStatus); // ancestry/IBD "data sources" line
+
         // Check for a newer installer at startup (unless the user opted out). Non-fatal — a failed
         // check just logs to the status line; the app never auto-updates.
         // One read of settings.json for the whole constructor — it was loaded six separate times.
@@ -1197,7 +1197,7 @@ impl NavigatorApp {
         if settings.check_for_updates != Some(false) {
             let _ = tx.send(Command::CheckForUpdate);
         }
-                                                   // Persisted theme wins; default dark. (Must match `dark_mode` below.)
+        // Persisted theme wins; default dark. (Must match `dark_mode` below.)
         let dark = !matches!(settings.theme.as_deref(), Some("light"));
         apply_theme(&cc.egui_ctx, dark);
         // Persisted UI scale (egui zoom) — fixes tiny text on a native-4K display the OS reports at
@@ -1208,7 +1208,11 @@ impl NavigatorApp {
         // (nav is then reconciled to the interface mode by `normalize_for_mode`). Seed `saved_ui_sig`
         // with the restored intent so a matching restore doesn't trigger a redundant re-save.
         let restore = &settings;
-        let restored_nav = restore.last_nav.as_deref().and_then(Nav::from_key).unwrap_or(Nav::Subjects);
+        let restored_nav = restore
+            .last_nav
+            .as_deref()
+            .and_then(Nav::from_key)
+            .unwrap_or(Nav::Subjects);
         let restored_tab = restore
             .last_detail_tab
             .as_deref()
@@ -2212,7 +2216,10 @@ mod window_geometry_tests {
         let mon = [1440.0, 900.0];
         let got = fit_window_to_monitor([3000.0, 2000.0], mon, MIN_WINDOW);
         assert!(got[0] <= mon[0] && got[1] <= mon[1], "must fit: {got:?} in {mon:?}");
-        assert!(got[0] <= mon[0] * 0.98 + 0.5 && got[1] <= mon[1] * 0.94 + 0.5, "margin respected");
+        assert!(
+            got[0] <= mon[0] * 0.98 + 0.5 && got[1] <= mon[1] * 0.94 + 0.5,
+            "margin respected"
+        );
     }
 
     #[test]
@@ -2277,7 +2284,7 @@ mod icon_glyph_tests {
     use super::SimplePanel;
     use ab_glyph::{Font, FontRef};
 
-        /// True when at least one font in `Proportional`'s fallback chain has a glyph for `c`.
+    /// True when at least one font in `Proportional`'s fallback chain has a glyph for `c`.
     ///
     /// Reads egui's own `FontDefinitions::default()` rather than a vendored copy of the `.ttf`s, so
     /// the test keeps testing the fonts the app actually ships as egui is upgraded. `glyph_id`
@@ -2296,7 +2303,11 @@ mod icon_glyph_tests {
         // Guards the test itself: if these ever start reporting renderable, the check has broken
         // rather than the fonts having improved.
         for c in ['◆', '⚭', '✓', '🧬'] {
-            assert!(!renderable(c), "{c} (U+{:04X}) should be missing from Proportional", c as u32);
+            assert!(
+                !renderable(c),
+                "{c} (U+{:04X}) should be missing from Proportional",
+                c as u32
+            );
         }
         assert!(renderable('♂'), "sanity: ♂ is present");
     }

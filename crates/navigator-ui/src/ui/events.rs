@@ -354,8 +354,11 @@ impl NavigatorApp {
                     // `.take()` so it applies once; a stale GUID (deleted subject) simply no-ops.
                     if self.selected_sample.is_none() {
                         if let Some(guid_str) = self.pending_restore_subject.take() {
-                            if let Some(guid) =
-                                self.all_biosamples.iter().find(|b| b.guid.0.to_string() == guid_str).map(|b| b.guid)
+                            if let Some(guid) = self
+                                .all_biosamples
+                                .iter()
+                                .find(|b| b.guid.0.to_string() == guid_str)
+                                .map(|b| b.guid)
                             {
                                 self.select_sample(guid);
                             }
@@ -544,10 +547,8 @@ impl NavigatorApp {
                     if self.selected_sample == Some(biosample_guid) {
                         self.roh_running = false;
                         if let Some(r) = &result {
-                            self.status = format!(
-                                "ROH: {} segments, F_ROH {:.3}",
-                                r.summary.n_segments, r.summary.f_roh
-                            );
+                            self.status =
+                                format!("ROH: {} segments, F_ROH {:.3}", r.summary.n_segments, r.summary.f_roh);
                         }
                         self.roh = result.map(|b| *b);
                     }
@@ -797,11 +798,13 @@ impl NavigatorApp {
                         }
                         self.y_profile = profile;
                         self.y_snp_names_requested = false; // re-resolve names incl. the new positions
-                                                            // A rebuild re-places the genome consensus (consensus_label); refresh the
-                                                            // Overview's cached Y/mt consensus so it doesn't lag until the next reload.
+
+                        // A rebuild re-places the genome consensus (consensus_label); refresh the
+                        // Overview's cached Y/mt consensus so it doesn't lag until the next reload.
                         let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
                         // The descent report is drawn from this profile — drop its cache so it rebuilds.
-                        self.descent_reports.retain(|(g, d, _)| !(*g == biosample_guid && *d == DnaType::Y));
+                        self.descent_reports
+                            .retain(|(g, d, _)| !(*g == biosample_guid && *d == DnaType::Y));
                     }
                 }
                 Event::YSnpNames { names } => {
@@ -820,7 +823,8 @@ impl NavigatorApp {
                         // A rebuild re-places the mt genome consensus; refresh the Overview's cache.
                         let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
                         // The descent report is drawn from this profile — drop its cache so it rebuilds.
-                        self.descent_reports.retain(|(g, d, _)| !(*g == biosample_guid && *d == DnaType::Mt));
+                        self.descent_reports
+                            .retain(|(g, d, _)| !(*g == biosample_guid && *d == DnaType::Mt));
                     }
                 }
                 Event::AutosomalProfile {
@@ -1010,13 +1014,15 @@ impl NavigatorApp {
                     // A candidate that became a request is no longer a candidate.
                     let requested: std::collections::HashSet<&str> =
                         entries.iter().filter_map(|e| e.partner_sample_ref.as_deref()).collect();
-                    self.ibd_suggestions.retain(|s| !requested.contains(s.suggested_sample_guid.as_str()));
+                    self.ibd_suggestions
+                        .retain(|s| !requested.contains(s.suggested_sample_guid.as_str()));
                     self.matching = entries;
                 }
                 Event::CandidateDismissed { suggested_sample_guid } => {
                     self.exchange_busy = false;
                     self.status = self.tr("matching.dismissed").to_string();
-                    self.ibd_suggestions.retain(|s| s.suggested_sample_guid != suggested_sample_guid);
+                    self.ibd_suggestions
+                        .retain(|s| s.suggested_sample_guid != suggested_sample_guid);
                     self.dismissed_candidates.insert(suggested_sample_guid);
                 }
                 Event::IbdExchangeDone {

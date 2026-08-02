@@ -64,13 +64,10 @@ impl App {
         let dev = self.ensure_device_key().await?;
         let request_uri = format!("exchange:{}", Uuid::new_v4());
         let ts = Utc::now().timestamp();
-        let sig = dev.sign_fresh(ts, &exchange::messages::request(
-            &request_uri,
-            &did,
-            partner_did,
-            purpose,
-            scope,
-        ));
+        let sig = dev.sign_fresh(
+            ts,
+            &exchange::messages::request(&request_uri, &did, partner_did, purpose, scope),
+        );
         let body = serde_json::json!({
             "request_uri": request_uri,
             "initiator_did": did,

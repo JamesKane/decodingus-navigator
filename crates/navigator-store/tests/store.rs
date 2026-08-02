@@ -114,7 +114,8 @@ async fn run_alignment_chain_persists() {
         run
     );
     assert_eq!(run.mean_insert_size, Some(580.7)); // flat metric column round-trips
-                                                   // The lab/instrument identity block is None at create, then filled by set_library_stats.
+
+    // The lab/instrument identity block is None at create, then filled by set_library_stats.
     assert_eq!(run.instrument_id, None);
     sequence_run::set_library_stats(
         s.pool(),
@@ -161,6 +162,7 @@ async fn run_alignment_chain_persists() {
     assert_eq!(reloaded.total_reads, Some(9_100_000));
     assert_eq!(reloaded.library_layout.as_deref(), Some("PAIRED"));
     assert_eq!(reloaded.total_bases, Some(1_365_000_000)); // preserved by COALESCE
+
     // The descriptive + identity columns are untouched by the read-stats write.
     assert_eq!(reloaded.instrument_id.as_deref(), Some("A00182"));
 
@@ -709,18 +711,24 @@ async fn bulk_member_counts_match_the_per_project_count() {
     // M:N member of p1 only.
     let a = sample(None);
     biosample::create(s.pool(), &a).await.unwrap();
-    biosample_project::add(s.pool(), a.guid, p1.id, None, "2026-07-25").await.unwrap();
+    biosample_project::add(s.pool(), a.guid, p1.id, None, "2026-07-25")
+        .await
+        .unwrap();
     // Legacy home column of p1 only.
     let b = sample(Some(p1.id));
     biosample::create(s.pool(), &b).await.unwrap();
     // Both M:N and home for p1 — the UNION must count this once, not twice.
     let c = sample(Some(p1.id));
     biosample::create(s.pool(), &c).await.unwrap();
-    biosample_project::add(s.pool(), c.guid, p1.id, None, "2026-07-25").await.unwrap();
+    biosample_project::add(s.pool(), c.guid, p1.id, None, "2026-07-25")
+        .await
+        .unwrap();
     // Member of p2 only, so the GROUP BY has to key correctly.
     let d = sample(None);
     biosample::create(s.pool(), &d).await.unwrap();
-    biosample_project::add(s.pool(), d.guid, p2.id, None, "2026-07-25").await.unwrap();
+    biosample_project::add(s.pool(), d.guid, p2.id, None, "2026-07-25")
+        .await
+        .unwrap();
 
     let counts: std::collections::HashMap<i64, i64> =
         biosample::member_counts(s.pool()).await.unwrap().into_iter().collect();
@@ -729,7 +737,11 @@ async fn bulk_member_counts_match_the_per_project_count() {
         assert_eq!(counts.get(&p).copied().unwrap_or(0), one, "project {p}");
     }
     assert_eq!(counts.get(&p1.id).copied().unwrap_or(0), 3, "a, b, c — c counted once");
-    assert_eq!(counts.get(&empty.id), None, "a project with no members is absent, not zero");
+    assert_eq!(
+        counts.get(&empty.id),
+        None,
+        "a project with no members is absent, not zero"
+    );
 
     // Removing a subject drops its membership first (a foreign key forbids a dangling
     // `biosample_project` row, which is why both count forms can join to `biosample` safely).

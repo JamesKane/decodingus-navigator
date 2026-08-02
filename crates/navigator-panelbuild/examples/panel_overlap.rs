@@ -4,8 +4,10 @@ use navigator_analysis::ancestry::AncestryPanel;
 use std::collections::HashMap;
 
 fn main() -> anyhow::Result<()> {
-    let a = AncestryPanel::from_bytes(&std::fs::read(std::env::args().nth(1).unwrap())?).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let b = AncestryPanel::from_bytes(&std::fs::read(std::env::args().nth(2).unwrap())?).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let a = AncestryPanel::from_bytes(&std::fs::read(std::env::args().nth(1).unwrap())?)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let b = AncestryPanel::from_bytes(&std::fs::read(std::env::args().nth(2).unwrap())?)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let bm: HashMap<(String, i64), (char, char)> = b
         .sites
         .iter()

@@ -30,7 +30,12 @@ fn draw_alt(contig: &str, pos: i64, ref_d: u32, alt_d: u32) -> Option<bool> {
 fn fit(label: &str, gts: &[SiteGenotype], panel: &AncestryPanel) {
     match ancient_admixture_fit(gts, panel, "chm13v2.0") {
         Some(r) => {
-            let get = |c: &str| r.components.iter().find(|x| x.population_code == c).map_or(0.0, |x| x.percentage);
+            let get = |c: &str| {
+                r.components
+                    .iter()
+                    .find(|x| x.population_code == c)
+                    .map_or(0.0, |x| x.percentage)
+            };
             println!(
                 "{:<26} {:>6}   WHG {:>5.1}  ANF {:>5.1}  Steppe {:>5.1}   disp {:>5.2}",
                 label,
@@ -46,7 +51,9 @@ fn fit(label: &str, gts: &[SiteGenotype], panel: &AncestryPanel) {
 }
 
 fn main() -> anyhow::Result<()> {
-    let panel_path = std::env::args().nth(1).expect("usage: phaploid_fit <ancient.bin> <bam> [ref.fa]");
+    let panel_path = std::env::args()
+        .nth(1)
+        .expect("usage: phaploid_fit <ancient.bin> <bam> [ref.fa]");
     let bam = PathBuf::from(std::env::args().nth(2).expect("bam"));
     let reference = std::env::args().nth(3).map(PathBuf::from);
     let panel = AncestryPanel::from_bytes(&std::fs::read(&panel_path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -65,7 +72,15 @@ fn main() -> anyhow::Result<()> {
 
     eprintln!("genotyping {} ancient sites from {} ...", sites.len(), bam.display());
     let params = HaploidCallerParams::default();
-    let gts = genotype_sites_all_contigs(&bam, &sites, 2, &params, reference.as_deref(), &navigator_analysis::CancelToken::none()).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let gts = genotype_sites_all_contigs(
+        &bam,
+        &sites,
+        2,
+        &params,
+        reference.as_deref(),
+        &navigator_analysis::CancelToken::none(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
     let called = gts.iter().filter(|g| g.dosage >= 0).count();
     eprintln!("genotyped: {} sites called (of {})", called, gts.len());
 

@@ -312,13 +312,16 @@ impl IdxReader {
 
                 let path = path.clone();
                 let repo = repo.clone();
-                let ref_id = header.reference_sequences().get_index_of(region.name()).ok_or_else(|| {
-                    AnalysisError::Message(format!(
-                        "contig {} not in {} header",
-                        String::from_utf8_lossy(region.name()),
-                        path.display()
-                    ))
-                })?;
+                let ref_id = header
+                    .reference_sequences()
+                    .get_index_of(region.name())
+                    .ok_or_else(|| {
+                        AnalysisError::Message(format!(
+                            "contig {} not in {} header",
+                            String::from_utf8_lossy(region.name()),
+                            path.display()
+                        ))
+                    })?;
                 let interval = region.interval();
                 let mut offsets = cram_container_offsets(inner.index(), ref_id, interval).into_iter();
 
@@ -364,8 +367,7 @@ impl IdxReader {
                             for rec in &records {
                                 // Same per-record overlap test noodles applies post-decode — the
                                 // container filter is a coarse prefilter, not a replacement for it.
-                                if let (Some(Ok(start)), Some(Ok(end))) = (rec.alignment_start(), rec.alignment_end())
-                                {
+                                if let (Some(Ok(start)), Some(Ok(end))) = (rec.alignment_start(), rec.alignment_end()) {
                                     if !interval.intersects((start..=end).into()) {
                                         continue;
                                     }
@@ -734,8 +736,14 @@ mod tests {
 
         for region in [
             Region::new(b"chrM".to_vec(), ..),
-            Region::new(b"chrM".to_vec(), Position::new(1).unwrap()..=Position::new(200).unwrap()),
-            Region::new(b"chrM".to_vec(), Position::new(50).unwrap()..=Position::new(60).unwrap()),
+            Region::new(
+                b"chrM".to_vec(),
+                Position::new(1).unwrap()..=Position::new(200).unwrap(),
+            ),
+            Region::new(
+                b"chrM".to_vec(),
+                Position::new(50).unwrap()..=Position::new(60).unwrap(),
+            ),
         ] {
             let (header, mut ours) = open_indexed(&cram, Some(&reference)).expect("open");
             let mine: Vec<Captured> = ours
@@ -757,7 +765,10 @@ mod tests {
                 .map(|r| capture(&r.expect("rec")))
                 .collect();
 
-            assert_eq!(mine, reference_impl, "region {region:?}: must match noodles' Query exactly");
+            assert_eq!(
+                mine, reference_impl,
+                "region {region:?}: must match noodles' Query exactly"
+            );
         }
     }
 }

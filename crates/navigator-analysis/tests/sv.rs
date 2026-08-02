@@ -73,7 +73,7 @@ fn walker_reads_cram_with_the_same_result_as_bam() {
         &config,
         &navigator_analysis::CancelToken::none(),
     )
-        .expect("BAM walk should succeed");
+    .expect("BAM walk should succeed");
     let from_cram = walker::collect_evidence(
         &fixtures().join("sv.cram"),
         Some(&fixtures().join("svref.fa")),
@@ -92,7 +92,10 @@ fn walker_reads_cram_with_the_same_result_as_bam() {
     // Compare the evidence itself, not just the counts — the split read carries the fields that
     // come from the accessors CRAM implements differently (name, SA tag, CIGAR clip length).
     let (b, c) = (&from_bam.split_reads[0], &from_cram.split_reads[0]);
-    assert_eq!((&c.read_name, c.clip_length, &c.supp_chrom, c.supp_pos), (&b.read_name, b.clip_length, &b.supp_chrom, b.supp_pos));
+    assert_eq!(
+        (&c.read_name, c.clip_length, &c.supp_chrom, c.supp_pos),
+        (&b.read_name, b.clip_length, &b.supp_chrom, b.supp_pos)
+    );
     let names = |e: &SvEvidenceCollection| {
         let mut v: Vec<_> = e
             .discordant_pairs

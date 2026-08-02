@@ -10,7 +10,9 @@ use navigator_domain::chipprofile;
 use std::io::{BufWriter, Write};
 
 fn main() -> anyhow::Result<()> {
-    let ibd_path = std::env::args().nth(1).expect("usage: resolve_chip_dosage <ibd_panel.bin> <chip.txt> <out.tsv>");
+    let ibd_path = std::env::args()
+        .nth(1)
+        .expect("usage: resolve_chip_dosage <ibd_panel.bin> <chip.txt> <out.tsv>");
     let chip_path = std::env::args().nth(2).expect("chip.txt");
     let out = std::env::args().nth(3).expect("out.tsv");
 
@@ -20,7 +22,8 @@ fn main() -> anyhow::Result<()> {
     eprintln!("chip build {build}: {} autosomal calls", calls.len());
 
     let ibd = IbdPanel::from_bytes(&std::fs::read(&ibd_path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let tuples: Vec<(String, i64, char, char)> = calls.into_iter().map(|c| (c.contig, c.position, c.a1, c.a2)).collect();
+    let tuples: Vec<(String, i64, char, char)> =
+        calls.into_iter().map(|c| (c.contig, c.position, c.a1, c.a2)).collect();
     let gts = ibd.resolve_chip(&build, &tuples);
 
     let mut w = BufWriter::new(std::fs::File::create(&out)?);

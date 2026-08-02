@@ -224,7 +224,9 @@ pub fn read_diploid_calls_from<R: BufRead>(
 
         let mut col = l.split('\t');
         let chrom = col.next().unwrap_or("");
-        let Some(sorted) = targets_by_contig.get(chrom) else { continue };
+        let Some(sorted) = targets_by_contig.get(chrom) else {
+            continue;
+        };
         let pos: i64 = match col.next().and_then(|s| s.parse().ok()) {
             Some(p) => p,
             None => continue,
@@ -316,11 +318,7 @@ pub struct GvcfSnv {
 /// which resolves sites a pileup caller can't (misaligned ref reads → false ~50/50), so reading the
 /// GVCF recovers private SNVs the de-novo pileup caller drops. Ref blocks, hom-ref, and indel records
 /// are skipped; records are gated on `params.min_dp` / `params.min_gq`.
-pub fn read_derived_snvs(
-    gvcf: &Path,
-    contig: &str,
-    params: &GvcfReadParams,
-) -> Result<Vec<GvcfSnv>, AnalysisError> {
+pub fn read_derived_snvs(gvcf: &Path, contig: &str, params: &GvcfReadParams) -> Result<Vec<GvcfSnv>, AnalysisError> {
     let file = std::fs::File::open(gvcf).map_err(|e| AnalysisError::io(gvcf, e))?;
     read_derived_snvs_from(bgzf::io::Reader::new(file), contig, params)
 }
@@ -396,7 +394,11 @@ pub fn read_derived_snvs_from<R: BufRead>(
             alternate: alt_allele.as_bytes()[0].to_ascii_uppercase() as char,
             depth,
             alt_depth,
-            allele_fraction: if depth > 0 { alt_depth as f64 / depth as f64 } else { 0.0 },
+            allele_fraction: if depth > 0 {
+                alt_depth as f64 / depth as f64
+            } else {
+                0.0
+            },
             gq,
         });
     }
@@ -504,7 +506,16 @@ pub fn read_site_evidence_from<R: BufRead>(
                 Some((ad_vec[0], ad_vec.get(alt_idx).copied().unwrap_or(0)))
             };
             // A variant record is more specific than any ref block at the same site → override.
-            out.insert(pos, GvcfSiteEvidence { allele, dp, ad, gq, refblock: false });
+            out.insert(
+                pos,
+                GvcfSiteEvidence {
+                    allele,
+                    dp,
+                    ad,
+                    gq,
+                    refblock: false,
+                },
+            );
         }
     }
     Ok(out)
@@ -680,7 +691,8 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
         called.variant_bases.insert(2459921, 'A');
         called.callable.insert(2459921);
         called.callable.insert(2459000); // hom-ref-only → takes the reference base
-                                         // The reference base at a hom-ref site can be the *derived* allele (CHM13 = J1 Y).
+
+        // The reference base at a hom-ref site can be the *derived* allele (CHM13 = J1 Y).
         let ref_base: HashMap<i64, char> = [(2459921, 'G'), (2459000, 'T'), (700, 'C')].into_iter().collect();
         let calls = assemble_calls(&called, &ref_base);
         assert_eq!(calls.get(&2459921), Some(&'A'), "variant (derived) wins over reference");
