@@ -4,13 +4,6 @@ Decoding-Us Navigator is an edge-computing companion application to [decoding-us
 
 Navigator is a **single self-contained Rust application**: a pure-Rust analysis stack ([noodles](https://github.com/zaeleus/noodles)) and an [egui](https://github.com/emilk/egui) desktop UI — **no JVM, no GATK, no samtools/bcftools** to install. The same binary doubles as a scriptable command-line tool.
 
-> **Repository note:** the Rust rewrite is the trunk on `main`. The original Scala/ScalaFX
-> implementation is preserved in git history only. The crate topology and developer setup are in
-> **[`crates/README.md`](crates/README.md)**; the design of the rewrite is documented in
-> **[`documents/design/RustRewrite_Plan.md`](documents/design/RustRewrite_Plan.md)** with resume
-> notes in **[`documents/design/HANDOFF.md`](documents/design/HANDOFF.md)**. End-user documentation
-> lives in the **[User Guide](USER_GUIDE.md)**.
-
 ## Privacy-Preserving Analysis
 
 All analysis runs locally. Your raw genomic files never leave your machine. Only anonymized summaries are optionally shared, with your explicit consent:
