@@ -82,9 +82,10 @@ Code exists or the design is settled; these are the near-term threads.
   Community 🔔 pattern); a Settings discoverability opt-in; a UI path for the *direct*
   `exchange_request(partner_did, …)` initiator (still test-only); the segment ideogram for persisted
   exchange results; and **live two-peer validation** of the whole flow against a running AppView.
-- **Known rough edge:** `consensus_ibd_section` (`ui/ibd.rs`) still picks the comparison subject with
-  a flat `ComboBox` over every biosample — unusable at 10k subjects. The Matching picker was rebuilt
-  on the filter + `show_rows` pattern; this one has not been.
+- **Note:** both subject pickers in this area (Matching, and `consensus_ibd_section` in `ui/ibd.rs`)
+  are now filter + virtualized `show_rows` rather than `ComboBox` — a workspace can hold 10k
+  subjects, and a `ComboBox` builds a widget per entry per frame. Follow that pattern for any new
+  roster-wide picker.
 
 ### 1.7 Packaging & release — open items
 - **Design:** [`design/packaging-and-release.md`](design/packaging-and-release.md)
