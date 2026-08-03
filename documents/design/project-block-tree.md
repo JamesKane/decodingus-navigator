@@ -266,6 +266,32 @@ following the one-view-per-module split, and keeping `central.rs` from growing a
    The open part is *where it lives*: a bespoke "compute private-Y for this project" button, or
    folded into the existing project-wide analyze / deep-analyze streaming flow — which is the same
    choice `BACKLOG.md` §1.2 already faces for panel genotyping, and probably wants the same answer.
+
+   **The deeper cause, and the prerequisite now built.** Private-Y is keyed on `alignment_id` and
+   sourced from a pileup walk or a GVCF sidecar found beside the BAM — so it is offered for
+   BAM/CRAM only. Most of this workspace's Y data is *externally processed VCFs*, which live in
+   `variant_set`/`variant_call` keyed on `biosample_guid` with no alignment at all: **7,842 subjects
+   have chrY calls, against the 1 with private-Y**. An engine over those call sets is the real fix.
+
+   It could not be written usefully first, because the import threw the evidence away: `variant_call`
+   stored only contig/position/ref/alt/rsID/genotype, so nothing downstream could tell a 40× hom-alt
+   call from a 2-read artefact. **Migration 0042 + `variants::CallEvidence` now capture QUAL, FILTER,
+   DP, GQ and AD** (`ad_alt` follows the genotype-selected ALT, so multi-allelic rows read correctly),
+   and `variant_set.call_schema` records whether a set has evidence — derived from what was captured,
+   never from the importer version, so it cannot promise evidence a sites-only VCF never had. Absent
+   fields stay `None`; reading them as `0` would make a good call look unsupported.
+
+   Real FTDNA Big Y (aengine) files confirm the value: ~218k `PASS` against ~44k FILTER-flagged calls
+   in a single sample, plus per-call AD/DP/GQ — exactly the gate a VCF-backed private-Y engine needs.
+   Existing sets keep `call_schema = 1` and must be re-imported to gain evidence.
+
+   **Blocking finding, not yet fixed:** a chrY-only Big Y VCF ingested *today* is auto-detected as an
+   "Autosomal 1240K call set" and lands in `external_panel_dosage` (266 chrY panel loci) instead of
+   creating a Y `variant_set`. The 7,834 existing `FTDNA Big Y (aengine)` sets predate that routing.
+   Until it is resolved, new Big Y VCF imports produce no Y variant set — and so no Y placement and
+   no private-Y source — from these files. Likely interacts with
+   [`external-caller-precedence.md`](external-caller-precedence.md), which deliberately gave external
+   call sets priority, so it wants care rather than a quick re-route.
 5. **Suffixed terminal names** (found in phase-2 validation) — some unresolved terminals are a real
    node name plus a suffix, e.g. `R-A9426:n0` where `R-A9426` *is* in the tree. Stripping the suffix
    and matching the parent node would recover those members, but only if the suffix means what it

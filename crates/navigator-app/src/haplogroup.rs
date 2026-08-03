@@ -250,6 +250,8 @@ impl App {
                 alternate: v.alternate.to_string(),
                 rs_id: None,
                 genotype: None,
+                // Derived from an rCRS diff, not a source VCF — there is no evidence to carry.
+                evidence: Default::default(),
             })
             .collect();
         let label = format!("mtDNA vs rCRS ({} variants)", derived.len());
@@ -5139,6 +5141,7 @@ mod vset_autosomal_calls_tests {
             alternate: a.into(),
             rs_id: None,
             genotype: (!gt.is_empty()).then(|| gt.to_string()),
+            evidence: Default::default(),
         }
     }
 
@@ -5150,6 +5153,7 @@ mod vset_autosomal_calls_tests {
             source_type: SourceType::WgsShortRead,
             reference_build: Some("GRCh37".into()),
             calls,
+            call_schema: navigator_domain::variants::CALL_SCHEMA_BASIC,
         }
     }
 

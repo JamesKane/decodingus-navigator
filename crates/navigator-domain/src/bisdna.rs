@@ -134,7 +134,8 @@ fn genotype_supports(genotype: &str, allele: &str) -> bool {
 
 /// The result of resolving BISDNA calls against the Y-SNP dictionary on a given build: the
 /// emitted variant calls (positives only) plus a per-category tally.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+// Not `Eq`: a call now carries `CallEvidence`, whose QUAL is an `f64`.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResolveOutcome {
     /// Positive (derived) calls resolved to a locus, as carried `VariantCall`s.
     pub calls: Vec<VariantCall>,

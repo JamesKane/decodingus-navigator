@@ -2188,14 +2188,20 @@ fn parse_vcf_subject_snps(path: &Path) -> Result<Vec<variants::VariantCall>, App
         let alts: Vec<&str> = alt_field.split(',').collect();
 
         // Genotyped (FORMAT + ≥1 sample, with a GT key) → honor the call; else sites-only.
-        let gt = (f.len() >= 10)
-            .then(|| {
-                f[8].split(':')
-                    .position(|k| k == "GT")
-                    .and_then(|i| f[9].split(':').nth(i))
-            })
-            .flatten();
-        let (alt, genotype) = match gt {
+        let sample_field = |key: &str| -> Option<&str> {
+            (f.len() >= 10)
+                .then(|| {
+                    f[8].split(':')
+                        .position(|k| k == key)
+                        .and_then(|i| f[9].split(':').nth(i))
+                })
+                .flatten()
+                .filter(|v| !v.is_empty() && *v != ".")
+        };
+        let gt = sample_field("GT");
+        // `alt_index` is the ALT the genotype actually selected — needed to pick the right AD entry
+        // on a multi-allelic row, where AD is [ref, alt1, alt2, …].
+        let (alt, genotype, alt_index) = match gt {
             Some(gt) => {
                 // First non-zero allele index selects the carried ALT; all-zero (0/0) or no-call
                 // (./.) means the subject is reference here — skip it.
@@ -2205,15 +2211,33 @@ fn parse_vcf_subject_snps(path: &Path) -> Result<Vec<variants::VariantCall>, App
                     .find(|&a| a > 0)
                 {
                     Some(idx) => match alts.get(idx - 1) {
-                        Some(&a) => (a, Some(gt.to_string())),
+                        Some(&a) => (a, Some(gt.to_string()), idx),
                         None => continue,
                     },
                     None => continue,
                 }
             }
-            None => (alts[0], None), // sites-only VCF: the listed variant is the subject's
+            None => (alts[0], None, 1), // sites-only VCF: the listed variant is the subject's
         };
-        if let Some(call) = variants::snp_call(chrom, pos, reference, alt, Some(id.to_string()), genotype) {
+
+        // Evidence the source supplies. Every field stays `None` when absent — a missing DP means
+        // "the vendor didn't say", and recording it as 0 would make a good call look unsupported.
+        let ad: Option<Vec<u32>> = sample_field("AD").map(|v| v.split(',').map(|x| x.parse().unwrap_or(0)).collect());
+        let evidence = variants::CallEvidence {
+            qual: f.get(5).and_then(|q| q.parse::<f64>().ok()),
+            // Only failures are stored; `.`/`PASS` is the overwhelming majority and means nothing.
+            filter: f
+                .get(6)
+                .filter(|v| !v.is_empty() && **v != "." && !v.eq_ignore_ascii_case("PASS"))
+                .map(|v| v.to_string()),
+            dp: sample_field("DP").and_then(|v| v.parse().ok()),
+            gq: sample_field("GQ").and_then(|v| v.parse().ok()),
+            ad_ref: ad.as_ref().and_then(|a| a.first().copied()),
+            ad_alt: ad.as_ref().and_then(|a| a.get(alt_index).copied()),
+        };
+        if let Some(call) =
+            variants::snp_call_with_evidence(chrom, pos, reference, alt, Some(id.to_string()), genotype, evidence)
+        {
             out.push(call);
         }
     }
@@ -4733,6 +4757,95 @@ mod settings_tests {
         // unrecognized tokens are ignored
         assert_eq!(resolve_ui_mode(Some("expert"), Some("simple")), Some(UiMode::Simple));
         assert_eq!(resolve_ui_mode(Some("expert"), None), None);
+    }
+}
+
+#[cfg(test)]
+mod vcf_evidence_tests {
+    use super::parse_vcf_subject_snps;
+
+    /// `name` keeps each test on its own file — they run in parallel, and a shared path means one
+    /// test deletes the file another is still reading.
+    fn parse(name: &str, body: &str) -> Vec<navigator_domain::variants::VariantCall> {
+        let dir = std::env::temp_dir().join(format!("nav-vcf-ev-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.vcf"));
+        std::fs::write(&path, body).unwrap();
+        let out = parse_vcf_subject_snps(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    const HEADER: &str = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n";
+
+    #[test]
+    fn captures_qual_depth_and_allele_depths() {
+        // The sample column is ONE colon-separated field, keyed by FORMAT.
+        let v = parse(
+            "qual",
+            &format!("{HEADER}chrY\t100\trs1\tA\tG\t512.7\tPASS\t.\tGT:AD:DP:GQ\t1/1:2,38:40:99\n"),
+        );
+        assert_eq!(v.len(), 1);
+        let e = &v[0].evidence;
+        assert_eq!(e.qual, Some(512.7));
+        assert_eq!(e.dp, Some(40));
+        assert_eq!(e.gq, Some(99));
+        assert_eq!(e.ad_ref, Some(2));
+        assert_eq!(e.ad_alt, Some(38));
+        assert_eq!(e.allele_fraction(), Some(0.95));
+        assert!(!e.is_filtered(), "PASS is not a failure");
+    }
+
+    #[test]
+    fn ad_alt_follows_the_called_allele_on_a_multiallelic_row() {
+        // GT 2 selects ALT[1] = T, so AD must be read at index 2, not 1.
+        let v = parse(
+            "multi",
+            &format!("{HEADER}chrY\t200\t.\tA\tG,T\t99\t.\t.\tGT:AD\t2/2:1,3,30\n"),
+        );
+        assert_eq!(v[0].alternate, "T", "the genotype-selected ALT is kept");
+        assert_eq!(v[0].evidence.ad_ref, Some(1));
+        assert_eq!(v[0].evidence.ad_alt, Some(30), "AD index follows the ALT index");
+    }
+
+    #[test]
+    fn a_failing_filter_is_recorded_but_pass_and_dot_are_not() {
+        let v = parse(
+            "filter",
+            &format!(
+                "{HEADER}chrY\t300\t.\tA\tG\t10\tLowQual\t.\tGT\t1/1\n\
+                 chrY\t301\t.\tA\tG\t10\t.\t.\tGT\t1/1\n"
+            ),
+        );
+        assert_eq!(v[0].evidence.filter.as_deref(), Some("LowQual"));
+        assert!(v[0].evidence.is_filtered());
+        assert_eq!(v[1].evidence.filter, None, "'.' is not a failure");
+    }
+
+    #[test]
+    fn absent_evidence_stays_absent_rather_than_becoming_zero() {
+        // A sites-only VCF: no FORMAT/sample columns, QUAL '.'.
+        let v = parse(
+            "sitesonly",
+            "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchrY\t400\t.\tA\tG\t.\t.\t.\n",
+        );
+        assert_eq!(v.len(), 1);
+        let e = &v[0].evidence;
+        assert!(e.is_empty(), "nothing captured → empty, so the set tags as BASIC");
+        assert_eq!(e.dp, None, "missing DP must not read as 0 supporting reads");
+        assert_eq!(e.allele_fraction(), None, "no AD → no fraction, not 0.0");
+    }
+
+    #[test]
+    fn a_reference_or_nocall_genotype_is_still_skipped() {
+        let v = parse(
+            "refcall",
+            &format!(
+                "{HEADER}chrY\t500\t.\tA\tG\t99\tPASS\t.\tGT:DP\t0/0:40\n\
+                 chrY\t501\t.\tA\tG\t99\tPASS\t.\tGT:DP\t./.:40\n"
+            ),
+        );
+        assert!(v.is_empty(), "the subject carries no ALT at either site");
     }
 }
 

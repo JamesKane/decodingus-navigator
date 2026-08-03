@@ -601,6 +601,8 @@ impl App {
                     alternate: v.alternate.to_string(),
                     rs_id: None,
                     genotype: None,
+                    // Derived from an rCRS diff, not a source VCF — no evidence to carry.
+                    evidence: Default::default(),
                 })
                 .collect();
             let set = NewVariantSet {

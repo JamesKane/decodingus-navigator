@@ -1,14 +1,64 @@
 //! A subject's SNP variant calls, imported from a VCF or a CSV/TSV table and grouped into
-//! a named [`VariantSet`] (Scala's `DataType.Variants`). A pragmatic port of the Scala
-//! `VariantCall`: the columns a basic VCF/CSV carries — contig, position, ref/alt, rsID,
-//! and (CSV only) a genotype — without QUAL/depth, which the shared VCF parser doesn't
-//! surface yet. Types are pure; [`parse_csv`] turns a marker table into calls with no IO.
+//! a named [`VariantSet`] (Scala's `DataType.Variants`). Types are pure; [`parse_csv`] turns a
+//! marker table into calls with no IO.
+//!
+//! A call optionally carries the source's own [`CallEvidence`] — QUAL/FILTER/DP/GQ/AD. Early
+//! imports dropped all of it, which left downstream analysis with nothing to gate on: a private-Y
+//! engine over imported VCFs could not tell a 40× hom-alt call from a 2-read artefact. Sets record
+//! which schema they were imported under ([`CALL_SCHEMA_EVIDENCE`]) so a consumer can require
+//! evidence rather than silently treat "absent" as "unknown but fine".
 
 use du_domain::ids::SampleGuid;
 use serde::{Deserialize, Serialize};
 
+/// Original import schema: contig/position/ref/alt/rsID/genotype only, no evidence.
+pub const CALL_SCHEMA_BASIC: i64 = 1;
+/// Imports that also capture [`CallEvidence`] from the source VCF.
+pub const CALL_SCHEMA_EVIDENCE: i64 = 2;
+
+/// Per-call evidence carried over from the source VCF. Every field is optional — a sites-only VCF
+/// has no FORMAT column, and vendors vary in what they emit — so absence means "the source didn't
+/// say", never "zero".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CallEvidence {
+    /// VCF `QUAL` — Phred confidence that a variant exists here at all.
+    pub qual: Option<f64>,
+    /// VCF `FILTER`, when it is neither `.` nor `PASS` (a passing call carries `None`, so the
+    /// column stays empty for the overwhelming majority of rows).
+    pub filter: Option<String>,
+    /// FORMAT `DP` — read depth at the site.
+    pub dp: Option<u32>,
+    /// FORMAT `GQ` — Phred confidence in the genotype call.
+    pub gq: Option<u32>,
+    /// FORMAT `AD` for the reference allele.
+    pub ad_ref: Option<u32>,
+    /// FORMAT `AD` for the *called* alternate allele (the one `genotype` selected, not simply the
+    /// first ALT — on a multi-allelic row those differ).
+    pub ad_alt: Option<u32>,
+}
+
+impl CallEvidence {
+    /// True when nothing was captured — used to store `NULL`s rather than a row of empties.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Fraction of reads supporting the called alternate, when both AD values are present.
+    /// `None` rather than a guess when the source gave no allele depths.
+    pub fn allele_fraction(&self) -> Option<f64> {
+        let (r, a) = (self.ad_ref?, self.ad_alt?);
+        let total = r + a;
+        (total > 0).then(|| a as f64 / total as f64)
+    }
+
+    /// Whether the source explicitly failed this call (`FILTER` present and not `PASS`).
+    pub fn is_filtered(&self) -> bool {
+        self.filter.is_some()
+    }
+}
+
 /// A single biallelic SNP call.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariantCall {
     pub contig: String,
     /// 1-based position.
@@ -19,6 +69,10 @@ pub struct VariantCall {
     pub rs_id: Option<String>,
     /// Genotype call (e.g. "0/1", "1/1"), if the source provides one.
     pub genotype: Option<String>,
+    /// The source's own confidence in this call. Default (all-`None`) for CSV imports and for sets
+    /// imported before [`CALL_SCHEMA_EVIDENCE`].
+    #[serde(default)]
+    pub evidence: CallEvidence,
 }
 
 /// The kind of source a variant set came from — carries the SNP-concordance weight used
@@ -87,7 +141,7 @@ impl SourceType {
 }
 
 /// A subject's variant calls from one import (a VCF, CSV export, YSEQ/Sanger panel, …).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariantSet {
     pub id: i64,
     pub biosample_guid: SampleGuid,
@@ -99,10 +153,23 @@ pub struct VariantSet {
     /// (e.g. Y-SNP-panel placement) read the build directly instead of re-deriving it.
     pub reference_build: Option<String>,
     pub calls: Vec<VariantCall>,
+    /// Which call schema this set was stored under — [`CALL_SCHEMA_BASIC`] or
+    /// [`CALL_SCHEMA_EVIDENCE`]. Derived from what was captured, not from the importer version, so
+    /// it never promises evidence the source didn't supply. Check it before applying a quality gate:
+    /// a `BASIC` set can't satisfy one, and treating its absent DP/GQ as zero would silently reject
+    /// every call.
+    pub call_schema: i64,
+}
+
+impl VariantSet {
+    /// Whether the calls carry [`CallEvidence`] a quality gate can act on.
+    pub fn has_evidence(&self) -> bool {
+        self.call_schema >= CALL_SCHEMA_EVIDENCE
+    }
 }
 
 /// Fields for creating a variant set (the store assigns the id).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NewVariantSet {
     pub biosample_guid: SampleGuid,
     pub source_label: String,
@@ -126,6 +193,29 @@ pub fn snp_call(
     rs_id: Option<String>,
     genotype: Option<String>,
 ) -> Option<VariantCall> {
+    snp_call_with_evidence(
+        contig,
+        position,
+        reference,
+        alternate,
+        rs_id,
+        genotype,
+        CallEvidence::default(),
+    )
+}
+
+/// [`snp_call`] carrying the source's [`CallEvidence`]. Separate rather than a seventh parameter on
+/// `snp_call` because most call sites (CSV tables, chip exports, hand entry) have no evidence to
+/// give and shouldn't have to say so.
+pub fn snp_call_with_evidence(
+    contig: &str,
+    position: i64,
+    reference: &str,
+    alternate: &str,
+    rs_id: Option<String>,
+    genotype: Option<String>,
+    evidence: CallEvidence,
+) -> Option<VariantCall> {
     (is_snp_allele(reference) && is_snp_allele(alternate)).then(|| VariantCall {
         contig: contig.to_string(),
         position,
@@ -133,6 +223,7 @@ pub fn snp_call(
         alternate: alternate.to_ascii_uppercase(),
         rs_id: rs_id.filter(|s| !s.is_empty() && s != "."),
         genotype: genotype.filter(|s| !s.is_empty() && s != "."),
+        evidence,
     })
 }
 
@@ -253,7 +344,9 @@ mod tests {
                 reference: "A".into(),
                 alternate: "G".into(),
                 rs_id: Some("rs1".into()),
-                genotype: None
+                genotype: None,
+                // A CSV marker table carries no per-call evidence.
+                evidence: CallEvidence::default(),
             }
         );
         assert_eq!(v[1].rs_id, None); // "." normalized away

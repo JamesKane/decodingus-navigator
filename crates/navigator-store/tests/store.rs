@@ -842,3 +842,79 @@ async fn bulk_loaders_match_the_per_item_queries() {
     assert!(alignment::list_for_biosamples(s.pool(), &[]).await.unwrap().is_empty());
     assert!(artifact::list_for_alignments(s.pool(), &[]).await.unwrap().is_empty());
 }
+
+/// Per-call evidence survives the round trip, and the set's schema tag reflects what was actually
+/// captured — not which importer ran. A `BASIC` set can never satisfy a quality gate, so a consumer
+/// has to be able to tell the two apart before it starts filtering on absent DP/GQ.
+#[tokio::test]
+async fn variant_call_evidence_round_trips_and_tags_the_schema() {
+    use navigator_domain::variants::{
+        CallEvidence, NewVariantSet, SourceType, VariantCall, CALL_SCHEMA_BASIC, CALL_SCHEMA_EVIDENCE,
+    };
+
+    let s = store().await;
+    let b = sample(None);
+    biosample::create(s.pool(), &b).await.unwrap();
+
+    let call = |pos: i64, evidence: CallEvidence| VariantCall {
+        contig: "chrY".into(),
+        position: pos,
+        reference: "A".into(),
+        alternate: "G".into(),
+        rs_id: None,
+        genotype: Some("1/1".into()),
+        evidence,
+    };
+    let evidence = CallEvidence {
+        qual: Some(512.5),
+        filter: Some("LowQual".into()),
+        dp: Some(40),
+        gq: Some(99),
+        ad_ref: Some(2),
+        ad_alt: Some(38),
+    };
+
+    let with = navigator_store::variant_set::create(
+        s.pool(),
+        &NewVariantSet {
+            biosample_guid: b.guid,
+            source_label: "big-y".into(),
+            source_type: SourceType::TargetedNgs,
+            reference_build: Some("GRCh38".into()),
+            // One call carries evidence, one doesn't — a real VCF mixes both.
+            calls: vec![call(100, evidence.clone()), call(200, CallEvidence::default())],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(with.call_schema, CALL_SCHEMA_EVIDENCE);
+    assert!(with.has_evidence());
+
+    let read = navigator_store::variant_set::get(s.pool(), with.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.call_schema, CALL_SCHEMA_EVIDENCE);
+    assert_eq!(read.calls[0].evidence, evidence, "every field survives the round trip");
+    assert_eq!(read.calls[0].evidence.allele_fraction(), Some(0.95));
+    assert!(read.calls[0].evidence.is_filtered());
+    // The evidence-free call stays evidence-free rather than reading back as zeros.
+    assert!(read.calls[1].evidence.is_empty());
+    assert_eq!(read.calls[1].evidence.dp, None);
+
+    // A set with nothing captured tags BASIC, so a consumer knows not to gate on quality here.
+    let without = navigator_store::variant_set::create(
+        s.pool(),
+        &NewVariantSet {
+            biosample_guid: b.guid,
+            source_label: "csv-panel".into(),
+            source_type: SourceType::Manual,
+            reference_build: None,
+            calls: vec![call(300, CallEvidence::default())],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(without.call_schema, CALL_SCHEMA_BASIC);
+    assert!(!without.has_evidence());
+}
