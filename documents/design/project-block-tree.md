@@ -285,13 +285,32 @@ following the one-view-per-module split, and keeping `central.rs` from growing a
    in a single sample, plus per-call AD/DP/GQ — exactly the gate a VCF-backed private-Y engine needs.
    Existing sets keep `call_schema = 1` and must be re-imported to gain evidence.
 
-   **Blocking finding, not yet fixed:** a chrY-only Big Y VCF ingested *today* is auto-detected as an
-   "Autosomal 1240K call set" and lands in `external_panel_dosage` (266 chrY panel loci) instead of
-   creating a Y `variant_set`. The 7,834 existing `FTDNA Big Y (aengine)` sets predate that routing.
-   Until it is resolved, new Big Y VCF imports produce no Y variant set — and so no Y placement and
-   no private-Y source — from these files. Likely interacts with
-   [`external-caller-precedence.md`](external-caller-precedence.md), which deliberately gave external
-   call sets priority, so it wants care rather than a quick re-route.
+   **Routing bug — found, root-caused, fixed.** A chrY-only Big Y VCF was auto-detected as an
+   "Autosomal 1240K call set" and landed in `external_panel_dosage` (266 chrY panel loci matched out
+   of ~260k records), creating no Y `variant_set` — so no Y placement and no private-Y source. The
+   7,834 existing `FTDNA Big Y (aengine)` sets predate that routing, which is why nothing looked
+   broken: this detector would have prevented creating them.
+
+   *Why it existed.* `looks_like_genotyped_callset_vcf` arrived with the external-caller-precedence
+   work (`5636286`), whose subject was **autosomal** call sets. It classified any VCF emitting
+   explicit `0/0` rows as a call set — a sound "call set vs variant list" test for the autosomal
+   problem it was solving — and the commit stated its own assumption plainly: *"chrY/chrM GVCFs are
+   the sidecar fast path, discovered in a directory, not here."* That held for the directory flow it
+   was designed with, but not for a loose `variants.vcf.gz` handed to `ingest`. Vendor Y products
+   report reference sites too, so they tripped the one signal it looked at, and nothing looked at
+   **contigs**.
+
+   *The fix.* `vcf_known_lineage_only` gates both the `.g.vcf` and genotyped-`.vcf` branches:
+   `##contig=<ID=…>` declarations are authoritative when present, else the records' `CHROM` column.
+   No contig evidence at all returns `false` — absence of evidence is not evidence of absence, so an
+   unreadable `.g.vcf` keeps the claim its extension makes rather than being demoted on a guess.
+   5 tests, including the real aengine header and a chrM-only equivalent.
+
+   Verified end to end on the same file that exposed it: now imports as `FTDNA Big Y (aengine)` /
+   `TARGETED_NGS` / GRCh38, **4,485 chrY calls** (matching the ~4,184 average of the sets created
+   under the old routing) at `call_schema = 2`, with 1,590 FILTER-flagged calls and DP spanning
+   1–4,212. The two fixes compose: a `dp=37, qual=1484` call and a `dp=1, gq=1` one-read artefact are
+   now distinguishable, which is precisely what the private-Y gate needs.
 5. **Suffixed terminal names** (found in phase-2 validation) — some unresolved terminals are a real
    node name plus a suffix, e.g. `R-A9426:n0` where `R-A9426` *is* in the tree. Stripping the suffix
    and matching the parent node would recover those members, but only if the suffix means what it

@@ -65,7 +65,10 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
     // A GATK gVCF (`.g.vcf[.gz]`) is genotyped at the 1240K panel — checked BEFORE the plain `.vcf`
     // rule below (a gVCF also ends `.vcf.gz`). A gVCF named plainly `.vcf.gz` is imported as a normal
     // variant set instead; the `.g.` convention is how GATK marks its genome VCFs.
-    if ends(".g.vcf") || ends(".g.vcf.gz") || ends(".g.vcf.bgz") {
+    // A gVCF is an autosomal call set only if it actually covers autosomes. A chrY- or chrM-only
+    // gVCF falls through to the `.vcf` branch below (`.g.vcf.gz` also ends `.vcf.gz`) and becomes a
+    // variant set, which is what a haploid-lineage call set is.
+    if (ends(".g.vcf") || ends(".g.vcf.gz") || ends(".g.vcf.bgz")) && !vcf_known_lineage_only(head) {
         return DetectedData::GvcfCallSet;
     }
     // EIGENSTRAT call-set triplet — the user can point at any member; the importer resolves the
@@ -78,7 +81,13 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
         // `bcftools mpileup`/`call` or joint-genotyped VCF over the 1240K sites — is a trusted
         // external autosomal call set, not a variant-only list. Route it to the panel importer so it
         // drives the autosomal consensus. A variant-only VCF (no `0/0`) stays a normal variant set.
-        if looks_like_genotyped_callset_vcf(head) {
+        //
+        // Emitting hom-ref rows is **not** on its own enough: a vendor Y/mt product does it too.
+        // FTDNA Big Y (aengine) reports reference sites across chrY, so on the `0/0` signal alone a
+        // Big Y export was classified an *autosomal* 1240K call set — landing ~260k chrY records in
+        // the panel importer, which recognized 266 of them and produced no Y variant set at all, so
+        // no Y placement and no private-Y source. A haploid-lineage call set is a variant set.
+        if looks_like_genotyped_callset_vcf(head) && !vcf_known_lineage_only(head) {
             return DetectedData::GvcfCallSet;
         }
         return DetectedData::Variants;
@@ -139,9 +148,47 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
     }
 }
 
+/// Whether a VCF head shows the file to be **positively confined to haploid lineages** — chrY and/or
+/// chrM, with no autosome anywhere in sight.
+///
+/// `##contig=<ID=…>` declarations are authoritative and enumerate every contig, so they win when
+/// present; otherwise the `CHROM` column of the records in the head is used. VCFs are
+/// coordinate-sorted with chr1 first, so a whole-genome file shows an autosome immediately while a
+/// chrY/chrM product never does.
+///
+/// Returns `false` when there is **no contig evidence at all** (an empty or unreadable head). Absence
+/// of evidence is not evidence of absence: a `.g.vcf` we couldn't read should keep the claim its
+/// extension makes rather than be demoted on a guess.
+///
+/// This is the guard that keeps a haploid-lineage call set off the autosomal panel pipeline.
+fn vcf_known_lineage_only(head: &str) -> bool {
+    let is_autosome = |c: &str| matches!(crate::contig::bare_upper(c).parse::<u8>(), Ok(1..=22));
+
+    let declared: Vec<String> = head
+        .lines()
+        .filter_map(|l| l.strip_prefix("##contig=<ID="))
+        .map(|rest| rest.chars().take_while(|&c| c != ',' && c != '>').collect())
+        .collect();
+    if !declared.is_empty() {
+        return !declared.iter().any(|c| is_autosome(c));
+    }
+    let mut saw_record = false;
+    let mut saw_autosome = false;
+    for chrom in head
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .filter_map(|l| l.split('\t').next())
+    {
+        saw_record = true;
+        saw_autosome |= is_autosome(chrom);
+    }
+    saw_record && !saw_autosome
+}
+
 /// A genotyped **all-sites** VCF: any data line whose `FORMAT` begins `GT` and whose sample genotype
 /// is an explicit hom-ref (`0/0` / `0|0`). A variant-only VCF never emits hom-ref rows, so this
-/// cleanly distinguishes a 1240K/panel call set (which lists every site) from a plain variant list.
+/// distinguishes a call set (which lists every site) from a plain variant list. It says nothing about
+/// *which* sites — pair it with [`vcf_known_lineage_only`] before calling anything autosomal.
 fn looks_like_genotyped_callset_vcf(head: &str) -> bool {
     head.lines()
         .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
@@ -394,6 +441,64 @@ chr1\t270133\trs12124819\tA\t.\t281\t.\tDP=33\tGT:DP:AD\t0/0:32:32
 chr1\t246193\t.\tG\tA\t225\t.\tDP=29\tGT\t1/1
 ";
         assert_eq!(detect("calls.vcf.gz", variants_only), DetectedData::Variants);
+    }
+
+    /// The real FTDNA Big Y (aengine) shape: hom-ref rows across chrY and nothing else. Reporting
+    /// reference sites made it look like a 1240K call set, so ~260k chrY records went to the
+    /// autosomal panel importer — which matched 266 of them and created no Y variant set, leaving the
+    /// subject with no Y placement and no private-Y source.
+    #[test]
+    fn a_chr_y_only_genotyped_vcf_is_a_variant_set_not_an_autosomal_call_set() {
+        let head = "\
+##fileformat=VCFv4.2
+##contig=<ID=chrY,length=57227415,assembly=ucsc.hg38>
+##contig=<ID=chrY_KI270740v1_random,length=37240,assembly=ucsc.hg38>
+##source=aengine
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1
+chrY\t2781205\t.\tC\tA\t10.47\tQUAL=10.4\tBQ=37\tGT:AD:DP:GQ\t0/0:0,5:5:0
+chrY\t2781435\t.\tA\tT\t28.57\tQUAL=28.5\tBQ=37\tGT:AD:DP:GQ\t1/1:0,7:7:10
+";
+        assert_eq!(detect("variants.vcf.gz", head), DetectedData::Variants);
+        // Same for a chrY gVCF handed over directly rather than via the sidecar directory.
+        assert_eq!(detect("chrY.g.vcf.gz", head), DetectedData::Variants);
+    }
+
+    #[test]
+    fn a_chr_m_only_genotyped_vcf_is_also_a_variant_set() {
+        let head = "\
+##fileformat=VCFv4.2
+##contig=<ID=chrM,length=16569>
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1
+chrM\t73\t.\tA\tG\t99\tPASS\t.\tGT:DP\t1/1:400
+chrM\t150\t.\tC\tT\t99\tPASS\t.\tGT:DP\t0/0:380
+";
+        assert_eq!(detect("mito.vcf.gz", head), DetectedData::Variants);
+    }
+
+    #[test]
+    fn a_whole_genome_call_set_is_unaffected_by_the_lineage_guard() {
+        // Declared autosomes → still a call set, even though chrY is present too.
+        let declared = "\
+##fileformat=VCFv4.2
+##contig=<ID=chr1,length=248956422>
+##contig=<ID=chrY,length=57227415>
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS
+chr1\t246193\trs3094315\tG\tA\t225\t.\tDP=29\tGT:DP\t0/0:29
+";
+        assert_eq!(detect("wgs.vcf.gz", declared), DetectedData::GvcfCallSet);
+
+        // No ##contig declarations → fall back to the records' CHROM column.
+        let undeclared = "\
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS
+chr1\t246193\trs3094315\tG\tA\t225\t.\tDP=29\tGT:DP\t0/0:29
+";
+        assert_eq!(detect("wgs.vcf.gz", undeclared), DetectedData::GvcfCallSet);
+    }
+
+    #[test]
+    fn an_unreadable_head_keeps_the_gvcf_extensions_claim() {
+        // No contig evidence is not evidence of no autosomes — don't demote on a guess.
+        assert_eq!(detect("sample.g.vcf.gz", ""), DetectedData::GvcfCallSet);
     }
 
     #[test]
