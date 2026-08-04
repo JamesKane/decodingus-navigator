@@ -16,6 +16,7 @@ struct SetRow {
     source_type: String,
     reference_build: Option<String>,
     call_schema: i64,
+    source_path: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -74,14 +75,15 @@ pub async fn create(pool: &SqlitePool, new: &NewVariantSet) -> Result<VariantSet
         variants::CALL_SCHEMA_BASIC
     };
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO variant_set (biosample_guid, source_label, source_type, reference_build, call_schema) \
-         VALUES (?, ?, ?, ?, ?) RETURNING id",
+        "INSERT INTO variant_set (biosample_guid, source_label, source_type, reference_build, call_schema, source_path) \
+         VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(new.biosample_guid.0.to_string())
     .bind(&new.source_label)
     .bind(new.source_type.as_str())
     .bind(&new.reference_build)
     .bind(schema)
+    .bind(&new.source_path)
     .fetch_one(&mut *tx)
     .await?;
     for c in &new.calls {
@@ -117,13 +119,14 @@ pub async fn create(pool: &SqlitePool, new: &NewVariantSet) -> Result<VariantSet
         reference_build: new.reference_build.clone(),
         calls: new.calls.clone(),
         call_schema: schema,
+        source_path: new.source_path.clone(),
     })
 }
 
 /// One variant set (with its calls) by id, or `None` if it doesn't exist.
 pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<VariantSet>, StoreError> {
     let Some(r) = sqlx::query_as::<_, SetRow>(
-        "SELECT id, biosample_guid, source_label, source_type, reference_build, call_schema FROM variant_set WHERE id = ?",
+        "SELECT id, biosample_guid, source_label, source_type, reference_build, call_schema, source_path FROM variant_set WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -141,6 +144,7 @@ pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<VariantSet>, Store
         reference_build: r.reference_build,
         calls,
         call_schema: r.call_schema,
+        source_path: r.source_path,
     }))
 }
 
@@ -158,6 +162,10 @@ async fn calls_for(pool: &SqlitePool, set_id: i64) -> Result<Vec<VariantCall>, S
 /// set row was removed.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM variant_set_genotype WHERE variant_set_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM variant_call WHERE variant_set_id = ?")
         .bind(id)
         .execute(&mut *tx)
@@ -174,7 +182,7 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
 /// All variant sets for a biosample, with their calls.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<VariantSet>, StoreError> {
     let rows: Vec<SetRow> = sqlx::query_as(
-        "SELECT id, biosample_guid, source_label, source_type, reference_build, call_schema FROM variant_set \
+        "SELECT id, biosample_guid, source_label, source_type, reference_build, call_schema, source_path FROM variant_set \
          WHERE biosample_guid = ? ORDER BY id",
     )
     .bind(guid.0.to_string())
@@ -193,6 +201,7 @@ pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<V
             reference_build: r.reference_build,
             calls,
             call_schema: r.call_schema,
+            source_path: r.source_path,
         });
     }
     Ok(sets)

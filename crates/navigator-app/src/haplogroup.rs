@@ -261,6 +261,7 @@ impl App {
             source_type: variants::SourceType::Imported,
             reference_build: None,
             calls,
+            source_path: None, // derived from the stored sequence, not a re-readable call file
         };
         Ok(variant_set::create(self.store.pool(), &new).await?)
     }
@@ -882,10 +883,7 @@ impl App {
         if !ngs_sets.is_empty() {
             let mut tree_cache: HashMap<String, navigator_analysis::haplo::HaploTree> = HashMap::new();
             for set in &ngs_sets {
-                let calls = Self::vset_chr_y_calls(set);
-                if calls.is_empty() {
-                    continue;
-                }
+                // Tree first: genotyping the source needs the target positions it defines.
                 let build = set.reference_build.clone().unwrap_or_else(|| "GRCh38".to_string());
                 if !tree_cache.contains_key(&build) {
                     match self.chip_y_tree(&build).await {
@@ -894,6 +892,10 @@ impl App {
                         }
                         Err(_) => continue,
                     }
+                }
+                let calls = self.vset_base_calls(set, "chrY", &tree_cache[&build]).await;
+                if calls.is_empty() {
+                    continue;
                 }
                 let assignment = Self::place_chip_panel(&tree_cache[&build], calls);
                 let obs = snp_obs_from_assignment(&assignment, true);
@@ -1104,7 +1106,7 @@ impl App {
             if set.source_type == SourceType::Chip || !is_grch38_build(&set.reference_build) {
                 continue;
             }
-            let calls = Self::vset_chr_y_calls(set);
+            let calls = self.vset_base_calls(set, "chrY", &tree).await;
             if !calls.is_empty() {
                 sources.push((set.source_type, strand_reconcile_to_tree(&tree, calls)));
             }
@@ -1191,7 +1193,7 @@ impl App {
                 continue;
             };
             let Some(tree) = trees.get(bk) else { continue };
-            let calls = Self::vset_chr_y_calls(set);
+            let calls = self.vset_base_calls(set, "chrY", tree).await;
             if !calls.is_empty() {
                 by_build
                     .entry(bk)
@@ -1484,7 +1486,7 @@ impl App {
                 continue;
             };
             let Some(tree) = trees.get(bk) else { continue };
-            let calls = Self::vset_chr_y_calls(set);
+            let calls = self.vset_base_calls(set, "chrY", tree).await;
             if !calls.is_empty() {
                 by_build
                     .entry(bk)
@@ -4425,6 +4427,56 @@ impl App {
             .collect()
     }
 
+    /// Tree-position genotypes for a variant set — the VCF counterpart of [`Self::base_calls`].
+    ///
+    /// [`Self::vset_chr_y_calls`] can only report the stored rows, which are the donor's *derived*
+    /// calls: the workspace never recorded where he is confidently ancestral, so placement cannot
+    /// separate "ancestral" from "not covered" and every backbone node scores as no-call. Re-reading
+    /// the source VCF at the tree's positions recovers the hom-ref rows it already contains, which is
+    /// what the CRAM path gets for free by genotyping every target.
+    ///
+    /// Cached in `variant_set_genotype` under the same site-set hash the alignment path uses, so a
+    /// changed tree misses rather than serving genotypes for sites that moved. Falls back to the
+    /// stored derived calls whenever the source is unavailable (never recorded, file since moved, or
+    /// unreadable) — strictly no worse than the previous behaviour.
+    async fn vset_base_calls(
+        &self,
+        set: &VariantSet,
+        contig: &str,
+        tree: &navigator_analysis::haplo::HaploTree,
+    ) -> HashMap<i64, char> {
+        let targets: HashSet<i64> = tree
+            .nodes
+            .values()
+            .flat_map(|n| n.loci.iter().map(|l| l.position))
+            .collect();
+        let stored = || Self::vset_chr_y_calls(set);
+        if targets.is_empty() {
+            return stored();
+        }
+        let cache_key = genotype_cache_key(contig, None, &targets);
+        if let Ok(Some(json)) = variant_set_genotype::get(self.store.pool(), set.id, &cache_key).await {
+            if let Ok(pairs) = serde_json::from_str::<Vec<(i64, char)>>(&json) {
+                return pairs.into_iter().collect();
+            }
+        }
+        let Some(path) = set.source_path.as_deref() else {
+            return stored();
+        };
+        let (p, c, t) = (PathBuf::from(path), contig.to_string(), targets);
+        let genotyped = tokio::task::spawn_blocking(move || crate::vcf_genotypes_at(&p, &c, &t))
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+        let Some(calls) = genotyped.filter(|c| !c.is_empty()) else {
+            return stored();
+        };
+        if let Ok(json) = serde_json::to_string(&calls.iter().map(|(p, b)| (*p, *b)).collect::<Vec<_>>()) {
+            let _ = variant_set_genotype::upsert(self.store.pool(), set.id, &cache_key, &json).await;
+        }
+        calls
+    }
+
     /// Place the subject's vendor **Y-NGS VCF** variant sets — FTDNA Big Y / Full Genomes Y Elite /
     /// YSEQ / Nebula / Dante, i.e. anything imported as a non-[`Chip`](SourceType::Chip)
     /// [`VariantSet`] carrying chrY calls — and record a per-source donor call for each. These are
@@ -4441,10 +4493,6 @@ impl App {
             if set.source_type == SourceType::Chip {
                 continue; // chips place via assign_y_bisdna / the chip-panel path
             }
-            let calls = Self::vset_chr_y_calls(set);
-            if calls.is_empty() {
-                continue;
-            }
             let build = set.reference_build.clone().unwrap_or_else(|| "GRCh38".to_string());
             if !tree_cache.contains_key(&build) {
                 match self.chip_y_tree(&build).await {
@@ -4456,6 +4504,10 @@ impl App {
                         continue;
                     }
                 }
+            }
+            let calls = self.vset_base_calls(set, "chrY", &tree_cache[&build]).await;
+            if calls.is_empty() {
+                continue;
             }
             let assignment = Self::place_chip_panel(&tree_cache[&build], calls);
             // A set with no tree-defining SNP matched carries no Y signal — e.g. an off-haplotree
@@ -5154,6 +5206,7 @@ mod vset_autosomal_calls_tests {
             reference_build: Some("GRCh37".into()),
             calls,
             call_schema: navigator_domain::variants::CALL_SCHEMA_BASIC,
+            source_path: None,
         }
     }
 

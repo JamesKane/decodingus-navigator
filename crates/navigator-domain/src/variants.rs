@@ -159,6 +159,10 @@ pub struct VariantSet {
     /// a `BASIC` set can't satisfy one, and treating its absent DP/GQ as zero would silently reject
     /// every call.
     pub call_schema: i64,
+    /// Where this set was imported from, when it came from a file. Kept so the source can be
+    /// **re-read** to genotype at tree positions — the role `alignment.bam_path` plays for the
+    /// BAM/CRAM path. `None` for hand entry and for sets imported before this was recorded.
+    pub source_path: Option<String>,
 }
 
 impl VariantSet {
@@ -177,6 +181,8 @@ pub struct NewVariantSet {
     /// Reference build the calls are on, when known (see [`VariantSet::reference_build`]).
     pub reference_build: Option<String>,
     pub calls: Vec<VariantCall>,
+    /// Source file, when there is one (see [`VariantSet::source_path`]).
+    pub source_path: Option<String>,
 }
 
 /// True for a one-base A/C/G/T allele (case-insensitive) — used to keep SNP rows only.

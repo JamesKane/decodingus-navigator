@@ -883,6 +883,7 @@ async fn variant_call_evidence_round_trips_and_tags_the_schema() {
             reference_build: Some("GRCh38".into()),
             // One call carries evidence, one doesn't — a real VCF mixes both.
             calls: vec![call(100, evidence.clone()), call(200, CallEvidence::default())],
+            source_path: Some("/tmp/big-y.vcf.gz".into()),
         },
     )
     .await
@@ -911,6 +912,7 @@ async fn variant_call_evidence_round_trips_and_tags_the_schema() {
             source_type: SourceType::Manual,
             reference_build: None,
             calls: vec![call(300, CallEvidence::default())],
+            source_path: None,
         },
     )
     .await

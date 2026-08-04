@@ -885,7 +885,7 @@ use navigator_store::{
     alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_archaic,
     consensus_archaic_segments, consensus_painting, consensus_profile, consensus_roh, haplogroup_call,
     mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, source_file, str_profile, sync_history,
-    sync_outbox, sync_state, variant_set, Store, StoreError,
+    sync_outbox, sync_state, variant_set, variant_set_genotype, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -4761,6 +4761,109 @@ mod settings_tests {
 }
 
 #[cfg(test)]
+mod vcf_genotype_tests {
+    use super::vcf_genotypes_at;
+    use std::collections::HashSet;
+
+    fn genotypes(name: &str, body: &str, targets: &[i64]) -> std::collections::HashMap<i64, char> {
+        let dir = std::env::temp_dir().join(format!("nav-vcf-gt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.vcf"));
+        std::fs::write(&path, body).unwrap();
+        let t: HashSet<i64> = targets.iter().copied().collect();
+        let out = vcf_genotypes_at(&path, "chrY", &t).unwrap();
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    const HEADER: &str = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n";
+
+    #[test]
+    fn hom_ref_rows_become_ancestral_evidence() {
+        // The reason this exists: a 0/0 row says the donor is *ancestral* here. Importing only the
+        // non-reference rows loses that, and placement can't tell ancestral from uncovered.
+        let g = genotypes(
+            "homref",
+            &format!(
+                "{HEADER}chrY\t100\t.\tA\tG\t99\tPASS\t.\tGT\t1/1\n\
+                 chrY\t200\t.\tC\tT\t99\tPASS\t.\tGT\t0/0\n"
+            ),
+            &[100, 200],
+        );
+        assert_eq!(g.get(&100), Some(&'G'), "derived → the ALT base");
+        assert_eq!(g.get(&200), Some(&'C'), "hom-ref → the REF base");
+    }
+
+    #[test]
+    fn a_no_call_is_not_ancestral() {
+        // `./.` also yields no non-zero allele index, but it is not evidence of the reference.
+        let g = genotypes(
+            "nocall",
+            &format!("{HEADER}chrY\t300\t.\tA\tG\t99\tPASS\t.\tGT\t./.\n"),
+            &[300],
+        );
+        assert!(g.is_empty(), "a no-call must stay absent, not read as ancestral");
+    }
+
+    #[test]
+    fn only_target_positions_and_the_right_contig_are_reported() {
+        let g = genotypes(
+            "targets",
+            &format!(
+                "{HEADER}chrY\t100\t.\tA\tG\t99\tPASS\t.\tGT\t1/1\n\
+                 chrY\t999\t.\tA\tG\t99\tPASS\t.\tGT\t1/1\n\
+                 chr1\t100\t.\tA\tG\t99\tPASS\t.\tGT\t1/1\n"
+            ),
+            &[100],
+        );
+        assert_eq!(g.len(), 1, "off-target and off-contig rows are ignored");
+        assert_eq!(g.get(&100), Some(&'G'));
+    }
+
+    #[test]
+    fn the_called_alt_is_used_on_a_multiallelic_row() {
+        let g = genotypes(
+            "multi",
+            &format!("{HEADER}chrY\t400\t.\tA\tG,T\t99\tPASS\t.\tGT\t2/2\n"),
+            &[400],
+        );
+        assert_eq!(g.get(&400), Some(&'T'), "GT 2 selects ALT[1]");
+    }
+
+    #[test]
+    fn indels_and_sites_only_rows_are_skipped() {
+        let g = genotypes(
+            "skip",
+            &format!(
+                "{HEADER}chrY\t500\t.\tA\tAT\t99\tPASS\t.\tGT\t1/1\n\
+                 chrY\t600\t.\tAT\tA\t99\tPASS\t.\tGT\t0/0\n"
+            ),
+            &[500, 600],
+        );
+        assert!(g.is_empty(), "no single observed base to report for an indel");
+
+        // A sites-only row has no sample column, so it says nothing about *this* donor.
+        let sites = genotypes(
+            "sitesonly",
+            "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchrY\t700\t.\tA\tG\t99\t.\t.\n",
+            &[700],
+        );
+        assert!(sites.is_empty());
+    }
+
+    #[test]
+    fn contig_naming_is_matched_leniently() {
+        // GRCh37-style bare `Y` must match a `chrY` query (see contig::bare_upper).
+        let g = genotypes(
+            "bareY",
+            &format!("{HEADER}Y\t800\t.\tA\tG\t99\tPASS\t.\tGT\t1/1\n"),
+            &[800],
+        );
+        assert_eq!(g.get(&800), Some(&'G'));
+    }
+}
+
+#[cfg(test)]
 mod vcf_evidence_tests {
     use super::parse_vcf_subject_snps;
 
@@ -4975,4 +5078,86 @@ mod seed_tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+}
+
+/// Genotype a VCF **at a fixed set of target positions** — the file-based counterpart of walking a
+/// BAM/CRAM at the tree's sites ([`App::base_calls`]).
+///
+/// Returns `position → observed base` for every target the VCF has something to say about:
+///
+/// - a non-reference genotype → the **called ALT** base (the donor is derived here);
+/// - an explicit hom-ref (`0/0` / `0|0`) → the **REF** base (the donor is confidently *ancestral*);
+/// - no record, or a no-call (`./.`) → absent, i.e. genuine no-call.
+///
+/// That middle case is the whole point. Importing only the non-reference rows leaves the workspace
+/// unable to distinguish "ancestral" from "not covered", so every backbone node scores as no-call and
+/// placement runs on a few dozen sites. A vendor Y export carries the hom-ref rows already (an
+/// aengine Big Y is ~218k PASS records, mostly `0/0`); this reads them.
+///
+/// Only single-base REF/ALT rows are used — an indel has no single observed base to report, and the
+/// tree's SNP loci are what the targets describe. `contig` is matched leniently (`chrY` == `Y`).
+fn vcf_genotypes_at(
+    path: &Path,
+    contig: &str,
+    targets: &std::collections::HashSet<i64>,
+) -> Result<HashMap<i64, char>, AppError> {
+    use std::io::BufRead;
+    let want = navigator_domain::contig::bare_upper(contig);
+    let reader = navigator_analysis::gzio::open_maybe_gz(path)?;
+    let mut out = HashMap::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 5 {
+            continue;
+        }
+        let Ok(pos) = f[1].parse::<i64>() else { continue };
+        if !targets.contains(&pos) || navigator_domain::contig::bare_upper(f[0]) != want {
+            continue;
+        }
+        let (reference, alt_field) = (f[3], f[4]);
+        let ref_base = match single_base(reference) {
+            Some(b) => b,
+            None => continue,
+        };
+        // Genotype selects which allele the donor carries; without a sample column the row is a
+        // sites-only listing and says nothing about *this* donor's state.
+        let gt = (f.len() >= 10)
+            .then(|| {
+                f[8].split(':')
+                    .position(|k| k == "GT")
+                    .and_then(|i| f[9].split(':').nth(i))
+            })
+            .flatten();
+        let Some(gt) = gt else { continue };
+        let idx = gt
+            .split(['/', '|'])
+            .filter_map(|a| a.parse::<usize>().ok())
+            .find(|&a| a > 0);
+        match idx {
+            // Derived: the ALT the genotype actually selected (not simply ALT[0]).
+            Some(i) => {
+                if let Some(b) = alt_field.split(',').nth(i - 1).and_then(single_base) {
+                    out.insert(pos, b);
+                }
+            }
+            // Ancestral — but only for an explicit hom-ref. `./.` parses to no indices too, and a
+            // no-call is not evidence of the reference allele.
+            None if gt.split(['/', '|']).any(|a| a == "0") => {
+                out.insert(pos, ref_base);
+            }
+            None => {}
+        }
+    }
+    Ok(out)
+}
+
+/// The single upper-cased base of a one-character A/C/G/T allele, else `None` (indel/symbolic).
+fn single_base(allele: &str) -> Option<char> {
+    let mut cs = allele.chars();
+    let c = cs.next()?.to_ascii_uppercase();
+    (cs.next().is_none() && matches!(c, 'A' | 'C' | 'G' | 'T')).then_some(c)
 }

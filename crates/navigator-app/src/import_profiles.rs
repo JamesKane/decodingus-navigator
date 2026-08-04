@@ -147,6 +147,9 @@ impl App {
             source_type,
             reference_build,
             calls,
+            // Recorded so the VCF can be re-read to genotype at tree positions (the role
+            // `alignment.bam_path` plays for a CRAM) — see `App::vset_base_calls`.
+            source_path: Some(path.to_string_lossy().into_owned()),
         };
         let set = variant_set::create(self.store.pool(), &new).await?;
 
@@ -198,6 +201,7 @@ impl App {
             source_type: SourceType::WgsShortRead,
             reference_build: Some(parsed.reference_build),
             calls: parsed.calls,
+            source_path: Some(path.to_string_lossy().into_owned()),
         };
         let set = variant_set::create(self.store.pool(), &new).await?;
 
@@ -234,6 +238,7 @@ impl App {
             source_type: SourceType::TargetedNgs,
             reference_build: Some("GRCh38".to_string()),
             calls,
+            source_path: Some(path.to_string_lossy().into_owned()),
         };
         let set = variant_set::create(self.store.pool(), &new).await?;
         // Place Y from the vendor (non-Chip) sets — the Named report carries the tree-defining SNPs.
@@ -259,6 +264,7 @@ impl App {
             source_type,
             reference_build: None,
             calls,
+            source_path: None, // parsed from text already in hand, not a file we can re-read
         };
         Ok(variant_set::create(self.store.pool(), &new).await?)
     }
@@ -432,6 +438,7 @@ impl App {
             source_type: SourceType::Chip,
             reference_build: Some(build.clone()),
             calls: outcome.calls,
+            source_path: None, // resolved through the Y-SNP dictionary; the panel is not a VCF
         };
         let variant_set = variant_set::create(self.store.pool(), &new).await?;
 
@@ -539,6 +546,7 @@ impl App {
                 source_type: SourceType::Chip,
                 reference_build: Some(build.clone()),
                 calls: variant_calls,
+                source_path: None, // extracted from a chip export, not a re-readable call file
             };
             variant_set::create(self.store.pool(), &set).await?;
 
@@ -612,6 +620,7 @@ impl App {
                 source_type: variants::SourceType::Sanger,
                 reference_build: None, // calls are rCRS-relative (contig "rCRS"), not a nuclear build
                 calls,
+                source_path: None, // derived by diffing the consensus against rCRS
             };
             // Best-effort: a variant-set hiccup must not lose the stored sequence.
             let _ = variant_set::create(self.store.pool(), &set).await;

@@ -290,6 +290,13 @@ pub struct RebuildArgs {
     /// Restrict to subjects in this project (by exact name).
     #[arg(long, short)]
     project: Option<String>,
+    /// Restrict to the subjects named in this file — one donor identifier or subject guid per line
+    /// (`#` comments and blanks ignored). Placement cost is dominated by subjects that own a
+    /// BAM/CRAM without cached genotypes, since those re-walk the alignment; a project filter can't
+    /// separate those from the cheap VCF-only subjects sharing the project, so scope by subject when
+    /// only some of them changed.
+    #[arg(long, value_name = "FILE")]
+    subjects_file: Option<PathBuf>,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
@@ -653,10 +660,37 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
         Err(e) => return report(e),
     };
 
+    // Accepts either identifier so a caller can feed whichever it has to hand — a report keyed by
+    // guid, or a list of donor ids.
+    let wanted: Option<std::collections::HashSet<String>> = match &args.subjects_file {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(text) => Some(
+                text.lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .map(|l| l.to_string())
+                    .collect(),
+            ),
+            Err(e) => {
+                eprintln!("error: reading {}: {e}", path.display());
+                return 1;
+            }
+        },
+        None => None,
+    };
+    if let Some(w) = &wanted {
+        println!("restricting to {} subject(s) from the list", w.len());
+    }
+
     let (mut rebuilt, mut skipped, mut failed) = (0usize, 0usize, 0usize);
     for b in &bios {
         if let Some(pid) = project_id {
             if b.project_id != Some(pid) {
+                continue;
+            }
+        }
+        if let Some(w) = &wanted {
+            if !w.contains(&b.donor_identifier) && !w.contains(&b.guid.0.to_string()) {
                 continue;
             }
         }
