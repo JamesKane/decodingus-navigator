@@ -242,7 +242,8 @@ impl App {
         self.load_analysis(alignment_id, "read_metrics", "1").await
     }
 
-    /// Local on-disk cache for alignments copied off a slow/removable volume (see [`localize`]).
+    /// Scratch directory for alignments copied off a slow/removable volume (see [`localize`]).
+    /// Entries are owned by a [`LocalAlignment`] and removed when the last holder drops.
     pub(crate) fn align_cache_dir() -> std::path::PathBuf {
         navigator_refgenome::cache::base_dir().join("cache").join("aln")
     }
@@ -255,32 +256,30 @@ impl App {
     /// subsequent pass read from local disk. The copy is reused across a subject's passes and cleared
     /// per subject by [`clear_align_cache`]. A copy failure falls back to the remote path (slow, but
     /// still works).
-    pub(crate) async fn localize(&self, remote: &Path) -> PathBuf {
+    pub(crate) async fn localize(&self, remote: &Path) -> LocalAlignment {
         if std::env::var_os("NAVIGATOR_NO_LOCALIZE").is_some() || !is_removable_volume(remote) {
-            return remote.to_path_buf();
+            return LocalAlignment::borrowed(remote);
         }
-        let cache = Self::align_cache_dir();
-        let local = cache.join(local_cache_name(remote));
-        if local.is_file() {
-            return local;
+        let local = Self::align_cache_dir().join(local_cache_name(remote));
+        // Another holder is already using this copy — share it and bump the count.
+        if LocalAlignment::retain(&local) {
+            return LocalAlignment::owned(local);
         }
         let (remote_owned, local2) = (remote.to_path_buf(), local.clone());
         match tokio::task::spawn_blocking(move || copy_with_index(&remote_owned, &local2)).await {
-            Ok(Ok(())) => local,
+            Ok(Ok(())) => {
+                LocalAlignment::retain(&local);
+                LocalAlignment::owned(local)
+            }
             Ok(Err(e)) => {
                 eprintln!("localize: copy failed ({e}); reading from the original (slow)");
-                remote.to_path_buf()
+                LocalAlignment::borrowed(remote)
             }
             Err(e) => {
                 eprintln!("localize: copy task failed ({e}); reading from the original (slow)");
-                remote.to_path_buf()
+                LocalAlignment::borrowed(remote)
             }
         }
-    }
-
-    /// Drop the local alignment cache (called per subject so the batch holds at most one file).
-    pub(crate) fn clear_align_cache() {
-        let _ = std::fs::remove_dir_all(Self::align_cache_dir());
     }
 
     /// Run the unified quality-metrics walker — coverage + callable, read-level QC metrics, and
@@ -308,9 +307,11 @@ impl App {
         let run_id = aln.sequence_run_id;
         // Copy off a slow/removable volume to local disk first — the walker's random-access record
         // iteration is far slower over a network/USB mount than a one-shot bulk copy.
+        // Held for the whole walk: dropping it removes the local copy.
         let bam = self
             .localize(Path::new(&aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?))
             .await;
+        let bam = bam.path().to_path_buf();
         // The walker requires a reference (CRAM decode + reference-N detection); resolve the
         // build via the gateway when no FASTA was stored at import.
         let reference = match aln.reference_path {
@@ -1196,4 +1197,147 @@ fn chrm_has_reads(c: &CoverageResult) -> bool {
     c.contig_coverage_stats
         .iter()
         .any(|s| contig::is_chr_m(&s.contig) && s.num_reads > 0)
+}
+
+/// Live localized copies: local path → how many [`LocalAlignment`]s hold it. A copy is removed when
+/// the count reaches zero, so its lifetime belongs to the copy rather than to a caller remembering
+/// to clean up.
+fn localized_registry() -> &'static std::sync::Mutex<HashMap<PathBuf, usize>> {
+    static REG: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, usize>>> = std::sync::OnceLock::new();
+    REG.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// An alignment path to read from, owning any local copy made for it.
+///
+/// The previous design cached copies in a directory cleared by one caller — `analyze_biosample` —
+/// while three call sites created them. Every other path (notably the Y genotyping a batch drives)
+/// copied ~400 MB per alignment and never cleaned up; that reached 687 files and 145 GB, and filled
+/// the volume mid-run. Tying removal to `Drop` makes that leak unrepresentable, and the refcount
+/// keeps the original benefit: a subject's several passes still share one copy instead of re-copying
+/// per pass.
+pub(crate) struct LocalAlignment {
+    path: PathBuf,
+    /// False when `path` is the original (no copy was made, so nothing to remove).
+    owned: bool,
+}
+
+impl LocalAlignment {
+    fn borrowed(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            owned: false,
+        }
+    }
+
+    fn owned(path: PathBuf) -> Self {
+        Self { path, owned: true }
+    }
+
+    /// Register interest in an existing copy; `true` when one was already present and is now
+    /// retained. A copy in progress is not registered, so callers race only on the copy itself.
+    fn retain(local: &Path) -> bool {
+        let mut reg = localized_registry().lock().unwrap();
+        match reg.get_mut(local) {
+            Some(n) => {
+                *n += 1;
+                true
+            }
+            None if local.is_file() => {
+                reg.insert(local.to_path_buf(), 1);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The path to read from — the local copy when one was made, else the original.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for LocalAlignment {
+    fn drop(&mut self) {
+        if !self.owned {
+            return;
+        }
+        let mut reg = localized_registry().lock().unwrap();
+        let remaining = match reg.get_mut(&self.path) {
+            Some(n) => {
+                *n = n.saturating_sub(1);
+                *n
+            }
+            None => 0,
+        };
+        if remaining > 0 {
+            return;
+        }
+        reg.remove(&self.path);
+        // Best-effort: a copy left behind is a disk-space problem, not a correctness one, and a
+        // panic here would mask whatever the caller was actually doing.
+        let _ = std::fs::remove_file(&self.path);
+        let p = self.path.to_string_lossy().into_owned();
+        for suffix in [".crai", ".bai"] {
+            let _ = std::fs::remove_file(PathBuf::from(format!("{p}{suffix}")));
+        }
+        let _ = std::fs::remove_file(self.path.with_extension("bai"));
+    }
+}
+
+#[cfg(test)]
+mod local_alignment_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("nav-localaln-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_local_copy_is_removed_with_its_index_when_dropped() {
+        let d = scratch("drop");
+        let (cram, crai) = (d.join("a.cram"), d.join("a.cram.crai"));
+        std::fs::write(&cram, "x").unwrap();
+        std::fs::write(&crai, "i").unwrap();
+
+        assert!(LocalAlignment::retain(&cram), "an existing copy registers");
+        drop(LocalAlignment::owned(cram.clone()));
+        assert!(!cram.is_file(), "the copy is removed when the last holder drops");
+        assert!(!crai.is_file(), "and so is its index");
+    }
+
+    #[test]
+    fn a_shared_copy_survives_until_the_last_holder_drops() {
+        // The reason for the refcount: a subject's passes each localize the same alignment, and
+        // removing it when the first finishes would force the rest to re-copy ~400 MB.
+        let d = scratch("shared");
+        let cram = d.join("b.cram");
+        std::fs::write(&cram, "x").unwrap();
+
+        assert!(LocalAlignment::retain(&cram));
+        let first = LocalAlignment::owned(cram.clone());
+        assert!(LocalAlignment::retain(&cram), "a second holder shares the copy");
+        let second = LocalAlignment::owned(cram.clone());
+
+        drop(first);
+        assert!(cram.is_file(), "still held by the second");
+        drop(second);
+        assert!(!cram.is_file(), "removed once nobody holds it");
+    }
+
+    #[test]
+    fn the_original_is_never_removed() {
+        // A path we didn't copy (local disk, or a failed copy falling back to the remote) must be
+        // left alone — deleting the user's own alignment would be catastrophic.
+        let d = scratch("borrowed");
+        let original = d.join("c.cram");
+        std::fs::write(&original, "x").unwrap();
+
+        let guard = LocalAlignment::borrowed(&original);
+        assert_eq!(guard.path(), original);
+        drop(guard);
+        assert!(original.is_file(), "the source file must survive");
+    }
 }

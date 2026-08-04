@@ -835,9 +835,6 @@ impl App {
         };
         o.had_alignment = true;
         let label = &biosample.donor_identifier;
-        // Drop any prior subject's local alignment copy so the batch holds at most one file's worth
-        // of cache; this subject's passes share the single copy `localize` makes below.
-        Self::clear_align_cache();
 
         // Preflight before spending any I/O on the steps below. A batch is the worst place to
         // discover a file problem the slow way: without this, an unreadable alignment produces one

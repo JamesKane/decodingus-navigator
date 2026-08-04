@@ -1303,6 +1303,7 @@ impl App {
                 &aln.bam_path.clone().ok_or(AppError::MissingPaths(alignment_id))?,
             ))
             .await;
+        let bam = bam.path().to_path_buf();
         let is_cram = bam.extension().is_some_and(|e| e.eq_ignore_ascii_case("cram"));
         let reference = match aln.reference_path.clone() {
             Some(p) => Some(PathBuf::from(p)),
@@ -4797,6 +4798,7 @@ impl App {
         let bam = self
             .localize(Path::new(&aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?))
             .await;
+        let bam = bam.path().to_path_buf();
         // Resolve the reference even when none was stored at import. A CRAM can't be decoded
         // without it, so resolve (download on a miss) via the gateway from the alignment's build —
         // e.g. the already-cached `chm13v2.0.fa` for a CHM13 CRAM. A BAM needs no reference to
