@@ -21,9 +21,40 @@ fn load_y_position_bed(env_var: &str, stem: &str, build_token: &str) -> Option<n
     })
 }
 
-/// Locate a per-sample chrY GVCF for an alignment (the ytree `*.chrY.g.vcf.gz` sidecar): the
-/// `NAVIGATOR_Y_GVCF` path override, else a sibling of the alignment's BAM/CRAM whose name ends
-/// `.chry.g.vcf.gz`. `None` when absent — the private-Y path then falls back to the pileup caller.
+/// Caller output directories a per-sample GVCF is commonly filed under, beside the alignment.
+/// A pipeline that runs several callers keeps each one's output in its own directory rather than
+/// beside the CRAM, so looking only at the alignment's own directory misses them.
+const CALLER_SUBDIRS: [&str; 3] = ["gatk4", "gatk3", "gvcf"];
+
+/// Locate a per-sample GVCF for `contig` beside an alignment: the alignment's own directory first
+/// (a `*.chrY.g.vcf.gz` sidecar, the ytree layout), then the known caller subdirectories, where a
+/// bare `chrY.g.vcf.gz` is the usual name.
+///
+/// Both spellings matter. The ytree flat layout emits `<sample>.chrY.g.vcf.gz` next to the CRAM; a
+/// per-run pipeline emits `gatk4/chrY.g.vcf.gz`, whose name has no sample prefix at all. Matching
+/// only the dotted suffix missed every file of the second kind — and since finding the GVCF is what
+/// lets placement skip decoding the CRAM, missing it silently turns a seconds-long read into a
+/// minutes-long whole-chromosome walk.
+fn gvcf_beside_alignment(aln: &Alignment, contig_token: &str) -> Option<PathBuf> {
+    let dotted = format!(".{contig_token}.g.vcf.gz");
+    let bare = format!("{contig_token}.g.vcf.gz");
+    let matches = |name: &str| {
+        let n = name.to_ascii_lowercase();
+        n.ends_with(&dotted) || n == bare
+    };
+    let dir = Path::new(aln.bam_path.as_ref()?).parent()?;
+    let scan = |d: &Path| -> Option<PathBuf> {
+        std::fs::read_dir(d)
+            .ok()?
+            .flatten()
+            .find_map(|e| matches(&e.file_name().to_string_lossy()).then(|| e.path()))
+    };
+    scan(dir).or_else(|| CALLER_SUBDIRS.iter().find_map(|sub| scan(&dir.join(sub))))
+}
+
+/// Locate a per-sample chrY GVCF for an alignment: the `NAVIGATOR_Y_GVCF` path override, else
+/// [`gvcf_beside_alignment`]. `None` when absent — the private-Y path then falls back to the pileup
+/// caller, and placement to a full CRAM walk.
 pub(crate) fn chr_y_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("NAVIGATOR_Y_GVCF") {
         let p = PathBuf::from(p);
@@ -31,19 +62,11 @@ pub(crate) fn chr_y_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let dir = Path::new(aln.bam_path.as_ref()?).parent()?;
-    std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
-        let name = e.file_name();
-        name.to_string_lossy()
-            .to_ascii_lowercase()
-            .ends_with(".chry.g.vcf.gz")
-            .then(|| e.path())
-    })
+    gvcf_beside_alignment(aln, "chry")
 }
 
-/// Locate a per-sample chrM GVCF for an alignment (the ytree `*.chrM.g.vcf.gz` sidecar): the
-/// `NAVIGATOR_M_GVCF` path override, else a sibling of the alignment's BAM/CRAM whose name ends
-/// `.chrm.g.vcf.gz`. `None` when absent. The mtDNA counterpart to [`chr_y_gvcf_for_alignment`].
+/// Locate a per-sample chrM GVCF for an alignment: the `NAVIGATOR_M_GVCF` path override, else
+/// [`gvcf_beside_alignment`]. The mtDNA counterpart to [`chr_y_gvcf_for_alignment`].
 pub(crate) fn chr_m_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("NAVIGATOR_M_GVCF") {
         let p = PathBuf::from(p);
@@ -51,14 +74,7 @@ pub(crate) fn chr_m_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let dir = Path::new(aln.bam_path.as_ref()?).parent()?;
-    std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
-        let name = e.file_name();
-        name.to_string_lossy()
-            .to_ascii_lowercase()
-            .ends_with(".chrm.g.vcf.gz")
-            .then(|| e.path())
-    })
+    gvcf_beside_alignment(aln, "chrm")
 }
 
 /// The bundled-mask filename token for an alignment's reference build, or `None` when no chrY masks
@@ -663,5 +679,86 @@ impl App {
             terminal: terminal.name.clone(),
             variants,
         })
+    }
+}
+
+#[cfg(test)]
+mod gvcf_discovery_tests {
+    use super::*;
+
+    fn alignment_at(bam: &Path) -> Alignment {
+        Alignment {
+            id: 1,
+            sequence_run_id: 1,
+            bam_path: Some(bam.to_string_lossy().into_owned()),
+            reference_path: None,
+            reference_build: "chm13v2.0".into(),
+            aligner: "bwa".into(),
+            variant_caller: None,
+            content_sha256: None,
+        }
+    }
+
+    /// Each case gets its own directory — these run in parallel.
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("nav-gvcf-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn finds_the_ytree_sibling_sidecar() {
+        let d = scratch("sibling");
+        std::fs::write(d.join("chrYM.cram"), "").unwrap();
+        std::fs::write(d.join("HG002.chrY.g.vcf.gz"), "").unwrap();
+        let got = chr_y_gvcf_for_alignment(&alignment_at(&d.join("chrYM.cram"))).unwrap();
+        assert_eq!(got.file_name().unwrap(), "HG002.chrY.g.vcf.gz");
+    }
+
+    #[test]
+    fn finds_a_bare_named_gvcf_in_a_caller_subdirectory() {
+        // The D2C per-run layout: `<run>/CP086569.2/gatk4/chrY.g.vcf.gz`, with no sample prefix and
+        // one directory down. Matching only `*.chry.g.vcf.gz` beside the CRAM found none of these,
+        // so every subject fell back to decoding the whole chromosome.
+        let d = scratch("subdir");
+        std::fs::write(d.join("chrYM.cram"), "").unwrap();
+        std::fs::create_dir_all(d.join("gatk4")).unwrap();
+        std::fs::write(d.join("gatk4").join("chrY.g.vcf.gz"), "").unwrap();
+        let got = chr_y_gvcf_for_alignment(&alignment_at(&d.join("chrYM.cram"))).unwrap();
+        assert_eq!(got.file_name().unwrap(), "chrY.g.vcf.gz");
+        assert_eq!(got.parent().unwrap().file_name().unwrap(), "gatk4");
+    }
+
+    #[test]
+    fn the_alignments_own_directory_wins_over_a_subdirectory() {
+        let d = scratch("precedence");
+        std::fs::write(d.join("chrYM.cram"), "").unwrap();
+        std::fs::write(d.join("HG002.chrY.g.vcf.gz"), "").unwrap();
+        std::fs::create_dir_all(d.join("gatk4")).unwrap();
+        std::fs::write(d.join("gatk4").join("chrY.g.vcf.gz"), "").unwrap();
+        let got = chr_y_gvcf_for_alignment(&alignment_at(&d.join("chrYM.cram"))).unwrap();
+        assert_eq!(got.file_name().unwrap(), "HG002.chrY.g.vcf.gz");
+    }
+
+    #[test]
+    fn a_chr_m_gvcf_is_not_mistaken_for_chr_y() {
+        let d = scratch("contig");
+        std::fs::write(d.join("chrYM.cram"), "").unwrap();
+        std::fs::create_dir_all(d.join("gatk4")).unwrap();
+        std::fs::write(d.join("gatk4").join("chrM.g.vcf.gz"), "").unwrap();
+        let aln = alignment_at(&d.join("chrYM.cram"));
+        assert!(
+            chr_y_gvcf_for_alignment(&aln).is_none(),
+            "chrM must not satisfy a chrY lookup"
+        );
+        assert!(chr_m_gvcf_for_alignment(&aln).is_some());
+    }
+
+    #[test]
+    fn absent_sidecars_yield_none() {
+        let d = scratch("absent");
+        std::fs::write(d.join("chrYM.cram"), "").unwrap();
+        assert!(chr_y_gvcf_for_alignment(&alignment_at(&d.join("chrYM.cram"))).is_none());
     }
 }
