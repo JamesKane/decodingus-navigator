@@ -762,3 +762,194 @@ mod gvcf_discovery_tests {
         assert!(chr_y_gvcf_for_alignment(&alignment_at(&d.join("chrYM.cram"))).is_none());
     }
 }
+
+/// Read depth a VCF call must show before it can be a private-variant candidate. Matches the GVCF
+/// path's floor: below this, a call is far more likely a misaligned-read cluster than a real SNV.
+const VCF_PRIVATE_MIN_DP: u32 = 4;
+
+/// Genotype-quality floor, matching the GVCF path's `min_gq`. Aligns the two sources' gates as far
+/// as the evidence allows — though it does not make them comparable: see
+/// [`App::private_y_from_variant_set`] on why a vendor caller's call set is a different instrument.
+const VCF_PRIVATE_MIN_GQ: u32 = 20;
+
+/// Derived-allele fraction a call must reach to count as **deterministic** on a haploid chromosome.
+/// chrY carries one copy, so a genuine call is essentially all-alt; a middling fraction is an
+/// ambiguous locus, and an ambiguous call cannot support a private-variant claim.
+const VCF_PRIVATE_MIN_AF: f64 = 0.95;
+
+impl App {
+    /// The **private bucket for a variant set** — the VCF counterpart of [`Self::private_y_variants`].
+    ///
+    /// Private-Y has always been keyed on an alignment: it walks a BAM/CRAM (or its GVCF sidecar) and
+    /// caches against `alignment_id`. A subject whose Y data arrived as an externally processed VCF
+    /// has no alignment, so the option was never offered — on R1b-CTS4466Plus that is ~1,600 of 1,881
+    /// members, and it is why cohort features that depend on private variants had almost nothing to
+    /// work with.
+    ///
+    /// The classification is deliberately the same as the alignment path's: subtract the placed
+    /// backbone, drop anything outside the cohort callable mask or on the cohort-shared blocklist,
+    /// then split off-path-known from novel. What differs is where the evidence comes from and how
+    /// the donor's own reliability is judged:
+    ///
+    /// - **Placement** uses [`Self::vset_base_calls`], so the terminal is derived from tree-position
+    ///   genotypes (including hom-ref) rather than the handful of derived calls alone.
+    /// - **There is no self-callable mask** — a VCF carries no coverage track. Its place is taken by
+    ///   the source's own per-call evidence: a `FILTER`-flagged call is dropped, as is one below
+    ///   [`VCF_PRIVATE_MIN_DP`], and a chrY heterozygote is dropped outright — on a haploid
+    ///   chromosome that is a paralog or mismapping artefact, and it is ~2/3 of a Big Y's chrY rows.
+    /// - **Depth and allele fraction are the source's**, so [`PublishGate`] judges these calls on real
+    ///   read evidence. A set imported before evidence capture (`call_schema` 1) therefore yields
+    ///   nothing publishable, which is the honest outcome rather than a fabricated one.
+    ///
+    /// **Not comparable to the alignment path's counts, and not yet fit for branch inference.** This
+    /// yields a median ~175 novel calls per donor against the GVCF path's 3–13. The gap is the
+    /// instrument, not a defect here: the alignment path reads GATK HaplotypeCaller at ploidy 1,
+    /// while a vendor export is a diploid caller emitting far more chrY calls, and only ~10% of the
+    /// difference is reachable by matching DP/GQ gates. Note also that `Novel` means "not
+    /// branch-defining in *this* tree" — the tree is FTDNA's supported branches plus splits solved
+    /// from the cohort, not a catalogue of known Y variation — so a real, well-known variant that
+    /// defines no branch classifies as novel here. Feeding these buckets to the block tree's
+    /// candidate detection took CTS4466 from 3 candidates to 20 (39 conflicts, 105 recurrent
+    /// positions dropped) on only 111 of ~1,600 sets, which is why
+    /// [`Self::private_y_for_biosamples`] does not union them yet.
+    pub async fn private_y_from_variant_set(&self, set: &VariantSet) -> Result<PrivateBucket, AppError> {
+        use navigator_analysis::haplo;
+
+        // Without per-call evidence every quality gate below is a no-op, and the result is a list of
+        // whatever the vendor's caller emitted — on a real set that is 400-550 "novel" calls against
+        // ~70 for the same donor's evidence-bearing set. A call we cannot judge is the most
+        // non-deterministic kind there is, so refuse rather than publish a number that looks like a
+        // finding. Re-importing the source populates `CallEvidence` (migration 0042).
+        if !set.has_evidence() {
+            return Err(AppError::Import(format!(
+                "variant set {} carries no per-call evidence (call_schema {}); re-import it to enable private-Y",
+                set.id, set.call_schema
+            )));
+        }
+        let build = set.reference_build.clone().unwrap_or_else(|| "GRCh38".to_string());
+        let tree = self.chip_y_tree(&build).await?;
+
+        let cache_key = {
+            let targets: HashSet<i64> = tree
+                .nodes
+                .values()
+                .flat_map(|n| n.loci.iter().map(|l| l.position))
+                .collect();
+            format!("pv1:{}", crate::haplogroup::genotype_cache_key("chrY", None, &targets))
+        };
+        if let Ok(Some(json)) = variant_set_private_y::get(self.store.pool(), set.id, &cache_key).await {
+            if let Ok(bucket) = serde_json::from_str::<PrivateBucket>(&json) {
+                return Ok(bucket);
+            }
+        }
+
+        // Place the set to get its backbone. Tree-position genotypes (with ancestral evidence) place
+        // far deeper than the derived calls alone would.
+        let genotypes = self.vset_base_calls(set, "chrY", &tree).await;
+        let assignment = assemble_assignment(&tree, &genotypes);
+        let Some(terminal) = assignment.ranked.first() else {
+            return Err(AppError::Import("no Y haplogroup match for this call set".into()));
+        };
+        let path = haplo::path_positions(&tree, terminal.id);
+        let known = haplo::tree_positions(&tree);
+
+        let mask_token = y_mask_build_token(&build);
+        let cohort_mask =
+            mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_CALLABLE_MASK", "chrY_callable_mask", t));
+        let cohort_shared =
+            mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_COHORT_SHARED", "chrY_cohort_shared_sites", t));
+        // CHM13-coordinate structural BEDs only annotate a CHM13 set, as on the alignment path.
+        let regions = if matches!(
+            canonical_build(&build),
+            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
+        ) {
+            self.y_structural_regions().await
+        } else {
+            None
+        };
+
+        let mut variants: Vec<PrivateVariant> = set
+            .calls
+            .iter()
+            .filter(|c| c.contig.eq_ignore_ascii_case("chrY") || c.contig.eq_ignore_ascii_case("y"))
+            .filter(|c| !path.contains(&c.position))
+            .filter(|c| cohort_mask.as_ref().map_or(true, |m| m.contains(c.position)))
+            .filter(|c| cohort_shared.as_ref().map_or(true, |m| !m.contains(c.position)))
+            .filter(|c| is_hemizygous(c.genotype.as_deref()))
+            .filter(|c| !c.evidence.is_filtered())
+            .filter(|c| !c.evidence.dp.is_some_and(|dp| dp < VCF_PRIVATE_MIN_DP))
+            .filter(|c| !c.evidence.gq.is_some_and(|gq| gq < VCF_PRIVATE_MIN_GQ))
+            .filter(|c| !c.evidence.allele_fraction().is_some_and(|af| af < VCF_PRIVATE_MIN_AF))
+            .filter_map(|c| {
+                let (reference, alternate) = (c.reference.chars().next()?, c.alternate.chars().next()?);
+                Some(PrivateVariant {
+                    position: c.position,
+                    reference,
+                    alternate,
+                    // The source's own numbers; absent when it gave none, which the publish gate
+                    // then (correctly) refuses rather than treating as evidence.
+                    depth: c.evidence.dp.unwrap_or(0),
+                    alt_depth: c.evidence.ad_alt.unwrap_or(0),
+                    allele_fraction: c.evidence.allele_fraction().unwrap_or(0.0),
+                    class: match known.get(&c.position) {
+                        Some(name) => PrivateClass::OffPathKnown(name.clone()),
+                        None => PrivateClass::Novel,
+                    },
+                    region: regions.as_ref().and_then(|r| r.classify(c.position)),
+                })
+            })
+            .collect();
+        variants.sort_by_key(|v| v.position);
+
+        let bucket = PrivateBucket {
+            terminal: terminal.name.clone(),
+            variants,
+        };
+        if let Ok(json) = serde_json::to_string(&bucket) {
+            let _ = variant_set_private_y::upsert(self.store.pool(), set.id, &cache_key, &json).await;
+        }
+        Ok(bucket)
+    }
+}
+
+/// Whether a genotype is a single-allele (hemizygous / homozygous-alt) call.
+///
+/// chrY is haploid, so a heterozygous call there has no biological reading: it is a paralogous or
+/// mismapped locus. In a real Big Y export those are ~2/3 of the chrY rows, and admitting them would
+/// make the private set mostly artefact. An absent genotype is admitted — a source that reports no GT
+/// is not asserting heterozygosity.
+fn is_hemizygous(gt: Option<&str>) -> bool {
+    let Some(gt) = gt else { return true };
+    let alleles: Vec<&str> = gt.split(['/', '|']).filter(|a| *a != ".").collect();
+    !alleles.is_empty() && alleles.windows(2).all(|w| w[0] == w[1])
+}
+
+#[cfg(test)]
+mod vcf_private_y_tests {
+    use super::is_hemizygous;
+
+    #[test]
+    fn a_chr_y_heterozygote_is_rejected() {
+        // chrY is haploid: a het call is a paralog or a mismapping, and it is ~2/3 of a Big Y's
+        // chrY rows — admitting them would make the private set mostly artefact.
+        assert!(!is_hemizygous(Some("0/1")));
+        assert!(!is_hemizygous(Some("1|2")));
+        assert!(!is_hemizygous(Some("1/2")));
+    }
+
+    #[test]
+    fn hemizygous_and_homozygous_alt_calls_are_kept() {
+        assert!(is_hemizygous(Some("1")));
+        assert!(is_hemizygous(Some("1/1")));
+        assert!(is_hemizygous(Some("1|1")));
+        assert!(is_hemizygous(Some("2/2")));
+    }
+
+    #[test]
+    fn a_source_that_reports_no_genotype_is_not_treated_as_heterozygous() {
+        // Absence of a GT is not an assertion about ploidy; rejecting it would silently discard
+        // every sites-only or CSV-derived set.
+        assert!(is_hemizygous(None));
+        assert!(is_hemizygous(Some("1/.")), "a partial call still carries one allele");
+    }
+}

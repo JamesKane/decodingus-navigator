@@ -387,7 +387,26 @@ impl App {
             return Ok(HashMap::new());
         }
 
-        let mut out = HashMap::new();
+        // VCF-derived buckets, for subjects whose Y data never came with an alignment — the large
+        // majority of a Y project. Read from the cache only, as the alignment path does: opening a
+        // tab must not start classifying thousands of call sets.
+        let mut out: HashMap<SampleGuid, PrivateBucket> = HashMap::new();
+        for guid in guids {
+            let rows =
+                navigator_store::variant_set_private_y::list_for_biosample(self.store.pool(), &guid.0.to_string())
+                    .await
+                    .unwrap_or_default();
+            for (_, json) in rows {
+                let Ok(bucket) = serde_json::from_str::<PrivateBucket>(&json) else {
+                    continue;
+                };
+                let entry = out.entry(*guid).or_insert_with(|| PrivateBucket {
+                    terminal: bucket.terminal.clone(),
+                    variants: Vec::new(),
+                });
+                merge_bucket(entry, bucket);
+            }
+        }
         for (guid, alignments) in &by_subject {
             // Same union-by-position, keep-the-deepest merge as the single-subject path.
             let mut by_pos: HashMap<i64, PrivateVariant> = HashMap::new();
@@ -421,13 +440,16 @@ impl App {
             }
             let mut variants: Vec<PrivateVariant> = by_pos.into_values().collect();
             variants.sort_by_key(|v| v.position);
-            out.insert(
-                *guid,
-                PrivateBucket {
-                    terminal: terminal.unwrap_or_default(),
-                    variants,
-                },
-            );
+            let from_alignments = PrivateBucket {
+                terminal: terminal.unwrap_or_default(),
+                variants,
+            };
+            match out.entry(*guid) {
+                std::collections::hash_map::Entry::Occupied(mut e) => merge_bucket(e.get_mut(), from_alignments),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(from_alignments);
+                }
+            }
         }
         Ok(out)
     }
@@ -1151,4 +1173,26 @@ mod read_profile_tests {
         // No metrics.
         assert_eq!(read_type_from_mean_len(0.0), None);
     }
+}
+
+/// Fold `extra` into `into`, deduping by position and keeping the deeper observation — the same rule
+/// the per-subject alignment union uses. A donor with both a CRAM and a vendor VCF should end up with
+/// one private set, not two competing ones.
+fn merge_bucket(into: &mut PrivateBucket, extra: PrivateBucket) {
+    if into.terminal.is_empty() {
+        into.terminal = extra.terminal;
+    }
+    let mut by_pos: HashMap<i64, PrivateVariant> = into.variants.drain(..).map(|v| (v.position, v)).collect();
+    for v in extra.variants {
+        by_pos
+            .entry(v.position)
+            .and_modify(|cur| {
+                if v.depth > cur.depth {
+                    *cur = v.clone();
+                }
+            })
+            .or_insert(v);
+    }
+    into.variants = by_pos.into_values().collect();
+    into.variants.sort_by_key(|v| v.position);
 }

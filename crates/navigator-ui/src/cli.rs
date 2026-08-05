@@ -1396,7 +1396,36 @@ async fn private_y_batch(app: &App, project: &str, force: bool) -> i32 {
     for (i, b) in members.iter().enumerate() {
         let alns = app.list_alignments_for_biosample(b.guid).await.unwrap_or_default();
         if alns.is_empty() {
-            no_aln += 1;
+            // No alignment — but a vendor Y-VCF carries the same evidence, and until the VCF-backed
+            // engine existed these subjects (the large majority of a Y project) had no private-Y at
+            // all. Classify their call sets instead.
+            let sets = app.list_variant_sets(b.guid).await.unwrap_or_default();
+            let mut any = false;
+            for set in sets.iter().filter(|s| s.source_type != navigator_app::SourceType::Chip) {
+                match app.private_y_from_variant_set(set).await {
+                    Ok(bucket) => {
+                        any = true;
+                        done += 1;
+                        novel += bucket.novel_in_unique_sequence();
+                        publishable += bucket.publishable_count(navigator_app::PublishGate::default());
+                        println!(
+                            "OK   {:<24} set {:<6} {:>4} novel-unique  {:>4} publishable  [{}]",
+                            truncate(&b.donor_identifier, 24),
+                            set.id,
+                            bucket.novel_in_unique_sequence(),
+                            bucket.publishable_count(navigator_app::PublishGate::default()),
+                            bucket.terminal
+                        );
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("FAIL {:<24} set {} {e}", truncate(&b.donor_identifier, 24), set.id);
+                    }
+                }
+            }
+            if !any {
+                no_aln += 1;
+            }
             continue;
         }
         for a in &alns {

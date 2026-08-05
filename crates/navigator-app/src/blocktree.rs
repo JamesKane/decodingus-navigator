@@ -267,6 +267,48 @@ fn drop_clustered(positions: &BTreeSet<i64>) -> BTreeSet<i64> {
         .collect()
 }
 
+/// Share of the cohort's private-Y-bearing members above which a position is treated as
+/// **population-shared** rather than private.
+///
+/// A variant carried by most of a cohort did not arise on one branch of it. On R1b-CTS4466Plus five
+/// positions were carried by *all* 111 donors with private-Y — those are reference-vs-population
+/// differences, real but not private, and the bundled cohort-shared blocklist (derived from a
+/// 3,352-sample CHM13 cohort that predates this collection) does not list them. Deriving the
+/// exclusion from the cohort in hand catches what a bundled list cannot anticipate.
+const COHORT_SHARED_FRACTION: f64 = 0.25;
+
+/// Donors required before the frequency rule engages at all.
+///
+/// The rule reasons about what a *large* population shares. A candidate branch needs two carriers by
+/// definition, so in a small cohort two carriers are already a large share — at four donors, every
+/// genuine branch would exceed a 25% ceiling and be thrown away. Below this many donors there is no
+/// population to argue from, so the rule abstains rather than guessing.
+const COHORT_SHARED_MIN_DONORS: usize = 20;
+
+/// Positions carried by more than [`COHORT_SHARED_FRACTION`] of the members that have private-Y.
+fn population_shared_positions(blocks: &[Block], private: &HashMap<SampleGuid, PrivateBucket>) -> BTreeSet<i64> {
+    let mut carriers: HashMap<i64, usize> = HashMap::new();
+    let mut donors = 0usize;
+    for block in blocks {
+        for m in &block.members {
+            let Some(bucket) = private.get(&m.guid) else { continue };
+            donors += 1;
+            for pos in candidate_positions(bucket) {
+                *carriers.entry(pos).or_default() += 1;
+            }
+        }
+    }
+    if donors < COHORT_SHARED_MIN_DONORS {
+        return BTreeSet::new();
+    }
+    let ceiling = (donors as f64 * COHORT_SHARED_FRACTION).ceil() as usize;
+    carriers
+        .into_iter()
+        .filter(|&(_, n)| n > ceiling)
+        .map(|(pos, _)| pos)
+        .collect()
+}
+
 /// Positions that would define a candidate branch under **more than one** named block.
 ///
 /// A variant defining a branch below two different parents did not arise once: it is recurrent, or a
@@ -319,7 +361,10 @@ pub(crate) fn insert_candidate_branches(
 ) -> (Vec<Block>, usize, usize) {
     // Computed across all blocks before any group is accepted — a position defining branches under
     // two parents is disqualified everywhere, not just wherever it happens to be seen second.
-    let recurrent = recurrent_positions(&blocks, private);
+    let recurrent: BTreeSet<i64> = recurrent_positions(&blocks, private)
+        .into_iter()
+        .chain(population_shared_positions(&blocks, private))
+        .collect();
     let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
     let mut conflicts = 0;
     let mut next_id: i64 = -1;

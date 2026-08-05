@@ -111,7 +111,7 @@ type YSourceCalls = Vec<(SourceType, HashMap<i64, char>)>;
 /// the queried `contig`, the lift source build, and an FNV-1a hash of the **sorted target
 /// positions** + their count. A changed tree (added/removed/moved positions) changes the hash →
 /// cache miss → fresh walk; the BAM `source_sig` handles a changed alignment file separately.
-fn genotype_cache_key(contig: &str, source_build: Option<&str>, targets: &HashSet<i64>) -> String {
+pub(crate) fn genotype_cache_key(contig: &str, source_build: Option<&str>, targets: &HashSet<i64>) -> String {
     let mut sorted: Vec<i64> = targets.iter().copied().collect();
     sorted.sort_unstable();
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -4440,7 +4440,7 @@ impl App {
     /// changed tree misses rather than serving genotypes for sites that moved. Falls back to the
     /// stored derived calls whenever the source is unavailable (never recorded, file since moved, or
     /// unreadable) — strictly no worse than the previous behaviour.
-    async fn vset_base_calls(
+    pub(crate) async fn vset_base_calls(
         &self,
         set: &VariantSet,
         contig: &str,

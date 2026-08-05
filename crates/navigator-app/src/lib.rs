@@ -889,7 +889,7 @@ use navigator_store::{
     alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_archaic,
     consensus_archaic_segments, consensus_painting, consensus_profile, consensus_roh, haplogroup_call,
     mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, source_file, str_profile, sync_history,
-    sync_outbox, sync_state, variant_set, variant_set_genotype, Store, StoreError,
+    sync_outbox, sync_state, variant_set, variant_set_genotype, variant_set_private_y, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
