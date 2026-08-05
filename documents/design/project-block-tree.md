@@ -1,10 +1,13 @@
 # Project Y block tree — design
 
-**Status:** **All three phases implemented and live** (branch `feat/project-block-tree`) — the
-aggregate + collapse (1), the `ProjectTab::Tree` canvas view (2), and private-variant blocks +
-shared-private candidate branches + TSV/HTML export (3), plus the `private-y --project` batch that
-phase 3 needed to work at all. Validated on R1b-CTS4466Plus: 229 subjects with private-Y (was 1),
-**3 candidate branches** surviving the artefact filters (see §9 phase 3). Drafted 2026-08-02.
+**Status:** **All three phases shipped** (branch `feat/project-block-tree`, 13 commits, not pushed) —
+the aggregate + collapse (1), the `ProjectTab::Tree` canvas (2), and private-variant blocks +
+candidate branches + export (3), plus four things phase 3 turned out to need: the
+`private-y --project` batch, a **VCF-backed private-Y engine** for subjects with no alignment, a
+**candidate review surface**, and an artefact-filter stack calibrated against R1b-CTS4466Plus.
+Live state there: 248/255 placed members carry private-Y (was 1 workspace-wide), **7 candidate
+branches** surviving the filters. Suite 797 passed. Open items in §11. Drafted 2026-08-02.
+
 **Closes:** `BACKLOG.md` §3.3 remaining scope ("a genuinely zoomable / searchable *whole-tree* view
 with the subject's placement highlighted") — reframed as **cohort-scoped**, which is the form that
 actually earns its keep.
@@ -211,7 +214,11 @@ following the one-view-per-module split, and keeping `central.rs` from growing a
   `F-M89` and `R-A1133` really are absent from the (fresh, 57 MB) DecodingUs tree while `R-A9426` is
   present; those terminals came from FTDNA-provenance calls. This is exactly what `unplaced` exists
   to surface.
-- **Phase 3** — ✅ **built.** Per-member private counts (`BlockMember.private_novel`/`private_total`,
+- **Phase 3** — ✅ **built**, then calibrated over several rounds against real data (§11 records what
+  is still open). The engine, the batch that feeds it, the review surface, and the filter stack are
+  described below.
+
+- **Phase 3 (original scope)** — ✅ **built.** Per-member private counts (`BlockMember.private_novel`/`private_total`,
   from a new bulk `App::private_y_for_biosamples`), **shared-private detection** inserting candidate
   branches, and `export::block_tree_tsv` / `block_tree_html`. 10 further tests.
 
@@ -264,6 +271,46 @@ following the one-view-per-module split, and keeping `central.rs` from growing a
   one `private_y` row. Fixed with a new `artifact::list_for_alignments_of_kind`; back to **1.7 s**.
   Note `project_report` still uses the unfiltered query and will have the same cost on such a project.
 
+## 9b. What phase 3 grew into
+
+The original phase-3 scope assumed private-Y already existed for a cohort. It did not — one subject
+in the whole workspace had it — so four further pieces were needed before candidate branches could
+mean anything.
+
+**`private-y --project`** — computes and persists the bucket for every alignment in a project.
+Resumable (cached buckets skipped, `--force` recomputes) and it skips alignments whose file is gone
+rather than reporting a missing vendor download as a failure. Took CTS4466 from 1 subject to 229.
+
+**A VCF-backed engine** (`App::private_y_from_variant_set`, migration 0044). Private-Y was keyed on
+`alignment_id`; ~1,600 of CTS4466's 1,881 members have no alignment at all. The engine classifies a
+call set the same way the alignment path classifies a walk, placing from `vset_base_calls` so the
+terminal rests on tree-position genotypes. There is no self-callable mask — a VCF has no coverage
+track — so the source's own evidence takes its place.
+
+**A review surface.** A candidate is *our inference*, not the tree's assertion, so it carries its
+evidence: clicking one shows every carrier's DP, AD(alt), derived fraction and publish-gate verdict,
+and the same rows go to the TSV export. This is what found the paralog the automated filters all
+missed — two carriers at DP 413/504 against a median of 57. Build the inspection surface *before*
+the filters next time; the filters written in the abstract caught clustering and recurrence, but the
+one that mattered came from looking at the data.
+
+**The filter stack**, each added because real data demanded it, not by anticipation:
+
+| gate | rejects |
+|---|---|
+| novel + unique sequence | off-path-known SNPs; palindrome/amplicon calls |
+| per-donor proximity (100 bp) | one donor's calls smeared across a misaligned read |
+| cross-block recurrence | a position defining branches under two parents — it arose twice |
+| cohort frequency (>25%, abstains <20 donors) | population/reference differences, not private variants |
+| cross-candidate clustering (1 kb) | separate "branches" inside one sequencing fragment |
+| *VCF sources only:* PASS · DP≥4 · GQ≥20 · AF≥0.95 · hemizygous · ≤3× donor median depth | non-deterministic calls; chrY heterozygotes; collapsed-repeat pile-ups |
+
+Two properties worth remembering. **The filters interact** — dropping the 56.83 Mb cluster changed
+which groupings passed the laminar check and surfaced a new candidate, so the set is never simply the
+previous one minus removals. And **each trades recall for precision**, which is a judgement about a
+cohort rather than a fact about the code: 8 candidates became 3, then 20 → 12 → 9 → 7 as the VCF
+engine widened the input and the gates tightened around it.
+
 ## 10. Out of scope
 
 - **mtDNA block tree.** The aggregate is `DnaType`-generic so allowing it costs nothing, but the
@@ -274,65 +321,46 @@ following the one-view-per-module split, and keeping `central.rs` from growing a
 
 ## 11. Open questions
 
-1. **Collapse threshold** — collapse a run of ≥2 member-less nodes, or ≥5? Affects readability only;
-   pick one and make it a constant.
-2. **Scope** — project-only, or also a "whole workspace" mode? The D2C cohort is a single project, so
-   project-scoped is sufficient for v1.
-3. **Terminals query cost** — `haplogroup_terminals()` is workspace-wide. On a 10k-subject workspace
-   that is one large query per view open; cache the result on the aggregate rather than re-querying
-   on redraw.
-4. **Private-Y coverage** — **answered by phase-3 validation: a batch action is required.** Exactly
-   one subject in the workspace has private-Y computed, so shared-private detection can never fire.
-   The open part is *where it lives*: a bespoke "compute private-Y for this project" button, or
-   folded into the existing project-wide analyze / deep-analyze streaming flow — which is the same
-   choice `BACKLOG.md` §1.2 already faces for panel genotyping, and probably wants the same answer.
+### Resolved
 
-   **The deeper cause, and the prerequisite now built.** Private-Y is keyed on `alignment_id` and
-   sourced from a pileup walk or a GVCF sidecar found beside the BAM — so it is offered for
-   BAM/CRAM only. Most of this workspace's Y data is *externally processed VCFs*, which live in
-   `variant_set`/`variant_call` keyed on `biosample_guid` with no alignment at all: **7,842 subjects
-   have chrY calls, against the 1 with private-Y**. An engine over those call sets is the real fix.
+1. **Collapse threshold** — a run of ≥2 member-less nodes (`COLLAPSE_MIN_RUN = 2`).
+2. **Scope / whole-workspace mode** — **project-scoped only** for v1.
+3. **Terminals query cost** — moot in practice. The Tree tab loads lazily and caches the aggregate in
+   `project_blocktree`, so `haplogroup_terminals()` runs once per project open rather than per
+   redraw; builds measure 0.7–1.7 s on a 9,853-subject project.
 
-   It could not be written usefully first, because the import threw the evidence away: `variant_call`
-   stored only contig/position/ref/alt/rsID/genotype, so nothing downstream could tell a 40× hom-alt
-   call from a 2-read artefact. **Migration 0042 + `variants::CallEvidence` now capture QUAL, FILTER,
-   DP, GQ and AD** (`ad_alt` follows the genotype-selected ALT, so multi-allelic rows read correctly),
-   and `variant_set.call_schema` records whether a set has evidence — derived from what was captured,
-   never from the importer version, so it cannot promise evidence a sites-only VCF never had. Absent
-   fields stay `None`; reading them as `0` would make a good call look unsupported.
+### Open
 
-   Real FTDNA Big Y (aengine) files confirm the value: ~218k `PASS` against ~44k FILTER-flagged calls
-   in a single sample, plus per-call AD/DP/GQ — exactly the gate a VCF-backed private-Y engine needs.
-   Existing sets keep `call_schema = 1` and must be re-imported to gain evidence.
+4. **Where the private-Y batch lives — half answered.** The batch itself exists as
+   `navigator private-y --project` (resumable; `--force` recomputes; skips alignments whose file is
+   gone). **There is no GUI trigger**, so a user who never touches the CLI cannot populate private-Y —
+   and without it candidate branches cannot fire at all. The original question stands: a bespoke
+   button, or folded into the project-wide analyze / deep-analyze streaming flow. `BACKLOG.md` §1.2
+   faces the same choice for panel genotyping and probably wants the same answer.
 
-   **Routing bug — found, root-caused, fixed.** A chrY-only Big Y VCF was auto-detected as an
-   "Autosomal 1240K call set" and landed in `external_panel_dosage` (266 chrY panel loci matched out
-   of ~260k records), creating no Y `variant_set` — so no Y placement and no private-Y source. The
-   7,834 existing `FTDNA Big Y (aengine)` sets predate that routing, which is why nothing looked
-   broken: this detector would have prevented creating them.
+5. **Suffixed terminal names — untouched.** **162** Y consensus labels carry a `:`-suffix
+   (`R-A9426:n0`, where `R-A9426` *is* in the tree), so those members land in `unplaced` instead of on
+   a branch. Stripping the suffix and matching the parent would recover them — but only if the suffix
+   means what it looks like, and nothing has yet established what writes it. Confirm before
+   special-casing.
 
-   *Why it existed.* `looks_like_genotyped_callset_vcf` arrived with the external-caller-precedence
-   work (`5636286`), whose subject was **autosomal** call sets. It classified any VCF emitting
-   explicit `0/0` rows as a call set — a sound "call set vs variant list" test for the autosomal
-   problem it was solving — and the commit stated its own assumption plainly: *"chrY/chrM GVCFs are
-   the sidecar fast path, discovered in a directory, not here."* That held for the directory flow it
-   was designed with, but not for a loose `variants.vcf.gz` handed to `ingest`. Vendor Y products
-   report reference sites too, so they tripped the one signal it looked at, and nothing looked at
-   **contigs**.
+6. **A regional concentration in the surviving candidates.** Three of seven span **88 kb** at
+   10.79–10.88 Mb. That is far beyond one sequencing fragment, so the 1 kb cross-candidate rule
+   correctly leaves them; widening it until they vanish would fit the filter to the observation rather
+   than to a mechanism. Left visible rather than filtered — a judgement about this cohort.
 
-   *The fix.* `vcf_known_lineage_only` gates both the `.g.vcf` and genotyped-`.vcf` branches:
-   `##contig=<ID=…>` declarations are authoritative when present, else the records' `CHROM` column.
-   No contig evidence at all returns `false` — absence of evidence is not evidence of absence, so an
-   unreadable `.g.vcf` keeps the claim its extension makes rather than being demoted on a guess.
-   5 tests, including the real aengine header and a chrM-only equivalent.
+7. **Per-donor novel counts sit above the alignment path's** (median ~73 vs 3–13). This looks like
+   instrument difference — GATK HaplotypeCaller at ploidy 1 against a vendor diploid caller — but it
+   is not proven. A subject carrying *both* a CRAM and a vendor VCF would settle it directly, by
+   classifying the same donor twice.
 
-   Verified end to end on the same file that exposed it: now imports as `FTDNA Big Y (aengine)` /
-   `TARGETED_NGS` / GRCh38, **4,485 chrY calls** (matching the ~4,184 average of the sets created
-   under the old routing) at `call_schema = 2`, with 1,590 FILTER-flagged calls and DP spanning
-   1–4,212. The two fixes compose: a `dp=37, qual=1484` call and a `dp=1, gq=1` one-read artefact are
-   now distinguishable, which is precisely what the private-Y gate needs.
-5. **Suffixed terminal names** (found in phase-2 validation) — some unresolved terminals are a real
-   node name plus a suffix, e.g. `R-A9426:n0` where `R-A9426` *is* in the tree. Stripping the suffix
-   and matching the parent node would recover those members, but only if the suffix means what it
-   looks like; worth confirming against whatever writes it before special-casing anything.
-6. **Whole-workspace mode** — resolved for v1: **project-scoped only**.
+### Debts this work incurred
+
+- **`project_report` still uses the unfiltered `artifact::list_for_alignments`**, which selects
+  `payload` for every artifact kind — the query that read gigabytes of `tree-genotype` JSON and took
+  the block-tree build from 1.5 s to 25 s. `artifact::list_for_alignments_of_kind` exists now; that
+  caller was never converted.
+- **The canvas has no interaction test coverage.** The click bug that made candidate review
+  unreachable shipped in phase 2 and the layout tests could not have caught it: they exercise the
+  pure `layout()` function, which has no input handling. Any test of click routing would need to
+  drive `egui` directly.
