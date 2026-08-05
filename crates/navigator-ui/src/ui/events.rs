@@ -196,6 +196,7 @@ impl NavigatorApp {
                     if self.selected_project == Some(project_id) {
                         self.project_blocktree = *tree;
                         self.project_blocktree_loading = false;
+                        self.blocktree_recentre = true;
                     }
                 }
                 Event::SubjectBrief { guid, brief } => {
@@ -1229,7 +1230,6 @@ impl NavigatorApp {
         // Not requested here: the block tree loads lazily when its tab is first opened.
         self.project_blocktree = None;
         self.project_blocktree_loading = false;
-        self.blocktree_expanded.clear();
         self.project_clustering = None; // stale for the new project until recomputed
         self.clustering_running = false;
         self.clear_sample_selection();

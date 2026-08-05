@@ -792,12 +792,17 @@ pub struct NavigatorApp {
     project_blocktree: Option<ProjectBlockTree>,
     project_blocktree_loading: bool,
     /// Blocks (by node id) the user expanded to reveal their equivalent SNPs and full member list.
-    blocktree_expanded: std::collections::HashSet<i64>,
     /// Zoom factor for the block-tree canvas (1.0 = natural size).
     blocktree_zoom: f32,
     /// Candidate branch open for review (its synthetic node id), if any. A candidate is an
     /// inference, so it gets a surface that shows the evidence rather than asking for trust.
     blocktree_review: Option<i64>,
+    /// Block whose member roster is showing beside the tree. The Big Tree keeps the men in a table
+    /// rather than in the diagram; this is that table, scoped to what the user clicked.
+    blocktree_selected: Option<i64>,
+    /// Recentre the canvas on the root next frame — set when a tree first arrives, so the view does
+    /// not open on the empty left margin of a canvas far wider than any viewport.
+    blocktree_recentre: bool,
     samples: Vec<Biosample>,
     /// Every biosample (the project-independent subjects list).
     all_biosamples: Vec<Biosample>,
@@ -1328,9 +1333,10 @@ impl NavigatorApp {
             project_str_loading: false,
             project_blocktree: None,
             project_blocktree_loading: false,
-            blocktree_expanded: std::collections::HashSet::new(),
             blocktree_zoom: 1.0,
             blocktree_review: None,
+            blocktree_selected: None,
+            blocktree_recentre: false,
             samples: Vec::new(),
             all_biosamples: Vec::new(),
             haplo_summary: std::collections::HashMap::new(),
