@@ -46,9 +46,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|m| m.private_novel.is_some())
         .count();
     println!(
-        "candidates: {} branch(es) from shared private variants · {} conflict(s) dropped · {with_private}/{placed} members have private-Y computed",
+        "candidates: {} branch(es) from shared private variants · {} conflict(s) · {} recurrent position(s) dropped · {with_private}/{placed} members have private-Y computed",
         candidates.len(),
         tree.candidate_conflicts,
+        tree.candidate_recurrent,
     );
     for c in candidates.iter().take(10) {
         let names: Vec<&str> = c.members.iter().map(|m| m.name.as_str()).collect();

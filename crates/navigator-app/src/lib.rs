@@ -113,6 +113,10 @@ pub struct ProjectBlockTree {
     /// Surfaced rather than silently discarded — a non-zero count means recurrent calls or genuine
     /// phylogenetic conflict in the cohort, which is worth knowing about.
     pub candidate_conflicts: usize,
+    /// Positions rejected as **recurrent** — each would have defined a candidate branch under more
+    /// than one parent block, so it arose more than once and cannot mark a new branch. Counted
+    /// rather than hidden: a high number says the cohort's private calls carry systematic noise.
+    pub candidate_recurrent: usize,
 }
 
 /// One block of a [`ProjectBlockTree`]: a branch plus the run of defining SNPs that are

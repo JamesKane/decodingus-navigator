@@ -432,6 +432,11 @@ impl App {
         Ok(out)
     }
 
+    /// Every alignment a subject owns, across all of its sequencing runs.
+    pub async fn list_alignments_for_biosample(&self, biosample_guid: SampleGuid) -> Result<Vec<Alignment>, AppError> {
+        Ok(alignment::list_for_biosample(self.store.pool(), biosample_guid).await?)
+    }
+
     pub async fn list_alignments(&self, sequence_run_id: i64) -> Result<Vec<Alignment>, AppError> {
         Ok(alignment::list_for_run(self.store.pool(), sequence_run_id).await?)
     }

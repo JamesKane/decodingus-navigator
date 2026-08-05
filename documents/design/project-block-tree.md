@@ -1,10 +1,10 @@
 # Project Y block tree — design
 
-**Status:** **All three phases implemented** (2026-08-02, branch `feat/project-block-tree`) — the
+**Status:** **All three phases implemented and live** (branch `feat/project-block-tree`) — the
 aggregate + collapse (1), the `ProjectTab::Tree` canvas view (2), and private-variant blocks +
-shared-private candidate branches + TSV/HTML export (3). 30 unit tests; validated live on two
-1,900-member cohorts. **Candidate detection is inert until private-Y is computed for more than one
-subject** — see §9 phase 3 and §11 Q4. Drafted 2026-08-02.
+shared-private candidate branches + TSV/HTML export (3), plus the `private-y --project` batch that
+phase 3 needed to work at all. Validated on R1b-CTS4466Plus: 229 subjects with private-Y (was 1),
+**3 candidate branches** surviving the artefact filters (see §9 phase 3). Drafted 2026-08-02.
 **Closes:** `BACKLOG.md` §3.3 remaining scope ("a genuinely zoomable / searchable *whole-tree* view
 with the subject's placement highlighted") — reframed as **cohort-scoped**, which is the form that
 actually earns its keep.
@@ -231,11 +231,31 @@ following the one-view-per-module split, and keeping `central.rs` from growing a
     doesn't fit.
   - **A member with no computed private-Y is not grouped**, and shows `None`, not `0`.
 
-  > **Inert on this workspace, and that is the finding.** Exactly **one** subject in the whole
-  > database has private-Y computed, so no block can contain two carriers and zero candidates appear.
-  > The logic is unit-tested against all of the above cases, but it cannot demonstrate on live data
-  > until private-Y exists for more members. This settles §11 Q4: the batch action is **required**,
-  > not optional — see the open question below for where it should live.
+  **Two further filters, added after the first live run.** Batch-computing private-Y for
+  R1b-CTS4466Plus (`navigator private-y --project`, 228 alignments, 2,157 novel unique-sequence
+  variants) produced 8 candidate branches — and nearly all of them were artefacts:
+
+  - **Proximity.** Every candidate variant sat in a tight cluster: six positions inside 32 bp
+    (`16342231…16342263`, gaps of 5–8 bp) and three inside 23 bp. Real Y mutations are megabases
+    apart; a handful of novel calls within tens of bases is one misaligned read smearing several
+    false SNVs — the same reasoning behind the GVCF path's depth floor. `drop_clustered` removes the
+    **whole** cluster (`CANDIDATE_MIN_SEPARATION_BP = 100`), because when several calls share one
+    mapping event there is no basis for electing one of them the real mutation.
+  - **Cross-block recurrence.** `11311865` and `11311870` each defined a candidate under *two*
+    different parent blocks. A variant that arose more than once cannot mark a new branch, and the
+    laminar check cannot see this — it reasons inside a single block. `recurrent_positions` runs
+    across all blocks before any group is accepted, and the count is surfaced as
+    `candidate_recurrent`.
+
+  Result on the same cohort: **8 candidates → 3**, all conflicts gone, and no candidate left showing
+  a single member. The survivors each rest on one isolated position with 2–4 carriers. Note the
+  recurrent count then reads 0 — not because recurrence is absent, but because proximity caught those
+  same positions first; the guard still covers an unclustered recurrent call.
+
+  > **Was inert until the batch existed.** Before it, exactly **one** subject in the database had
+  > private-Y, so no block could hold two carriers. This settled §11 Q4: the batch action was
+  > **required**, not optional. It now exists as `private-y --project` (resumable — cached buckets
+  > are skipped; `--force` recomputes), and the CTS4466 run took private-Y from 1 subject to 229.
 
   **Performance regression found and fixed while validating.** Adding the private-Y load took the
   R1b-CTS4466Plus build from 1.5 s to 25 s. The cause was not the artifact freshness stats (the first

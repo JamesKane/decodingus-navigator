@@ -374,6 +374,12 @@ pub fn block_tree_tsv(tree: &ProjectBlockTree) -> String {
             tree.candidate_conflicts
         ));
     }
+    if tree.candidate_recurrent > 0 {
+        out.push_str(&format!(
+            "# {} position(s) dropped as recurrent (would define a branch under more than one parent)\n",
+            tree.candidate_recurrent
+        ));
+    }
     out.push_str(
         "depth\tkind\thaplogroup\tequivalent_snps\tfolded_branches\tmembers_at\tmembers_below\tsnps\tmembers\n",
     );
@@ -437,14 +443,19 @@ pub fn block_tree_html(tree: &ProjectBlockTree, project: &str) -> String {
             esc(&b.members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ")),
         ));
     }
-    let conflicts = if tree.candidate_conflicts > 0 {
-        format!(
+    let mut conflicts = String::new();
+    if tree.candidate_conflicts > 0 {
+        conflicts.push_str(&format!(
             "<p class=\"meta\">{} shared-variant grouping(s) dropped as conflicting.</p>",
             tree.candidate_conflicts
-        )
-    } else {
-        String::new()
-    };
+        ));
+    }
+    if tree.candidate_recurrent > 0 {
+        conflicts.push_str(&format!(
+            "<p class=\"meta\">{} position(s) dropped as recurrent.</p>",
+            tree.candidate_recurrent
+        ));
+    }
     let unplaced = if tree.unplaced.is_empty() {
         String::new()
     } else {

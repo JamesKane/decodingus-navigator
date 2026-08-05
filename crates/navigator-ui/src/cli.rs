@@ -42,7 +42,7 @@ pub enum Command {
     /// Diagnostic: dump the raw read pileup (ref + A/C/G/T) behind each lineage call for one alignment.
     DebugCalls(DebugCallsArgs),
     /// Diagnostic: the filtered private-Y bucket for an alignment — DISPLAY vs PUBLISH counts.
-    PrivateY(DebugCallsArgs),
+    PrivateY(PrivateYArgs),
     /// Diagnostic: deep (ancient) ancestry fitted over each view of a subject — the pooled
     /// consensus, each source alone, and thinned site sets. The stability gate: a 30x WGS and a
     /// consumer chip must agree, or the estimate is tracking the assay, not the donor.
@@ -213,6 +213,29 @@ pub struct DebugCallsArgs {
     /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
     #[arg(long, short)]
     alignment: Option<i64>,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct PrivateYArgs {
+    /// Subject donor identifier (used to pick an alignment when `--alignment` is omitted — prefers a
+    /// CHM13/HiFi alignment, else the first).
+    #[arg(long, short)]
+    subject: Option<String>,
+    /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
+    #[arg(long, short)]
+    alignment: Option<i64>,
+    /// **Batch**: compute and persist the private-Y bucket for every alignment of every member of
+    /// this project, instead of reporting one. Private-Y is what a cohort view needs to tell a
+    /// shared unnamed variant from a lone one, and it is cached per alignment — so a project has to
+    /// be walked once before anything cross-subject can use it.
+    #[arg(long, short)]
+    project: Option<String>,
+    /// Recompute buckets that are already cached (default: skip them, so a batch is resumable).
+    #[arg(long)]
+    force: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
@@ -1357,11 +1380,79 @@ async fn debug_calls(args: DebugCallsArgs) -> i32 {
     }
 }
 
-async fn private_y(args: DebugCallsArgs) -> i32 {
+/// Compute + persist private-Y for every alignment in a project. One process, so the multi-MB
+/// haplotree is fetched and parsed once rather than per subject.
+async fn private_y_batch(app: &App, project: &str, force: bool) -> i32 {
+    let Ok(Some(pid)) = resolve_project_filter(app, Some(&project.to_string())).await else {
+        return 1;
+    };
+    let members = match app.list_biosamples(pid).await {
+        Ok(v) => v,
+        Err(e) => return report(e),
+    };
+    let (mut done, mut skipped, mut failed, mut no_aln) = (0usize, 0usize, 0usize, 0usize);
+    let mut missing = 0usize;
+    let (mut novel, mut publishable) = (0usize, 0usize);
+    for (i, b) in members.iter().enumerate() {
+        let alns = app.list_alignments_for_biosample(b.guid).await.unwrap_or_default();
+        if alns.is_empty() {
+            no_aln += 1;
+            continue;
+        }
+        for a in &alns {
+            // A row whose file is gone (e.g. a superseded vendor download) is not a computation
+            // failure — reporting it as one buries the real errors and sets a misleading exit code.
+            if !a.bam_path.as_deref().is_some_and(|p| std::path::Path::new(p).exists()) {
+                missing += 1;
+                continue;
+            }
+            if !force {
+                if let Ok(Some(_)) = app.cached_private_y(a.id).await {
+                    skipped += 1;
+                    continue;
+                }
+            }
+            match app.private_y_variants_self_masked(a.id).await {
+                Ok(bucket) => {
+                    let gate = app.publish_gate_for_alignment(a.id).await.unwrap_or_default();
+                    novel += bucket.novel_in_unique_sequence();
+                    publishable += bucket.publishable_count(gate);
+                    done += 1;
+                    println!(
+                        "OK   {:<24} aln {:<6} {:>4} novel-unique  {:>4} publishable  [{}]",
+                        truncate(&b.donor_identifier, 24),
+                        a.id,
+                        bucket.novel_in_unique_sequence(),
+                        bucket.publishable_count(gate),
+                        bucket.terminal
+                    );
+                }
+                Err(e) => {
+                    failed += 1;
+                    eprintln!("FAIL {:<24} aln {} {e}", truncate(&b.donor_identifier, 24), a.id);
+                }
+            }
+        }
+        if (i + 1) % 50 == 0 {
+            println!("  … {}/{} members", i + 1, members.len());
+        }
+    }
+    println!(
+        "\ncomputed {done}, skipped {skipped} (cached), failed {failed}, {missing} alignment file(s) \
+         missing, {no_aln} member(s) with no alignment.\n\
+         {novel} novel unique-sequence variant(s); {publishable} clear the publish gate."
+    );
+    i32::from(failed > 0)
+}
+
+async fn private_y(args: PrivateYArgs) -> i32 {
     let app = match open(args.db).await {
         Ok(a) => a,
         Err(c) => return c,
     };
+    if let Some(project) = args.project.as_deref() {
+        return private_y_batch(&app, project, args.force).await;
+    }
     let alignment_id = match args.alignment {
         Some(id) => id,
         None => {

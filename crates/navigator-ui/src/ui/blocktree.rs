@@ -206,6 +206,13 @@ impl NavigatorApp {
                     self.tr("blocktree.conflicts")
                 ));
             }
+            if tree.candidate_recurrent > 0 {
+                s.push_str(&format!(
+                    " · {} {}",
+                    tree.candidate_recurrent,
+                    self.tr("blocktree.recurrent")
+                ));
+            }
             s
         });
         // Every label is resolved before the closure: `self.tr` borrows `self`, and the zoom slider

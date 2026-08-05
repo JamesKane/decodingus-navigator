@@ -78,6 +78,7 @@ impl App {
                 },
                 build_key: String::new(),
                 candidate_conflicts: 0,
+                candidate_recurrent: 0,
             }));
         }
 
@@ -160,7 +161,7 @@ impl App {
         // Candidates go in *after* the collapse: they are leaves with members, so they could never
         // be absorbed, and inserting them earlier would only make the collapse reason about
         // synthetic nodes.
-        let (blocks, candidate_conflicts) = insert_candidate_branches(blocks, &private);
+        let (blocks, candidate_conflicts, candidate_recurrent) = insert_candidate_branches(blocks, &private);
         unplaced.sort_by(|a, b| (&a.name, a.guid.0).cmp(&(&b.name, b.guid.0)));
 
         Ok(Some(ProjectBlockTree {
@@ -170,6 +171,7 @@ impl App {
             provider: provider.to_string(),
             build_key: build_key.to_string(),
             candidate_conflicts,
+            candidate_recurrent,
         }))
     }
 
@@ -230,11 +232,70 @@ fn private_locus(v: &PrivateVariant) -> Locus {
 /// share a mapping artefact than an ancestor. Sharing noise would manufacture branches, which is the
 /// one failure mode this feature must not have.
 fn candidate_positions(bucket: &PrivateBucket) -> BTreeSet<i64> {
-    bucket
+    let novel: BTreeSet<i64> = bucket
         .variants
         .iter()
         .filter(|v| v.class == PrivateClass::Novel && v.region.is_none())
         .map(|v| v.position)
+        .collect();
+    drop_clustered(&novel)
+}
+
+/// How far apart two novel calls must be to count as independent mutations.
+///
+/// Real Y mutations are scattered across megabases; a handful of "novel" calls within tens of bases
+/// is one misaligned read smearing several false SNVs, which is why the GVCF path already imposes a
+/// depth floor for the same reason. On the CTS4466 cohort the first candidate branches were built
+/// almost entirely from such clusters — six positions inside 32 bp, gaps of 5–8 bp.
+const CANDIDATE_MIN_SEPARATION_BP: i64 = 100;
+
+/// Drop every position that has another candidate within [`CANDIDATE_MIN_SEPARATION_BP`].
+///
+/// The whole cluster goes, not the extras: when several calls share one mapping event there is no
+/// basis for electing one of them the real mutation.
+fn drop_clustered(positions: &BTreeSet<i64>) -> BTreeSet<i64> {
+    let ordered: Vec<i64> = positions.iter().copied().collect();
+    ordered
+        .iter()
+        .enumerate()
+        .filter(|(i, &p)| {
+            let prev_far = *i == 0 || p - ordered[i - 1] > CANDIDATE_MIN_SEPARATION_BP;
+            let next_far = *i + 1 == ordered.len() || ordered[i + 1] - p > CANDIDATE_MIN_SEPARATION_BP;
+            prev_far && next_far
+        })
+        .map(|(_, &p)| p)
+        .collect()
+}
+
+/// Positions that would define a candidate branch under **more than one** named block.
+///
+/// A variant defining a branch below two different parents did not arise once: it is recurrent, or a
+/// systematic call error. Either way it is the one thing a *new-branch* candidate must not be. The
+/// laminar check cannot see this — it reasons within a single block — so cross-block recurrence is
+/// caught here, before any group is accepted.
+fn recurrent_positions(blocks: &[Block], private: &HashMap<SampleGuid, PrivateBucket>) -> BTreeSet<i64> {
+    let mut blocks_per_position: HashMap<i64, BTreeSet<i64>> = HashMap::new();
+    for block in blocks {
+        if block.members.len() < 2 {
+            continue;
+        }
+        let mut carriers: HashMap<i64, usize> = HashMap::new();
+        for m in &block.members {
+            let Some(bucket) = private.get(&m.guid) else { continue };
+            for pos in candidate_positions(bucket) {
+                *carriers.entry(pos).or_default() += 1;
+            }
+        }
+        for (pos, n) in carriers {
+            if n >= 2 {
+                blocks_per_position.entry(pos).or_default().insert(block.node_id);
+            }
+        }
+    }
+    blocks_per_position
+        .into_iter()
+        .filter(|(_, blocks)| blocks.len() > 1)
+        .map(|(pos, _)| pos)
         .collect()
 }
 
@@ -255,7 +316,10 @@ fn candidate_positions(bucket: &PrivateBucket) -> BTreeSet<i64> {
 pub(crate) fn insert_candidate_branches(
     blocks: Vec<Block>,
     private: &HashMap<SampleGuid, PrivateBucket>,
-) -> (Vec<Block>, usize) {
+) -> (Vec<Block>, usize, usize) {
+    // Computed across all blocks before any group is accepted — a position defining branches under
+    // two parents is disqualified everywhere, not just wherever it happens to be seen second.
+    let recurrent = recurrent_positions(&blocks, private);
     let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
     let mut conflicts = 0;
     let mut next_id: i64 = -1;
@@ -270,6 +334,9 @@ pub(crate) fn insert_candidate_branches(
         for (i, m) in block.members.iter().enumerate() {
             let Some(bucket) = private.get(&m.guid) else { continue };
             for pos in candidate_positions(bucket) {
+                if recurrent.contains(&pos) {
+                    continue;
+                }
                 carriers.entry(pos).or_default().insert(i);
             }
         }
@@ -405,7 +472,7 @@ pub(crate) fn insert_candidate_branches(
         out.push(block);
         out.extend(kids);
     }
-    (out, conflicts)
+    (out, conflicts, recurrent.len())
 }
 
 /// Fold runs of **member-less single-child** branches into the branch below them, when the run is at
@@ -691,8 +758,15 @@ mod tests {
     fn two_members_sharing_a_novel_variant_become_a_candidate_branch() {
         let b = block(1, "R-X", 0, &["kane", "smith", "jones"]);
         // kane + smith share 100 and 200; jones shares nothing.
-        let p = privates(&b, &[bucket(&[100, 200]), bucket(&[100, 200]), bucket(&[900])]);
-        let (out, conflicts) = insert_candidate_branches(vec![b], &p);
+        let p = privates(
+            &b,
+            &[
+                bucket(&[100_000, 200_000]),
+                bucket(&[100_000, 200_000]),
+                bucket(&[900_000]),
+            ],
+        );
+        let (out, conflicts, _) = insert_candidate_branches(vec![b], &p);
         assert_eq!(conflicts, 0);
         assert_eq!(out.len(), 2, "the named block plus one candidate");
 
@@ -704,7 +778,7 @@ mod tests {
         // Both shared positions are equivalent on this branch — one block, two loci.
         let mut pos: Vec<i64> = cand.loci.iter().map(|l| l.position).collect();
         pos.sort_unstable();
-        assert_eq!(pos, vec![100, 200]);
+        assert_eq!(pos, vec![100_000, 200_000]);
 
         let mut names: Vec<&str> = cand.members.iter().map(|m| m.name.as_str()).collect();
         names.sort_unstable();
@@ -721,7 +795,7 @@ mod tests {
     fn a_variant_only_one_member_carries_defines_no_branch() {
         let b = block(1, "R-X", 0, &["kane", "smith"]);
         let p = privates(&b, &[bucket(&[100]), bucket(&[200])]);
-        let (out, _) = insert_candidate_branches(vec![b], &p);
+        let (out, _, _) = insert_candidate_branches(vec![b], &p);
         assert_eq!(out.len(), 1, "no shared variant → no candidate");
         assert!(!out[0].candidate);
         assert_eq!(out[0].members.len(), 2, "members stay on the named block");
@@ -740,7 +814,7 @@ mod tests {
             ],
         };
         let p = privates(&b, &[shared.clone(), shared]);
-        let (out, _) = insert_candidate_branches(vec![b], &p);
+        let (out, _, _) = insert_candidate_branches(vec![b], &p);
         assert_eq!(out.len(), 1, "noise must not manufacture a branch");
     }
 
@@ -748,8 +822,15 @@ mod tests {
     fn nested_sharing_nests_the_candidate_branches() {
         let b = block(1, "R-X", 0, &["a", "b", "c"]);
         // All three share 100; a and b additionally share 200 — a finer branch inside the broader one.
-        let p = privates(&b, &[bucket(&[100, 200]), bucket(&[100, 200]), bucket(&[100])]);
-        let (out, conflicts) = insert_candidate_branches(vec![b], &p);
+        let p = privates(
+            &b,
+            &[
+                bucket(&[100_000, 200_000]),
+                bucket(&[100_000, 200_000]),
+                bucket(&[100_000]),
+            ],
+        );
+        let (out, conflicts, _) = insert_candidate_branches(vec![b], &p);
         assert_eq!(conflicts, 0);
 
         let cands: Vec<&Block> = out.iter().filter(|x| x.candidate).collect();
@@ -758,8 +839,8 @@ mod tests {
         let fine = cands.iter().find(|x| x.depth == 2).unwrap();
         assert_eq!(broad.parent, Some(1), "the broad branch hangs off the named block");
         assert_eq!(fine.parent, Some(broad.node_id), "the finer branch nests inside it");
-        assert_eq!(broad.loci[0].position, 100);
-        assert_eq!(fine.loci[0].position, 200);
+        assert_eq!(broad.loci[0].position, 100_000);
+        assert_eq!(fine.loci[0].position, 200_000);
         // c sits on the broad branch; a and b moved down to the finer one.
         assert_eq!(
             broad.members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
@@ -778,8 +859,11 @@ mod tests {
         let b = block(1, "R-X", 0, &["a", "b", "c"]);
         // {a,b} share 100; {b,c} share 200. Neither set contains the other, so they cannot both be
         // branches of one tree — the smaller-ranked one is dropped and counted.
-        let p = privates(&b, &[bucket(&[100]), bucket(&[100, 200]), bucket(&[200])]);
-        let (out, conflicts) = insert_candidate_branches(vec![b], &p);
+        let p = privates(
+            &b,
+            &[bucket(&[100_000]), bucket(&[100_000, 200_000]), bucket(&[200_000])],
+        );
+        let (out, conflicts, _) = insert_candidate_branches(vec![b], &p);
         assert_eq!(conflicts, 1, "the conflicting group is reported, not silently dropped");
         assert_eq!(
             out.iter().filter(|x| x.candidate).count(),
@@ -794,9 +878,70 @@ mod tests {
         // Only `kane` has a bucket at all — `smith` was never analyzed, which is not the same as
         // having no private variants.
         let p: HashMap<SampleGuid, PrivateBucket> = [(b.members[0].guid, bucket(&[100]))].into_iter().collect();
-        let (out, _) = insert_candidate_branches(vec![b], &p);
+        let (out, _, _) = insert_candidate_branches(vec![b], &p);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].members.len(), 2);
+    }
+
+    // ---- artefact filters ------------------------------------------------------
+
+    #[test]
+    fn clustered_calls_are_dropped_whole() {
+        // Six "novel" calls inside 32 bp is one misaligned read, not six mutations — the shape that
+        // produced most of the first candidate branches on the CTS4466 cohort.
+        let cluster = bucket(&[16342231, 16342238, 16342245, 16342253, 16342258, 16342263]);
+        assert!(
+            candidate_positions(&cluster).is_empty(),
+            "the whole cluster goes; there is no basis for electing one call the real one"
+        );
+
+        // A lone call keeps its place, and a distant neighbour doesn't drag it down.
+        let spread = bucket(&[1_000_000, 2_000_000, 2_000_050]);
+        let kept: Vec<i64> = candidate_positions(&spread).into_iter().collect();
+        assert_eq!(kept, vec![1_000_000], "only the pair within 100 bp is dropped");
+    }
+
+    #[test]
+    fn a_position_defining_branches_under_two_parents_is_rejected() {
+        // 11311865 was shared by two members under one block *and* two under another. A variant that
+        // arose twice cannot mark a new branch, and the laminar check can't see it — it reasons
+        // inside a single block.
+        let mut left = block(1, "R-A", 0, &["a", "b"]);
+        left.subtree_members = 2;
+        let mut right = block(2, "R-B", 0, &["c", "d"]);
+        right.subtree_members = 2;
+
+        let mut private = HashMap::new();
+        for m in left.members.iter().chain(right.members.iter()) {
+            private.insert(m.guid, bucket(&[11311865]));
+        }
+        let (out, _, recurrent) = insert_candidate_branches(vec![left, right], &private);
+        assert_eq!(recurrent, 1, "the shared position is counted as recurrent");
+        assert_eq!(
+            out.iter().filter(|b| b.candidate).count(),
+            0,
+            "and defines no candidate under either parent"
+        );
+    }
+
+    #[test]
+    fn a_position_confined_to_one_parent_still_defines_a_branch() {
+        // The guard must not reject an ordinary shared variant just because two blocks exist.
+        let mut left = block(1, "R-A", 0, &["a", "b"]);
+        left.subtree_members = 2;
+        let mut right = block(2, "R-B", 0, &["c", "d"]);
+        right.subtree_members = 2;
+
+        let mut private = HashMap::new();
+        for m in &left.members {
+            private.insert(m.guid, bucket(&[500_000]));
+        }
+        for m in &right.members {
+            private.insert(m.guid, bucket(&[900_000]));
+        }
+        let (out, _, recurrent) = insert_candidate_branches(vec![left, right], &private);
+        assert_eq!(recurrent, 0);
+        assert_eq!(out.iter().filter(|b| b.candidate).count(), 2, "one candidate per block");
     }
 
     // ---- export ---------------------------------------------------------------
@@ -830,6 +975,7 @@ mod tests {
             provider: "decodingus".into(),
             build_key: "hs1".into(),
             candidate_conflicts: 2,
+            candidate_recurrent: 0,
         }
     }
 
