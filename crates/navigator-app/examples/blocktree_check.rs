@@ -51,6 +51,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tree.candidate_conflicts,
         tree.candidate_recurrent,
     );
+    for c in candidates.iter().take(3) {
+        for e in c.evidence.iter().take(6) {
+            println!(
+                "    EVIDENCE {} @{} {}>{} dp={} alt={} af={:.2} publishable={}",
+                e.member, e.position, e.reference, e.alternate, e.depth, e.alt_depth, e.allele_fraction, e.publishable
+            );
+        }
+    }
     for c in candidates.iter().take(10) {
         let names: Vec<&str> = c.members.iter().map(|m| m.name.as_str()).collect();
         let pos: Vec<String> = c.loci.iter().take(6).map(|l| l.position.to_string()).collect();

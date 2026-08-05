@@ -150,6 +150,7 @@ impl App {
                 subtree_members: 0, // filled by `roll_up_subtree_members`
                 collapsed: Vec::new(),
                 candidate: false,
+                evidence: Vec::new(),
             })
             .collect();
         // Stable leaf order, so the layout doesn't reshuffle between opens.
@@ -469,6 +470,27 @@ pub(crate) fn insert_candidate_branches(
                 .filter(|m| owner.get(m) == Some(id))
                 .map(|&m| block.members[m].clone())
                 .collect();
+            let evidence: Vec<CandidateEvidence> = set
+                .iter()
+                .flat_map(|&m| {
+                    let member = &block.members[m];
+                    let bucket = private.get(&member.guid);
+                    positions.iter().filter_map(move |&pos| {
+                        let v = bucket?.variants.iter().find(|v| v.position == pos)?;
+                        Some(CandidateEvidence {
+                            guid: member.guid,
+                            member: member.name.clone(),
+                            position: pos,
+                            reference: v.reference,
+                            alternate: v.alternate,
+                            depth: v.depth,
+                            alt_depth: v.alt_depth,
+                            allele_fraction: v.allele_fraction,
+                            publishable: PublishGate::default().admits(v),
+                        })
+                    })
+                })
+                .collect();
             kids.push(Block {
                 node_id: *id,
                 name: String::new(), // the view localizes a candidate's label
@@ -483,6 +505,7 @@ pub(crate) fn insert_candidate_branches(
                 members,
                 collapsed: Vec::new(),
                 candidate: true,
+                evidence,
             });
         }
         // Depth: walk up the synthetic parents to the named block.
@@ -648,6 +671,7 @@ mod tests {
             subtree_members: 0,
             collapsed: Vec::new(),
             candidate: false,
+            evidence: Vec::new(),
         }
     }
 

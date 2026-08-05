@@ -795,6 +795,9 @@ pub struct NavigatorApp {
     blocktree_expanded: std::collections::HashSet<i64>,
     /// Zoom factor for the block-tree canvas (1.0 = natural size).
     blocktree_zoom: f32,
+    /// Candidate branch open for review (its synthetic node id), if any. A candidate is an
+    /// inference, so it gets a surface that shows the evidence rather than asking for trust.
+    blocktree_review: Option<i64>,
     samples: Vec<Biosample>,
     /// Every biosample (the project-independent subjects list).
     all_biosamples: Vec<Biosample>,
@@ -1327,6 +1330,7 @@ impl NavigatorApp {
             project_blocktree_loading: false,
             blocktree_expanded: std::collections::HashSet::new(),
             blocktree_zoom: 1.0,
+            blocktree_review: None,
             samples: Vec::new(),
             all_biosamples: Vec::new(),
             haplo_summary: std::collections::HashMap::new(),
@@ -1679,6 +1683,7 @@ impl eframe::App for NavigatorApp {
             Nav::Community => self.community_central(ui),
         });
         self.analysis_modal(ctx);
+        self.blocktree_review_modal(ctx);
         self.diagnosis_modal(ctx);
         self.update_modal(ctx);
         self.edit_subject_modal(ctx);

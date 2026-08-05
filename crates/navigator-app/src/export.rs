@@ -11,7 +11,7 @@ use navigator_domain::ancestry::AncestryResult;
 use navigator_domain::brief::{LineageBrief, SubjectBrief};
 use navigator_domain::reconciliation::DnaType;
 
-use crate::{BranchReport, DescentReport, ProjectBlockTree};
+use crate::{Block, BranchReport, DescentReport, ProjectBlockTree};
 
 /// Minimal HTML text escaping for the small, controlled strings we embed (population names etc.).
 fn esc(s: &str) -> String {
@@ -399,6 +399,34 @@ pub fn block_tree_tsv(tree: &ProjectBlockTree) -> String {
             names.join(","),
         ));
     }
+    // Per-carrier evidence for every candidate. A candidate is an inference, and a shared export
+    // that showed only "1 SNP, 3 members" would ask the reader to trust it — the depth and derived
+    // fraction behind each call are what let them judge it instead.
+    let candidates: Vec<&Block> = tree
+        .blocks
+        .iter()
+        .filter(|b| b.candidate && !b.evidence.is_empty())
+        .collect();
+    if !candidates.is_empty() {
+        out.push_str("\n# candidate-branch evidence\ncandidate\tmember\tposition\tref\talt\tdepth\talt_depth\tallele_fraction\tpublishable\n");
+        for (i, b) in candidates.iter().enumerate() {
+            for e in &b.evidence {
+                out.push_str(&format!(
+                    "candidate-{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\n",
+                    i + 1,
+                    e.member,
+                    e.position,
+                    e.reference,
+                    e.alternate,
+                    e.depth,
+                    e.alt_depth,
+                    e.allele_fraction,
+                    if e.publishable { "yes" } else { "no" },
+                ));
+            }
+        }
+    }
+
     // The members the tree does not account for belong in the same file — a shared export that
     // silently covered only the placed fraction would misrepresent the cohort.
     if !tree.unplaced.is_empty() {

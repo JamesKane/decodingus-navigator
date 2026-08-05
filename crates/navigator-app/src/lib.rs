@@ -146,6 +146,33 @@ pub struct Block {
     /// localize. This is the thing a published tree cannot tell you and we can: a branch that is
     /// real in the data but has not been named yet.
     pub candidate: bool,
+    /// For a candidate branch: every carrier's evidence at each shared position, so it can be
+    /// reviewed. Empty on a named block, whose SNPs are the tree's assertion rather than ours.
+    pub evidence: Vec<CandidateEvidence>,
+}
+
+/// One carrier's evidence at one of a candidate branch's shared positions.
+///
+/// A candidate is an inference, and "1 SNP shared by three men" is not enough to judge it. What
+/// decides whether it is a branch or a mapping artefact is the read evidence behind each carrier's
+/// call — depth, and how cleanly the derived allele dominates on a chromosome that carries one copy.
+/// Carried on the aggregate so the branch can be reviewed rather than taken on trust.
+#[derive(Debug, Clone)]
+pub struct CandidateEvidence {
+    pub guid: SampleGuid,
+    /// Display name of the carrier.
+    pub member: String,
+    pub position: i64,
+    pub reference: char,
+    pub alternate: char,
+    /// Read depth at the site; `0` when the source reported none.
+    pub depth: u32,
+    /// Reads supporting the derived allele.
+    pub alt_depth: u32,
+    /// Derived-allele fraction — on haploid chrY a real call is essentially 1.0.
+    pub allele_fraction: f64,
+    /// Whether this call clears the federation publish gate.
+    pub publishable: bool,
 }
 
 /// A project member placed at a [`Block`].

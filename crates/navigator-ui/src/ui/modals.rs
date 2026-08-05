@@ -1920,6 +1920,118 @@ impl NavigatorApp {
             self.consent_prompt = None;
         }
     }
+
+    /// Review a candidate branch: the shared position(s) and every carrier's read evidence.
+    ///
+    /// A candidate is inferred, not published, and "1 SNP shared by three men" cannot be judged from
+    /// the canvas. What decides it is the evidence behind each call — depth, and how cleanly the
+    /// derived allele dominates on a chromosome carrying one copy. A middling fraction or a thin
+    /// depth is the signature of the mapping artefacts this view is most at risk of presenting as
+    /// discoveries, so they are shown plainly and flagged.
+    pub(crate) fn blocktree_review_modal(&mut self, ctx: &egui::Context) {
+        let Some(node_id) = self.blocktree_review else { return };
+        let Some(block) = self
+            .project_blocktree
+            .as_ref()
+            .and_then(|t| t.blocks.iter().find(|b| b.node_id == node_id))
+        else {
+            self.blocktree_review = None;
+            return;
+        };
+
+        let positions: Vec<i64> = block.loci.iter().map(|l| l.position).collect();
+        let carriers = block.members.len().max(
+            block
+                .evidence
+                .iter()
+                .map(|e| e.guid)
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+        );
+        let title = self.tr("blocktree.review.title").to_string();
+        let close = self.tr("common.close").to_string();
+        let mut dismiss = false;
+
+        modal_frame(ctx, "blocktree_review_modal", 620.0, |ui| {
+            ui.heading(title);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} shared variant(s) · {} carrier(s) · positions {}",
+                    positions.len(),
+                    carriers,
+                    positions.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
+                ))
+                .weak()
+                .small(),
+            );
+            ui.add_space(8.0);
+
+            if block.evidence.is_empty() {
+                ui.label(
+                    egui::RichText::new(
+                        "No per-call evidence recorded for these carriers — the source did not supply \
+                         depth or allele depths, so this branch cannot be judged from the data.",
+                    )
+                    .small(),
+                );
+            } else {
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    egui::Grid::new("candidate_evidence").striped(true).show(ui, |ui| {
+                        for h in ["Member", "Position", "Ref>Alt", "DP", "AD(alt)", "AF", ""] {
+                            ui.label(egui::RichText::new(h).strong().small());
+                        }
+                        ui.end_row();
+                        for e in &block.evidence {
+                            ui.label(egui::RichText::new(&e.member).small());
+                            ui.label(egui::RichText::new(e.position.to_string()).small());
+                            ui.label(egui::RichText::new(format!("{}>{}", e.reference, e.alternate)).small());
+                            ui.label(egui::RichText::new(e.depth.to_string()).small());
+                            ui.label(egui::RichText::new(e.alt_depth.to_string()).small());
+                            // The determinism signal: on haploid chrY a real call is essentially 1.0.
+                            let af = egui::RichText::new(format!("{:.2}", e.allele_fraction)).small();
+                            ui.label(if e.allele_fraction >= 0.95 {
+                                af
+                            } else {
+                                af.color(egui::Color32::from_rgb(210, 160, 90))
+                            });
+                            ui.label(
+                                egui::RichText::new(if e.publishable { "publishable" } else { "" })
+                                    .small()
+                                    .weak(),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                });
+            }
+
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new(
+                    "AF is the derived fraction over allele depths; DP counts every read at the site, \
+                     so AD(alt)/DP need not equal AF.",
+                )
+                .small()
+                .weak(),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "A candidate is inferred from shared unnamed variants — it is not a published \
+                     branch. Thin depth, a middling fraction, or carriers that cluster in one region \
+                     are the marks of a mapping artefact.",
+                )
+                .small()
+                .weak(),
+            );
+            ui.add_space(8.0);
+            if ui.button(close).clicked() {
+                dismiss = true;
+            }
+        });
+        if dismiss {
+            self.blocktree_review = None;
+        }
+    }
 }
 
 /// Shared modal scaffold: a dimmed full-screen backdrop + a centered `Frame::window` of `width`.

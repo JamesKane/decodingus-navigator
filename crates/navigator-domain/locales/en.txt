@@ -508,6 +508,7 @@ blocktree.candidate=Candidate branch
 blocktree.candidates=candidate branches — private variants shared by two or more members, not yet named in the tree
 blocktree.conflicts=grouping(s) dropped as conflicting
 blocktree.recurrent=position(s) dropped as recurrent
+blocktree.review.title=Review candidate branch
 blocktree.export=Export…
 blocktree.exported=Block tree exported to
 ystr.project.empty=No members in this project have Y-STR results yet.

@@ -257,6 +257,7 @@ impl NavigatorApp {
 
         let lay = layout(&tree.blocks, &self.blocktree_expanded, zoom);
         let mut toggle: Option<i64> = None;
+        let mut review: Option<i64> = None;
         let mut open_subject: Option<SampleGuid> = None;
 
         egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
@@ -352,10 +353,23 @@ impl NavigatorApp {
                     );
                 }
 
-                // Click a block to expand it (full member list + the SNP names on hover).
+                // ONE interact per block. Two on the same rect meant the later one sat on top and
+                // swallowed the click: every candidate has members, so the double-click handler
+                // always existed for them and single-click never fired.
                 let resp = ui.interact(rect, egui::Id::new(("blocktree", b.node_id)), egui::Sense::click());
-                if resp.clicked() {
-                    toggle = Some(b.node_id);
+                if resp.double_clicked() {
+                    // Jump to a member's subject page.
+                    if let Some(m) = b.members.first() {
+                        open_subject = Some(m.guid);
+                    }
+                } else if resp.clicked() {
+                    // A named block expands to show its members; a candidate is an inference, so
+                    // clicking it opens the evidence instead of just more names.
+                    if b.candidate {
+                        review = Some(b.node_id);
+                    } else {
+                        toggle = Some(b.node_id);
+                    }
                 }
                 if resp.hovered() && !b.loci.is_empty() {
                     let names: Vec<&str> = b.loci.iter().map(|l| l.name.as_str()).take(40).collect();
@@ -368,15 +382,6 @@ impl NavigatorApp {
                         tip.push_str(&format!("\n\nfolded: {}", b.collapsed.join(" → ")));
                     }
                     resp.on_hover_text(tip);
-                }
-                // Double-click a placed block to jump to its first member's subject page.
-                if let Some(m) = b.members.first() {
-                    if ui
-                        .interact(rect, egui::Id::new(("blocktree-open", b.node_id)), egui::Sense::click())
-                        .double_clicked()
-                    {
-                        open_subject = Some(m.guid);
-                    }
                 }
             }
         });
@@ -419,6 +424,9 @@ impl NavigatorApp {
                 }
             }
         }
+        if let Some(id) = review {
+            self.blocktree_review = Some(id);
+        }
         if let Some(id) = toggle {
             if !self.blocktree_expanded.remove(&id) {
                 self.blocktree_expanded.insert(id);
@@ -458,6 +466,7 @@ mod tests {
             subtree_members: members.len(),
             collapsed: Vec::new(),
             candidate: false,
+            evidence: Vec::new(),
         }
     }
 
