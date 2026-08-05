@@ -777,6 +777,19 @@ const VCF_PRIVATE_MIN_GQ: u32 = 20;
 /// ambiguous locus, and an ambiguous call cannot support a private-variant claim.
 const VCF_PRIVATE_MIN_AF: f64 = 0.95;
 
+/// Depth ceiling, as a multiple of the donor's own typical depth at good calls.
+///
+/// chrY carries one copy, so a locus drawing far more reads than the rest of the chromosome is
+/// collecting them from somewhere else — a collapsed repeat. This was found by reviewing a candidate
+/// branch whose two carriers sat at DP 413 and 504 against a median of 57, each holding a stubborn
+/// ~5% reference allele: the shape of a paralogous pile-up, and it cleared every other gate. Three
+/// times the median keeps ~91% of quality calls while removing that tail.
+const VCF_PRIVATE_MAX_DEPTH_RATIO: u32 = 3;
+
+/// Minimum quality-passing calls before a depth ratio is trustworthy. Below this the median is not a
+/// description of the donor's coverage, and the rule abstains rather than judging against noise.
+const VCF_PRIVATE_MIN_CALLS_FOR_RATIO: usize = 20;
+
 impl App {
     /// The **private bucket for a variant set** — the VCF counterpart of [`Self::private_y_variants`].
     ///
@@ -868,7 +881,9 @@ impl App {
             None
         };
 
-        let mut variants: Vec<PrivateVariant> = set
+        // Quality-passing calls first, so the depth ceiling below is measured against the donor's own
+        // good coverage rather than against a median dragged down by the junk we are about to drop.
+        let passing: Vec<&navigator_domain::variants::VariantCall> = set
             .calls
             .iter()
             .filter(|c| c.contig.eq_ignore_ascii_case("chrY") || c.contig.eq_ignore_ascii_case("y"))
@@ -880,6 +895,15 @@ impl App {
             .filter(|c| !c.evidence.dp.is_some_and(|dp| dp < VCF_PRIVATE_MIN_DP))
             .filter(|c| !c.evidence.gq.is_some_and(|gq| gq < VCF_PRIVATE_MIN_GQ))
             .filter(|c| !c.evidence.allele_fraction().is_some_and(|af| af < VCF_PRIVATE_MIN_AF))
+            .collect();
+        let depth_ceiling = median_depth(&passing).map(|m| m * VCF_PRIVATE_MAX_DEPTH_RATIO);
+
+        let mut variants: Vec<PrivateVariant> = passing
+            .into_iter()
+            .filter(|c| match (depth_ceiling, c.evidence.dp) {
+                (Some(ceiling), Some(dp)) => dp <= ceiling,
+                _ => true,
+            })
             .filter_map(|c| {
                 let (reference, alternate) = (c.reference.chars().next()?, c.alternate.chars().next()?);
                 Some(PrivateVariant {
@@ -951,5 +975,65 @@ mod vcf_private_y_tests {
         // every sites-only or CSV-derived set.
         assert!(is_hemizygous(None));
         assert!(is_hemizygous(Some("1/.")), "a partial call still carries one allele");
+    }
+}
+
+/// Median read depth across `calls`, or `None` when too few carry one to describe the donor's
+/// coverage. Median rather than mean: the pile-ups this exists to find would drag a mean upward and
+/// hide themselves behind it.
+fn median_depth(calls: &[&navigator_domain::variants::VariantCall]) -> Option<u32> {
+    let mut depths: Vec<u32> = calls.iter().filter_map(|c| c.evidence.dp).collect();
+    if depths.len() < VCF_PRIVATE_MIN_CALLS_FOR_RATIO {
+        return None;
+    }
+    depths.sort_unstable();
+    Some(depths[depths.len() / 2]).filter(|&m| m > 0)
+}
+
+#[cfg(test)]
+mod depth_ratio_tests {
+    use super::{median_depth, VCF_PRIVATE_MIN_CALLS_FOR_RATIO};
+    use navigator_domain::variants::{CallEvidence, VariantCall};
+
+    fn call(dp: Option<u32>) -> VariantCall {
+        VariantCall {
+            contig: "chrY".into(),
+            position: 1,
+            reference: "A".into(),
+            alternate: "G".into(),
+            rs_id: None,
+            genotype: Some("1/1".into()),
+            evidence: CallEvidence {
+                dp,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn the_median_ignores_the_pile_ups_it_exists_to_find() {
+        // A mean would be dragged up by the outliers and hide them behind itself.
+        let mut calls: Vec<VariantCall> = (0..VCF_PRIVATE_MIN_CALLS_FOR_RATIO).map(|_| call(Some(50))).collect();
+        calls.push(call(Some(2584)));
+        calls.push(call(Some(1191)));
+        let refs: Vec<&VariantCall> = calls.iter().collect();
+        assert_eq!(median_depth(&refs), Some(50));
+    }
+
+    #[test]
+    fn it_abstains_on_too_few_calls_to_describe_coverage() {
+        let calls: Vec<VariantCall> = (0..VCF_PRIVATE_MIN_CALLS_FOR_RATIO - 1)
+            .map(|_| call(Some(50)))
+            .collect();
+        let refs: Vec<&VariantCall> = calls.iter().collect();
+        assert_eq!(median_depth(&refs), None, "no ceiling rather than one built on noise");
+    }
+
+    #[test]
+    fn a_source_reporting_no_depth_yields_no_ceiling() {
+        // Absent depth must not read as zero and reject everything.
+        let calls: Vec<VariantCall> = (0..40).map(|_| call(None)).collect();
+        let refs: Vec<&VariantCall> = calls.iter().collect();
+        assert_eq!(median_depth(&refs), None);
     }
 }
