@@ -310,6 +310,54 @@ fn population_shared_positions(blocks: &[Block], private: &HashMap<SampleGuid, P
         .collect()
 }
 
+/// Window within which two *candidate-defining* positions are treated as one mapping event.
+///
+/// Wider than the per-donor [`CANDIDATE_MIN_SEPARATION_BP`] because this is a different question.
+/// That rule asks whether one donor's calls smear across a read; this asks whether separate branches,
+/// with different member sets, land suspiciously close together. On R1b-CTS4466Plus three of nine
+/// candidates fell inside a **567 bp window** at 56.83 Mb — three independent lineage events in less
+/// than a kilobase is not a thing that happens, whereas one repeat unit mis-mapping across several
+/// donors is. A kilobase spans a sequencing fragment, so it is the scale at which one mis-mapping
+/// event can produce apparently separate branches.
+const CANDIDATE_CLUSTER_WINDOW_BP: i64 = 1_000;
+
+/// Every position that would define a candidate branch, anywhere in the cohort.
+fn candidate_defining_positions(blocks: &[Block], private: &HashMap<SampleGuid, PrivateBucket>) -> BTreeSet<i64> {
+    let mut out = BTreeSet::new();
+    for block in blocks {
+        if block.members.len() < 2 {
+            continue;
+        }
+        let mut carriers: HashMap<i64, usize> = HashMap::new();
+        for m in &block.members {
+            let Some(bucket) = private.get(&m.guid) else { continue };
+            for pos in candidate_positions(bucket) {
+                *carriers.entry(pos).or_default() += 1;
+            }
+        }
+        out.extend(carriers.into_iter().filter(|&(_, n)| n >= 2).map(|(pos, _)| pos));
+    }
+    out
+}
+
+/// Candidate-defining positions lying within [`CANDIDATE_CLUSTER_WINDOW_BP`] of another.
+///
+/// The whole cluster is rejected, as in the per-donor rule: when several apparent branches share one
+/// mis-mapping there is no basis for electing one of them real.
+fn clustered_candidate_positions(blocks: &[Block], private: &HashMap<SampleGuid, PrivateBucket>) -> BTreeSet<i64> {
+    let defining: Vec<i64> = candidate_defining_positions(blocks, private).into_iter().collect();
+    defining
+        .iter()
+        .enumerate()
+        .filter(|(i, &p)| {
+            let near_prev = *i > 0 && p - defining[i - 1] <= CANDIDATE_CLUSTER_WINDOW_BP;
+            let near_next = *i + 1 < defining.len() && defining[i + 1] - p <= CANDIDATE_CLUSTER_WINDOW_BP;
+            near_prev || near_next
+        })
+        .map(|(_, &p)| p)
+        .collect()
+}
+
 /// Positions that would define a candidate branch under **more than one** named block.
 ///
 /// A variant defining a branch below two different parents did not arise once: it is recurrent, or a
@@ -365,6 +413,7 @@ pub(crate) fn insert_candidate_branches(
     let recurrent: BTreeSet<i64> = recurrent_positions(&blocks, private)
         .into_iter()
         .chain(population_shared_positions(&blocks, private))
+        .chain(clustered_candidate_positions(&blocks, private))
         .collect();
     let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
     let mut conflicts = 0;
@@ -1011,6 +1060,46 @@ mod tests {
         let (out, _, recurrent) = insert_candidate_branches(vec![left, right], &private);
         assert_eq!(recurrent, 0);
         assert_eq!(out.iter().filter(|b| b.candidate).count(), 2, "one candidate per block");
+    }
+
+    #[test]
+    fn candidates_clustering_across_the_cohort_are_all_rejected() {
+        // The 56.83 Mb case: three branches with *different* member sets inside 567 bp. Three
+        // independent lineage events in under a kilobase is not a thing; one repeat unit
+        // mis-mapping across several donors is.
+        let mut a = block(1, "R-A", 0, &["a", "b"]);
+        a.subtree_members = 2;
+        let mut b = block(2, "R-B", 0, &["c", "d"]);
+        b.subtree_members = 2;
+        let mut private = HashMap::new();
+        for m in &a.members {
+            private.insert(m.guid, bucket(&[56_832_495]));
+        }
+        for m in &b.members {
+            private.insert(m.guid, bucket(&[56_833_062]));
+        }
+        let (out, _, dropped) = insert_candidate_branches(vec![a, b], &private);
+        assert_eq!(dropped, 2, "both positions go — neither can be elected the real one");
+        assert_eq!(out.iter().filter(|x| x.candidate).count(), 0);
+    }
+
+    #[test]
+    fn candidates_far_apart_are_left_alone() {
+        // Same shape, megabases apart: two ordinary branches, and the rule must not touch them.
+        let mut a = block(1, "R-A", 0, &["a", "b"]);
+        a.subtree_members = 2;
+        let mut b = block(2, "R-B", 0, &["c", "d"]);
+        b.subtree_members = 2;
+        let mut private = HashMap::new();
+        for m in &a.members {
+            private.insert(m.guid, bucket(&[10_756_695]));
+        }
+        for m in &b.members {
+            private.insert(m.guid, bucket(&[18_055_974]));
+        }
+        let (out, _, dropped) = insert_candidate_branches(vec![a, b], &private);
+        assert_eq!(dropped, 0);
+        assert_eq!(out.iter().filter(|x| x.candidate).count(), 2);
     }
 
     // ---- export ---------------------------------------------------------------
