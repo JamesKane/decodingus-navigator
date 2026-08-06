@@ -75,6 +75,11 @@ const SNP_FG: egui::Color32 = egui::Color32::from_rgb(176, 182, 192);
 /// phylogeny is built from, not part of the phylogeny.
 const MEMBER_BG: egui::Color32 = egui::Color32::from_rgb(58, 60, 66);
 const MEMBER_FG: egui::Color32 = egui::Color32::from_rgb(198, 202, 210);
+/// Private variants get their own colour because they are a different *kind* of claim: unnamed
+/// mutations this cohort observed, not branches a tree has published. Teal, as the Big Tree has it.
+const PRIVATE_BG: egui::Color32 = egui::Color32::from_rgb(30, 74, 72);
+const PRIVATE_STROKE: egui::Color32 = egui::Color32::from_rgb(64, 142, 136);
+const PRIVATE_FG: egui::Color32 = egui::Color32::from_rgb(150, 208, 200);
 
 /// One laid-out block: where it sits, and how many SNP names its box shows.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +99,24 @@ pub(crate) struct PlacedMember {
     pub rect: egui::Rect,
 }
 
+/// The private-variant block below a branch: the mutations its men carry that no branch names yet.
+///
+/// It is drawn **on the same vertical scale as the blocks**, because it measures the same thing —
+/// mutations accrued since the named branch above it, which is the time between that branch and the
+/// present. That is what makes it belong in the diagram rather than in a tooltip: the ruler reads
+/// straight through it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PlacedPrivate {
+    /// Index into the `blocks` slice.
+    pub block: usize,
+    /// Mean private-variant count across the men here that have one.
+    pub average: f32,
+    /// How many men that mean is over — `private_novel` is `None` when never computed, which is not
+    /// zero, so an average over 2 of 30 men must not read as the branch's.
+    pub counted: usize,
+    pub rect: egui::Rect,
+}
+
 /// One ruler graduation: a y on the canvas and the mutations accumulated to it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Tick {
@@ -106,6 +129,7 @@ pub(crate) struct Tick {
 pub(crate) struct Layout {
     pub placed: Vec<Placed>,
     pub members: Vec<PlacedMember>,
+    pub privates: Vec<PlacedPrivate>,
     /// Graduations for the left gutter, along the lineage that accrued the most mutations.
     pub ticks: Vec<Tick>,
     pub size: egui::Vec2,
@@ -286,6 +310,42 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
         placed.push(Placed { idx: i, rect });
     }
 
+    // Private variants, between a branch and its men — flush under the block, on the same scale, so
+    // the ruler measures straight through. The span is the men's, not the block's: these mutations
+    // belong to the men standing here, not to the subclades that branch off elsewhere under it.
+    let mut privates: Vec<PlacedPrivate> = Vec::new();
+    for (i, b) in blocks.iter().enumerate() {
+        let counts: Vec<usize> = b.members.iter().filter_map(|m| m.private_novel).collect();
+        if counts.is_empty() {
+            continue;
+        }
+        let average = counts.iter().sum::<usize>() as f32 / counts.len() as f32;
+        let xs: Vec<f32> = member_slots
+            .iter()
+            .filter(|(bi, _, _)| *bi == i)
+            .map(|(_, _, x)| *x)
+            .collect();
+        let (Some(&lo), Some(&hi)) = (
+            xs.iter().min_by(|a, b| a.total_cmp(b)),
+            xs.iter().max_by(|a, b| a.total_cmp(b)),
+        ) else {
+            continue;
+        };
+        // At least one row, so a branch whose men average under a mutation still reads as present.
+        let h = (average * row_h).max(row_h) + 2.0 * pad;
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(lo, placed[i].rect.bottom()),
+            egui::vec2(hi + member_w - lo, h),
+        );
+        deepest = deepest.max(rect.bottom());
+        privates.push(PlacedPrivate {
+            block: i,
+            average,
+            counted: counts.len(),
+            rect,
+        });
+    }
+
     // The men sit in one band beneath the whole diagram, as the Big Tree tables them below it,
     // reached by a stem from their block. Sharing a baseline is what makes them scannable: hung from
     // their own blocks they would step down the page in lockstep with the phylogeny, which says
@@ -307,6 +367,7 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
         ticks: ruler_ticks(blocks, &placed, row_h, pad),
         placed,
         members,
+        privates,
         size: egui::vec2((cursor - h_gap).max(0.0) + pad, deepest + pad),
     }
 }
@@ -389,6 +450,7 @@ impl NavigatorApp {
         let roster_empty = self.tr("blocktree.roster.empty").to_string();
         let upstream_snps = self.tr("blocktree.upstream.snps").to_string();
         let upstream_hint = self.tr("blocktree.upstream.hint").to_string();
+        let private_label = self.tr("blocktree.private.title").to_string();
         let (zoom_label, no_placement, candidate_label, export_label) = (
             self.tr("blocktree.zoom").to_string(),
             self.tr("blocktree.none.placed").to_string(),
@@ -666,6 +728,52 @@ impl NavigatorApp {
                 }
             }
 
+            // Private variants, between each branch and its men.
+            for pv in &lay.privates {
+                let rect = pv.rect.translate(origin);
+                if !clip.intersects(rect) {
+                    continue;
+                }
+                painter.rect_filled(rect, 2.0, PRIVATE_BG);
+                painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, PRIVATE_STROKE));
+                let inner = painter.with_clip_rect(rect.shrink(1.0));
+                let mut y = rect.top() + PAD * zoom;
+                inner.text(
+                    egui::pos2(rect.center().x, y),
+                    egui::Align2::CENTER_TOP,
+                    &private_label,
+                    small.clone(),
+                    PRIVATE_FG,
+                );
+                y += ROW_H * zoom;
+                // One decimal: these are means over a handful of men, and rounding 4.5 to 5 hides
+                // that the branch is half a mutation from its neighbour.
+                inner.text(
+                    egui::pos2(rect.center().x, y),
+                    egui::Align2::CENTER_TOP,
+                    format!("{:.1}", pv.average),
+                    small.clone(),
+                    PRIVATE_FG,
+                );
+                let resp = ui.interact(
+                    rect,
+                    egui::Id::new(("blocktree_private", pv.block)),
+                    egui::Sense::hover(),
+                );
+                if resp.hovered() {
+                    let b = &drawn[pv.block];
+                    // Say what the mean is over. `private_novel` is None until private-Y has been
+                    // computed, so a mean over 2 of 30 men must not be read as the branch's.
+                    resp.on_hover_text(format!(
+                        "{}\n{:.1} on average over {} of {} men here",
+                        b.name,
+                        pv.average,
+                        pv.counted,
+                        b.members.len()
+                    ));
+                }
+            }
+
             // Men, as the Big Tree draws them: a grey box on a stem below the block they sit on.
             // They are the evidence the phylogeny rests on, so they belong in the diagram — the
             // roster beside it stays for the private-variant counts and for scanning a long list.
@@ -674,7 +782,15 @@ impl NavigatorApp {
                 let b = &drawn[pm.block];
                 // A stem from the block down to the band. This is the one connector the diagram
                 // still draws, because a man's box is the one thing not positioned by containment.
-                let from = lay.placed[pm.block].rect.translate(origin);
+                // Start the stem below the private-variant block when there is one, so the man hangs
+                // off his own unnamed mutations rather than appearing to hang off the named branch.
+                let from = lay
+                    .privates
+                    .iter()
+                    .find(|pv| pv.block == pm.block)
+                    .map(|pv| pv.rect)
+                    .unwrap_or(lay.placed[pm.block].rect)
+                    .translate(origin);
                 let a = egui::pos2(rect.center().x.clamp(from.left(), from.right()), from.bottom());
                 let z = egui::pos2(rect.center().x, rect.top());
                 if clip.intersects(egui::Rect::from_two_pos(a, z)) {
@@ -1003,6 +1119,54 @@ mod tests {
         let lay = layout(&split(), 1.0);
         let lowest = lay.members.iter().map(|m| m.rect.bottom()).fold(0.0f32, f32::max);
         assert!(lay.size.y >= lowest, "men must not be cut off the bottom");
+    }
+
+    /// Private variants are drawn on the block scale, because they measure the same thing: the
+    /// mutations between the named branch and the present.
+    #[test]
+    fn private_variants_extend_the_time_axis_below_a_branch() {
+        let mut b = block(1, 0, 0, &["a", "b"]);
+        b.members[0].private_novel = Some(6);
+        b.members[1].private_novel = Some(4);
+        let lay = layout(&[b], 1.0);
+
+        let pv = lay.privates.first().expect("a branch whose men carry private variants");
+        assert!((pv.average - 5.0).abs() < 0.001);
+        assert_eq!(pv.counted, 2);
+        assert!(
+            (pv.rect.height() - (5.0 * ROW_H + 2.0 * PAD)).abs() < 0.5,
+            "five mutations is five rows, the same scale the ruler graduates"
+        );
+        assert!(
+            (pv.rect.top() - lay.placed[0].rect.bottom()).abs() < 0.01,
+            "flush under its branch — the axis must not skip"
+        );
+        // It spans the men it belongs to, and they hang below it.
+        for m in &lay.members {
+            assert!(m.rect.top() >= pv.rect.bottom());
+            assert!(m.rect.left() >= pv.rect.left() - 0.01 && m.rect.right() <= pv.rect.right() + 0.01);
+        }
+    }
+
+    /// `private_novel` is `None` until private-Y has been computed, which is not the same as zero.
+    #[test]
+    fn a_branch_with_no_private_y_computed_gets_no_block() {
+        let lay = layout(&split(), 1.0);
+        assert!(
+            lay.privates.is_empty(),
+            "absent evidence must not be drawn as zero mutations"
+        );
+
+        // And a mean is taken only over the men that have one.
+        let mut b = block(1, 0, 0, &["a", "b", "c"]);
+        b.members[0].private_novel = Some(9);
+        let lay = layout(&[b], 1.0);
+        let pv = lay.privates.first().unwrap();
+        assert!(
+            (pv.average - 9.0).abs() < 0.001,
+            "the two unknowns are not counted as 0"
+        );
+        assert_eq!(pv.counted, 1, "and the view can say the mean is over one of three");
     }
 
     #[test]

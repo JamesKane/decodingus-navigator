@@ -863,3 +863,4 @@ matching.consent.neverTitle=Qué nunca sale de este dispositivo
 matching.consent.neverBody=Su nombre, sus archivos, su información de salud y cualquier posición fuera del panel IBD. DecodingUs solo retransmite texto cifrado y no puede leer nada de ello.
 blocktree.upstream.snps = SNP anteriores
 blocktree.upstream.hint = Tronco plegado por encima de la cohorte — haz clic para ver sus miembros
+blocktree.private.title = Variantes privadas

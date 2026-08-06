@@ -878,3 +878,4 @@ matching.consent.neverTitle=What never leaves this device
 matching.consent.neverBody=Your name, your files, your health information, and any position outside the IBD panel. DecodingUs relays only ciphertext and cannot read any of it.
 blocktree.upstream.snps = SNPs upstream
 blocktree.upstream.hint = Folded backbone above the cohort — click to list any members on it
+blocktree.private.title = Private variants
