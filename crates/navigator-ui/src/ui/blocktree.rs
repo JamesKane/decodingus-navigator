@@ -129,6 +129,9 @@ pub(crate) struct PlacedPrivate {
     /// How many men that mean is over — `private_novel` is `None` when never computed, which is not
     /// zero, so an average over 2 of 30 men must not read as the branch's.
     pub counted: usize,
+    /// Men dropped as implausible (see [`PRIVATE_Y_QC_WARN`]). Never silently: the block is marked
+    /// and the hover says how many, because "we excluded a third of this branch" is a finding.
+    pub suppressed: usize,
     pub rect: egui::Rect,
 }
 
@@ -330,7 +333,22 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
     // belong to the men standing here, not to the subclades that branch off elsewhere under it.
     let mut privates: Vec<PlacedPrivate> = Vec::new();
     for (i, b) in blocks.iter().enumerate() {
-        let counts: Vec<usize> = b.members.iter().filter_map(|m| m.private_novel).collect();
+        // A donor whose raw novel count trips the workspace's own plausibility threshold is dropped
+        // whole, not trimmed. `PRIVATE_Y_QC_WARN` already declares such a count "unusually high for
+        // one sample — check for contamination, low/uneven coverage, or a reference-build mismatch",
+        // which is a statement about the *sample*, so its gated count is not trustworthy either. One
+        // donor at 661 would otherwise set a branch's height single-handed.
+        let plausible = |m: &&navigator_app::BlockMember| {
+            !m.private_novel
+                .is_some_and(|n| n >= navigator_domain::results_context::PRIVATE_Y_QC_WARN)
+        };
+        let counts: Vec<usize> = b
+            .members
+            .iter()
+            .filter(plausible)
+            .filter_map(|m| m.private_publishable)
+            .collect();
+        let suppressed = b.members.iter().filter(|m| !plausible(m)).count();
         if counts.is_empty() {
             continue;
         }
@@ -357,6 +375,7 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
             block: i,
             average,
             counted: counts.len(),
+            suppressed,
             rect,
         });
     }
@@ -751,24 +770,39 @@ impl NavigatorApp {
                     continue;
                 }
                 painter.rect_filled(rect, 2.0, PRIVATE_BG);
-                painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, PRIVATE_STROKE));
+                // A suppressed donor is a fact about the branch, so the box says so rather than
+                // quietly reporting a mean over whoever survived.
+                let edge = if pv.suppressed > 0 {
+                    egui::Stroke::new(1.5, CANDIDATE_STROKE)
+                } else {
+                    egui::Stroke::new(1.0, PRIVATE_STROKE)
+                };
+                painter.rect_stroke(rect, 2.0, edge);
+
+                // Fit the text to the box rather than centring it wider than the box: at this width
+                // "Private variants" overhangs both edges and the clip eats the ends, which is how
+                // the label came out reading "rivate variant".
                 let inner = painter.with_clip_rect(rect.shrink(1.0));
+                let avail = rect.width() - 2.0 * PAD * zoom;
                 let mut y = rect.top() + PAD * zoom;
-                inner.text(
-                    egui::pos2(rect.center().x, y),
-                    egui::Align2::CENTER_TOP,
-                    &private_label,
-                    small.clone(),
-                    PRIVATE_FG,
-                );
-                y += ROW_H * zoom;
-                inner.text(
-                    egui::pos2(rect.center().x, y),
-                    egui::Align2::CENTER_TOP,
-                    format!("{private_average} {}", fmt_average(pv.average)),
-                    small.clone(),
-                    PRIVATE_FG,
-                );
+                let value = format!("{private_average} {}", fmt_average(pv.average));
+                for (text, wrap) in [(private_label.clone(), true), (value, false)] {
+                    let g = ui.fonts(|f| {
+                        f.layout(
+                            text,
+                            small.clone(),
+                            PRIVATE_FG,
+                            if wrap { avail } else { f32::INFINITY },
+                        )
+                    });
+                    // Whatever is left after the title wraps has to hold the number; when it can't,
+                    // the number wins — a box saying only "4" still carries the measurement.
+                    if y + g.size().y > rect.bottom() - PAD * zoom && wrap {
+                        continue;
+                    }
+                    inner.galley(egui::pos2(rect.center().x - g.size().x / 2.0, y), g.clone(), PRIVATE_FG);
+                    y += g.size().y;
+                }
                 let resp = ui.interact(
                     rect,
                     egui::Id::new(("blocktree_private", pv.block)),
@@ -780,14 +814,24 @@ impl NavigatorApp {
                     // subtree — and among those, only the ones private-Y has actually been computed
                     // for, since `private_novel` is `None` until then and `None` is not zero.
                     let mut tip = format!(
-                        "{}\nOn average {} private variant(s) in {} of {} men placed here",
+                        "{}\nOn average {} publishable private variant(s) in {} of {} men placed here",
                         b.name,
                         fmt_average(pv.average),
                         pv.counted,
                         b.members.len()
                     );
-                    if pv.counted < b.members.len() {
-                        tip.push_str("\n(the rest have no private-Y computed)");
+                    if pv.suppressed > 0 {
+                        tip.push_str(&format!(
+                            "\n\n{} man/men excluded: over {} novel calls each, which is unusually high \
+                             for one sample — check for contamination, low/uneven coverage, or a \
+                             reference-build mismatch",
+                            pv.suppressed,
+                            navigator_domain::results_context::PRIVATE_Y_QC_WARN
+                        ));
+                    }
+                    let unaccounted = b.members.len() - pv.counted - pv.suppressed;
+                    if unaccounted > 0 {
+                        tip.push_str(&format!("\n{unaccounted} with no private-Y computed"));
                     }
                     resp.on_hover_text(tip);
                 }
@@ -918,6 +962,7 @@ mod tests {
             guid: SampleGuid(Default::default()),
             name: name.into(),
             private_novel: None,
+            private_publishable: None,
             private_total: None,
         }
     }
@@ -1146,7 +1191,9 @@ mod tests {
     fn private_variants_extend_the_time_axis_below_a_branch() {
         let mut b = block(1, 0, 0, &["a", "b"]);
         b.members[0].private_novel = Some(6);
+        b.members[0].private_publishable = Some(6);
         b.members[1].private_novel = Some(4);
+        b.members[1].private_publishable = Some(4);
         let lay = layout(&[b], 1.0);
 
         let pv = lay.privates.first().expect("a branch whose men carry private variants");
@@ -1173,11 +1220,14 @@ mod tests {
     fn the_average_covers_the_men_placed_here_not_the_subtree() {
         let mut here = block(1, 0, 0, &["a", "b"]);
         here.members[0].private_novel = Some(4);
+        here.members[0].private_publishable = Some(4);
         here.members[1].private_novel = Some(4);
+        here.members[1].private_publishable = Some(4);
         here.subtree_members = 5;
         let mut below = block(2, 1, 1, &["c", "d", "e"]);
         for m in &mut below.members {
             m.private_novel = Some(40);
+            m.private_publishable = Some(40);
         }
 
         let lay = layout(&[here, below], 1.0);
@@ -1187,6 +1237,35 @@ mod tests {
             "the subtree's 40s must not pull it up"
         );
         assert_eq!(root.counted, 2);
+    }
+
+    /// One donor at 661 novel calls would otherwise set a branch's height single-handed. The
+    /// workspace already declares such a count implausible for one sample; the view honours that.
+    #[test]
+    fn an_implausible_donor_is_dropped_from_the_average_and_declared() {
+        let mut b = block(1, 0, 0, &["ok", "ok2", "junk"]);
+        b.members[0].private_novel = Some(4);
+        b.members[0].private_publishable = Some(4);
+        b.members[1].private_novel = Some(6);
+        b.members[1].private_publishable = Some(6);
+        b.members[2].private_novel = Some(661);
+        b.members[2].private_publishable = Some(661);
+
+        let lay = layout(&[b], 1.0);
+        let pv = lay.privates.first().unwrap();
+        assert!((pv.average - 5.0).abs() < 0.001, "the 661 must not enter the mean");
+        assert_eq!(pv.counted, 2);
+        assert_eq!(pv.suppressed, 1, "and the exclusion is reported, never silent");
+    }
+
+    /// The average is of the *publishable* count — the one a branch claim could rest on.
+    #[test]
+    fn the_average_is_of_the_gated_count() {
+        let mut b = block(1, 0, 0, &["a"]);
+        b.members[0].private_novel = Some(30);
+        b.members[0].private_publishable = Some(3);
+        let lay = layout(&[b], 1.0);
+        assert!((lay.privates[0].average - 3.0).abs() < 0.001);
     }
 
     #[test]
@@ -1207,6 +1286,7 @@ mod tests {
         // And a mean is taken only over the men that have one.
         let mut b = block(1, 0, 0, &["a", "b", "c"]);
         b.members[0].private_novel = Some(9);
+        b.members[0].private_publishable = Some(9);
         let lay = layout(&[b], 1.0);
         let pv = lay.privates.first().unwrap();
         assert!(

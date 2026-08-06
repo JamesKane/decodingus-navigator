@@ -185,6 +185,11 @@ pub struct BlockMember {
     /// computed for the subject, which is distinct from `Some(0)` ("computed, none found").
     /// Populated in phase 3 (`documents/design/project-block-tree.md` §9); `None` before that.
     pub private_novel: Option<usize>,
+    /// The **publishable** subset of the above: novel, unique-sequence, near-homozygous, with enough
+    /// supporting reads ([`PublishGate`]). This is the count we would stake a branch claim on, and
+    /// the one the block tree averages — the permissive `private_novel` is a working figure, not a
+    /// finding.
+    pub private_publishable: Option<usize>,
     pub private_total: Option<usize>,
 }
 

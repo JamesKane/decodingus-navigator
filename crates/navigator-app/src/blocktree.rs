@@ -132,6 +132,9 @@ impl App {
                 guid,
                 name,
                 private_novel: private.get(&guid).map(|b| b.novel_in_unique_sequence()),
+                private_publishable: private
+                    .get(&guid)
+                    .map(|b| b.publishable_count(crate::PublishGate::default())),
                 private_total: private.get(&guid).map(|b| b.variants.len()),
             });
         }
@@ -704,6 +707,7 @@ mod tests {
             guid: SampleGuid(uuid::Uuid::new_v4()),
             name: name.into(),
             private_novel: None,
+            private_publishable: None,
             private_total: None,
         }
     }
