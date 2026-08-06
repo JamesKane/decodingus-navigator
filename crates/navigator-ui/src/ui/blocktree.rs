@@ -49,8 +49,9 @@ const TICK_SNPS: usize = 5;
 /// Width of the left gutter carrying the SNP ruler.
 const GUTTER_W: f32 = 30.0;
 const PAD: f32 = 4.0;
-/// A man's box: kit names are short (`B169652`, `196206`), so it is narrower than a block.
-const MEMBER_W: f32 = 58.0;
+/// A man's box, and the width of a private-variant block. Wide enough that "Private variants" sets
+/// on one line and a long kit name (`GMWOF5428705`) is not cropped.
+const MEMBER_W: f32 = 84.0;
 // No SNP cap: a block's height **is** its elapsed time. Mutations accumulate at a roughly steady
 // rate, so the number of phylogenetically equivalent SNPs on a branch is how long that branch ran
 // unbroken — and eliding any of them shortens the box, which is to say it misreports the time. A
@@ -364,11 +365,14 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
         ) else {
             continue;
         };
-        // At least one row, so a branch whose men average under a mutation still reads as present.
+        // **One column wide, always** — centred over the men it covers. The figure is a single
+        // branch-level statistic, so sizing the box to the number of men would imply it is a
+        // per-man quantity, and would make an identical average look different on two branches for
+        // no reason but headcount.
         let h = (average * row_h).max(row_h) + 2.0 * pad;
         let rect = egui::Rect::from_min_size(
-            egui::pos2(lo, placed[i].rect.bottom()),
-            egui::vec2(hi + member_w - lo, h),
+            egui::pos2((lo + hi) / 2.0, placed[i].rect.bottom()),
+            egui::vec2(member_w, h),
         );
         deepest = deepest.max(rect.bottom());
         privates.push(PlacedPrivate {
@@ -1207,11 +1211,37 @@ mod tests {
             (pv.rect.top() - lay.placed[0].rect.bottom()).abs() < 0.01,
             "flush under its branch — the axis must not skip"
         );
-        // It spans the men it belongs to, and they hang below it.
+        // The men hang below it, and it is centred on them.
+        let (lo, hi) = (
+            lay.members.iter().map(|m| m.rect.left()).fold(f32::MAX, f32::min),
+            lay.members.iter().map(|m| m.rect.right()).fold(f32::MIN, f32::max),
+        );
+        assert!(
+            (pv.rect.center().x - (lo + hi) / 2.0).abs() < 0.01,
+            "centred on its men"
+        );
         for m in &lay.members {
             assert!(m.rect.top() >= pv.rect.bottom());
-            assert!(m.rect.left() >= pv.rect.left() - 0.01 && m.rect.right() <= pv.rect.right() + 0.01);
         }
+    }
+
+    /// One column wide regardless of headcount. The average is a branch-level figure; sizing the box
+    /// to the number of men would make an identical average look different on two branches.
+    #[test]
+    fn private_blocks_are_one_column_wide_whatever_the_headcount() {
+        let mut one = block(1, 0, 0, &["a"]);
+        one.members[0].private_novel = Some(5);
+        one.members[0].private_publishable = Some(5);
+        let mut many = block(1, 0, 0, &["a", "b", "c", "d"]);
+        for m in &mut many.members {
+            m.private_novel = Some(5);
+            m.private_publishable = Some(5);
+        }
+
+        let w1 = layout(&[one], 1.0).privates[0].rect.width();
+        let w4 = layout(&[many], 1.0).privates[0].rect.width();
+        assert!((w1 - w4).abs() < 0.01, "same average, same box — {w1} vs {w4}");
+        assert!((w1 - MEMBER_W).abs() < 0.01, "one member column wide");
     }
 
     /// The mean is over the men *placed on* the block, not its subtree — FTDNA reports 4 over 2
