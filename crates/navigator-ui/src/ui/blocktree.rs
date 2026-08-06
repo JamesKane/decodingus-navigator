@@ -37,7 +37,17 @@ use super::*;
 const BOX_W: f32 = 84.0;
 const ROW_H: f32 = 12.0; // one line of SNP text inside a block
 const H_GAP: f32 = 6.0; // horizontal gap between sibling subtrees
-const V_GAP: f32 = 18.0; // vertical gap between depth levels — room for the connector
+/// Vertical gap between a block and its children — **zero**. In the Big Tree a parent block spans
+/// the full width of its descendants and they sit flush against its underside, so *containment*
+/// carries the parent/child relation and no connector is drawn between levels. A gap here would also
+/// corrupt the vertical scale, which is meant to read as accumulated mutations and nothing else.
+const V_GAP: f32 = 0.0;
+/// Stem length from the last block down to the band of biosample boxes.
+const STEM: f32 = 26.0;
+/// Ruler tick interval, in SNPs.
+const TICK_SNPS: usize = 5;
+/// Width of the left gutter carrying the SNP ruler.
+const GUTTER_W: f32 = 30.0;
 const PAD: f32 = 4.0;
 /// A man's box: kit names are short (`B169652`, `196206`), so it is narrower than a block.
 const MEMBER_W: f32 = 58.0;
@@ -84,18 +94,78 @@ pub(crate) struct PlacedMember {
     pub rect: egui::Rect,
 }
 
-/// The laid-out tree: block rects, member rects, and the total canvas size.
+/// One ruler graduation: a y on the canvas and the mutations accumulated to it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Tick {
+    pub y: f32,
+    pub snps: usize,
+}
+
+/// The laid-out tree: block rects, member rects, the SNP ruler, and the total canvas size.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Layout {
     pub placed: Vec<Placed>,
     pub members: Vec<PlacedMember>,
+    /// Graduations for the left gutter, along the lineage that accrued the most mutations.
+    pub ticks: Vec<Tick>,
     pub size: egui::Vec2,
+}
+
+/// Graduations for the SNP ruler, walking the **deepest lineage** — the one that accrued the most
+/// mutations, and so the one that reaches furthest down the canvas.
+///
+/// The ticks are computed rather than spaced evenly, because evenly spaced would be wrong: each
+/// block spends one row on its name, so a fixed pixels-per-SNP scale drifts by a row per generation.
+/// Walking the lineage and placing each graduation inside the block that contains it keeps the axis
+/// honest — the ticks come out *nearly* regular, and where they don't, the irregularity is real.
+fn ruler_ticks(blocks: &[Block], placed: &[Placed], row_h: f32, pad: f32) -> Vec<Tick> {
+    // Cumulative mutations to the bottom of each block, so "deepest" means most mutations, not most
+    // generations — a long slow branch outranks several short ones.
+    let index: HashMap<i64, usize> = blocks.iter().enumerate().map(|(i, b)| (b.node_id, i)).collect();
+    let mut cum = vec![0usize; blocks.len()];
+    let mut best = (0usize, 0usize); // (mutations, block)
+    for (i, b) in blocks.iter().enumerate() {
+        let above = b.parent.and_then(|p| index.get(&p)).map(|&p| cum[p]).unwrap_or(0);
+        cum[i] = above + b.loci.len();
+        if cum[i] > best.0 {
+            best = (cum[i], i);
+        }
+    }
+    // Walk back up from the deepest block, then read the chain root-first.
+    let mut chain = Vec::new();
+    let mut at = Some(best.1);
+    while let Some(i) = at {
+        chain.push(i);
+        at = blocks[i].parent.and_then(|p| index.get(&p)).copied();
+    }
+    chain.reverse();
+
+    let mut ticks = Vec::new();
+    let mut seen = 0usize;
+    for i in chain {
+        let n = blocks[i].loci.len();
+        // The SNP rows start below the name row.
+        let body_top = placed[i].rect.top() + pad + row_h;
+        // Every multiple of TICK_SNPS that falls inside this block's run of mutations.
+        let mut k = (seen / TICK_SNPS + 1) * TICK_SNPS;
+        while k <= seen + n {
+            ticks.push(Tick {
+                y: body_top + (k - seen) as f32 * row_h,
+                snps: k,
+            });
+            k += TICK_SNPS;
+        }
+        seen += n;
+    }
+    ticks
 }
 
 /// Lines a block's box needs: the branch name, one line per equivalent SNP, and the member count.
 fn lines_for(b: &Block) -> usize {
-    // name + one line per SNP + the count line. Every SNP, always — see the note above.
-    1 + b.loci.len() + 1
+    // The name's row + one row per SNP. Every SNP, always — see the note above. The old member-count
+    // row is gone: the men are boxes in the band below, so counting them here was both redundant and
+    // a row of height that no mutation paid for.
+    1 + b.loci.len()
 }
 
 /// The folded backbone above the cohort, as a path rather than a box.
@@ -143,6 +213,7 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
     let (box_w, row_h, h_gap, v_gap, pad) = (BOX_W * zoom, ROW_H * zoom, H_GAP * zoom, V_GAP * zoom, PAD * zoom);
     let member_w = MEMBER_W * zoom;
     let member_h = row_h + 2.0 * pad;
+    let (stem, gutter) = (STEM * zoom, GUTTER_W * zoom);
 
     let index: HashMap<i64, usize> = blocks.iter().enumerate().map(|(i, b)| (b.node_id, i)).collect();
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); blocks.len()];
@@ -155,6 +226,7 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
     }
 
     let heights: Vec<f32> = blocks.iter().map(|b| lines_for(b) as f32 * row_h + 2.0 * pad).collect();
+    let mut member_slots: Vec<(usize, usize, f32)> = Vec::new();
 
     // Pass 1, bottom-up: the horizontal extent each subtree needs. `blocks` is pre-order, so
     // iterating in reverse visits every child before its parent.
@@ -172,23 +244,26 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
         extent[i] = extent[i].max(kids + men + h_gap * (n - 1) as f32);
     }
 
-    // Pass 2, top-down: hand each subtree its band, centre the box in it, and stack children across.
+    // Pass 2, top-down: hand each subtree its band, then let the block *fill* it.
     let mut left = vec![0.0f32; blocks.len()];
-    let mut cursor = 0.0;
+    let mut cursor = gutter;
     for &r in &roots {
         left[r] = cursor;
         cursor += extent[r] + h_gap;
     }
     let mut placed = Vec::with_capacity(blocks.len());
-    let mut members = Vec::new();
     let mut deepest = 0.0f32;
     // Pre-order, so a parent's top is always settled before its children read it.
     let mut top = vec![0.0f32; blocks.len()];
+    // Cumulative SNPs down to each block's top — the quantity the ruler measures.
+    let mut snps_above = vec![0usize; blocks.len()];
     for i in 0..blocks.len() {
-        let x = left[i] + (extent[i] - box_w) / 2.0;
-        let rect = egui::Rect::from_min_size(egui::pos2(x, top[i]), egui::vec2(box_w, heights[i]));
+        // Icicle: the block spans its whole subtree. A parent therefore visibly *contains* the
+        // lineages it splits into, which is how the Big Tree shows descent — no elbow needed.
+        let rect = egui::Rect::from_min_size(egui::pos2(left[i], top[i]), egui::vec2(extent[i], heights[i]));
         for &c in &children[i] {
             top[c] = rect.bottom() + v_gap;
+            snps_above[c] = snps_above[i] + blocks[i].loci.len();
         }
 
         let n = slots(i);
@@ -196,18 +271,12 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
             let kids: f32 = children[i].iter().map(|&c| extent[c]).sum::<f32>();
             let total = kids + blocks[i].members.len() as f32 * member_w + h_gap * (n - 1) as f32;
             let mut cx = left[i] + (extent[i] - total) / 2.0;
-            // Men to the left of the subclades, so a lineage that both splits and holds men reads
-            // left-to-right as "these men here, then the branches below".
-            let men_top = rect.bottom() + v_gap;
+            // Men take a slot to the left of the subclades, so a lineage that both splits and holds
+            // men makes room for both. Their boxes are positioned later, once the band is known.
             for m in 0..blocks[i].members.len() {
-                members.push(PlacedMember {
-                    block: i,
-                    member: m,
-                    rect: egui::Rect::from_min_size(egui::pos2(cx, men_top), egui::vec2(member_w, member_h)),
-                });
+                member_slots.push((i, m, cx));
                 cx += member_w + h_gap;
             }
-            deepest = deepest.max(men_top + member_h);
             for &c in &children[i] {
                 left[c] = cx;
                 cx += extent[c] + h_gap;
@@ -216,11 +285,29 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
         deepest = deepest.max(rect.bottom());
         placed.push(Placed { idx: i, rect });
     }
-    let height = deepest + pad;
+
+    // The men sit in one band beneath the whole diagram, as the Big Tree tables them below it,
+    // reached by a stem from their block. Sharing a baseline is what makes them scannable: hung from
+    // their own blocks they would step down the page in lockstep with the phylogeny, which says
+    // nothing about the men.
+    let band = deepest + stem;
+    let members: Vec<PlacedMember> = member_slots
+        .into_iter()
+        .map(|(block, member, x)| PlacedMember {
+            block,
+            member,
+            rect: egui::Rect::from_min_size(egui::pos2(x, band), egui::vec2(member_w, member_h)),
+        })
+        .collect();
+    if !members.is_empty() {
+        deepest = band + member_h;
+    }
+
     Layout {
+        ticks: ruler_ticks(blocks, &placed, row_h, pad),
         placed,
         members,
-        size: egui::vec2((cursor - h_gap).max(0.0) + pad, height),
+        size: egui::vec2((cursor - h_gap).max(0.0) + pad, deepest + pad),
     }
 }
 
@@ -460,26 +547,43 @@ impl NavigatorApp {
             let zoom = zoom.clamp(0.4, 2.5);
             let font = egui::FontId::proportional(11.0 * zoom);
             let small = egui::FontId::proportional(9.5 * zoom);
-            let index: HashMap<i64, usize> = drawn.iter().enumerate().map(|(i, b)| (b.node_id, i)).collect();
+
+            // The SNP ruler, in the left gutter: the scale that makes a block's height readable as a
+            // quantity rather than an impression. Graduated in mutations accumulated from the top of
+            // this view — not from the root of the tree, which is above the cohort and in the
+            // breadcrumb.
+            {
+                let g = egui::Rect::from_min_size(
+                    egui::pos2(canvas.left(), canvas.top()),
+                    egui::vec2(GUTTER_W * zoom, lay.size.y),
+                );
+                painter.rect_filled(g, 0.0, egui::Color32::from_gray(34));
+                for t in &lay.ticks {
+                    let y = canvas.top() + t.y;
+                    if !clip.y_range().contains(y) {
+                        continue;
+                    }
+                    painter.line_segment(
+                        [egui::pos2(g.right() - 4.0 * zoom, y), egui::pos2(g.right(), y)],
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+                    );
+                    painter.text(
+                        egui::pos2(g.right() - 6.0 * zoom, y),
+                        egui::Align2::RIGHT_CENTER,
+                        t.snps.to_string(),
+                        small.clone(),
+                        egui::Color32::from_gray(120),
+                    );
+                }
+            }
 
             for p in &lay.placed {
                 let rect = p.rect.translate(origin);
                 let b = &drawn[p.idx];
 
-                // Connector to the parent, drawn even when the block itself is off-screen on one
-                // side, so an edge crossing the viewport still shows.
-                if let Some(pi) = b.parent.and_then(|q| index.get(&q)) {
-                    let prect = lay.placed[*pi].rect.translate(origin);
-                    let a = egui::pos2(prect.center().x, prect.bottom());
-                    let z = egui::pos2(rect.center().x, rect.top());
-                    let mid = (a.y + z.y) / 2.0;
-                    if clip.intersects(egui::Rect::from_two_pos(a, z)) {
-                        let stroke = egui::Stroke::new(1.0, EDGE);
-                        painter.line_segment([a, egui::pos2(a.x, mid)], stroke);
-                        painter.line_segment([egui::pos2(a.x, mid), egui::pos2(z.x, mid)], stroke);
-                        painter.line_segment([egui::pos2(z.x, mid), z], stroke);
-                    }
-                }
+                // No connector to the parent: the block sits flush under it and inside its span, so
+                // containment shows the descent. An elbow here would be drawing what the geometry
+                // already says.
 
                 // Cull: everything below is per-block text layout, the expensive part.
                 if !clip.intersects(rect) {
@@ -502,12 +606,12 @@ impl NavigatorApp {
                 let pad = PAD * zoom;
                 let row = ROW_H * zoom;
                 let mut y = rect.top() + pad;
-                let left = rect.left() + pad;
+                let cx = rect.center().x;
                 // Clipped to the box: a label that outgrows its block is then cropped rather than
                 // spilling across the canvas, whatever the text turns out to be.
                 let inner = painter.with_clip_rect(rect.shrink(1.0));
                 let put = |text: String, color: egui::Color32, f: &egui::FontId, y: f32| {
-                    inner.text(egui::pos2(left, y), egui::Align2::LEFT_TOP, text, f.clone(), color);
+                    inner.text(egui::pos2(cx, y), egui::Align2::CENTER_TOP, text, f.clone(), color);
                 };
 
                 // A candidate has no published name — the view supplies the label, localized.
@@ -526,17 +630,6 @@ impl NavigatorApp {
                     put(l.name.clone(), SNP_FG, &small, y);
                     y += row;
                 }
-                // The men *here* are boxes below the block now, so the line carries only what the
-                // canvas can't show at a glance: how many sit anywhere in the subtree beneath.
-                // ASCII only: `▾` is absent from the bundled font and renders as a tofu box.
-                let sub = match b.subtree_members {
-                    below if below > b.members.len() => format!("+{below}"),
-                    _ => String::new(),
-                };
-                if !sub.is_empty() {
-                    put(sub, egui::Color32::from_gray(140), &small, y);
-                }
-
                 // ONE interact per block. Two on the same rect meant the later one sat on top and
                 // swallowed the click: every candidate has members, so the double-click handler
                 // always existed for them and single-click never fired.
@@ -579,12 +672,14 @@ impl NavigatorApp {
             for pm in &lay.members {
                 let rect = pm.rect.translate(origin);
                 let b = &drawn[pm.block];
-                let stem = lay.placed[pm.block].rect.translate(origin);
-                let a = egui::pos2(stem.center().x, stem.bottom());
+                // A stem from the block down to the band. This is the one connector the diagram
+                // still draws, because a man's box is the one thing not positioned by containment.
+                let from = lay.placed[pm.block].rect.translate(origin);
+                let a = egui::pos2(rect.center().x.clamp(from.left(), from.right()), from.bottom());
                 let z = egui::pos2(rect.center().x, rect.top());
                 if clip.intersects(egui::Rect::from_two_pos(a, z)) {
                     let stroke = egui::Stroke::new(1.0, EDGE);
-                    let mid = (a.y + z.y) / 2.0;
+                    let mid = z.y - (z.y - a.y) * 0.35;
                     painter.line_segment([a, egui::pos2(a.x, mid)], stroke);
                     painter.line_segment([egui::pos2(a.x, mid), egui::pos2(z.x, mid)], stroke);
                     painter.line_segment([egui::pos2(z.x, mid), z], stroke);
@@ -728,7 +823,7 @@ mod tests {
         let lay = layout(&split(), 1.0);
         assert_eq!(lay.placed.len(), 3);
         assert_eq!(lay.placed[0].rect.top(), 0.0, "the root starts the canvas");
-        assert!(lay.placed[1].rect.top() > lay.placed[0].rect.bottom());
+        assert!(lay.placed[1].rect.top() >= lay.placed[0].rect.bottom());
     }
 
     /// Vertical position is cumulative, so a lineage that accrued more mutations sits lower than its
@@ -753,16 +848,20 @@ mod tests {
         );
     }
 
+    /// Icicle: the parent spans its whole subtree, so descent reads as containment.
     #[test]
-    fn layout_centres_a_parent_over_its_children() {
+    fn a_parent_block_spans_its_children() {
         let lay = layout(&split(), 1.0);
-        let (root, a, b) = (
-            lay.placed[0].rect.center().x,
-            lay.placed[1].rect.center().x,
-            lay.placed[2].rect.center().x,
+        let (root, a, b) = (lay.placed[0].rect, lay.placed[1].rect, lay.placed[2].rect);
+        assert!(a.center().x < b.center().x, "siblings run left to right in pre-order");
+        assert!(
+            root.left() <= a.left() && root.right() >= b.right(),
+            "the parent must contain both children horizontally"
         );
-        assert!(a < b, "siblings run left to right in pre-order");
-        assert!((root - (a + b) / 2.0).abs() < 0.5, "root sits over its children");
+        assert!(
+            (a.top() - root.bottom()).abs() < 0.01,
+            "children sit flush against the parent — no gap to misread as elapsed time"
+        );
     }
 
     #[test]
@@ -799,8 +898,8 @@ mod tests {
         let mut b = block(1, 0, 0, &[]);
         b.loci = (0..600).map(|i| locus(&format!("M{i}"), i)).collect();
         let lay = layout(&[b], 1.0);
-        // name + 600 SNPs + count.
-        assert!((lay.placed[0].rect.height() - (602.0 * ROW_H + 2.0 * PAD)).abs() < 0.5);
+        // name + 600 SNPs.
+        assert!((lay.placed[0].rect.height() - (601.0 * ROW_H + 2.0 * PAD)).abs() < 0.5);
     }
 
     /// The backbone the cohort merely passed through is upstream context, so it leaves the canvas
@@ -830,15 +929,49 @@ mod tests {
 
     /// Men are blocks of their own hanging under their terminal, the way the Big Tree stems them.
     #[test]
-    fn men_hang_below_their_own_block() {
-        let lay = layout(&split(), 1.0);
+    fn men_share_one_band_below_the_diagram() {
+        let mut blocks = split();
+        // Give the two lineages different depths, so a shared baseline is observable.
+        blocks[2].loci = (0..20).map(|i| locus(&format!("M{i}"), i)).collect();
+        let lay = layout(&blocks, 1.0);
         assert_eq!(lay.members.len(), 2, "one box per man");
+        assert!(
+            (lay.members[0].rect.top() - lay.members[1].rect.top()).abs() < 0.01,
+            "men are tabled on one baseline, not stepped down with the phylogeny"
+        );
         for pm in &lay.members {
             let block = lay.placed.iter().find(|p| p.idx == pm.block).unwrap();
             assert!(pm.rect.top() > block.rect.bottom(), "a man hangs below his block");
         }
-        // Each man is under his own terminal, not pooled under the root.
-        assert_ne!(lay.members[0].block, lay.members[1].block);
+        assert_ne!(
+            lay.members[0].block, lay.members[1].block,
+            "each under his own terminal"
+        );
+    }
+
+    /// The ruler is the scale that makes a block's height a quantity rather than an impression.
+    #[test]
+    fn the_ruler_graduates_the_deepest_lineage_in_snps() {
+        let mut root = block(1, 0, 0, &[]);
+        root.loci = (0..7).map(|i| locus(&format!("R{i}"), i)).collect();
+        let mut deep = block(2, 1, 1, &["a"]);
+        deep.loci = (0..9).map(|i| locus(&format!("D{i}"), i)).collect();
+        let shallow = block(3, 1, 1, &["b"]);
+
+        let lay = layout(&[root, deep, shallow], 1.0);
+        let snps: Vec<usize> = lay.ticks.iter().map(|t| t.snps).collect();
+        assert_eq!(
+            snps,
+            vec![5, 10, 15],
+            "every {TICK_SNPS}th mutation down the 16-SNP lineage"
+        );
+        for w in lay.ticks.windows(2) {
+            assert!(w[1].y > w[0].y, "graduations descend");
+        }
+        // Tick 5 falls in the root's own run, so it lands inside the root block.
+        assert!(lay.ticks[0].y < lay.placed[0].rect.bottom());
+        // Tick 10 is past the root's 7, so it lands in the block below.
+        assert!(lay.ticks[1].y > lay.placed[0].rect.bottom());
     }
 
     #[test]
