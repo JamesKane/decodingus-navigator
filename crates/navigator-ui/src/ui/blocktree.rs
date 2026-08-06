@@ -783,30 +783,46 @@ impl NavigatorApp {
                 };
                 painter.rect_stroke(rect, 2.0, edge);
 
-                // Fit the text to the box rather than centring it wider than the box: at this width
-                // "Private variants" overhangs both edges and the clip eats the ends, which is how
-                // the label came out reading "rivate variant".
+                // The box's height is the measurement, so the text has to fit *it* — never the
+                // other way round. A one-mutation block is one row tall, which holds one line, and
+                // the line that matters is the number: the title is a label, the value is the
+                // finding. So the title appears only when both fit, exactly as the Big Tree drops it
+                // from its thin blocks.
                 let inner = painter.with_clip_rect(rect.shrink(1.0));
-                let avail = rect.width() - 2.0 * PAD * zoom;
-                let mut y = rect.top() + PAD * zoom;
-                let value = format!("{private_average} {}", fmt_average(pv.average));
-                for (text, wrap) in [(private_label.clone(), true), (value, false)] {
-                    let g = ui.fonts(|f| {
-                        f.layout(
-                            text,
-                            small.clone(),
-                            PRIVATE_FG,
-                            if wrap { avail } else { f32::INFINITY },
-                        )
-                    });
-                    // Whatever is left after the title wraps has to hold the number; when it can't,
-                    // the number wins — a box saying only "4" still carries the measurement.
-                    if y + g.size().y > rect.bottom() - PAD * zoom && wrap {
-                        continue;
-                    }
-                    inner.galley(egui::pos2(rect.center().x - g.size().x / 2.0, y), g.clone(), PRIVATE_FG);
-                    y += g.size().y;
+                let pad_z = PAD * zoom;
+                let avail = rect.width() - 2.0 * pad_z;
+                let title = ui.fonts(|f| f.layout(private_label.clone(), small.clone(), PRIVATE_FG, avail));
+                let value = ui.fonts(|f| {
+                    f.layout(
+                        format!("{private_average} {}", fmt_average(pv.average)),
+                        small.clone(),
+                        PRIVATE_FG,
+                        avail,
+                    )
+                });
+                let both = title.size().y + value.size().y <= rect.height() - 2.0 * pad_z;
+                let used = if both {
+                    title.size().y + value.size().y
+                } else {
+                    value.size().y
+                };
+                // Centred in the box, as the reference centres it — with the text top-aligned once
+                // the box is shorter than the text, so what survives the clip is the start of it.
+                let mut y = rect.top() + ((rect.height() - used) / 2.0).max(pad_z);
+                if both {
+                    inner.galley(
+                        egui::pos2(rect.center().x - title.size().x / 2.0, y),
+                        title.clone(),
+                        PRIVATE_FG,
+                    );
+                    y += title.size().y;
                 }
+                inner.galley(
+                    egui::pos2(rect.center().x - value.size().x / 2.0, y),
+                    value.clone(),
+                    PRIVATE_FG,
+                );
+
                 let resp = ui.interact(
                     rect,
                     egui::Id::new(("blocktree_private", pv.block)),
