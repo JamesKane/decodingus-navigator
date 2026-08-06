@@ -61,6 +61,12 @@ impl RegionMask {
         RegionMask { intervals: merged }
     }
 
+    /// The coalesced `[start, end)` intervals, for callers that need to transform them (lifting a
+    /// mask to another build, say) rather than only query membership.
+    pub fn intervals(&self) -> &[(i64, i64)] {
+        &self.intervals
+    }
+
     /// Total callable bases.
     pub fn covered(&self) -> i64 {
         self.intervals.iter().map(|(s, e)| e - s).sum()
@@ -148,6 +154,59 @@ const CHM13_PAR2: (i64, i64) = (62_122_808, 62_460_029);
 /// the validated constant carried over from the Scala port (mostly satellite, unmappable).
 const CHM13_YQ12_HET: (i64, i64) = (26_637_970, 62_122_809);
 
+/// Per-build chrY PAR + heterochromatin bounds, 0-based half-open.
+///
+/// These are **not lifted** — they are taken natively per build, because they are precisely
+/// documented for each assembly and because a chain is least trustworthy exactly here: the
+/// pseudoautosomal regions are shared with chrX and Yq12 is satellite, so a lift through either is
+/// as likely to be wrong as absent. The palindromes and amplicons *are* lifted, since they sit in
+/// male-specific euchromatin where the chain is reliable.
+///
+/// GRCh38 (GCA_000001405.15): PAR1 `chrY:10,001–2,781,479`, PAR2 `chrY:56,887,903–57,217,415`;
+/// the male-specific euchromatin ends and the heterochromatic arm begins at ~26.6 Mb, running to
+/// the end of the assembly.
+const GRCH38_PAR1: (i64, i64) = (10_000, 2_781_479);
+const GRCH38_PAR2: (i64, i64) = (56_887_902, 57_217_415);
+const GRCH38_YQ12_HET: (i64, i64) = (26_600_000, 57_227_415);
+
+/// GRCh37/hg19: PAR1 `chrY:10,001–2,649,520`, PAR2 `chrY:59,034,050–59,363,566`; the
+/// heterochromatic arm runs from ~28.8 Mb to the start of PAR2.
+const GRCH37_PAR1: (i64, i64) = (10_000, 2_649_520);
+const GRCH37_PAR2: (i64, i64) = (59_034_049, 59_363_566);
+const GRCH37_YQ12_HET: (i64, i64) = (28_800_000, 59_034_050);
+
+/// One build's chrY geometry: the two pseudoautosomal regions and the heterochromatic arm, all
+/// 0-based half-open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YLandmarks {
+    pub par: [(i64, i64); 2],
+    pub heterochromatin: (i64, i64),
+}
+
+/// The PAR and heterochromatin constants for a build key (`hs1`/`chm13`, `GRCh38`, `GRCh37`).
+/// `None` for a build with no registered chrY geometry.
+pub fn y_landmarks(build: &str) -> Option<YLandmarks> {
+    let b = build.to_ascii_lowercase();
+    if b.contains("chm13") || b.contains("hs1") || b.contains("t2t") {
+        Some(YLandmarks {
+            par: [CHM13_PAR1, CHM13_PAR2],
+            heterochromatin: CHM13_YQ12_HET,
+        })
+    } else if b.contains("38") {
+        Some(YLandmarks {
+            par: [GRCH38_PAR1, GRCH38_PAR2],
+            heterochromatin: GRCH38_YQ12_HET,
+        })
+    } else if b.contains("37") || b.contains("hg19") {
+        Some(YLandmarks {
+            par: [GRCH37_PAR1, GRCH37_PAR2],
+            heterochromatin: GRCH37_YQ12_HET,
+        })
+    } else {
+        None
+    }
+}
+
 /// Curated CHM13 chrY structural regions with quality modifiers, for down-weighting calls in
 /// paralog-prone / unmappable zones. [`classify`](Self::classify) returns the **most-impactful**
 /// (lowest-modifier) class containing a position; [`quality_modifier`](Self::quality_modifier)
@@ -172,6 +231,17 @@ impl YStructuralRegions {
             RegionMask::from_bed(amplicon, "chrY")?,
             RegionMask::from_bed(azf_dyz, "chrY")?.union(&[CHM13_YQ12_HET]),
         ))
+    }
+
+    /// The palindrome and amplicon masks, for lifting to another build. PAR and heterochromatin are
+    /// deliberately not exposed for that purpose — see [`y_landmarks`].
+    pub fn structural_masks(&self) -> (&RegionMask, &RegionMask) {
+        (&self.palindrome, &self.amplicon)
+    }
+
+    /// The AZF/DYZ + heterochromatin mask, for lifting the satellite-array intervals.
+    pub fn heterochromatin_mask(&self) -> &RegionMask {
+        &self.heterochromatin
     }
 
     /// Build from explicit masks (the seam the BED loader + unit tests share). XTR/STR/centromere
@@ -212,6 +282,56 @@ impl YStructuralRegions {
     /// position is in unique sequence).
     pub fn quality_modifier(&self, position: i64) -> f64 {
         self.classify(position).map_or(1.0, |c| c.modifier())
+    }
+}
+
+#[cfg(test)]
+mod y_landmark_tests {
+    use super::*;
+
+    /// PAR and heterochromatin are per-build constants rather than lifted, so a wrong one silently
+    /// mis-masks a whole assembly. Pin the documented coordinates.
+    #[test]
+    fn each_build_carries_its_own_chry_geometry() {
+        let l = y_landmarks("hs1").expect("CHM13");
+        assert_eq!(l.par[0], CHM13_PAR1);
+        assert_eq!(l.heterochromatin, CHM13_YQ12_HET);
+
+        // GRCh38 PAR1 chrY:10,001-2,781,479 → 0-based half-open.
+        let l = y_landmarks("GRCh38").expect("GRCh38");
+        assert_eq!(l.par[0], (10_000, 2_781_479));
+        assert_eq!(l.par[1], (56_887_902, 57_217_415));
+        assert!(
+            l.heterochromatin.0 < l.par[1].0,
+            "the heterochromatic arm ends before PAR2 begins"
+        );
+
+        // GRCh37 PAR1 chrY:10,001-2,649,520.
+        let l = y_landmarks("GRCh37").expect("GRCh37");
+        assert_eq!(l.par[0], (10_000, 2_649_520));
+        assert_eq!(l.par[1], (59_034_049, 59_363_566));
+        assert!(l.heterochromatin.0 < l.par[1].0);
+
+        assert!(y_landmarks("hg19").is_some(), "the UCSC name resolves too");
+        assert!(
+            y_landmarks("GRCm39").is_none(),
+            "no geometry invented for an unknown build"
+        );
+    }
+
+    /// The three builds must not collide: a GRCh37 position inside GRCh38's PAR2 is not in PAR.
+    #[test]
+    fn the_builds_do_not_share_par_bounds() {
+        let g38 = y_landmarks("GRCh38").unwrap().par;
+        let g37 = y_landmarks("GRCh37").unwrap().par;
+        assert_ne!(g38[1], g37[1], "PAR2 moved between assemblies");
+        assert!(g37[1].0 > g38[1].1, "GRCh37 PAR2 starts past the end of GRCh38's");
+    }
+
+    #[test]
+    fn intervals_round_trip_through_the_accessor() {
+        let m = RegionMask::from_intervals(vec![(30, 40), (10, 20), (18, 25)]);
+        assert_eq!(m.intervals(), &[(10, 25), (30, 40)], "coalesced and sorted");
     }
 }
 

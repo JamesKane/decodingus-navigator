@@ -88,6 +88,10 @@ fn y_mask_build_token(build: &str) -> Option<&'static str> {
     }
 }
 
+/// A shared, process-wide copy of one build's chrY structural regions (see the memo in
+/// [`App::y_structural_regions_for`]).
+type YRegionsHandle = std::sync::Arc<navigator_analysis::mask::YStructuralRegions>;
+
 impl App {
     // ---- fast path: place haplogroups from precomputed pipeline GVCFs ---------
 
@@ -544,7 +548,48 @@ impl App {
             .map(|r| r.annotate(contig, position))
     }
 
-    async fn y_structural_regions(&self) -> Option<navigator_analysis::mask::YStructuralRegions> {
+    /// Memo for [`y_structural_regions_for`]: lifting parses the whole chain file, and a project
+    /// pass over thousands of subjects would otherwise repeat that per subject — the same trap the
+    /// tree fetch fell into. The masks are static within a process, so resolve each build once.
+    fn y_regions_memo() -> &'static std::sync::Mutex<HashMap<String, Option<YRegionsHandle>>> {
+        static MEMO: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Option<YRegionsHandle>>>> =
+            std::sync::OnceLock::new();
+        MEMO.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+    }
+
+    /// The curated chrY structural regions **in `build`'s coordinates**.
+    ///
+    /// The three BEDs are CHM13-native, so anything else is lifted. That matters more than it
+    /// sounds: without it, a GRCh38 or GRCh37 source has no structural mask at all, every
+    /// palindromic and amplicon call counts as unique sequence, and private-variant counts inflate
+    /// into the hundreds — the difference between a donor averaging 4 and one averaging 661.
+    ///
+    /// Best-effort throughout: any download / chain / parse failure yields `None` so the annotation
+    /// never blocks the analysis, exactly as before.
+    async fn y_structural_regions_for(&self, build: &str) -> Option<YRegionsHandle> {
+        // Keyed by the *canonical* build: `hs1`, `CHM13v2.0` and the masked variant share coordinates
+        // and must share one entry rather than lifting three times.
+        let key = canonical_build(build)?.as_str().to_string();
+        if let Some(hit) = Self::y_regions_memo().lock().unwrap().get(&key) {
+            return hit.clone();
+        }
+        let built = self.build_y_structural_regions(build).await.map(std::sync::Arc::new);
+        if built.is_none() {
+            // Cached so a batch does not retry a failing download per subject — but *said*, because
+            // "no structural mask" is the condition that inflated private-variant counts into the
+            // hundreds in the first place, and it must never be reached silently again.
+            eprintln!(
+                "no chrY structural mask available for {key} — private-variant counts will include \
+                 palindromic and amplicon calls"
+            );
+        }
+        Self::y_regions_memo().lock().unwrap().insert(key, built.clone());
+        built
+    }
+
+    async fn build_y_structural_regions(&self, build: &str) -> Option<navigator_analysis::mask::YStructuralRegions> {
+        use navigator_analysis::mask::{RegionMask, YStructuralRegions};
+
         let amplicon = self
             .gateway
             .resolve_mask("chm13v2.0Y_amplicons_v1", &mut |_, _| {})
@@ -560,7 +605,52 @@ impl App {
             .resolve_mask("chm13v2.0Y_AZF_DYZ_v1", &mut |_, _| {})
             .await
             .ok()?;
-        navigator_analysis::mask::YStructuralRegions::from_beds(&amplicon, &palindrome, &azf_dyz).ok()
+        let native = YStructuralRegions::from_beds(&amplicon, &palindrome, &azf_dyz).ok()?;
+
+        let target = canonical_build(build)?;
+        if matches!(target, ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs) {
+            return Some(native);
+        }
+        // PAR and heterochromatin are taken natively per build rather than lifted — a chain is least
+        // trustworthy in exactly those places (PAR is shared with chrX, Yq12 is satellite).
+        let landmarks = navigator_analysis::mask::y_landmarks(build)?;
+
+        self.gateway
+            .resolve_chain(ReferenceBuild::Chm13v2.as_str(), target.as_str(), &mut |_, _| {})
+            .await
+            .ok()?;
+        let lift = |m: &RegionMask, what: &str| -> Option<RegionMask> {
+            let (iv, dropped) = self
+                .gateway
+                .lift_intervals(ReferenceBuild::Chm13v2.as_str(), target.as_str(), "chrY", m.intervals())
+                .ok()?;
+            if iv.is_empty() {
+                // A mask that lifted to nothing is not a mask; better to annotate nothing than to
+                // report "no structural regions here" as though it had been checked.
+                eprintln!("chrY {what} mask lifted CHM13→{} to nothing; skipping", target.as_str());
+                return None;
+            }
+            if dropped > 0 {
+                eprintln!(
+                    "chrY {what} mask CHM13→{}: {} of {} intervals dropped as unliftable",
+                    target.as_str(),
+                    dropped,
+                    m.intervals().len()
+                );
+            }
+            Some(RegionMask::from_intervals(iv))
+        };
+        let (palindrome_m, amplicon_m) = native.structural_masks();
+        Some(YStructuralRegions::from_masks(
+            RegionMask::from_intervals(landmarks.par.to_vec()),
+            lift(palindrome_m, "palindrome")?,
+            lift(amplicon_m, "amplicon")?,
+            // The satellite arrays rarely survive a chain, so the build's heterochromatin bound is
+            // the load-bearing part here and the lifted AZF/DYZ intervals only refine it.
+            lift(native.heterochromatin_mask(), "AZF/DYZ")
+                .unwrap_or_else(|| RegionMask::from_intervals(vec![]))
+                .union(&[landmarks.heterochromatin]),
+        ))
     }
 
     /// Derive chrY private-variant candidates from a per-sample GVCF, returning the same
@@ -620,15 +710,7 @@ impl App {
         // The structural BEDs are in CHM13 chrY coordinates, so they only annotate a CHM13 alignment.
         // The cohort masks apply per build: native for CHM13, CrossMap-lifted (hs1→hg38) for GRCh38.
         let aln = self.alignment_or_err(alignment_id).await?;
-        let is_chm13 = matches!(
-            canonical_build(&aln.reference_build),
-            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
-        );
-        let regions = if is_chm13 {
-            self.y_structural_regions().await
-        } else {
-            None
-        };
+        let regions = self.y_structural_regions_for(&aln.reference_build).await;
         // L2: the cohort **callable mask** (Poznik-style, CALLABLE in ≥90% of a ~3k-male cohort) —
         // only ~25% of non-PAR chrY is reliably callable cohort-wide. L3: a **cohort-shared-sites**
         // blocklist — every position that varies with ≥2 carriers across the cohort (plus homoplasy
@@ -871,15 +953,9 @@ impl App {
             mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_CALLABLE_MASK", "chrY_callable_mask", t));
         let cohort_shared =
             mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_COHORT_SHARED", "chrY_cohort_shared_sites", t));
-        // CHM13-coordinate structural BEDs only annotate a CHM13 set, as on the alignment path.
-        let regions = if matches!(
-            canonical_build(&build),
-            Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs)
-        ) {
-            self.y_structural_regions().await
-        } else {
-            None
-        };
+        // The structural BEDs are CHM13-native and lifted to whatever this set is in — without that
+        // a GRCh38 set has no structural mask and its private counts inflate into the hundreds.
+        let regions = self.y_structural_regions_for(&build).await;
 
         // Quality-passing calls first, so the depth ceiling below is measured against the donor's own
         // good coverage rather than against a median dragged down by the junk we are about to drop.

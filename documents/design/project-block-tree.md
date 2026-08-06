@@ -399,10 +399,16 @@ engine widened the input and the gates tightened around it.
    correctly leaves them; widening it until they vanish would fit the filter to the observation rather
    than to a mechanism. Left visible rather than filtered — a judgement about this cohort.
 
-7. **Per-donor novel counts sit above the alignment path's** (median ~73 vs 3–13). This looks like
-   instrument difference — GATK HaplotypeCaller at ploidy 1 against a vendor diploid caller — but it
-   is not proven. A subject carrying *both* a CRAM and a vendor VCF would settle it directly, by
-   classifying the same donor twice.
+7. **Per-donor novel counts sat above the alignment path's** (median ~73 vs 3–13) — ✅ **cause
+   found, and it was not the instrument.** The structural-region masks are CHM13-native, and both
+   private-Y paths applied them *only* to a CHM13 source. On a GRCh38 set `regions` was `None`, so
+   every palindromic and amplicon call counted as unique sequence. The alignment path masked those
+   regions; the VCF path, being mostly GRCh38, did not. Hence one branch in R1b-CTS4466Plus
+   averaging **661** private variants beside another averaging 4.
+
+   Fixed by lifting the masks — see §13. The GATK-vs-vendor-caller hypothesis is withdrawn; it was
+   a plausible story that happened to be wrong, and the give-away (only GRCh38 sources affected)
+   was in the data all along.
 
 ### Debts this work incurred
 
@@ -473,3 +479,44 @@ of §11.5 are inside the default set, and re-placing one turned `E-FT400514:n0` 
 - **Nothing *notices* a new tree.** `fetch_tree` refreshes on a TTL, but the sweep is still something
   a user has to think to run. A startup comparison of the tree hash against the workspace's
   most-common stamp would turn this into the "option when a new tree lands" it is meant to be.
+
+## 13. Lifting the chrY structural masks off CHM13
+
+The three curated chrY structural BEDs (amplicons, inverted repeats/palindromes, AZF-DYZ) are
+CHM13-native, and both private-Y paths simply skipped them for any other build. That is the cause of
+§11.7: a GRCh38 source had **no structural mask at all**, so paralogous sequence — precisely the
+sequence that generates spurious novel calls — was counted as unique.
+
+`y_structural_regions_for(build)` now lifts them. The chains were already registered
+(`chm13v2-grch38.chain`, `chm13v2-hg19.chain`) and `resolve_chain` already cached them; what was
+missing was `Gateway::lift_intervals`.
+
+**PAR and heterochromatin are not lifted.** They are taken as per-build constants, because a chain
+is least trustworthy in exactly those places — PAR is shared with chrX and Yq12 is satellite — and
+because both are precisely documented per assembly. The palindromes and amplicons *are* lifted,
+since they sit in male-specific euchromatin where the chain holds.
+
+**A partial lift is recovered rather than dropped.** Endpoints are tried first, as the exact case.
+When they fail — common for amplicons, which are exactly where the assemblies disagree — the
+interval body is sampled at 64 points and the dominant target contig's extent is taken, provided at
+least a quarter of the samples mapped. This matters because the masks *suppress* calls: too small a
+mask admits false novels by the hundred, while too large a one costs a handful of true calls in
+known-paralogous sequence. The asymmetry says recover.
+
+Measured survival against the real chains:
+
+| | palindrome | amplicon |
+|---|---:|---:|
+| CHM13 (native) | 6.19 Mb | 4.41 Mb |
+| GRCh38 | 5.65 Mb (91%) | 3.59 Mb (81%) |
+| GRCh37 | 5.69 Mb (92%) | 3.64 Mb (83%) |
+
+Endpoint-only lifting gave 79% / 64% on GRCh38; the interior fallback is what recovers the rest. The
+remaining shortfall is genuinely non-syntenic — CHM13 carries Y sequence the older assemblies lack.
+
+### Open
+
+- **Nothing re-runs private-Y after this.** Every cached `private_y` artefact and
+  `variant_set_private_y` row was computed without the mask, so the stored counts are still the
+  inflated ones. They need recomputing with `--force`, which is the same shape of problem as §12 and
+  wants the same answer.
