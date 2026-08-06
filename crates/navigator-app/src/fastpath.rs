@@ -521,13 +521,15 @@ impl App {
         // Persist the self-masked bucket so it reloads instead of recomputing next session. Version
         // "3": prefers a per-sample GVCF sidecar as the derived-call source (was pileup-only in v2),
         // so v2 blobs must recompute rather than reload.
-        self.save_analysis(alignment_id, "private_y", "3", &bucket).await?;
+        // Version 4: private variants are now classified against structural masks lifted to the
+        // alignment's own build. A v3 bucket on a GRCh38 alignment saw no mask at all.
+        self.save_analysis(alignment_id, "private_y", "4", &bucket).await?;
         Ok(bucket)
     }
 
     /// Cached self-masked private-Y bucket for an alignment, if previously computed.
     pub async fn cached_private_y(&self, alignment_id: i64) -> Result<Option<PrivateBucket>, AppError> {
-        self.load_analysis(alignment_id, "private_y", "3").await
+        self.load_analysis(alignment_id, "private_y", "4").await
     }
 
     /// Shared core: assign Y, de-novo chrY, subtract the backbone, optionally mask, classify.
@@ -930,7 +932,10 @@ impl App {
                 .values()
                 .flat_map(|n| n.loci.iter().map(|l| l.position))
                 .collect();
-            format!("pv1:{}", crate::haplogroup::genotype_cache_key("chrY", None, &targets))
+            // `pv2`: the chrY structural masks are now lifted to the set's own build, so a `pv1`
+            // bucket was classified with **no** structural mask on anything but CHM13 and its counts
+            // are inflated. The version is the invalidation — `--force` cannot reach this cache.
+            format!("pv2:{}", crate::haplogroup::genotype_cache_key("chrY", None, &targets))
         };
         if let Ok(Some(json)) = variant_set_private_y::get(self.store.pool(), set.id, &cache_key).await {
             if let Ok(bucket) = serde_json::from_str::<PrivateBucket>(&json) {

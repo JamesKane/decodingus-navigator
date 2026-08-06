@@ -378,7 +378,7 @@ impl App {
         }
         let ids: Vec<i64> = by_subject.values().flatten().map(|a| a.id).collect();
         let stored: HashMap<i64, AnalysisArtifact> =
-            artifact::list_for_alignments_of_kind(self.store.pool(), &ids, "private_y", "3")
+            artifact::list_for_alignments_of_kind(self.store.pool(), &ids, "private_y", "4")
                 .await?
                 .into_iter()
                 .map(|a| (a.alignment_id, a))

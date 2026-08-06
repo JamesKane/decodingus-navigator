@@ -514,9 +514,46 @@ Measured survival against the real chains:
 Endpoint-only lifting gave 79% / 64% on GRCh38; the interior fallback is what recovers the rest. The
 remaining shortfall is genuinely non-syntenic — CHM13 carries Y sequence the older assemblies lack.
 
-### Open
+### Measured on the cohort
 
-- **Nothing re-runs private-Y after this.** Every cached `private_y` artefact and
-  `variant_set_private_y` row was computed without the mask, so the stored counts are still the
-  inflated ones. They need recomputing with `--force`, which is the same shape of problem as §12 and
-  wants the same answer.
+Recomputed across R1b-CTS4466Plus (337 buckets). Both caches were **version-bumped** rather than
+force-cleared — `private_y` artefact `"3"`→`"4"` and the VCF key `pv1:`→`pv2:` — because the
+algorithm changed, and because `--force` cannot reach the VCF cache at all. That left both the old
+and new buckets in the database for the same 107 variant sets, so the effect is exactly measurable:
+
+| | before | after |
+|---|---:|---:|
+| novel-in-unique, total | 7,841 | 5,732 |
+| median per donor | 73 | 55 |
+| max | 102 | 82 |
+| donors over `PRIVATE_Y_QC_WARN` | 106 | 64 |
+
+**26.9% of the calls were paralogous sequence.** Real, and not the whole story.
+
+## 14. The residual is recurrent, not private — open
+
+The 5,732 surviving calls fall on **356 distinct positions**. 92% of them sit at a position seen in
+ten or more of the 107 donors, and three positions (12,023,935 · 15,285,765 · 15,732,901) appear in
+**every** donor. A variant carried by the entire cohort is not private by any definition — it is
+either a real branch variant the tree should name, or a systematic artefact. Either way it must be
+blocked, and something already exists to block it.
+
+The cause is asset density, not logic. Both cohort masks apply on GRCh38, but they lifted very
+differently:
+
+| | CHM13 | GRCh38 | |
+|---|---:|---:|---|
+| `chrY_callable_mask` | 14.96 Mb | 14.56 Mb | 97% — fine |
+| `chrY_cohort_shared_sites` | 323,414 pos | 105,609 pos | **33%** |
+
+The shared-sites blocklist *is* the recurrent-artefact filter ("every position that varies with ≥2
+carriers across the cohort, plus homoplasy hotspots"), and two thirds of it did not survive the
+CrossMap lift to GRCh38. Those are single-base intervals, so there is no interior to recover the way
+§13 recovers a span — both endpoints have to map or the position is lost.
+
+Re-lifting with our own chain would likely yield about the same. The right fix is to **compute the
+GRCh38 blocklist natively from the cohort's own GRCh38 calls** rather than lifting a CHM13 product —
+an asset-pipeline job under `scripts/`, and a deliberate one, since the masks are manifest-verified
+(`asset-manifest-verification`). Until then, GRCh38 private-Y counts stay roughly an order of
+magnitude above FTDNA's, and the block tree's QC suppression (§11, amber edge) is what stands between
+that and a misleading diagram.
