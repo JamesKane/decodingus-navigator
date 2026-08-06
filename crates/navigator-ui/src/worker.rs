@@ -19,9 +19,9 @@ use navigator_app::{
     DmMessage, DnaType, ExchangeSessionInfo, FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary,
     FtdnaResolution, HaploAssignment, HeteroplasmySite, IbdComparison, IbdDetectorConfig, IbdSuggestion,
     IdentityVerification, IncomingRequest, MatchingEntry, NarratedBrief, PaintingResult, PrivateBucket,
-    ProjectImportSummary, ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics, RecruitmentInvitation,
-    RefBuildStatus, RohResult, SexInferenceResult, SignalKind, SourceType, StoredIbdExchange, StrConcordanceRow,
-    SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult, YMatch, YstrClustering,
+    ProjectBlockTree, ProjectImportSummary, ProjectOverview, ProjectSampleReport, ProjectStrChart, ReadMetrics,
+    RecruitmentInvitation, RefBuildStatus, RohResult, SexInferenceResult, SignalKind, SourceType, StoredIbdExchange,
+    StrConcordanceRow, SubjectAnalysisStatus, SubjectBrief, SvAnalysisResult, YMatch, YstrClustering,
 };
 use navigator_domain::chipprofile::ChipProfile;
 use navigator_domain::du_domain::ids::SampleGuid;
@@ -69,6 +69,9 @@ pub enum Command {
     LoadProjectReport(i64),
     /// Load (precompute) the per-member Y-STR overview (FTDNA-style chart) for a project.
     LoadProjectStrChart(i64),
+    /// Build the cohort Y **block tree** for a project. Fetches + parses a multi-MB haplotree, so the
+    /// UI sends this lazily on first view of the Tree tab rather than on project select.
+    LoadProjectBlockTree(i64),
     /// Build (off the UI thread) the plain-language Subject Brief for a subject (Simple mode).
     LoadSubjectBrief(SampleGuid),
     /// Build (off the UI thread) a YFull-style Y/mtDNA descent report for a subject.
@@ -769,6 +772,12 @@ pub enum Event {
         project_id: i64,
         chart: ProjectStrChart,
     },
+    /// The cohort Y block tree for a project. `tree` is `None` when the project has no members at
+    /// all — distinct from a tree with no placed members, which comes back with everyone `unplaced`.
+    ProjectBlockTree {
+        project_id: i64,
+        tree: Box<Option<ProjectBlockTree>>,
+    },
     /// The plain-language Subject Brief for a subject (Simple mode).
     SubjectBrief {
         guid: SampleGuid,
@@ -1409,6 +1418,12 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         }),
         Command::LoadProjectStrChart(project_id) => ev(app.project_str_chart(project_id).await, |chart| {
             Event::ProjectStrChart { project_id, chart }
+        }),
+        Command::LoadProjectBlockTree(project_id) => ev(app.project_block_tree(project_id, DnaType::Y).await, |tree| {
+            Event::ProjectBlockTree {
+                project_id,
+                tree: Box::new(tree),
+            }
         }),
         Command::LoadSubjectBrief(guid) => ev(app.subject_brief(guid).await, |brief| Event::SubjectBrief {
             guid,

@@ -111,7 +111,7 @@ type YSourceCalls = Vec<(SourceType, HashMap<i64, char>)>;
 /// the queried `contig`, the lift source build, and an FNV-1a hash of the **sorted target
 /// positions** + their count. A changed tree (added/removed/moved positions) changes the hash →
 /// cache miss → fresh walk; the BAM `source_sig` handles a changed alignment file separately.
-fn genotype_cache_key(contig: &str, source_build: Option<&str>, targets: &HashSet<i64>) -> String {
+pub(crate) fn genotype_cache_key(contig: &str, source_build: Option<&str>, targets: &HashSet<i64>) -> String {
     let mut sorted: Vec<i64> = targets.iter().copied().collect();
     sorted.sort_unstable();
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -250,6 +250,8 @@ impl App {
                 alternate: v.alternate.to_string(),
                 rs_id: None,
                 genotype: None,
+                // Derived from an rCRS diff, not a source VCF — there is no evidence to carry.
+                evidence: Default::default(),
             })
             .collect();
         let label = format!("mtDNA vs rCRS ({} variants)", derived.len());
@@ -259,6 +261,7 @@ impl App {
             source_type: variants::SourceType::Imported,
             reference_build: None,
             calls,
+            source_path: None, // derived from the stored sequence, not a re-readable call file
         };
         Ok(variant_set::create(self.store.pool(), &new).await?)
     }
@@ -880,10 +883,7 @@ impl App {
         if !ngs_sets.is_empty() {
             let mut tree_cache: HashMap<String, navigator_analysis::haplo::HaploTree> = HashMap::new();
             for set in &ngs_sets {
-                let calls = Self::vset_chr_y_calls(set);
-                if calls.is_empty() {
-                    continue;
-                }
+                // Tree first: genotyping the source needs the target positions it defines.
                 let build = set.reference_build.clone().unwrap_or_else(|| "GRCh38".to_string());
                 if !tree_cache.contains_key(&build) {
                     match self.chip_y_tree(&build).await {
@@ -892,6 +892,10 @@ impl App {
                         }
                         Err(_) => continue,
                     }
+                }
+                let calls = self.vset_base_calls(set, "chrY", &tree_cache[&build]).await;
+                if calls.is_empty() {
+                    continue;
                 }
                 let assignment = Self::place_chip_panel(&tree_cache[&build], calls);
                 let obs = snp_obs_from_assignment(&assignment, true);
@@ -1102,7 +1106,7 @@ impl App {
             if set.source_type == SourceType::Chip || !is_grch38_build(&set.reference_build) {
                 continue;
             }
-            let calls = Self::vset_chr_y_calls(set);
+            let calls = self.vset_base_calls(set, "chrY", &tree).await;
             if !calls.is_empty() {
                 sources.push((set.source_type, strand_reconcile_to_tree(&tree, calls)));
             }
@@ -1189,7 +1193,7 @@ impl App {
                 continue;
             };
             let Some(tree) = trees.get(bk) else { continue };
-            let calls = Self::vset_chr_y_calls(set);
+            let calls = self.vset_base_calls(set, "chrY", tree).await;
             if !calls.is_empty() {
                 by_build
                     .entry(bk)
@@ -1299,6 +1303,7 @@ impl App {
                 &aln.bam_path.clone().ok_or(AppError::MissingPaths(alignment_id))?,
             ))
             .await;
+        let bam = bam.path().to_path_buf();
         let is_cram = bam.extension().is_some_and(|e| e.eq_ignore_ascii_case("cram"));
         let reference = match aln.reference_path.clone() {
             Some(p) => Some(PathBuf::from(p)),
@@ -1482,7 +1487,7 @@ impl App {
                 continue;
             };
             let Some(tree) = trees.get(bk) else { continue };
-            let calls = Self::vset_chr_y_calls(set);
+            let calls = self.vset_base_calls(set, "chrY", tree).await;
             if !calls.is_empty() {
                 by_build
                     .entry(bk)
@@ -2469,7 +2474,7 @@ impl App {
     /// straight into the existing rCRS mt pipeline (FASTA/chip sources and the `chrM` genotyper all
     /// speak rCRS) — and still fall back to FTDNA when the DecodingUs tree or the CHM13 `chrM` needed
     /// to build the remap is unavailable.
-    async fn mt_tree_rcrs(&self) -> Result<(navigator_analysis::haplo::HaploTree, &'static str), AppError> {
+    pub(crate) async fn mt_tree_rcrs(&self) -> Result<(navigator_analysis::haplo::HaploTree, &'static str), AppError> {
         if !matches!(y_tree_provider(), YTreeProvider::Ftdna) {
             if let Some(tree) = self.decodingus_mt_tree_rcrs().await {
                 return Ok((tree, "decodingus"));
@@ -4148,6 +4153,104 @@ impl App {
         Ok(missing)
     }
 
+    /// The active Y tree's content hash (first 16 hex), the `yt:` half of a placement fingerprint.
+    /// Standalone — [`y_score_fingerprint`](Self::y_score_fingerprint) can only be computed for a
+    /// subject that owns an alignment to hash, which excludes VCF-only subjects and anyone whose
+    /// source file has moved.
+    pub async fn current_y_tree_hash(&self) -> Result<String, AppError> {
+        let json = match y_tree_provider() {
+            YTreeProvider::DecodingUs => self.fetch_decodingus_y_tree().await?,
+            YTreeProvider::Ftdna => self.fetch_ftdna_y_tree().await?,
+        };
+        Ok(sha256_str(&json)[..16].to_string())
+    }
+
+    /// The active mtDNA tree's content hash (first 16 hex) — the `mt:` half.
+    pub async fn current_mt_tree_hash(&self) -> Result<String, AppError> {
+        let json = self.fetch_ftdna_mt_tree().await?;
+        Ok(sha256_str(&json)[..16].to_string())
+    }
+
+    /// Subjects whose Y or mtDNA calls were placed against **a different haplotree** than the one
+    /// now active, and so are due a re-placement.
+    ///
+    /// This is the selector, not the sweep: `rebuild-signatures` already re-places a set of
+    /// subjects, and `assign_*_haplogroup_walk` already no-ops when a subject's fingerprint still
+    /// matches — so feeding this list to that sweep is cheap on anything already current.
+    ///
+    /// `include_unknown` adds the subjects whose calls predate the fingerprint field, which is a
+    /// provenance backfill rather than a response to a tree change — see the store function.
+    ///
+    /// A tree that cannot be fetched yields no subjects for that DNA type rather than an error: the
+    /// point of the sweep is to act on a *known* new tree, and "the network is down" is not one.
+    pub async fn subjects_placed_against_another_tree(
+        &self,
+        include_unknown: bool,
+    ) -> Result<Vec<SampleGuid>, AppError> {
+        let mut out: Vec<SampleGuid> = Vec::new();
+        let mut seen: HashSet<SampleGuid> = HashSet::new();
+        for (dna, tag, hash) in [
+            (DnaType::Y, "yt:", self.current_y_tree_hash().await.ok()),
+            (DnaType::Mt, "mt:", self.current_mt_tree_hash().await.ok()),
+        ] {
+            let Some(hash) = hash else {
+                eprintln!("{dna:?} tree unavailable — skipping its staleness check");
+                continue;
+            };
+            for g in haplogroup_call::biosamples_placed_against_another_tree(
+                self.store.pool(),
+                dna,
+                tag,
+                &hash,
+                include_unknown,
+            )
+            .await?
+            {
+                if seen.insert(g) {
+                    out.push(g);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Subjects whose **genome-level consensus label names a branch the current Y tree does not
+    /// carry** — the other half of tree staleness, and the one that actually bites.
+    ///
+    /// A consensus is *derived* from the per-source calls and persisted separately, with no tree
+    /// stamp of its own. So it can rot while every call beneath it is current: `GMWOF5428705` holds
+    /// a call placed against today's tree (`E-C116698`) under a consensus of `E-FT400514:n0` last
+    /// reconciled four weeks earlier. A sweep keyed on call fingerprints alone cannot see that.
+    ///
+    /// Testing the label against the tree's node names catches it directly and needs no schema
+    /// change: a label absent from the tree is stale by definition, whatever the cause — and it is
+    /// exactly the set the block tree drops into `unplaced`.
+    pub async fn subjects_labelled_off_tree(&self) -> Result<Vec<SampleGuid>, AppError> {
+        // Node *names* are build-independent, so any build key yields the same index — `hs1` is the
+        // DecodingUs tree's native space and needs no liftover.
+        let tree = match y_tree_provider() {
+            YTreeProvider::DecodingUs => {
+                let json = self.fetch_decodingus_y_tree().await?;
+                navigator_analysis::haplo::parse_decodingus_json(&json, "hs1").map_err(AppError::Import)?
+            }
+            YTreeProvider::Ftdna => {
+                let json = self.fetch_ftdna_y_tree().await?;
+                navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?
+            }
+        };
+        let names = navigator_analysis::haplo::name_index(&tree);
+        let mut out = Vec::new();
+        for (guid, dna, label) in navigator_store::consensus_profile::list_labels(self.store.pool()).await? {
+            if dna != DnaType::Y.as_str() || names.contains_key(label.as_str()) {
+                continue;
+            }
+            if let Ok(g) = guid.parse() {
+                out.push(SampleGuid(g));
+            }
+        }
+        Ok(out)
+    }
+
     /// Fingerprint of the inputs to a Y-haplogroup score: the alignment's content hash + the
     /// active Y-tree's content hash. Unchanged inputs → a re-score is unnecessary. Errors (e.g.
     /// the tree is unreachable and uncached) disable caching for this run rather than failing.
@@ -4423,6 +4526,56 @@ impl App {
             .collect()
     }
 
+    /// Tree-position genotypes for a variant set — the VCF counterpart of [`Self::base_calls`].
+    ///
+    /// [`Self::vset_chr_y_calls`] can only report the stored rows, which are the donor's *derived*
+    /// calls: the workspace never recorded where he is confidently ancestral, so placement cannot
+    /// separate "ancestral" from "not covered" and every backbone node scores as no-call. Re-reading
+    /// the source VCF at the tree's positions recovers the hom-ref rows it already contains, which is
+    /// what the CRAM path gets for free by genotyping every target.
+    ///
+    /// Cached in `variant_set_genotype` under the same site-set hash the alignment path uses, so a
+    /// changed tree misses rather than serving genotypes for sites that moved. Falls back to the
+    /// stored derived calls whenever the source is unavailable (never recorded, file since moved, or
+    /// unreadable) — strictly no worse than the previous behaviour.
+    pub(crate) async fn vset_base_calls(
+        &self,
+        set: &VariantSet,
+        contig: &str,
+        tree: &navigator_analysis::haplo::HaploTree,
+    ) -> HashMap<i64, char> {
+        let targets: HashSet<i64> = tree
+            .nodes
+            .values()
+            .flat_map(|n| n.loci.iter().map(|l| l.position))
+            .collect();
+        let stored = || Self::vset_chr_y_calls(set);
+        if targets.is_empty() {
+            return stored();
+        }
+        let cache_key = genotype_cache_key(contig, None, &targets);
+        if let Ok(Some(json)) = variant_set_genotype::get(self.store.pool(), set.id, &cache_key).await {
+            if let Ok(pairs) = serde_json::from_str::<Vec<(i64, char)>>(&json) {
+                return pairs.into_iter().collect();
+            }
+        }
+        let Some(path) = set.source_path.as_deref() else {
+            return stored();
+        };
+        let (p, c, t) = (PathBuf::from(path), contig.to_string(), targets);
+        let genotyped = tokio::task::spawn_blocking(move || crate::vcf_genotypes_at(&p, &c, &t))
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+        let Some(calls) = genotyped.filter(|c| !c.is_empty()) else {
+            return stored();
+        };
+        if let Ok(json) = serde_json::to_string(&calls.iter().map(|(p, b)| (*p, *b)).collect::<Vec<_>>()) {
+            let _ = variant_set_genotype::upsert(self.store.pool(), set.id, &cache_key, &json).await;
+        }
+        calls
+    }
+
     /// Place the subject's vendor **Y-NGS VCF** variant sets — FTDNA Big Y / Full Genomes Y Elite /
     /// YSEQ / Nebula / Dante, i.e. anything imported as a non-[`Chip`](SourceType::Chip)
     /// [`VariantSet`] carrying chrY calls — and record a per-source donor call for each. These are
@@ -4439,10 +4592,6 @@ impl App {
             if set.source_type == SourceType::Chip {
                 continue; // chips place via assign_y_bisdna / the chip-panel path
             }
-            let calls = Self::vset_chr_y_calls(set);
-            if calls.is_empty() {
-                continue;
-            }
             let build = set.reference_build.clone().unwrap_or_else(|| "GRCh38".to_string());
             if !tree_cache.contains_key(&build) {
                 match self.chip_y_tree(&build).await {
@@ -4454,6 +4603,10 @@ impl App {
                         continue;
                     }
                 }
+            }
+            let calls = self.vset_base_calls(set, "chrY", &tree_cache[&build]).await;
+            if calls.is_empty() {
+                continue;
             }
             let assignment = Self::place_chip_panel(&tree_cache[&build], calls);
             // A set with no tree-defining SNP matched carries no Y signal — e.g. an off-haplotree
@@ -4743,6 +4896,7 @@ impl App {
         let bam = self
             .localize(Path::new(&aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?))
             .await;
+        let bam = bam.path().to_path_buf();
         // Resolve the reference even when none was stored at import. A CRAM can't be decoded
         // without it, so resolve (download on a miss) via the gateway from the alignment's build —
         // e.g. the already-cached `chm13v2.0.fa` for a CHM13 CRAM. A BAM needs no reference to
@@ -5139,6 +5293,7 @@ mod vset_autosomal_calls_tests {
             alternate: a.into(),
             rs_id: None,
             genotype: (!gt.is_empty()).then(|| gt.to_string()),
+            evidence: Default::default(),
         }
     }
 
@@ -5150,6 +5305,8 @@ mod vset_autosomal_calls_tests {
             source_type: SourceType::WgsShortRead,
             reference_build: Some("GRCh37".into()),
             calls,
+            call_schema: navigator_domain::variants::CALL_SCHEMA_BASIC,
+            source_path: None,
         }
     }
 

@@ -50,3 +50,36 @@ async fn resolve_grch38_to_chm13_chain() {
     assert!(lo.lift("chr1", 1_000_000).is_some() || lo.lift("1", 1_000_000).is_some());
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// The CHM13 chrY structural masks are only useful on GRCh38/37 if they lift, and only *safe* if a
+/// bad lift is dropped rather than smeared across the chromosome. Both are properties of the real
+/// chain, so this is a live test.
+#[tokio::test]
+#[ignore = "downloads a real liftover chain"]
+async fn lift_chry_intervals_chm13_to_grch38() {
+    let base = scratch();
+    let g = ReferenceGateway::new(base.clone(), reqwest::Client::new());
+    g.resolve_chain("chm13v2.0", "GRCh38", &mut |_, _| {})
+        .await
+        .expect("resolve chain");
+
+    // Two real CHM13 chrY palindrome spans plus one deliberate nonsense interval far past the end
+    // of the chromosome, which must not survive.
+    let src = [
+        (6_000_000, 6_100_000),
+        (18_000_000, 18_200_000),
+        (200_000_000, 200_100_000),
+    ];
+    let (lifted, dropped) = g.lift_intervals("chm13v2.0", "GRCh38", "chrY", &src).expect("lift");
+
+    assert!(dropped >= 1, "the off-chromosome interval must be dropped");
+    for &(s, e) in &lifted {
+        assert!(e > s, "a lifted interval keeps its orientation");
+        assert!(e < 60_000_000, "GRCh38 chrY is ~57.2 Mb — a lift past that is a smear");
+    }
+    // Whatever survived must be no more than 2x its source span, the guard against a bad lift.
+    let src_total: i64 = src.iter().map(|(s, e)| e - s).sum();
+    let got_total: i64 = lifted.iter().map(|(s, e)| e - s).sum();
+    assert!(got_total <= src_total * 2, "lifted span must stay bounded");
+    let _ = std::fs::remove_dir_all(&base);
+}

@@ -38,6 +38,8 @@ pub mod sync_history;
 pub mod sync_outbox;
 pub mod sync_state;
 pub mod variant_set;
+pub mod variant_set_genotype;
+pub mod variant_set_private_y;
 
 pub use error::StoreError;
 

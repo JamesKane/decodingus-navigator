@@ -97,6 +97,7 @@ impl NavigatorApp {
             ProjectTab::Members => self.samples_section(ui),
             ProjectTab::Report => self.project_report_section(ui),
             ProjectTab::Ystr => self.project_ystr_section(ui),
+            ProjectTab::Tree => self.project_blocktree_section(ui),
         }
     }
 

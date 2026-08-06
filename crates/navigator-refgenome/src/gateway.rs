@@ -402,6 +402,89 @@ impl ReferenceGateway {
             .collect())
     }
 
+    /// Lift `[start, end)` intervals on `contig` from build `from` to build `to` via the cached
+    /// chain (call [`resolve_chain`](Self::resolve_chain) first).
+    ///
+    /// An interval survives only when **both endpoints** land on the same target contig and the
+    /// lifted span is 0.5×–2× the source span — the same sanity check
+    /// [`lift_hipstr_bed`](Self::lift_hipstr_bed) applies, and for the same reason: a chain can map
+    /// two ends of a repeat to wildly separated places, and a structural mask that has silently
+    /// stretched across a chromosome is worse than no mask, because it would suppress real calls.
+    ///
+    /// Intervals that fail are dropped and counted. The caller gets `(intervals, dropped)` so it can
+    /// say how much of the mask survived rather than presenting a thinned mask as the whole one.
+    pub fn lift_intervals(
+        &self,
+        from: &str,
+        to: &str,
+        contig: &str,
+        intervals: &[(i64, i64)],
+    ) -> Result<(Vec<(i64, i64)>, usize), RefgenomeError> {
+        let lo = self.load_liftover(from, to)?;
+        let lift1 = |p: i64| -> Option<(String, i64)> {
+            lo.chains
+                .iter()
+                .filter(|c| c.t_name == contig)
+                .find_map(|c| c.lift(p).map(|q| (c.q_name.clone(), q)))
+        };
+        let (mut out, mut dropped) = (Vec::with_capacity(intervals.len()), 0usize);
+        for &(s, e) in intervals {
+            if e <= s {
+                dropped += 1;
+                continue;
+            }
+            // Endpoints first — the exact case, and the only one that can prove the full span.
+            if let (Some(a), Some(b)) = (lift1(s), lift1(e)) {
+                if a.0 == b.0 {
+                    // An inverted lift comes back reversed; the interval is the same stretch.
+                    let (lo_p, hi_p) = if a.1 <= b.1 { (a.1, b.1) } else { (b.1, a.1) };
+                    let (src, dst) = ((e - s) as f64, (hi_p - lo_p) as f64);
+                    if dst >= src * 0.5 && dst <= src * 2.0 {
+                        out.push((lo_p, hi_p));
+                        continue;
+                    }
+                }
+            }
+            // Fall back to the interior. An interval whose *ends* sit in a gap can still have a body
+            // that maps — which is the common case for amplicons, since they are exactly where the
+            // assemblies disagree. Recovering the mapped part matters because these masks are used
+            // to *suppress* calls: too small a mask admits false novels by the hundred, while too
+            // large a one costs a handful of true calls in known-paralogous sequence.
+            const SAMPLES: i64 = 64;
+            let step = ((e - s) / SAMPLES).max(1);
+            let mut by_contig: std::collections::HashMap<String, (i64, i64, usize)> = Default::default();
+            let mut tried = 0usize;
+            let mut p = s;
+            while p <= e {
+                tried += 1;
+                if let Some((c, q)) = lift1(p) {
+                    let ent = by_contig.entry(c).or_insert((q, q, 0));
+                    ent.0 = ent.0.min(q);
+                    ent.1 = ent.1.max(q);
+                    ent.2 += 1;
+                }
+                p += step;
+            }
+            // The dominant target contig, and only if enough of the interval actually mapped — one
+            // stray point is not evidence of a region.
+            let best = by_contig.into_values().max_by_key(|v| v.2);
+            match best {
+                Some((lo_p, hi_p, hits)) if hits * 4 >= tried && hi_p > lo_p => {
+                    // No lower span bound here: a partial recovery is *expected* to be shorter than
+                    // the source. The upper bound still guards against a lift smeared across the
+                    // chromosome.
+                    if (hi_p - lo_p) as f64 <= (e - s) as f64 * 2.0 {
+                        out.push((lo_p, hi_p));
+                    } else {
+                        dropped += 1;
+                    }
+                }
+                _ => dropped += 1,
+            }
+        }
+        Ok((out, dropped))
+    }
+
     /// Lift a HipSTR-format reference BED from `from` build to `to` build via the cached chain
     /// (call [`resolve_chain`](Self::resolve_chain) first), writing a new gzipped BED in the target
     /// coordinates. Each tract's endpoints (`[start+1, end+1]`, 1-based, end-inclusive — the HipSTR

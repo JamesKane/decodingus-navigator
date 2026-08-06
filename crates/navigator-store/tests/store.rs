@@ -614,6 +614,69 @@ async fn set_sequence_run_reparents_an_alignment() {
     assert!(!alignment::set_sequence_run(s.pool(), 9999, primary.id).await.unwrap());
 }
 
+/// The selector behind `rebuild-signatures --stale-tree`: who was placed against a tree other than
+/// the active one.
+#[tokio::test]
+async fn stale_tree_selector_finds_subjects_placed_against_another_tree() {
+    use navigator_domain::reconciliation::{CallProvenance, DnaType, RunHaplogroupCall};
+    use navigator_store::haplogroup_call;
+
+    let s = store().await;
+    let call = RunHaplogroupCall {
+        source_label: "aln #1 Y".into(),
+        haplogroup: "R-FGC29071".into(),
+        lineage: vec!["Y".into(), "R".into()],
+        score: 0.9,
+        matched: 80,
+        expected: 100,
+    };
+    // Four subjects: current, superseded, no fingerprint at all, and one whose fingerprint carries
+    // no tree tag.
+    let mut guids = Vec::new();
+    for fp in [Some("f:aaa|yt:CURRENT"), Some("f:bbb|yt:OLD"), None, Some("f:ccc")] {
+        let b = sample(None);
+        biosample::create(s.pool(), &b).await.unwrap();
+        haplogroup_call::upsert(
+            s.pool(),
+            b.guid,
+            DnaType::Y,
+            "aln:1",
+            &call,
+            CallProvenance::NavigatorWalk,
+            fp,
+        )
+        .await
+        .unwrap();
+        guids.push(b.guid);
+    }
+
+    // Default: only what is *provably* on another tree.
+    let stale = haplogroup_call::biosamples_placed_against_another_tree(s.pool(), DnaType::Y, "yt:", "CURRENT", false)
+        .await
+        .unwrap();
+    assert_eq!(stale, vec![guids[1]], "only the superseded tree, not the unknowns");
+
+    // Opt in, and the two unknowable ones join it.
+    let with_unknown =
+        haplogroup_call::biosamples_placed_against_another_tree(s.pool(), DnaType::Y, "yt:", "CURRENT", true)
+            .await
+            .unwrap();
+    assert!(!with_unknown.contains(&guids[0]), "a current placement is never stale");
+    assert!(with_unknown.contains(&guids[1]));
+    assert!(with_unknown.contains(&guids[2]), "no fingerprint at all");
+    assert!(
+        with_unknown.contains(&guids[3]),
+        "a fingerprint with no tree tag must not slip through on a substr offset"
+    );
+    assert_eq!(with_unknown.len(), 3);
+
+    // The mt calls of these same subjects are untouched, so an mt sweep selects nobody by tag.
+    let mt = haplogroup_call::biosamples_placed_against_another_tree(s.pool(), DnaType::Mt, "mt:", "CURRENT", true)
+        .await
+        .unwrap();
+    assert!(mt.is_empty(), "the selector is scoped to one DNA type");
+}
+
 #[tokio::test]
 async fn haplogroup_call_fingerprint_round_trips() {
     use navigator_domain::reconciliation::{CallProvenance, DnaType, RunHaplogroupCall};
@@ -841,4 +904,82 @@ async fn bulk_loaders_match_the_per_item_queries() {
     // Empty inputs must not query at all, and must not error.
     assert!(alignment::list_for_biosamples(s.pool(), &[]).await.unwrap().is_empty());
     assert!(artifact::list_for_alignments(s.pool(), &[]).await.unwrap().is_empty());
+}
+
+/// Per-call evidence survives the round trip, and the set's schema tag reflects what was actually
+/// captured — not which importer ran. A `BASIC` set can never satisfy a quality gate, so a consumer
+/// has to be able to tell the two apart before it starts filtering on absent DP/GQ.
+#[tokio::test]
+async fn variant_call_evidence_round_trips_and_tags_the_schema() {
+    use navigator_domain::variants::{
+        CallEvidence, NewVariantSet, SourceType, VariantCall, CALL_SCHEMA_BASIC, CALL_SCHEMA_EVIDENCE,
+    };
+
+    let s = store().await;
+    let b = sample(None);
+    biosample::create(s.pool(), &b).await.unwrap();
+
+    let call = |pos: i64, evidence: CallEvidence| VariantCall {
+        contig: "chrY".into(),
+        position: pos,
+        reference: "A".into(),
+        alternate: "G".into(),
+        rs_id: None,
+        genotype: Some("1/1".into()),
+        evidence,
+    };
+    let evidence = CallEvidence {
+        qual: Some(512.5),
+        filter: Some("LowQual".into()),
+        dp: Some(40),
+        gq: Some(99),
+        ad_ref: Some(2),
+        ad_alt: Some(38),
+    };
+
+    let with = navigator_store::variant_set::create(
+        s.pool(),
+        &NewVariantSet {
+            biosample_guid: b.guid,
+            source_label: "big-y".into(),
+            source_type: SourceType::TargetedNgs,
+            reference_build: Some("GRCh38".into()),
+            // One call carries evidence, one doesn't — a real VCF mixes both.
+            calls: vec![call(100, evidence.clone()), call(200, CallEvidence::default())],
+            source_path: Some("/tmp/big-y.vcf.gz".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(with.call_schema, CALL_SCHEMA_EVIDENCE);
+    assert!(with.has_evidence());
+
+    let read = navigator_store::variant_set::get(s.pool(), with.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.call_schema, CALL_SCHEMA_EVIDENCE);
+    assert_eq!(read.calls[0].evidence, evidence, "every field survives the round trip");
+    assert_eq!(read.calls[0].evidence.allele_fraction(), Some(0.95));
+    assert!(read.calls[0].evidence.is_filtered());
+    // The evidence-free call stays evidence-free rather than reading back as zeros.
+    assert!(read.calls[1].evidence.is_empty());
+    assert_eq!(read.calls[1].evidence.dp, None);
+
+    // A set with nothing captured tags BASIC, so a consumer knows not to gate on quality here.
+    let without = navigator_store::variant_set::create(
+        s.pool(),
+        &NewVariantSet {
+            biosample_guid: b.guid,
+            source_label: "csv-panel".into(),
+            source_type: SourceType::Manual,
+            reference_build: None,
+            calls: vec![call(300, CallEvidence::default())],
+            source_path: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(without.call_schema, CALL_SCHEMA_BASIC);
+    assert!(!without.has_evidence());
 }

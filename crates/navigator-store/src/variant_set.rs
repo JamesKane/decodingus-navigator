@@ -2,7 +2,7 @@
 //! (the `SampleGuid` is stored as its hyphenated TEXT form, like elsewhere).
 
 use du_domain::ids::SampleGuid;
-use navigator_domain::variants::{NewVariantSet, SourceType, VariantCall, VariantSet};
+use navigator_domain::variants::{self, CallEvidence, NewVariantSet, SourceType, VariantCall, VariantSet};
 use sqlx::SqlitePool;
 
 use crate::error::parse_sample_guid;
@@ -15,6 +15,8 @@ struct SetRow {
     source_label: String,
     source_type: String,
     reference_build: Option<String>,
+    call_schema: i64,
+    source_path: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -25,10 +27,22 @@ struct CallRow {
     alternate: String,
     rs_id: Option<String>,
     genotype: Option<String>,
+    qual: Option<f64>,
+    filter: Option<String>,
+    dp: Option<i64>,
+    gq: Option<i64>,
+    ad_ref: Option<i64>,
+    ad_alt: Option<i64>,
 }
+
+/// Columns read back for a call, in `CallRow` order.
+const CALL_COLS: &str = "contig, position, reference, alternate, rs_id, genotype, qual, filter, dp, gq, ad_ref, ad_alt";
 
 impl CallRow {
     fn into_domain(self) -> VariantCall {
+        // Stored as INTEGER (SQLite has no unsigned type); a negative would be corrupt data, so it
+        // reads back as absent rather than wrapping into a huge count.
+        let count = |v: Option<i64>| v.and_then(|n| u32::try_from(n).ok());
         VariantCall {
             contig: self.contig,
             position: self.position,
@@ -36,6 +50,14 @@ impl CallRow {
             alternate: self.alternate,
             rs_id: self.rs_id,
             genotype: self.genotype,
+            evidence: CallEvidence {
+                qual: self.qual,
+                filter: self.filter,
+                dp: count(self.dp),
+                gq: count(self.gq),
+                ad_ref: count(self.ad_ref),
+                ad_alt: count(self.ad_alt),
+            },
         }
     }
 }
@@ -43,20 +65,34 @@ impl CallRow {
 /// Create a variant set and bulk-insert its calls in one transaction.
 pub async fn create(pool: &SqlitePool, new: &NewVariantSet) -> Result<VariantSet, StoreError> {
     let mut tx = pool.begin().await?;
+    // The schema tag is derived from what was actually captured, not from which importer ran. A
+    // sites-only VCF and a CSV marker table genuinely have no evidence, and a consumer asking "can
+    // I gate on quality here?" needs the truthful answer — a tag keyed to the importer version
+    // would claim evidence those sets can never supply.
+    let schema = if new.calls.iter().any(|c| !c.evidence.is_empty()) {
+        variants::CALL_SCHEMA_EVIDENCE
+    } else {
+        variants::CALL_SCHEMA_BASIC
+    };
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO variant_set (biosample_guid, source_label, source_type, reference_build) \
-         VALUES (?, ?, ?, ?) RETURNING id",
+        "INSERT INTO variant_set (biosample_guid, source_label, source_type, reference_build, call_schema, source_path) \
+         VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(new.biosample_guid.0.to_string())
     .bind(&new.source_label)
     .bind(new.source_type.as_str())
     .bind(&new.reference_build)
+    .bind(schema)
+    .bind(&new.source_path)
     .fetch_one(&mut *tx)
     .await?;
     for c in &new.calls {
+        let e = &c.evidence;
         sqlx::query(
-            "INSERT INTO variant_call (variant_set_id, contig, position, reference, alternate, rs_id, genotype) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO variant_call \
+             (variant_set_id, contig, position, reference, alternate, rs_id, genotype, \
+              qual, filter, dp, gq, ad_ref, ad_alt) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(&c.contig)
@@ -65,6 +101,12 @@ pub async fn create(pool: &SqlitePool, new: &NewVariantSet) -> Result<VariantSet
         .bind(&c.alternate)
         .bind(&c.rs_id)
         .bind(&c.genotype)
+        .bind(e.qual)
+        .bind(&e.filter)
+        .bind(e.dp.map(i64::from))
+        .bind(e.gq.map(i64::from))
+        .bind(e.ad_ref.map(i64::from))
+        .bind(e.ad_alt.map(i64::from))
         .execute(&mut *tx)
         .await?;
     }
@@ -76,13 +118,15 @@ pub async fn create(pool: &SqlitePool, new: &NewVariantSet) -> Result<VariantSet
         source_type: new.source_type,
         reference_build: new.reference_build.clone(),
         calls: new.calls.clone(),
+        call_schema: schema,
+        source_path: new.source_path.clone(),
     })
 }
 
 /// One variant set (with its calls) by id, or `None` if it doesn't exist.
 pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<VariantSet>, StoreError> {
     let Some(r) = sqlx::query_as::<_, SetRow>(
-        "SELECT id, biosample_guid, source_label, source_type, reference_build FROM variant_set WHERE id = ?",
+        "SELECT id, biosample_guid, source_label, source_type, reference_build, call_schema, source_path FROM variant_set WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -99,14 +143,15 @@ pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<VariantSet>, Store
         source_type: SourceType::from_code(&r.source_type),
         reference_build: r.reference_build,
         calls,
+        call_schema: r.call_schema,
+        source_path: r.source_path,
     }))
 }
 
 async fn calls_for(pool: &SqlitePool, set_id: i64) -> Result<Vec<VariantCall>, StoreError> {
-    let rows: Vec<CallRow> = sqlx::query_as(
-        "SELECT contig, position, reference, alternate, rs_id, genotype FROM variant_call \
-         WHERE variant_set_id = ? ORDER BY id",
-    )
+    let rows: Vec<CallRow> = sqlx::query_as(&format!(
+        "SELECT {CALL_COLS} FROM variant_call WHERE variant_set_id = ? ORDER BY id"
+    ))
     .bind(set_id)
     .fetch_all(pool)
     .await?;
@@ -117,6 +162,10 @@ async fn calls_for(pool: &SqlitePool, set_id: i64) -> Result<Vec<VariantCall>, S
 /// set row was removed.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM variant_set_genotype WHERE variant_set_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM variant_call WHERE variant_set_id = ?")
         .bind(id)
         .execute(&mut *tx)
@@ -133,7 +182,7 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
 /// All variant sets for a biosample, with their calls.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<VariantSet>, StoreError> {
     let rows: Vec<SetRow> = sqlx::query_as(
-        "SELECT id, biosample_guid, source_label, source_type, reference_build FROM variant_set \
+        "SELECT id, biosample_guid, source_label, source_type, reference_build, call_schema, source_path FROM variant_set \
          WHERE biosample_guid = ? ORDER BY id",
     )
     .bind(guid.0.to_string())
@@ -151,6 +200,8 @@ pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<V
             source_type: SourceType::from_code(&r.source_type),
             reference_build: r.reference_build,
             calls,
+            call_schema: r.call_schema,
+            source_path: r.source_path,
         });
     }
     Ok(sets)

@@ -1,6 +1,8 @@
 # DUNavigator Backlog
 
-Last reviewed: 2026-07-26 (rewritten against the Rust tree).
+Last reviewed: 2026-08-05 (§3.3 block tree built; §1.1 archaic status corrected; four
+pre-existing bugs found during that work recorded under Cross-cutting). Rewritten against the Rust
+tree 2026-07-26.
 
 > **This file was rewritten.** The previous version was the **Scala-era** inventory (last reviewed
 > 2026-03-07) and described classes that no longer exist — `AncestryEstimator`, `SyncService`,
@@ -21,7 +23,10 @@ Code exists or the design is settled; these are the near-term threads.
 
 ### 1.1 Archaic ancestry (Neanderthal / Denisovan)
 - **Design:** [`design/ArchaicAncestry_Design.md`](design/ArchaicAncestry_Design.md)
-- **Status:** Design draft, no code. The only design-only item that is a *new user-visible feature*.
+- **Status (corrected 2026-08-02):** **Tier A shipped** (`230353b`, `#34`) and reports a *count*,
+  never a % Neanderthal. **Tier B is built but gated OFF** (`#35`, `#40`) — the diagnosis is that it
+  measured the wrong observable, not that the HMM is broken; read `#41`/`#42` before reopening. The
+  "design draft, no code" status below was already stale when this file was written.
 - **Scope:** Phase 1 = compute our own marker panel (EVA archaic VCFs + Ensembl-75 ancestral alleles
   + 1kGP AFR outgroup) + Tier A `count_archaic_markers` + domain/store/UI card — the 23andMe
   equivalent, for chip *and* WGS, reusing the ancestry-panel machinery. Phase 2 = Tier B segment HMM
@@ -148,11 +153,21 @@ Verified 2026-07-26 to have no implementation in the tree.
 - **Status:** No implementation. Lexicon defined only.
 
 ### 3.3 Interactive haplogroup tree visualization
-- **Status:** **Partial.** `ui/descent.rs` draws the subject's root→terminal path (YFull-YReport
-  style, both Simple and Advanced densities) and `ui/branch.rs` gives a per-marker branch report with
-  TSV export.
-- **Scope remaining:** a genuinely zoomable / searchable *whole-tree* view with the subject's
-  placement highlighted.
+- **Status:** **Mostly built.** Per-subject: `ui/descent.rs` draws the root→terminal path
+  (YFull-YReport style, Simple and Advanced densities) and `ui/branch.rs` gives a per-marker branch
+  report with TSV export. Cohort: the project **block tree** below.
+- **Built, cohort-scoped** — [`design/project-block-tree.md`](design/project-block-tree.md), branch
+  `feat/project-block-tree` (13 commits, unpushed). A project Y **block tree**: induced subtree over
+  the members' terminals, equivalent-SNP blocks, and **candidate branches** inferred from private
+  variants two or more members share — the thing a published tree cannot show. A `ProjectTab::Tree`
+  canvas draws it; clicking a candidate opens the per-carrier read evidence behind it.
+- **Scope remaining:** a zoomable/searchable *whole-tree* view (this is cohort-scoped by design), and
+  the open items in that doc's §11 — chiefly **no GUI trigger for the private-Y batch** (CLI only,
+  and candidates cannot fire without it) and 162 `:`-suffixed terminals that fall to `unplaced`.
+- **Note:** phase 3 grew well past its original scope because private-Y existed for exactly one
+  subject workspace-wide. That pulled in a `private-y --project` batch, a **VCF-backed private-Y
+  engine** for the majority of members who have no alignment, and an artefact-filter stack. Four
+  pre-existing bugs surfaced on the way — see the design doc and the entries below.
 
 ### 3.4 Cross-subject IBD network view
 - **Status:** **Partial.** Cross-subject Y ranking (`ymatch`), federated
@@ -182,6 +197,21 @@ Verified 2026-07-26 to have no implementation in the tree.
 - **Compare multi-select** — the Compare view still takes a limited selection.
 - **Tree cache staleness** — `fetch_tree` is cache-first with no freshness check, so a stale cached
   haplotree silently under-places. Open.
+- **Fixed while building the block tree** (branch `feat/project-block-tree`), all pre-existing and
+  costing continuously:
+  - a **chrY-only VCF was routed to the autosomal 1240K path** (`looks_like_genotyped_callset_vcf`
+    asked only "does it emit `0/0` rows?" and never looked at contigs), so a Big Y import produced no
+    Y variant set, no placement and no private-Y source;
+  - the **VCF import discarded QUAL/FILTER/DP/GQ/AD**, leaving nothing downstream able to tell a 40×
+    hom-alt call from a 2-read artefact (migration 0042);
+  - **GVCF sidecar discovery looked in one directory for one filename spelling**, missing
+    `gatk4/chrY.g.vcf.gz` entirely — every affected subject decoded a whole chromosome a sidecar
+    could have answered (50–90 s → 1.3–3.3 s);
+  - **`localize` leaked its alignment copies** — cleanup lived in one caller while three created
+    them; reached 687 files / **145 GB** and filled the volume mid-run. Now RAII with a refcount.
+- **`project_report` reads every artifact payload** — it still uses the unfiltered
+  `artifact::list_for_alignments`, which pulled gigabytes of `tree-genotype` JSON to read a few small
+  kinds. `artifact::list_for_alignments_of_kind` exists; convert the caller.
 - **mtDNA FASTA export** — the Scala app had it; the Rust `export.rs` covers coverage / read-metrics
   / ancestry / mtDNA-variants / IBD-segments / branch / descent / callable-BED / subject-brief
   (TSV + HTML), but **not** FASTA. Carry it over if still wanted. No PDF export exists either.

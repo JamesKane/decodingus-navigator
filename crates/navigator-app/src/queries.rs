@@ -358,6 +358,107 @@ impl App {
         }))
     }
 
+    /// [`donor_private_y`](Self::donor_private_y) for **many** subjects at once, in two queries
+    /// rather than two per subject: the alignments, then the artifact rows, then per-subject merging
+    /// in memory. Subjects with no cached private-Y are simply absent from the map — that is "never
+    /// computed", not "none found".
+    ///
+    /// Deliberately **not** built on `AlignmentArtifacts`: that stats every alignment file up front
+    /// to check freshness, and private-Y is computed for only a small fraction of a typical cohort.
+    /// Statting the rest buys nothing and costs everything — on a collection living on an external
+    /// volume those stats dominated the whole block-tree build. Here only the alignments that
+    /// actually carry a `private_y` row are statted.
+    pub(crate) async fn private_y_for_biosamples(
+        &self,
+        guids: &[SampleGuid],
+    ) -> Result<HashMap<SampleGuid, PrivateBucket>, AppError> {
+        let mut by_subject: HashMap<SampleGuid, Vec<Alignment>> = HashMap::new();
+        for (guid, aln) in alignment::list_for_biosamples(self.store.pool(), guids).await? {
+            by_subject.entry(guid).or_default().push(aln);
+        }
+        let ids: Vec<i64> = by_subject.values().flatten().map(|a| a.id).collect();
+        let stored: HashMap<i64, AnalysisArtifact> =
+            artifact::list_for_alignments_of_kind(self.store.pool(), &ids, "private_y", "4")
+                .await?
+                .into_iter()
+                .map(|a| (a.alignment_id, a))
+                .collect();
+        if stored.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // VCF-derived buckets, for subjects whose Y data never came with an alignment — the large
+        // majority of a Y project. Read from the cache only, as the alignment path does: opening a
+        // tab must not start classifying thousands of call sets.
+        let mut out: HashMap<SampleGuid, PrivateBucket> = HashMap::new();
+        for guid in guids {
+            let rows =
+                navigator_store::variant_set_private_y::list_for_biosample(self.store.pool(), &guid.0.to_string())
+                    .await
+                    .unwrap_or_default();
+            for (_, json) in rows {
+                let Ok(bucket) = serde_json::from_str::<PrivateBucket>(&json) else {
+                    continue;
+                };
+                let entry = out.entry(*guid).or_insert_with(|| PrivateBucket {
+                    terminal: bucket.terminal.clone(),
+                    variants: Vec::new(),
+                });
+                merge_bucket(entry, bucket);
+            }
+        }
+        for (guid, alignments) in &by_subject {
+            // Same union-by-position, keep-the-deepest merge as the single-subject path.
+            let mut by_pos: HashMap<i64, PrivateVariant> = HashMap::new();
+            let mut terminal: Option<String> = None;
+            let mut any = false;
+            for a in alignments {
+                let Some(row) = stored.get(&a.id) else { continue };
+                // Only now is a stat worth paying for.
+                let current = a.bam_path.as_deref().and_then(|p| file_signature(Path::new(p)));
+                if !artifact_is_fresh(row.source_sig.as_deref(), current.as_deref()) {
+                    continue;
+                }
+                let Ok(bucket) = serde_json::from_str::<PrivateBucket>(&row.payload) else {
+                    continue;
+                };
+                any = true;
+                terminal.get_or_insert(bucket.terminal);
+                for v in bucket.variants {
+                    by_pos
+                        .entry(v.position)
+                        .and_modify(|cur| {
+                            if v.depth > cur.depth {
+                                *cur = v.clone();
+                            }
+                        })
+                        .or_insert(v);
+                }
+            }
+            if !any {
+                continue;
+            }
+            let mut variants: Vec<PrivateVariant> = by_pos.into_values().collect();
+            variants.sort_by_key(|v| v.position);
+            let from_alignments = PrivateBucket {
+                terminal: terminal.unwrap_or_default(),
+                variants,
+            };
+            match out.entry(*guid) {
+                std::collections::hash_map::Entry::Occupied(mut e) => merge_bucket(e.get_mut(), from_alignments),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(from_alignments);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every alignment a subject owns, across all of its sequencing runs.
+    pub async fn list_alignments_for_biosample(&self, biosample_guid: SampleGuid) -> Result<Vec<Alignment>, AppError> {
+        Ok(alignment::list_for_biosample(self.store.pool(), biosample_guid).await?)
+    }
+
     pub async fn list_alignments(&self, sequence_run_id: i64) -> Result<Vec<Alignment>, AppError> {
         Ok(alignment::list_for_run(self.store.pool(), sequence_run_id).await?)
     }
@@ -761,9 +862,6 @@ impl App {
         };
         o.had_alignment = true;
         let label = &biosample.donor_identifier;
-        // Drop any prior subject's local alignment copy so the batch holds at most one file's worth
-        // of cache; this subject's passes share the single copy `localize` makes below.
-        Self::clear_align_cache();
 
         // Preflight before spending any I/O on the steps below. A batch is the worst place to
         // discover a file problem the slow way: without this, an unreadable alignment produces one
@@ -1075,4 +1173,26 @@ mod read_profile_tests {
         // No metrics.
         assert_eq!(read_type_from_mean_len(0.0), None);
     }
+}
+
+/// Fold `extra` into `into`, deduping by position and keeping the deeper observation — the same rule
+/// the per-subject alignment union uses. A donor with both a CRAM and a vendor VCF should end up with
+/// one private set, not two competing ones.
+fn merge_bucket(into: &mut PrivateBucket, extra: PrivateBucket) {
+    if into.terminal.is_empty() {
+        into.terminal = extra.terminal;
+    }
+    let mut by_pos: HashMap<i64, PrivateVariant> = into.variants.drain(..).map(|v| (v.position, v)).collect();
+    for v in extra.variants {
+        by_pos
+            .entry(v.position)
+            .and_modify(|cur| {
+                if v.depth > cur.depth {
+                    *cur = v.clone();
+                }
+            })
+            .or_insert(v);
+    }
+    into.variants = by_pos.into_values().collect();
+    into.variants.sort_by_key(|v| v.position);
 }

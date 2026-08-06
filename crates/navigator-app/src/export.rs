@@ -11,7 +11,7 @@ use navigator_domain::ancestry::AncestryResult;
 use navigator_domain::brief::{LineageBrief, SubjectBrief};
 use navigator_domain::reconciliation::DnaType;
 
-use crate::{BranchReport, DescentReport};
+use crate::{Block, BranchReport, DescentReport, ProjectBlockTree};
 
 /// Minimal HTML text escaping for the small, controlled strings we embed (population names etc.).
 fn esc(s: &str) -> String {
@@ -344,6 +344,171 @@ pub fn descent_tsv(report: &DescentReport) -> String {
         }
     }
     out
+}
+
+// ---- project block tree ------------------------------------------------------
+
+/// The cohort block tree as TSV: one row per block, in the aggregate's own pre-order, with `depth`
+/// carrying the shape. Candidate branches (inferred from shared private variants, not named in the
+/// published tree) are marked in the `kind` column and named `candidate` rather than left blank, so
+/// a reader of the file alone can't mistake one for a published haplogroup.
+///
+/// Members are a comma-joined cell rather than one row each: the unit a researcher shares from this
+/// view is the *branch*, and exploding it per member would bury the tree shape.
+pub fn block_tree_tsv(tree: &ProjectBlockTree) -> String {
+    let dna = match tree.dna {
+        DnaType::Y => "Y-DNA",
+        DnaType::Mt => "mtDNA",
+    };
+    let placed: usize = tree.blocks.iter().map(|b| b.members.len()).sum();
+    let mut out = format!(
+        "# DUNavigator {dna} block tree — tree {} · coordinates {} · {} blocks · {placed} placed · {} not on this tree\n",
+        tree.provider,
+        if tree.build_key.is_empty() { "n/a" } else { &tree.build_key },
+        tree.blocks.len(),
+        tree.unplaced.len(),
+    );
+    if tree.candidate_conflicts > 0 {
+        out.push_str(&format!(
+            "# {} shared-variant grouping(s) dropped as conflicting (overlapping without nesting)\n",
+            tree.candidate_conflicts
+        ));
+    }
+    if tree.candidate_recurrent > 0 {
+        out.push_str(&format!(
+            "# {} position(s) dropped as recurrent (would define a branch under more than one parent)\n",
+            tree.candidate_recurrent
+        ));
+    }
+    out.push_str(
+        "depth\tkind\thaplogroup\tequivalent_snps\tfolded_branches\tmembers_at\tmembers_below\tsnps\tmembers\n",
+    );
+    for b in &tree.blocks {
+        let names: Vec<&str> = b.members.iter().map(|m| m.name.as_str()).collect();
+        let snps: Vec<&str> = b.loci.iter().map(|l| l.name.as_str()).collect();
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            b.depth,
+            if b.candidate { "candidate" } else { "branch" },
+            if b.candidate { "candidate" } else { b.name.as_str() },
+            b.loci.len(),
+            b.collapsed.len(),
+            b.members.len(),
+            b.subtree_members,
+            snps.join(","),
+            names.join(","),
+        ));
+    }
+    // Per-carrier evidence for every candidate. A candidate is an inference, and a shared export
+    // that showed only "1 SNP, 3 members" would ask the reader to trust it — the depth and derived
+    // fraction behind each call are what let them judge it instead.
+    let candidates: Vec<&Block> = tree
+        .blocks
+        .iter()
+        .filter(|b| b.candidate && !b.evidence.is_empty())
+        .collect();
+    if !candidates.is_empty() {
+        out.push_str("\n# candidate-branch evidence\ncandidate\tmember\tposition\tref\talt\tdepth\talt_depth\tallele_fraction\tpublishable\n");
+        for (i, b) in candidates.iter().enumerate() {
+            for e in &b.evidence {
+                out.push_str(&format!(
+                    "candidate-{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{}\n",
+                    i + 1,
+                    e.member,
+                    e.position,
+                    e.reference,
+                    e.alternate,
+                    e.depth,
+                    e.alt_depth,
+                    e.allele_fraction,
+                    if e.publishable { "yes" } else { "no" },
+                ));
+            }
+        }
+    }
+
+    // The members the tree does not account for belong in the same file — a shared export that
+    // silently covered only the placed fraction would misrepresent the cohort.
+    if !tree.unplaced.is_empty() {
+        out.push_str("\n# not on this tree\nname\tterminal\treason\n");
+        for u in &tree.unplaced {
+            let (terminal, reason) = match u.terminal.as_deref() {
+                Some(t) => (t, "terminal absent from this tree"),
+                None => ("", "no placement"),
+            };
+            out.push_str(&format!("{}\t{}\t{}\n", u.name, terminal, reason));
+        }
+    }
+    out
+}
+
+/// The cohort block tree as a self-contained HTML page: the same rows, indented by depth so the
+/// shape reads at a glance, with candidate branches called out.
+pub fn block_tree_html(tree: &ProjectBlockTree, project: &str) -> String {
+    let dna = match tree.dna {
+        DnaType::Y => "Y-DNA",
+        DnaType::Mt => "mtDNA",
+    };
+    let placed: usize = tree.blocks.iter().map(|b| b.members.len()).sum();
+    let mut rows = String::new();
+    for b in &tree.blocks {
+        let indent = "&nbsp;".repeat(b.depth * 3);
+        let label = if b.candidate {
+            format!("{indent}<em>candidate branch</em>")
+        } else {
+            format!("{indent}<strong>{}</strong>", esc(&b.name))
+        };
+        let folded = if b.collapsed.is_empty() {
+            String::new()
+        } else {
+            format!(" <span class=\"meta\">+{} folded</span>", b.collapsed.len())
+        };
+        rows.push_str(&format!(
+            "<tr><td>{label}{folded}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            b.loci.len(),
+            b.members.len(),
+            b.subtree_members,
+            esc(&b.members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ")),
+        ));
+    }
+    let mut conflicts = String::new();
+    if tree.candidate_conflicts > 0 {
+        conflicts.push_str(&format!(
+            "<p class=\"meta\">{} shared-variant grouping(s) dropped as conflicting.</p>",
+            tree.candidate_conflicts
+        ));
+    }
+    if tree.candidate_recurrent > 0 {
+        conflicts.push_str(&format!(
+            "<p class=\"meta\">{} position(s) dropped as recurrent.</p>",
+            tree.candidate_recurrent
+        ));
+    }
+    let unplaced = if tree.unplaced.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<h2>Not on this tree ({})</h2><p class=\"meta\">No {dna} placement, or a terminal this tree does not carry.</p><p>{}</p>",
+            tree.unplaced.len(),
+            esc(&tree
+                .unplaced
+                .iter()
+                .map(|u| u.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")),
+        )
+    };
+    format!(
+        "<!doctype html><meta charset=\"utf-8\"><title>{p} — {dna} block tree</title><style>{HTML_STYLE}</style>\
+<h1>{p} — {dna} block tree</h1>\
+<p class=\"meta\">Tree {prov} · coordinates {build} · {nb} blocks · {placed} placed · {nu} not on this tree</p>{conflicts}\
+<table><tr><th>Branch</th><th>SNPs</th><th>Members</th><th>Below</th><th>Kits</th></tr>{rows}</table>{unplaced}",
+        p = esc(project),
+        prov = esc(&tree.provider),
+        build = if tree.build_key.is_empty() { "n/a" } else { &tree.build_key },
+        nb = tree.blocks.len(),
+        nu = tree.unplaced.len(),
+    )
 }
 
 pub fn mtdna_variants_tsv(variants: &[MtVariant]) -> String {

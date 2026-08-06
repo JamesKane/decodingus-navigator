@@ -42,7 +42,7 @@ pub enum Command {
     /// Diagnostic: dump the raw read pileup (ref + A/C/G/T) behind each lineage call for one alignment.
     DebugCalls(DebugCallsArgs),
     /// Diagnostic: the filtered private-Y bucket for an alignment — DISPLAY vs PUBLISH counts.
-    PrivateY(DebugCallsArgs),
+    PrivateY(PrivateYArgs),
     /// Diagnostic: deep (ancient) ancestry fitted over each view of a subject — the pooled
     /// consensus, each source alone, and thinned site sets. The stability gate: a 30x WGS and a
     /// consumer chip must agree, or the estimate is tracking the assay, not the donor.
@@ -219,6 +219,29 @@ pub struct DebugCallsArgs {
 }
 
 #[derive(Args)]
+pub struct PrivateYArgs {
+    /// Subject donor identifier (used to pick an alignment when `--alignment` is omitted — prefers a
+    /// CHM13/HiFi alignment, else the first).
+    #[arg(long, short)]
+    subject: Option<String>,
+    /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
+    #[arg(long, short)]
+    alignment: Option<i64>,
+    /// **Batch**: compute and persist the private-Y bucket for every alignment of every member of
+    /// this project, instead of reporting one. Private-Y is what a cohort view needs to tell a
+    /// shared unnamed variant from a lone one, and it is cached per alignment — so a project has to
+    /// be walked once before anything cross-subject can use it.
+    #[arg(long, short)]
+    project: Option<String>,
+    /// Recompute buckets that are already cached (default: skip them, so a batch is resumable).
+    #[arg(long)]
+    force: bool,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
 pub struct BranchReportArgs {
     /// Subject donor identifier (used to pick a Y/mt alignment when `--alignment` is omitted —
     /// prefers a CHM13/HiFi alignment, else the first).
@@ -290,6 +313,27 @@ pub struct RebuildArgs {
     /// Restrict to subjects in this project (by exact name).
     #[arg(long, short)]
     project: Option<String>,
+    /// Restrict to the subjects named in this file — one donor identifier or subject guid per line
+    /// (`#` comments and blanks ignored). Placement cost is dominated by subjects that own a
+    /// BAM/CRAM without cached genotypes, since those re-walk the alignment; a project filter can't
+    /// separate those from the cheap VCF-only subjects sharing the project, so scope by subject when
+    /// only some of them changed.
+    #[arg(long, value_name = "FILE")]
+    subjects_file: Option<PathBuf>,
+    /// Only subjects placed against a **different haplotree** than the one now active — the sweep to
+    /// run when a new tree lands. Combines with the other filters (all of them must pass), and
+    /// implies `--all`: a subject can be due a re-placement without yet having a profile built.
+    #[arg(long)]
+    stale_tree: bool,
+    /// With `--stale-tree`, also take subjects whose calls carry **no tree fingerprint** — placed
+    /// before the field existed, so which tree they used is unknowable. That is a provenance
+    /// backfill, not a response to a tree change, and it is far larger: most such subjects own a
+    /// BAM/CRAM that re-placement re-walks. Off by default so the routine sweep stays runnable.
+    #[arg(long)]
+    include_unknown: bool,
+    /// With `--stale-tree`, list the affected subjects and exit without re-placing anything.
+    #[arg(long)]
+    dry_run: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
@@ -638,6 +682,11 @@ async fn backfill_profiles(args: BackfillArgs) -> i32 {
 /// stay stale until rebuilt here.
 async fn rebuild_signatures(args: RebuildArgs) -> i32 {
     use std::time::Instant;
+    // Reject the invalid combinations before opening the database or reading anything.
+    if (args.dry_run || args.include_unknown) && !args.stale_tree {
+        eprintln!("error: --dry-run and --include-unknown only apply with --stale-tree");
+        return 2;
+    }
     let app = match open(args.db).await {
         Ok(a) => a,
         Err(c) => return c,
@@ -653,6 +702,57 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
         Err(e) => return report(e),
     };
 
+    // The staleness selector: which subjects were placed against a tree other than today's. Held as
+    // guids rather than folded into `wanted` because that set is matched against donor identifiers
+    // too, and a donor id that happened to look like a guid would cross-match.
+    let stale: Option<std::collections::HashSet<SampleGuid>> = if args.stale_tree {
+        // Two independent symptoms of the same thing, unioned: a *source call* stamped with another
+        // tree, and a *derived consensus* naming a branch this tree does not carry. The second can
+        // be true while every call beneath it is current, so neither selector subsumes the other.
+        let by_fingerprint = match app.subjects_placed_against_another_tree(args.include_unknown).await {
+            Ok(v) => v,
+            Err(e) => return report(e),
+        };
+        let off_tree = match app.subjects_labelled_off_tree().await {
+            Ok(v) => v,
+            Err(e) => return report(e),
+        };
+        let mut set: std::collections::HashSet<SampleGuid> = by_fingerprint.iter().copied().collect();
+        let also = off_tree.iter().filter(|g| !set.contains(g)).count();
+        set.extend(off_tree);
+        println!(
+            "{} subject(s) placed against an older tree; {} more labelled off this tree — {} total",
+            by_fingerprint.len(),
+            also,
+            set.len()
+        );
+        Some(set)
+    } else {
+        None
+    };
+
+    // Accepts either identifier so a caller can feed whichever it has to hand — a report keyed by
+    // guid, or a list of donor ids.
+    let wanted: Option<std::collections::HashSet<String>> = match &args.subjects_file {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(text) => Some(
+                text.lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                    .map(|l| l.to_string())
+                    .collect(),
+            ),
+            Err(e) => {
+                eprintln!("error: reading {}: {e}", path.display());
+                return 1;
+            }
+        },
+        None => None,
+    };
+    if let Some(w) = &wanted {
+        println!("restricting to {} subject(s) from the list", w.len());
+    }
+
     let (mut rebuilt, mut skipped, mut failed) = (0usize, 0usize, 0usize);
     for b in &bios {
         if let Some(pid) = project_id {
@@ -660,10 +760,27 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
                 continue;
             }
         }
+        if let Some(w) = &wanted {
+            if !w.contains(&b.donor_identifier) && !w.contains(&b.guid.0.to_string()) {
+                continue;
+            }
+        }
+        if let Some(st) = &stale {
+            if !st.contains(&b.guid) {
+                continue;
+            }
+        }
         let label = truncate(&b.donor_identifier, 24);
+        if args.dry_run {
+            println!("STALE {label}");
+            rebuilt += 1;
+            continue;
+        }
         // Default: only refresh subjects that already carry a Y or mt profile (the stale ones). With
         // --all, build for every subject (those with no evidence just yield an empty profile).
-        if !args.all {
+        // --stale-tree already names exactly who is due, and a subject can be due without yet having
+        // a profile, so it selects on its own.
+        if !args.all && stale.is_none() {
             let has_y = matches!(app.cached_y_profile(b.guid).await, Ok(Some(_)));
             let has_mt = matches!(app.cached_mt_profile(b.guid).await, Ok(Some(_)));
             if !has_y && !has_mt {
@@ -692,6 +809,10 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
                 );
             }
         }
+    }
+    if args.dry_run {
+        println!("\n{rebuilt} subject(s) would be re-placed (dry run)");
+        return 0;
     }
     println!("\nrebuilt {rebuilt} subject(s), {skipped} skipped (no profile), {failed} failed");
     if failed > 0 {
@@ -1323,11 +1444,108 @@ async fn debug_calls(args: DebugCallsArgs) -> i32 {
     }
 }
 
-async fn private_y(args: DebugCallsArgs) -> i32 {
+/// Compute + persist private-Y for every alignment in a project. One process, so the multi-MB
+/// haplotree is fetched and parsed once rather than per subject.
+async fn private_y_batch(app: &App, project: &str, force: bool) -> i32 {
+    let Ok(Some(pid)) = resolve_project_filter(app, Some(&project.to_string())).await else {
+        return 1;
+    };
+    let members = match app.list_biosamples(pid).await {
+        Ok(v) => v,
+        Err(e) => return report(e),
+    };
+    let (mut done, mut skipped, mut failed, mut no_aln) = (0usize, 0usize, 0usize, 0usize);
+    let mut missing = 0usize;
+    let (mut novel, mut publishable) = (0usize, 0usize);
+    for (i, b) in members.iter().enumerate() {
+        let alns = app.list_alignments_for_biosample(b.guid).await.unwrap_or_default();
+        if alns.is_empty() {
+            // No alignment — but a vendor Y-VCF carries the same evidence, and until the VCF-backed
+            // engine existed these subjects (the large majority of a Y project) had no private-Y at
+            // all. Classify their call sets instead.
+            let sets = app.list_variant_sets(b.guid).await.unwrap_or_default();
+            let mut any = false;
+            for set in sets.iter().filter(|s| s.source_type != navigator_app::SourceType::Chip) {
+                match app.private_y_from_variant_set(set).await {
+                    Ok(bucket) => {
+                        any = true;
+                        done += 1;
+                        novel += bucket.novel_in_unique_sequence();
+                        publishable += bucket.publishable_count(navigator_app::PublishGate::default());
+                        println!(
+                            "OK   {:<24} set {:<6} {:>4} novel-unique  {:>4} publishable  [{}]",
+                            truncate(&b.donor_identifier, 24),
+                            set.id,
+                            bucket.novel_in_unique_sequence(),
+                            bucket.publishable_count(navigator_app::PublishGate::default()),
+                            bucket.terminal
+                        );
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("FAIL {:<24} set {} {e}", truncate(&b.donor_identifier, 24), set.id);
+                    }
+                }
+            }
+            if !any {
+                no_aln += 1;
+            }
+            continue;
+        }
+        for a in &alns {
+            // A row whose file is gone (e.g. a superseded vendor download) is not a computation
+            // failure — reporting it as one buries the real errors and sets a misleading exit code.
+            if !a.bam_path.as_deref().is_some_and(|p| std::path::Path::new(p).exists()) {
+                missing += 1;
+                continue;
+            }
+            if !force {
+                if let Ok(Some(_)) = app.cached_private_y(a.id).await {
+                    skipped += 1;
+                    continue;
+                }
+            }
+            match app.private_y_variants_self_masked(a.id).await {
+                Ok(bucket) => {
+                    let gate = app.publish_gate_for_alignment(a.id).await.unwrap_or_default();
+                    novel += bucket.novel_in_unique_sequence();
+                    publishable += bucket.publishable_count(gate);
+                    done += 1;
+                    println!(
+                        "OK   {:<24} aln {:<6} {:>4} novel-unique  {:>4} publishable  [{}]",
+                        truncate(&b.donor_identifier, 24),
+                        a.id,
+                        bucket.novel_in_unique_sequence(),
+                        bucket.publishable_count(gate),
+                        bucket.terminal
+                    );
+                }
+                Err(e) => {
+                    failed += 1;
+                    eprintln!("FAIL {:<24} aln {} {e}", truncate(&b.donor_identifier, 24), a.id);
+                }
+            }
+        }
+        if (i + 1) % 50 == 0 {
+            println!("  … {}/{} members", i + 1, members.len());
+        }
+    }
+    println!(
+        "\ncomputed {done}, skipped {skipped} (cached), failed {failed}, {missing} alignment file(s) \
+         missing, {no_aln} member(s) with no alignment.\n\
+         {novel} novel unique-sequence variant(s); {publishable} clear the publish gate."
+    );
+    i32::from(failed > 0)
+}
+
+async fn private_y(args: PrivateYArgs) -> i32 {
     let app = match open(args.db).await {
         Ok(a) => a,
         Err(c) => return c,
     };
+    if let Some(project) = args.project.as_deref() {
+        return private_y_batch(&app, project, args.force).await;
+    }
     let alignment_id = match args.alignment {
         Some(id) => id,
         None => {

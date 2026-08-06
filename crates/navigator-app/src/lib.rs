@@ -24,7 +24,7 @@ use navigator_analysis::sidecar;
 // on navigator-app (ui -> app), not directly on navigator-analysis.
 pub use navigator_analysis::caller::VariantCall as DenovoCall;
 pub use navigator_analysis::coverage::CoverageResult as Coverage;
-pub use navigator_analysis::haplo::{BranchEvidence, CallState, NodeEvidence, ScoredHaplogroup, SnpEvidence};
+pub use navigator_analysis::haplo::{BranchEvidence, CallState, Locus, NodeEvidence, ScoredHaplogroup, SnpEvidence};
 pub use navigator_analysis::heteroplasmy::HeteroplasmySite;
 pub use navigator_analysis::mask::YRegionClass;
 pub use navigator_analysis::mtvariants::{MtRegion, MtVariant, MtVariantKind};
@@ -83,6 +83,123 @@ pub struct DescentReport {
     pub terminal: String,
     /// Nodes root→terminal, each with its defining SNPs + the sample's state (`NodeEvidence`).
     pub nodes: Vec<NodeEvidence>,
+}
+
+/// A cohort **block tree** for one project: the induced subtree of the haplotree spanning the
+/// members' terminal haplogroups, each node a *block* of phylogenetically equivalent SNPs, with the
+/// members hanging off their own terminal. The group-project counterpart to [`DescentReport`] —
+/// where that draws one subject's root→terminal path, this draws where a whole cohort sits relative
+/// to each other. Built by [`App::project_block_tree`]; see
+/// `documents/design/project-block-tree.md`.
+///
+/// This view **reads** placements and never re-places, so it cannot introduce a placement error.
+#[derive(Debug, Clone)]
+pub struct ProjectBlockTree {
+    pub dna: DnaType,
+    /// Induced-subtree blocks in pre-order (a parent always precedes its children).
+    pub blocks: Vec<Block>,
+    /// Members with no placement, or whose terminal is absent from this tree. Reported rather than
+    /// dropped: on a multi-lab cohort provider/build skew is expected, and hiding it would
+    /// misrepresent how much of the project the tree actually accounts for.
+    pub unplaced: Vec<UnplacedMember>,
+    /// The tree the view was drawn on (`"decodingus"` / `"ftdna"`) — `Block::loci` belong to it.
+    pub provider: String,
+    /// The coordinate space `Block::loci` positions are in. Node names and topology are
+    /// build-independent; only the positions are, so the view is labelled with the one build key it
+    /// was parsed under (the cohort's modal build).
+    pub build_key: String,
+    /// Shared-private groupings that were **dropped** because they conflicted: their member sets
+    /// overlapped an accepted group without nesting inside it, so keeping both would not be a tree.
+    /// Surfaced rather than silently discarded — a non-zero count means recurrent calls or genuine
+    /// phylogenetic conflict in the cohort, which is worth knowing about.
+    pub candidate_conflicts: usize,
+    /// Positions rejected as **recurrent** — each would have defined a candidate branch under more
+    /// than one parent block, so it arose more than once and cannot mark a new branch. Counted
+    /// rather than hidden: a high number says the cohort's private calls carry systematic noise.
+    pub candidate_recurrent: usize,
+}
+
+/// One block of a [`ProjectBlockTree`]: a branch plus the run of defining SNPs that are
+/// phylogenetically equivalent on it — every member below carries all of them, and nothing observed
+/// in this cohort separates them.
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub node_id: i64,
+    pub name: String,
+    /// Parent within the induced subtree (`None` at a root).
+    pub parent: Option<i64>,
+    /// Depth within the induced subtree, root = 0 — the layout's x coordinate.
+    pub depth: usize,
+    /// The equivalent SNPs defining this block. After a collapse this is the concatenation of the
+    /// absorbed branches' loci, root-most first: within *this cohort* they are one undivided block.
+    pub loci: Vec<Locus>,
+    /// Members whose terminal *is* this block.
+    pub members: Vec<BlockMember>,
+    /// Members at or below this block — the count to badge on a collapsed branch.
+    pub subtree_members: usize,
+    /// Names of the member-less branches this block absorbed when collapsed (root-most first).
+    /// Empty for an ordinary block. Kept so the UI can still name what it folded away.
+    pub collapsed: Vec<String>,
+    /// True when this is a **candidate branch** — not a node in the published tree, but a grouping
+    /// inferred from private (unnamed) variants that two or more members share. `node_id` is
+    /// synthetic and negative for these; `name` is empty, because the label is the view's to
+    /// localize. This is the thing a published tree cannot tell you and we can: a branch that is
+    /// real in the data but has not been named yet.
+    pub candidate: bool,
+    /// For a candidate branch: every carrier's evidence at each shared position, so it can be
+    /// reviewed. Empty on a named block, whose SNPs are the tree's assertion rather than ours.
+    pub evidence: Vec<CandidateEvidence>,
+}
+
+/// One carrier's evidence at one of a candidate branch's shared positions.
+///
+/// A candidate is an inference, and "1 SNP shared by three men" is not enough to judge it. What
+/// decides whether it is a branch or a mapping artefact is the read evidence behind each carrier's
+/// call — depth, and how cleanly the derived allele dominates on a chromosome that carries one copy.
+/// Carried on the aggregate so the branch can be reviewed rather than taken on trust.
+#[derive(Debug, Clone)]
+pub struct CandidateEvidence {
+    pub guid: SampleGuid,
+    /// Display name of the carrier.
+    pub member: String,
+    pub position: i64,
+    pub reference: char,
+    pub alternate: char,
+    /// Read depth at the site; `0` when the source reported none.
+    pub depth: u32,
+    /// Reads supporting the derived allele.
+    pub alt_depth: u32,
+    /// Derived-allele fraction — on haploid chrY a real call is essentially 1.0.
+    pub allele_fraction: f64,
+    /// Whether this call clears the federation publish gate.
+    pub publishable: bool,
+}
+
+/// A project member placed at a [`Block`].
+#[derive(Debug, Clone)]
+pub struct BlockMember {
+    pub guid: SampleGuid,
+    /// Display name (donor identifier, else the guid) — what the tree leaf is labelled with.
+    pub name: String,
+    /// Unnamed (private) variants below this member's terminal. `None` until private-Y has been
+    /// computed for the subject, which is distinct from `Some(0)` ("computed, none found").
+    /// Populated in phase 3 (`documents/design/project-block-tree.md` §9); `None` before that.
+    pub private_novel: Option<usize>,
+    /// The **publishable** subset of the above: novel, unique-sequence, near-homozygous, with enough
+    /// supporting reads ([`PublishGate`]). This is the count we would stake a branch claim on, and
+    /// the one the block tree averages — the permissive `private_novel` is a working figure, not a
+    /// finding.
+    pub private_publishable: Option<usize>,
+    pub private_total: Option<usize>,
+}
+
+/// A project member the block tree could not place.
+#[derive(Debug, Clone)]
+pub struct UnplacedMember {
+    pub guid: SampleGuid,
+    pub name: String,
+    /// The terminal that failed to resolve against this tree; `None` = no placement at all.
+    pub terminal: Option<String>,
 }
 
 /// A per-marker branch report: the sample's genotype at every defining marker of a chosen tree
@@ -804,7 +921,7 @@ use navigator_store::{
     alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_archaic,
     consensus_archaic_segments, consensus_painting, consensus_profile, consensus_roh, haplogroup_call,
     mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, source_file, str_profile, sync_history,
-    sync_outbox, sync_state, variant_set, Store, StoreError,
+    sync_outbox, sync_state, variant_set, variant_set_genotype, variant_set_private_y, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -2107,14 +2224,20 @@ fn parse_vcf_subject_snps(path: &Path) -> Result<Vec<variants::VariantCall>, App
         let alts: Vec<&str> = alt_field.split(',').collect();
 
         // Genotyped (FORMAT + ≥1 sample, with a GT key) → honor the call; else sites-only.
-        let gt = (f.len() >= 10)
-            .then(|| {
-                f[8].split(':')
-                    .position(|k| k == "GT")
-                    .and_then(|i| f[9].split(':').nth(i))
-            })
-            .flatten();
-        let (alt, genotype) = match gt {
+        let sample_field = |key: &str| -> Option<&str> {
+            (f.len() >= 10)
+                .then(|| {
+                    f[8].split(':')
+                        .position(|k| k == key)
+                        .and_then(|i| f[9].split(':').nth(i))
+                })
+                .flatten()
+                .filter(|v| !v.is_empty() && *v != ".")
+        };
+        let gt = sample_field("GT");
+        // `alt_index` is the ALT the genotype actually selected — needed to pick the right AD entry
+        // on a multi-allelic row, where AD is [ref, alt1, alt2, …].
+        let (alt, genotype, alt_index) = match gt {
             Some(gt) => {
                 // First non-zero allele index selects the carried ALT; all-zero (0/0) or no-call
                 // (./.) means the subject is reference here — skip it.
@@ -2124,15 +2247,33 @@ fn parse_vcf_subject_snps(path: &Path) -> Result<Vec<variants::VariantCall>, App
                     .find(|&a| a > 0)
                 {
                     Some(idx) => match alts.get(idx - 1) {
-                        Some(&a) => (a, Some(gt.to_string())),
+                        Some(&a) => (a, Some(gt.to_string()), idx),
                         None => continue,
                     },
                     None => continue,
                 }
             }
-            None => (alts[0], None), // sites-only VCF: the listed variant is the subject's
+            None => (alts[0], None, 1), // sites-only VCF: the listed variant is the subject's
         };
-        if let Some(call) = variants::snp_call(chrom, pos, reference, alt, Some(id.to_string()), genotype) {
+
+        // Evidence the source supplies. Every field stays `None` when absent — a missing DP means
+        // "the vendor didn't say", and recording it as 0 would make a good call look unsupported.
+        let ad: Option<Vec<u32>> = sample_field("AD").map(|v| v.split(',').map(|x| x.parse().unwrap_or(0)).collect());
+        let evidence = variants::CallEvidence {
+            qual: f.get(5).and_then(|q| q.parse::<f64>().ok()),
+            // Only failures are stored; `.`/`PASS` is the overwhelming majority and means nothing.
+            filter: f
+                .get(6)
+                .filter(|v| !v.is_empty() && **v != "." && !v.eq_ignore_ascii_case("PASS"))
+                .map(|v| v.to_string()),
+            dp: sample_field("DP").and_then(|v| v.parse().ok()),
+            gq: sample_field("GQ").and_then(|v| v.parse().ok()),
+            ad_ref: ad.as_ref().and_then(|a| a.first().copied()),
+            ad_alt: ad.as_ref().and_then(|a| a.get(alt_index).copied()),
+        };
+        if let Some(call) =
+            variants::snp_call_with_evidence(chrom, pos, reference, alt, Some(id.to_string()), genotype, evidence)
+        {
             out.push(call);
         }
     }
@@ -2726,6 +2867,8 @@ pub struct RefBuildStatus {
 mod analysis;
 pub use analysis::AnalysisStep;
 mod auth;
+mod blocktree;
+pub use blocktree::COLLAPSE_MIN_RUN;
 mod brief;
 mod commands;
 mod dm;
@@ -4654,6 +4797,198 @@ mod settings_tests {
 }
 
 #[cfg(test)]
+mod vcf_genotype_tests {
+    use super::vcf_genotypes_at;
+    use std::collections::HashSet;
+
+    fn genotypes(name: &str, body: &str, targets: &[i64]) -> std::collections::HashMap<i64, char> {
+        let dir = std::env::temp_dir().join(format!("nav-vcf-gt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.vcf"));
+        std::fs::write(&path, body).unwrap();
+        let t: HashSet<i64> = targets.iter().copied().collect();
+        let out = vcf_genotypes_at(&path, "chrY", &t).unwrap();
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    const HEADER: &str = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n";
+
+    #[test]
+    fn hom_ref_rows_become_ancestral_evidence() {
+        // The reason this exists: a 0/0 row says the donor is *ancestral* here. Importing only the
+        // non-reference rows loses that, and placement can't tell ancestral from uncovered.
+        let g = genotypes(
+            "homref",
+            &format!(
+                "{HEADER}chrY\t100\t.\tA\tG\t99\tPASS\t.\tGT\t1/1\n\
+                 chrY\t200\t.\tC\tT\t99\tPASS\t.\tGT\t0/0\n"
+            ),
+            &[100, 200],
+        );
+        assert_eq!(g.get(&100), Some(&'G'), "derived → the ALT base");
+        assert_eq!(g.get(&200), Some(&'C'), "hom-ref → the REF base");
+    }
+
+    #[test]
+    fn a_no_call_is_not_ancestral() {
+        // `./.` also yields no non-zero allele index, but it is not evidence of the reference.
+        let g = genotypes(
+            "nocall",
+            &format!("{HEADER}chrY\t300\t.\tA\tG\t99\tPASS\t.\tGT\t./.\n"),
+            &[300],
+        );
+        assert!(g.is_empty(), "a no-call must stay absent, not read as ancestral");
+    }
+
+    #[test]
+    fn only_target_positions_and_the_right_contig_are_reported() {
+        let g = genotypes(
+            "targets",
+            &format!(
+                "{HEADER}chrY\t100\t.\tA\tG\t99\tPASS\t.\tGT\t1/1\n\
+                 chrY\t999\t.\tA\tG\t99\tPASS\t.\tGT\t1/1\n\
+                 chr1\t100\t.\tA\tG\t99\tPASS\t.\tGT\t1/1\n"
+            ),
+            &[100],
+        );
+        assert_eq!(g.len(), 1, "off-target and off-contig rows are ignored");
+        assert_eq!(g.get(&100), Some(&'G'));
+    }
+
+    #[test]
+    fn the_called_alt_is_used_on_a_multiallelic_row() {
+        let g = genotypes(
+            "multi",
+            &format!("{HEADER}chrY\t400\t.\tA\tG,T\t99\tPASS\t.\tGT\t2/2\n"),
+            &[400],
+        );
+        assert_eq!(g.get(&400), Some(&'T'), "GT 2 selects ALT[1]");
+    }
+
+    #[test]
+    fn indels_and_sites_only_rows_are_skipped() {
+        let g = genotypes(
+            "skip",
+            &format!(
+                "{HEADER}chrY\t500\t.\tA\tAT\t99\tPASS\t.\tGT\t1/1\n\
+                 chrY\t600\t.\tAT\tA\t99\tPASS\t.\tGT\t0/0\n"
+            ),
+            &[500, 600],
+        );
+        assert!(g.is_empty(), "no single observed base to report for an indel");
+
+        // A sites-only row has no sample column, so it says nothing about *this* donor.
+        let sites = genotypes(
+            "sitesonly",
+            "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchrY\t700\t.\tA\tG\t99\t.\t.\n",
+            &[700],
+        );
+        assert!(sites.is_empty());
+    }
+
+    #[test]
+    fn contig_naming_is_matched_leniently() {
+        // GRCh37-style bare `Y` must match a `chrY` query (see contig::bare_upper).
+        let g = genotypes(
+            "bareY",
+            &format!("{HEADER}Y\t800\t.\tA\tG\t99\tPASS\t.\tGT\t1/1\n"),
+            &[800],
+        );
+        assert_eq!(g.get(&800), Some(&'G'));
+    }
+}
+
+#[cfg(test)]
+mod vcf_evidence_tests {
+    use super::parse_vcf_subject_snps;
+
+    /// `name` keeps each test on its own file — they run in parallel, and a shared path means one
+    /// test deletes the file another is still reading.
+    fn parse(name: &str, body: &str) -> Vec<navigator_domain::variants::VariantCall> {
+        let dir = std::env::temp_dir().join(format!("nav-vcf-ev-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{name}.vcf"));
+        std::fs::write(&path, body).unwrap();
+        let out = parse_vcf_subject_snps(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    const HEADER: &str = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n";
+
+    #[test]
+    fn captures_qual_depth_and_allele_depths() {
+        // The sample column is ONE colon-separated field, keyed by FORMAT.
+        let v = parse(
+            "qual",
+            &format!("{HEADER}chrY\t100\trs1\tA\tG\t512.7\tPASS\t.\tGT:AD:DP:GQ\t1/1:2,38:40:99\n"),
+        );
+        assert_eq!(v.len(), 1);
+        let e = &v[0].evidence;
+        assert_eq!(e.qual, Some(512.7));
+        assert_eq!(e.dp, Some(40));
+        assert_eq!(e.gq, Some(99));
+        assert_eq!(e.ad_ref, Some(2));
+        assert_eq!(e.ad_alt, Some(38));
+        assert_eq!(e.allele_fraction(), Some(0.95));
+        assert!(!e.is_filtered(), "PASS is not a failure");
+    }
+
+    #[test]
+    fn ad_alt_follows_the_called_allele_on_a_multiallelic_row() {
+        // GT 2 selects ALT[1] = T, so AD must be read at index 2, not 1.
+        let v = parse(
+            "multi",
+            &format!("{HEADER}chrY\t200\t.\tA\tG,T\t99\t.\t.\tGT:AD\t2/2:1,3,30\n"),
+        );
+        assert_eq!(v[0].alternate, "T", "the genotype-selected ALT is kept");
+        assert_eq!(v[0].evidence.ad_ref, Some(1));
+        assert_eq!(v[0].evidence.ad_alt, Some(30), "AD index follows the ALT index");
+    }
+
+    #[test]
+    fn a_failing_filter_is_recorded_but_pass_and_dot_are_not() {
+        let v = parse(
+            "filter",
+            &format!(
+                "{HEADER}chrY\t300\t.\tA\tG\t10\tLowQual\t.\tGT\t1/1\n\
+                 chrY\t301\t.\tA\tG\t10\t.\t.\tGT\t1/1\n"
+            ),
+        );
+        assert_eq!(v[0].evidence.filter.as_deref(), Some("LowQual"));
+        assert!(v[0].evidence.is_filtered());
+        assert_eq!(v[1].evidence.filter, None, "'.' is not a failure");
+    }
+
+    #[test]
+    fn absent_evidence_stays_absent_rather_than_becoming_zero() {
+        // A sites-only VCF: no FORMAT/sample columns, QUAL '.'.
+        let v = parse(
+            "sitesonly",
+            "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\nchrY\t400\t.\tA\tG\t.\t.\t.\n",
+        );
+        assert_eq!(v.len(), 1);
+        let e = &v[0].evidence;
+        assert!(e.is_empty(), "nothing captured → empty, so the set tags as BASIC");
+        assert_eq!(e.dp, None, "missing DP must not read as 0 supporting reads");
+        assert_eq!(e.allele_fraction(), None, "no AD → no fraction, not 0.0");
+    }
+
+    #[test]
+    fn a_reference_or_nocall_genotype_is_still_skipped() {
+        let v = parse(
+            "refcall",
+            &format!(
+                "{HEADER}chrY\t500\t.\tA\tG\t99\tPASS\t.\tGT:DP\t0/0:40\n\
+                 chrY\t501\t.\tA\tG\t99\tPASS\t.\tGT:DP\t./.:40\n"
+            ),
+        );
+        assert!(v.is_empty(), "the subject carries no ALT at either site");
+    }
+}
+
+#[cfg(test)]
 mod import_tests {
     use super::{artifact_is_fresh, collect_data_files, file_signature, is_recognized_data_file};
     use std::path::Path;
@@ -4779,4 +5114,86 @@ mod seed_tests {
 
         let _ = std::fs::remove_dir_all(&base);
     }
+}
+
+/// Genotype a VCF **at a fixed set of target positions** — the file-based counterpart of walking a
+/// BAM/CRAM at the tree's sites ([`App::base_calls`]).
+///
+/// Returns `position → observed base` for every target the VCF has something to say about:
+///
+/// - a non-reference genotype → the **called ALT** base (the donor is derived here);
+/// - an explicit hom-ref (`0/0` / `0|0`) → the **REF** base (the donor is confidently *ancestral*);
+/// - no record, or a no-call (`./.`) → absent, i.e. genuine no-call.
+///
+/// That middle case is the whole point. Importing only the non-reference rows leaves the workspace
+/// unable to distinguish "ancestral" from "not covered", so every backbone node scores as no-call and
+/// placement runs on a few dozen sites. A vendor Y export carries the hom-ref rows already (an
+/// aengine Big Y is ~218k PASS records, mostly `0/0`); this reads them.
+///
+/// Only single-base REF/ALT rows are used — an indel has no single observed base to report, and the
+/// tree's SNP loci are what the targets describe. `contig` is matched leniently (`chrY` == `Y`).
+fn vcf_genotypes_at(
+    path: &Path,
+    contig: &str,
+    targets: &std::collections::HashSet<i64>,
+) -> Result<HashMap<i64, char>, AppError> {
+    use std::io::BufRead;
+    let want = navigator_domain::contig::bare_upper(contig);
+    let reader = navigator_analysis::gzio::open_maybe_gz(path)?;
+    let mut out = HashMap::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 5 {
+            continue;
+        }
+        let Ok(pos) = f[1].parse::<i64>() else { continue };
+        if !targets.contains(&pos) || navigator_domain::contig::bare_upper(f[0]) != want {
+            continue;
+        }
+        let (reference, alt_field) = (f[3], f[4]);
+        let ref_base = match single_base(reference) {
+            Some(b) => b,
+            None => continue,
+        };
+        // Genotype selects which allele the donor carries; without a sample column the row is a
+        // sites-only listing and says nothing about *this* donor's state.
+        let gt = (f.len() >= 10)
+            .then(|| {
+                f[8].split(':')
+                    .position(|k| k == "GT")
+                    .and_then(|i| f[9].split(':').nth(i))
+            })
+            .flatten();
+        let Some(gt) = gt else { continue };
+        let idx = gt
+            .split(['/', '|'])
+            .filter_map(|a| a.parse::<usize>().ok())
+            .find(|&a| a > 0);
+        match idx {
+            // Derived: the ALT the genotype actually selected (not simply ALT[0]).
+            Some(i) => {
+                if let Some(b) = alt_field.split(',').nth(i - 1).and_then(single_base) {
+                    out.insert(pos, b);
+                }
+            }
+            // Ancestral — but only for an explicit hom-ref. `./.` parses to no indices too, and a
+            // no-call is not evidence of the reference allele.
+            None if gt.split(['/', '|']).any(|a| a == "0") => {
+                out.insert(pos, ref_base);
+            }
+            None => {}
+        }
+    }
+    Ok(out)
+}
+
+/// The single upper-cased base of a one-character A/C/G/T allele, else `None` (indel/symbolic).
+fn single_base(allele: &str) -> Option<char> {
+    let mut cs = allele.chars();
+    let c = cs.next()?.to_ascii_uppercase();
+    (cs.next().is_none() && matches!(c, 'A' | 'C' | 'G' | 'T')).then_some(c)
 }

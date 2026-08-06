@@ -1006,6 +1006,103 @@ pub fn deepen_terminal(tree: &HaploTree, calls: &HashMap<i64, char>, start: i64)
     current
 }
 
+// ---- induced subtree (the block-tree substrate) ------------------------------
+
+/// One node of an [`induced_subtree`], carrying the branch's equivalent defining SNPs — a *block*
+/// in the FTDNA "block tree" sense: every sample below this node carries all of `loci`, and nothing
+/// observed separates them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InducedNode {
+    pub id: i64,
+    pub name: String,
+    /// Parent **within the induced subtree** (`None` at an induced root).
+    pub parent: Option<i64>,
+    /// Depth **within the induced subtree**, root = 0. This is the layout coordinate: the induced
+    /// root is the members' common ancestor, not the tree's, so full-tree depth would waste the
+    /// whole left margin on nodes nobody is placed under.
+    pub depth: usize,
+    /// The equivalent SNPs defining this branch (the node's own loci).
+    pub loci: Vec<Locus>,
+}
+
+/// Haplogroup name → node id, over the whole tree. Callers placing *many* samples should build this
+/// once: the per-subject path ([`crate::haplo::descent_by_node`]'s caller) does a linear scan for its
+/// one terminal, which is fine for one subject and quadratic for a cohort.
+///
+/// Names are assumed unique within a tree. On a duplicate the **lowest id** wins, so the result does
+/// not depend on `HashMap` iteration order.
+pub fn name_index(tree: &HaploTree) -> HashMap<&str, i64> {
+    let mut idx: HashMap<&str, i64> = HashMap::with_capacity(tree.nodes.len());
+    for n in tree.nodes.values() {
+        idx.entry(n.name.as_str())
+            .and_modify(|id| *id = (*id).min(n.id))
+            .or_insert(n.id);
+    }
+    idx
+}
+
+/// The **induced subtree** spanning `terminals`: every node lying on a root→terminal path for at
+/// least one of them, emitted in pre-order (a parent always precedes its children).
+///
+/// This is the skeleton of a cohort block tree — the union of the members' descent paths, which is
+/// exactly the set of branches that any of them share. Ids absent from `tree` are ignored, so a
+/// caller may pass terminals resolved against a different provider/build without pre-filtering.
+///
+/// Sibling order is by `(name, id)` and roots likewise, so the emitted order is deterministic
+/// regardless of `HashMap` iteration order — layout and snapshot tests depend on that.
+pub fn induced_subtree(tree: &HaploTree, terminals: &[i64]) -> Vec<InducedNode> {
+    let parent = build_parent_map(tree);
+
+    // Every node on some root→terminal path. `seen` also breaks a malformed cycle: a node already
+    // kept means the rest of its path is kept too, so we can stop climbing.
+    let mut kept: HashSet<i64> = HashSet::new();
+    for &t in terminals {
+        if !tree.nodes.contains_key(&t) {
+            continue; // terminal not in this tree (provider/build skew) — the caller reports it
+        }
+        let mut cur = Some(t);
+        while let Some(id) = cur {
+            if !kept.insert(id) {
+                break;
+            }
+            cur = parent.get(&id).copied();
+        }
+    }
+    if kept.is_empty() {
+        return Vec::new();
+    }
+
+    // Induced roots: kept nodes whose parent is absent from the kept set. Normally exactly one (the
+    // members' common ancestor), but a tree with several roots — the DecodingUs document has a
+    // `roots` array — can yield several, and so can a cohort spanning them.
+    let sort_key = |id: &i64| tree.nodes.get(id).map(|n| (n.name.clone(), n.id));
+    let mut roots: Vec<i64> = kept
+        .iter()
+        .copied()
+        .filter(|id| !parent.get(id).is_some_and(|p| kept.contains(p)))
+        .collect();
+    roots.sort_by_key(sort_key);
+
+    let mut out = Vec::with_capacity(kept.len());
+    let mut stack: Vec<(i64, Option<i64>, usize)> = Vec::new();
+    // Reversed, so popping yields the sorted order.
+    stack.extend(roots.iter().rev().map(|&id| (id, None, 0)));
+    while let Some((id, par, depth)) = stack.pop() {
+        let Some(node) = tree.nodes.get(&id) else { continue };
+        out.push(InducedNode {
+            id,
+            name: node.name.clone(),
+            parent: par,
+            depth,
+            loci: node.loci.clone(),
+        });
+        let mut children: Vec<i64> = node.children.iter().copied().filter(|c| kept.contains(c)).collect();
+        children.sort_by_key(sort_key);
+        stack.extend(children.into_iter().rev().map(|c| (c, Some(id), depth + 1)));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1026,6 +1123,102 @@ mod tests {
     /// Sample base calls by position (the bases the sample carries at these positions).
     fn calls(pairs: &[(i64, char)]) -> HashMap<i64, char> {
         pairs.iter().copied().collect()
+    }
+
+    /// A branching tree, for the induced-subtree/block cases:
+    ///
+    /// ```text
+    /// root ──> R ──> R1 ──> R1a
+    ///            └─> R2      └─> R1b
+    /// ```
+    ///
+    /// `R1` carries two equivalent SNPs — the block case.
+    const BRANCHY: &str = r#"{
+      "allNodes": {
+        "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
+        "2": {"haplogroupId": 2, "name": "R", "isRoot": false,
+              "variants": [{"variant":"M207","position":100,"ancestral":"A","derived":"G"}], "children": [3, 6]},
+        "3": {"haplogroupId": 3, "name": "R1", "isRoot": false,
+              "variants": [{"variant":"M173","position":200,"ancestral":"C","derived":"T"},
+                           {"variant":"M306","position":201,"ancestral":"G","derived":"A"}], "children": [4, 5]},
+        "4": {"haplogroupId": 4, "name": "R1a", "isRoot": false,
+              "variants": [{"variant":"M420","position":300,"ancestral":"A","derived":"T"}], "children": []},
+        "5": {"haplogroupId": 5, "name": "R1b", "isRoot": false,
+              "variants": [{"variant":"M343","position":400,"ancestral":"C","derived":"A"}], "children": []},
+        "6": {"haplogroupId": 6, "name": "R2", "isRoot": false,
+              "variants": [{"variant":"M479","position":500,"ancestral":"T","derived":"C"}], "children": []}
+      }
+    }"#;
+
+    #[test]
+    fn name_index_maps_every_haplogroup_name() {
+        let t = parse_ftdna_json(BRANCHY).unwrap();
+        let idx = name_index(&t);
+        assert_eq!(idx.len(), 6);
+        assert_eq!(idx.get("R1b"), Some(&5));
+        assert_eq!(idx.get("root"), Some(&1));
+        assert_eq!(idx.get("nope"), None);
+    }
+
+    #[test]
+    fn induced_subtree_spans_only_the_members_paths() {
+        let t = parse_ftdna_json(BRANCHY).unwrap();
+        // Two members: one at R1a, one at R1b. R2 is off every path and must not appear.
+        let nodes = induced_subtree(&t, &[4, 5]);
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["root", "R", "R1", "R1a", "R1b"]);
+        assert!(!names.contains(&"R2"));
+    }
+
+    #[test]
+    fn induced_subtree_is_preorder_with_induced_parent_and_depth() {
+        let t = parse_ftdna_json(BRANCHY).unwrap();
+        let nodes = induced_subtree(&t, &[4, 5, 6]);
+        // Pre-order: a parent is always emitted before its children.
+        let pos = |name: &str| nodes.iter().position(|n| n.name == name).unwrap();
+        for n in &nodes {
+            if let Some(p) = n.parent {
+                let parent_name = &nodes.iter().find(|x| x.id == p).unwrap().name;
+                assert!(pos(parent_name) < pos(&n.name), "{} preceded its parent", n.name);
+            }
+        }
+        // Depth is measured from the induced root, not the full tree.
+        assert_eq!(nodes[0].depth, 0);
+        assert_eq!(nodes[0].parent, None);
+        assert_eq!(nodes.iter().find(|n| n.name == "R1a").unwrap().depth, 3);
+    }
+
+    #[test]
+    fn induced_subtree_carries_the_equivalent_snp_block() {
+        let t = parse_ftdna_json(BRANCHY).unwrap();
+        let nodes = induced_subtree(&t, &[4]);
+        let r1 = nodes.iter().find(|n| n.name == "R1").unwrap();
+        // R1's two SNPs are phylogenetically equivalent — that pair *is* the block.
+        let mut markers: Vec<&str> = r1.loci.iter().map(|l| l.name.as_str()).collect();
+        markers.sort_unstable();
+        assert_eq!(markers, vec!["M173", "M306"]);
+    }
+
+    #[test]
+    fn induced_subtree_ignores_terminals_absent_from_the_tree() {
+        let t = parse_ftdna_json(BRANCHY).unwrap();
+        // 999 doesn't exist (provider/build skew); the real terminal still resolves.
+        let nodes = induced_subtree(&t, &[4, 999]);
+        let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["root", "R", "R1", "R1a"]);
+        // ...and a cohort of nothing but unknowns yields nothing, rather than panicking.
+        assert!(induced_subtree(&t, &[999]).is_empty());
+        assert!(induced_subtree(&t, &[]).is_empty());
+    }
+
+    #[test]
+    fn induced_subtree_is_deterministic_across_runs() {
+        let t = parse_ftdna_json(BRANCHY).unwrap();
+        // HashMap iteration order varies per process; the emitted order must not.
+        let first = induced_subtree(&t, &[4, 5, 6]);
+        for _ in 0..8 {
+            assert_eq!(induced_subtree(&t, &[6, 5, 4]), first);
+        }
     }
 
     #[test]
