@@ -4153,6 +4153,104 @@ impl App {
         Ok(missing)
     }
 
+    /// The active Y tree's content hash (first 16 hex), the `yt:` half of a placement fingerprint.
+    /// Standalone — [`y_score_fingerprint`](Self::y_score_fingerprint) can only be computed for a
+    /// subject that owns an alignment to hash, which excludes VCF-only subjects and anyone whose
+    /// source file has moved.
+    pub async fn current_y_tree_hash(&self) -> Result<String, AppError> {
+        let json = match y_tree_provider() {
+            YTreeProvider::DecodingUs => self.fetch_decodingus_y_tree().await?,
+            YTreeProvider::Ftdna => self.fetch_ftdna_y_tree().await?,
+        };
+        Ok(sha256_str(&json)[..16].to_string())
+    }
+
+    /// The active mtDNA tree's content hash (first 16 hex) — the `mt:` half.
+    pub async fn current_mt_tree_hash(&self) -> Result<String, AppError> {
+        let json = self.fetch_ftdna_mt_tree().await?;
+        Ok(sha256_str(&json)[..16].to_string())
+    }
+
+    /// Subjects whose Y or mtDNA calls were placed against **a different haplotree** than the one
+    /// now active, and so are due a re-placement.
+    ///
+    /// This is the selector, not the sweep: `rebuild-signatures` already re-places a set of
+    /// subjects, and `assign_*_haplogroup_walk` already no-ops when a subject's fingerprint still
+    /// matches — so feeding this list to that sweep is cheap on anything already current.
+    ///
+    /// `include_unknown` adds the subjects whose calls predate the fingerprint field, which is a
+    /// provenance backfill rather than a response to a tree change — see the store function.
+    ///
+    /// A tree that cannot be fetched yields no subjects for that DNA type rather than an error: the
+    /// point of the sweep is to act on a *known* new tree, and "the network is down" is not one.
+    pub async fn subjects_placed_against_another_tree(
+        &self,
+        include_unknown: bool,
+    ) -> Result<Vec<SampleGuid>, AppError> {
+        let mut out: Vec<SampleGuid> = Vec::new();
+        let mut seen: HashSet<SampleGuid> = HashSet::new();
+        for (dna, tag, hash) in [
+            (DnaType::Y, "yt:", self.current_y_tree_hash().await.ok()),
+            (DnaType::Mt, "mt:", self.current_mt_tree_hash().await.ok()),
+        ] {
+            let Some(hash) = hash else {
+                eprintln!("{dna:?} tree unavailable — skipping its staleness check");
+                continue;
+            };
+            for g in haplogroup_call::biosamples_placed_against_another_tree(
+                self.store.pool(),
+                dna,
+                tag,
+                &hash,
+                include_unknown,
+            )
+            .await?
+            {
+                if seen.insert(g) {
+                    out.push(g);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Subjects whose **genome-level consensus label names a branch the current Y tree does not
+    /// carry** — the other half of tree staleness, and the one that actually bites.
+    ///
+    /// A consensus is *derived* from the per-source calls and persisted separately, with no tree
+    /// stamp of its own. So it can rot while every call beneath it is current: `GMWOF5428705` holds
+    /// a call placed against today's tree (`E-C116698`) under a consensus of `E-FT400514:n0` last
+    /// reconciled four weeks earlier. A sweep keyed on call fingerprints alone cannot see that.
+    ///
+    /// Testing the label against the tree's node names catches it directly and needs no schema
+    /// change: a label absent from the tree is stale by definition, whatever the cause — and it is
+    /// exactly the set the block tree drops into `unplaced`.
+    pub async fn subjects_labelled_off_tree(&self) -> Result<Vec<SampleGuid>, AppError> {
+        // Node *names* are build-independent, so any build key yields the same index — `hs1` is the
+        // DecodingUs tree's native space and needs no liftover.
+        let tree = match y_tree_provider() {
+            YTreeProvider::DecodingUs => {
+                let json = self.fetch_decodingus_y_tree().await?;
+                navigator_analysis::haplo::parse_decodingus_json(&json, "hs1").map_err(AppError::Import)?
+            }
+            YTreeProvider::Ftdna => {
+                let json = self.fetch_ftdna_y_tree().await?;
+                navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?
+            }
+        };
+        let names = navigator_analysis::haplo::name_index(&tree);
+        let mut out = Vec::new();
+        for (guid, dna, label) in navigator_store::consensus_profile::list_labels(self.store.pool()).await? {
+            if dna != DnaType::Y.as_str() || names.contains_key(label.as_str()) {
+                continue;
+            }
+            if let Ok(g) = guid.parse() {
+                out.push(SampleGuid(g));
+            }
+        }
+        Ok(out)
+    }
+
     /// Fingerprint of the inputs to a Y-haplogroup score: the alignment's content hash + the
     /// active Y-tree's content hash. Unchanged inputs → a re-score is unnecessary. Errors (e.g.
     /// the tree is unreachable and uncached) disable caching for this run rather than failing.

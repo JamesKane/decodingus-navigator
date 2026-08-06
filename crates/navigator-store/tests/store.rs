@@ -614,6 +614,69 @@ async fn set_sequence_run_reparents_an_alignment() {
     assert!(!alignment::set_sequence_run(s.pool(), 9999, primary.id).await.unwrap());
 }
 
+/// The selector behind `rebuild-signatures --stale-tree`: who was placed against a tree other than
+/// the active one.
+#[tokio::test]
+async fn stale_tree_selector_finds_subjects_placed_against_another_tree() {
+    use navigator_domain::reconciliation::{CallProvenance, DnaType, RunHaplogroupCall};
+    use navigator_store::haplogroup_call;
+
+    let s = store().await;
+    let call = RunHaplogroupCall {
+        source_label: "aln #1 Y".into(),
+        haplogroup: "R-FGC29071".into(),
+        lineage: vec!["Y".into(), "R".into()],
+        score: 0.9,
+        matched: 80,
+        expected: 100,
+    };
+    // Four subjects: current, superseded, no fingerprint at all, and one whose fingerprint carries
+    // no tree tag.
+    let mut guids = Vec::new();
+    for fp in [Some("f:aaa|yt:CURRENT"), Some("f:bbb|yt:OLD"), None, Some("f:ccc")] {
+        let b = sample(None);
+        biosample::create(s.pool(), &b).await.unwrap();
+        haplogroup_call::upsert(
+            s.pool(),
+            b.guid,
+            DnaType::Y,
+            "aln:1",
+            &call,
+            CallProvenance::NavigatorWalk,
+            fp,
+        )
+        .await
+        .unwrap();
+        guids.push(b.guid);
+    }
+
+    // Default: only what is *provably* on another tree.
+    let stale = haplogroup_call::biosamples_placed_against_another_tree(s.pool(), DnaType::Y, "yt:", "CURRENT", false)
+        .await
+        .unwrap();
+    assert_eq!(stale, vec![guids[1]], "only the superseded tree, not the unknowns");
+
+    // Opt in, and the two unknowable ones join it.
+    let with_unknown =
+        haplogroup_call::biosamples_placed_against_another_tree(s.pool(), DnaType::Y, "yt:", "CURRENT", true)
+            .await
+            .unwrap();
+    assert!(!with_unknown.contains(&guids[0]), "a current placement is never stale");
+    assert!(with_unknown.contains(&guids[1]));
+    assert!(with_unknown.contains(&guids[2]), "no fingerprint at all");
+    assert!(
+        with_unknown.contains(&guids[3]),
+        "a fingerprint with no tree tag must not slip through on a substr offset"
+    );
+    assert_eq!(with_unknown.len(), 3);
+
+    // The mt calls of these same subjects are untouched, so an mt sweep selects nobody by tag.
+    let mt = haplogroup_call::biosamples_placed_against_another_tree(s.pool(), DnaType::Mt, "mt:", "CURRENT", true)
+        .await
+        .unwrap();
+    assert!(mt.is_empty(), "the selector is scoped to one DNA type");
+}
+
 #[tokio::test]
 async fn haplogroup_call_fingerprint_round_trips() {
     use navigator_domain::reconciliation::{CallProvenance, DnaType, RunHaplogroupCall};

@@ -320,6 +320,20 @@ pub struct RebuildArgs {
     /// only some of them changed.
     #[arg(long, value_name = "FILE")]
     subjects_file: Option<PathBuf>,
+    /// Only subjects placed against a **different haplotree** than the one now active — the sweep to
+    /// run when a new tree lands. Combines with the other filters (all of them must pass), and
+    /// implies `--all`: a subject can be due a re-placement without yet having a profile built.
+    #[arg(long)]
+    stale_tree: bool,
+    /// With `--stale-tree`, also take subjects whose calls carry **no tree fingerprint** — placed
+    /// before the field existed, so which tree they used is unknowable. That is a provenance
+    /// backfill, not a response to a tree change, and it is far larger: most such subjects own a
+    /// BAM/CRAM that re-placement re-walks. Off by default so the routine sweep stays runnable.
+    #[arg(long)]
+    include_unknown: bool,
+    /// With `--stale-tree`, list the affected subjects and exit without re-placing anything.
+    #[arg(long)]
+    dry_run: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
@@ -668,6 +682,11 @@ async fn backfill_profiles(args: BackfillArgs) -> i32 {
 /// stay stale until rebuilt here.
 async fn rebuild_signatures(args: RebuildArgs) -> i32 {
     use std::time::Instant;
+    // Reject the invalid combinations before opening the database or reading anything.
+    if (args.dry_run || args.include_unknown) && !args.stale_tree {
+        eprintln!("error: --dry-run and --include-unknown only apply with --stale-tree");
+        return 2;
+    }
     let app = match open(args.db).await {
         Ok(a) => a,
         Err(c) => return c,
@@ -681,6 +700,35 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
     let bios = match app.list_all_biosamples().await {
         Ok(v) => v,
         Err(e) => return report(e),
+    };
+
+    // The staleness selector: which subjects were placed against a tree other than today's. Held as
+    // guids rather than folded into `wanted` because that set is matched against donor identifiers
+    // too, and a donor id that happened to look like a guid would cross-match.
+    let stale: Option<std::collections::HashSet<SampleGuid>> = if args.stale_tree {
+        // Two independent symptoms of the same thing, unioned: a *source call* stamped with another
+        // tree, and a *derived consensus* naming a branch this tree does not carry. The second can
+        // be true while every call beneath it is current, so neither selector subsumes the other.
+        let by_fingerprint = match app.subjects_placed_against_another_tree(args.include_unknown).await {
+            Ok(v) => v,
+            Err(e) => return report(e),
+        };
+        let off_tree = match app.subjects_labelled_off_tree().await {
+            Ok(v) => v,
+            Err(e) => return report(e),
+        };
+        let mut set: std::collections::HashSet<SampleGuid> = by_fingerprint.iter().copied().collect();
+        let also = off_tree.iter().filter(|g| !set.contains(g)).count();
+        set.extend(off_tree);
+        println!(
+            "{} subject(s) placed against an older tree; {} more labelled off this tree — {} total",
+            by_fingerprint.len(),
+            also,
+            set.len()
+        );
+        Some(set)
+    } else {
+        None
     };
 
     // Accepts either identifier so a caller can feed whichever it has to hand — a report keyed by
@@ -717,10 +765,22 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
                 continue;
             }
         }
+        if let Some(st) = &stale {
+            if !st.contains(&b.guid) {
+                continue;
+            }
+        }
         let label = truncate(&b.donor_identifier, 24);
+        if args.dry_run {
+            println!("STALE {label}");
+            rebuilt += 1;
+            continue;
+        }
         // Default: only refresh subjects that already carry a Y or mt profile (the stale ones). With
         // --all, build for every subject (those with no evidence just yield an empty profile).
-        if !args.all {
+        // --stale-tree already names exactly who is due, and a subject can be due without yet having
+        // a profile, so it selects on its own.
+        if !args.all && stale.is_none() {
             let has_y = matches!(app.cached_y_profile(b.guid).await, Ok(Some(_)));
             let has_mt = matches!(app.cached_mt_profile(b.guid).await, Ok(Some(_)));
             if !has_y && !has_mt {
@@ -749,6 +809,10 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
                 );
             }
         }
+    }
+    if args.dry_run {
+        println!("\n{rebuilt} subject(s) would be re-placed (dry run)");
+        return 0;
     }
     println!("\nrebuilt {rebuilt} subject(s), {skipped} skipped (no profile), {failed} failed");
     if failed > 0 {

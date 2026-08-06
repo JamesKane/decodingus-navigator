@@ -1,12 +1,14 @@
 # Project Y block tree — design
 
-**Status:** **All three phases shipped** (branch `feat/project-block-tree`, 13 commits, not pushed) —
+**Status:** **All three phases shipped** (branch `feat/project-block-tree`, 15 commits, not pushed) —
 the aggregate + collapse (1), the `ProjectTab::Tree` canvas (2), and private-variant blocks +
 candidate branches + export (3), plus four things phase 3 turned out to need: the
 `private-y --project` batch, a **VCF-backed private-Y engine** for subjects with no alignment, a
 **candidate review surface**, and an artefact-filter stack calibrated against R1b-CTS4466Plus.
 Live state there: 248/255 placed members carry private-Y (was 1 workspace-wide), **7 candidate
-branches** surviving the filters. Suite 797 passed. Open items in §11. Drafted 2026-08-02.
+branches** surviving the filters. Suite 797 passed. The canvas was then **redrawn to Alex
+Williamson's Big Tree presentation** (§8) — the thing the name "block tree" refers to. Open items in
+§11. Drafted 2026-08-02, rendering revised 2026-08-05.
 
 **Closes:** `BACKLOG.md` §3.3 remaining scope ("a genuinely zoomable / searchable *whole-tree* view
 with the subject's placement highlighted") — reframed as **cohort-scoped**, which is the form that
@@ -171,20 +173,62 @@ Three things the implementation settled:
 `subtree_members` needs no recomputation after a collapse: an absorbed node has no members of its own
 and exactly one child, so its count already equals the survivor's.
 
-## 8. UI
+## 8. UI — the Big Tree presentation
 
 A new `ProjectTab::Tree` (`project.tab.tree`, en + es), rendered from a new `ui/blocktree.rs` —
 following the one-view-per-module split, and keeping `central.rs` from growing again.
 
-- Layout is precomputed **once per `(project, tree)`** into node rects, not rebuilt per frame; draw
-  culled to `ui.clip_rect()`.
-- Depth → x, leaf order → y (classic block-tree columns). Scroll + zoom. Click a block to expand its
-  equivalent SNPs; click a member to open that subject — the `return_to_project` round-trip already
-  exists (`central.rs:713`).
+The draft specified "depth → x, leaf order → y … click a block to expand its equivalent SNPs". That
+was wrong on three counts, and the corrections all come from one principle:
+
+> **Mutations accrue at a roughly steady rate, so a count of SNPs is a measure of elapsed time.**
+
+Everything below follows from taking that seriously, which is what Williamson's Big Tree does and
+what FTDNA's Block Tree borrowed.
+
+- **Top-down, not left-right.** Depth → y. Time runs down the page.
+- **A block's height is its SNP count, and nothing is elided.** Every equivalent SNP gets its own
+  line, so the box's height *is* how long that branch ran unbroken. There is no cap and no
+  expand-on-click: a truncated box is a shortened box, and a shortened box misreports the time. (A
+  line may carry several *names* — `BY30547 Y43043` is one mutation with two — but never two
+  mutations.) This removes the draft's expand interaction entirely, along with its state.
+- **Vertical position is cumulative.** A block hangs directly beneath its parent rather than on a row
+  shared with everything at its depth. How far down a block sits is therefore the mutations
+  accumulated along the path to it: height reads as time *within* a branch, y as time *along* the
+  lineage. Depth-aligned rows would pad every short branch out to the tallest box beside it — a lot
+  of empty canvas, and a lie about when the branch happened, since two lineages at one depth would
+  draw level even when one had accrued thirty more mutations than the other.
+- **Men are blocks of their own.** Each biosample is a grey box on a stem below the block it is
+  placed on, taking a horizontal slot beside that block's child subtrees so a lineage that both
+  splits and holds men makes room for both. Click one to open its subject — the `return_to_project`
+  round-trip already exists (`central.rs:713`). A roster side panel stays alongside, because it is
+  the only place the private-variant counts are scannable as a list.
+- **The backbone above the cohort is a breadcrumb, not a block.** See §8b.
+- ASCII markers only in the canvas: `▾` is absent from the bundled font and renders as tofu.
+- Layout is precomputed **once per `(tree, zoom)`** into node rects, not rebuilt per frame; draw
+  culled to `ui.clip_rect()`. `layout()` is a pure function over `&[Block]`, so it is testable
+  without a canvas.
 - **No `ComboBox` anywhere** in this view, per the roster-picker rule: a project can hold thousands
   of members, and a `ComboBox` builds a widget per entry per frame.
 - Loading goes over the worker thread (`Command::LoadProjectBlockTree` / `Event::ProjectBlockTreeReady`)
   because it fetches and parses a multi-MB tree.
+
+### 8b. Why the backbone can't be a block
+
+Uncapping the SNP list is only affordable because of one exception. R1b-CTS4466Plus induces a root of
+`R-Z290`: **24 folded branches, 1,763 SNPs** — twelve times taller than the entire cohort hanging off
+it. The next largest block in that project is **24 SNPs**, so there was never a general problem, only
+this one.
+
+A collapsed run is by construction *more than one branch*. Its height is a sum across the tree
+**above** the cohort, not one branch's elapsed time — the single place the height-as-time reading
+does not hold. So it leaves the canvas for a path across the top
+(`Y › A0-T › … › R-P312 › R-Z290  (1763 SNPs upstream)`), exactly as the Big Tree's subclade pages
+render everything above the clade in view.
+
+The test is **the fold, not member-lessness**. Two shallow kits sit on `R-Z290`; a member-less guard
+would never have fired where it mattered. They keep their roster because the breadcrumb is
+selectable.
 
 ## 9. Phasing
 
@@ -338,11 +382,17 @@ engine widened the input and the gates tightened around it.
    button, or folded into the project-wide analyze / deep-analyze streaming flow. `BACKLOG.md` §1.2
    faces the same choice for panel genotyping and probably wants the same answer.
 
-5. **Suffixed terminal names — untouched.** **162** Y consensus labels carry a `:`-suffix
-   (`R-A9426:n0`, where `R-A9426` *is* in the tree), so those members land in `unplaced` instead of on
-   a branch. Stripping the suffix and matching the parent would recover them — but only if the suffix
-   means what it looks like, and nothing has yet established what writes it. Confirm before
-   special-casing.
+5. **Suffixed terminal names — ✅ diagnosed; the proposed fix was wrong.** The draft suggested
+   stripping the `:` suffix and matching the parent. **Do not.** Those 162 labels are not a naming
+   convention — they are *stale placements against a superseded tree generation*:
+
+   - all are `:n0`/`:n1`, plus three indel-defined (`:6686542 AGT->A`);
+   - the current cached DecodingUs tree contains **zero** such node names;
+   - nothing in Navigator writes the suffix — it came from the tree;
+   - **153 of the 159 fingerprinted ones sit on one tree fingerprint**, `yt:b211464f1bd97ca6`.
+
+   Stripping the suffix would have silently demoted 153 subjects to a *less derived* branch in order
+   to work around a stale placement. Closed as won't-fix, subsumed by §12.
 
 6. **A regional concentration in the surviving candidates.** Three of seven span **88 kb** at
    10.79–10.88 Mb. That is far beyond one sequencing fragment, so the 1 kb cross-candidate rule
@@ -360,7 +410,66 @@ engine widened the input and the gates tightened around it.
   `payload` for every artifact kind — the query that read gigabytes of `tree-genotype` JSON and took
   the block-tree build from 1.5 s to 25 s. `artifact::list_for_alignments_of_kind` exists now; that
   caller was never converted.
-- **The canvas has no interaction test coverage.** The click bug that made candidate review
-  unreachable shipped in phase 2 and the layout tests could not have caught it: they exercise the
-  pure `layout()` function, which has no input handling. Any test of click routing would need to
-  drive `egui` directly.
+- **The canvas has no interaction test coverage, and the rendering rework widened the gap.** The
+  click bug that made candidate review unreachable shipped in phase 2 and the layout tests could not
+  have caught it: they exercise the pure `layout()` function, which has no input handling. The
+  Williamson rework then added member-box clicks and a selectable breadcrumb on top of that, still
+  untested — all 13 tests are pure layout. Any test of click routing would need to drive `egui`
+  directly.
+- **`blocktree_recentre` shipped pinned.** It was set on tab open but cleared only on the empty-tree
+  early return, so `horizontal_scroll_offset` re-applied every frame and overwrote any sideways drag.
+  Fixed, but it is the second one-shot-flag bug in this view and neither was catchable without the
+  interaction coverage above.
+
+## 12. Re-evaluating the workspace when a new tree lands — ✅ built
+
+Placement is **demand-driven per alignment**: `assign_y_haplogroup` computes a
+`f:<file hash>|yt:<tree hash>` fingerprint and skips re-scoring when it is unchanged, so a new tree
+is only noticed the next time that one subject is re-analysed. Nothing swept the workspace, and
+**7 distinct tree generations** had accumulated in `haplogroup_call`.
+
+The sweep itself already existed — `rebuild-signatures` re-places a set of subjects, and the
+per-alignment skip makes it cheap on anything already current. What was missing was a **selector**.
+
+### Two independent symptoms
+
+Keying on call fingerprints alone is not enough, and the live workspace shows why. `GMWOF5428705`
+holds a call placed against *today's* tree (`E-C116698`) sitting under a consensus of
+`E-FT400514:n0`, last reconciled four weeks earlier. **A consensus is derived and persisted
+separately, with no tree stamp of its own, so it rots while every call beneath it stays current.**
+So `--stale-tree` unions two selectors:
+
+1. `haplogroup_call::biosamples_placed_against_another_tree` — a *source call* stamped with a
+   different tree hash. Works for Y (`yt:`) and mt (`mt:`).
+2. `App::subjects_labelled_off_tree` — a *derived consensus* naming a branch the current tree does
+   not carry. Tested against the tree's `name_index`, so it needs no schema change and catches the
+   defect directly: a label absent from the tree is stale by definition, and it is exactly the set
+   the block tree drops into `unplaced`.
+
+### The unfingerprinted backlog is a separate job
+
+15,648 Y calls (80%) predate the fingerprint field, so which tree they used is unknowable. Folding
+them into the default would make the routine sweep 13,183 subjects — mostly BAM re-walks — for a
+tree change that provably affects far fewer. They are opt-in behind `--include-unknown`.
+
+Measured on the live workspace (current tree `yt:b6dfde928041fe28`):
+
+| | current | provably superseded | no fingerprint |
+|---|---:|---:|---:|
+| Y calls | 198 | 3,780 | 15,648 |
+| mt calls | 319 | 3,416 | 0 |
+
+`--stale-tree` selects **5,363** subjects; with `--include-unknown`, 13,183. All 162 `:n0` subjects
+of §11.5 are inside the default set, and re-placing one turned `E-FT400514:n0` into `E-C116698`.
+
+### Still open
+
+- **The off-tree-label selector is Y-only.** The fingerprint selector covers both arms (3,416 mt
+  calls are on a superseded tree), but `subjects_labelled_off_tree` tests Y consensus labels against
+  the Y tree and nothing checks the mt equivalent. Whether mt consensus labels rot the same way is
+  unmeasured, not established as safe.
+- **No GUI trigger.** This is the CLI half. It is the same question as §11.4 (the private-Y batch)
+  and should get the same answer.
+- **Nothing *notices* a new tree.** `fetch_tree` refreshes on a TTL, but the sweep is still something
+  a user has to think to run. A startup comparison of the tree hash against the workspace's
+  most-common stamp would turn this into the "option when a new tree lands" it is meant to be.
