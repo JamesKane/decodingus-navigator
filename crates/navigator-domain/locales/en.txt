@@ -879,3 +879,4 @@ matching.consent.neverBody=Your name, your files, your health information, and a
 blocktree.upstream.snps = SNPs upstream
 blocktree.upstream.hint = Folded backbone above the cohort — click to list any members on it
 blocktree.private.title = Private variants
+blocktree.private.average = Average:

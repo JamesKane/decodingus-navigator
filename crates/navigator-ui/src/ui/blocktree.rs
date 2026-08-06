@@ -99,7 +99,22 @@ pub(crate) struct PlacedMember {
     pub rect: egui::Rect,
 }
 
+/// Render a mean over a handful of men: whole numbers plain, otherwise one decimal. Rounding 4.5 to
+/// 5 would hide that a branch sits half a mutation from its neighbour; printing `4.0` for an exact 4
+/// is just noise.
+fn fmt_average(v: f32) -> String {
+    if (v - v.round()).abs() < 0.05 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{v:.1}")
+    }
+}
+
 /// The private-variant block below a branch: the mutations its men carry that no branch names yet.
+///
+/// The mean is over the men whose terminal **is** this block — not its subtree. A branch that both
+/// splits and holds men counts only the men standing on it, which is what FTDNA reports too
+/// (`R-FGC29071` averages over 2 participants while 7 more sit on branches below it).
 ///
 /// It is drawn **on the same vertical scale as the blocks**, because it measures the same thing —
 /// mutations accrued since the named branch above it, which is the time between that branch and the
@@ -451,6 +466,7 @@ impl NavigatorApp {
         let upstream_snps = self.tr("blocktree.upstream.snps").to_string();
         let upstream_hint = self.tr("blocktree.upstream.hint").to_string();
         let private_label = self.tr("blocktree.private.title").to_string();
+        let private_average = self.tr("blocktree.private.average").to_string();
         let (zoom_label, no_placement, candidate_label, export_label) = (
             self.tr("blocktree.zoom").to_string(),
             self.tr("blocktree.none.placed").to_string(),
@@ -746,12 +762,10 @@ impl NavigatorApp {
                     PRIVATE_FG,
                 );
                 y += ROW_H * zoom;
-                // One decimal: these are means over a handful of men, and rounding 4.5 to 5 hides
-                // that the branch is half a mutation from its neighbour.
                 inner.text(
                     egui::pos2(rect.center().x, y),
                     egui::Align2::CENTER_TOP,
-                    format!("{:.1}", pv.average),
+                    format!("{private_average} {}", fmt_average(pv.average)),
                     small.clone(),
                     PRIVATE_FG,
                 );
@@ -762,15 +776,20 @@ impl NavigatorApp {
                 );
                 if resp.hovered() {
                     let b = &drawn[pv.block];
-                    // Say what the mean is over. `private_novel` is None until private-Y has been
-                    // computed, so a mean over 2 of 30 men must not be read as the branch's.
-                    resp.on_hover_text(format!(
-                        "{}\n{:.1} on average over {} of {} men here",
+                    // Name the denominator. It is the men whose terminal *is* this block — not the
+                    // subtree — and among those, only the ones private-Y has actually been computed
+                    // for, since `private_novel` is `None` until then and `None` is not zero.
+                    let mut tip = format!(
+                        "{}\nOn average {} private variant(s) in {} of {} men placed here",
                         b.name,
-                        pv.average,
+                        fmt_average(pv.average),
                         pv.counted,
                         b.members.len()
-                    ));
+                    );
+                    if pv.counted < b.members.len() {
+                        tip.push_str("\n(the rest have no private-Y computed)");
+                    }
+                    resp.on_hover_text(tip);
                 }
             }
 
@@ -1146,6 +1165,34 @@ mod tests {
             assert!(m.rect.top() >= pv.rect.bottom());
             assert!(m.rect.left() >= pv.rect.left() - 0.01 && m.rect.right() <= pv.rect.right() + 0.01);
         }
+    }
+
+    /// The mean is over the men *placed on* the block, not its subtree — FTDNA reports 4 over 2
+    /// participants for R-FGC29071 while 7 more men sit on branches below it.
+    #[test]
+    fn the_average_covers_the_men_placed_here_not_the_subtree() {
+        let mut here = block(1, 0, 0, &["a", "b"]);
+        here.members[0].private_novel = Some(4);
+        here.members[1].private_novel = Some(4);
+        here.subtree_members = 5;
+        let mut below = block(2, 1, 1, &["c", "d", "e"]);
+        for m in &mut below.members {
+            m.private_novel = Some(40);
+        }
+
+        let lay = layout(&[here, below], 1.0);
+        let root = lay.privates.iter().find(|p| p.block == 0).unwrap();
+        assert!(
+            (root.average - 4.0).abs() < 0.001,
+            "the subtree's 40s must not pull it up"
+        );
+        assert_eq!(root.counted, 2);
+    }
+
+    #[test]
+    fn an_average_reads_as_a_whole_number_when_it_is_one() {
+        assert_eq!(fmt_average(4.0), "4");
+        assert_eq!(fmt_average(4.5), "4.5", "rounding would hide half a mutation");
     }
 
     /// `private_novel` is `None` until private-Y has been computed, which is not the same as zero.

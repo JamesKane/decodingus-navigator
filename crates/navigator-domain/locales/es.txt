@@ -864,3 +864,4 @@ matching.consent.neverBody=Su nombre, sus archivos, su información de salud y c
 blocktree.upstream.snps = SNP anteriores
 blocktree.upstream.hint = Tronco plegado por encima de la cohorte — haz clic para ver sus miembros
 blocktree.private.title = Variantes privadas
+blocktree.private.average = Promedio:
