@@ -321,6 +321,26 @@ impl NavigatorApp {
                     // Coverage was (re)computed — refresh the subjects-list Status column.
                     let _ = self.tx.send(Command::LoadSubjectStatus);
                 }
+                Event::MaintenanceSurvey(v) => {
+                    self.maintenance = Some(v);
+                    self.maintenance_surveying = false;
+                }
+                Event::ChoreProgress {
+                    chore,
+                    done,
+                    total,
+                    label,
+                    fraction,
+                } => {
+                    self.chore_running = Some((chore, done, total, label, fraction));
+                }
+                Event::ChoreDone { chore, outcome } => {
+                    self.status = format!("{}: {}", chore.key(), outcome.summary);
+                    self.chore_last = Some((chore, outcome));
+                    self.chore_running = None;
+                    // The survey it was based on is now stale by construction.
+                    self.maintenance = None;
+                }
                 Event::DeepAnalyzeProgress {
                     project_id,
                     done,

@@ -61,6 +61,15 @@ pub enum Command {
     LoadOverview,
     /// Load the ancestry/IBD asset presence + integrity status (the "data sources" line).
     LoadAssetStatus,
+    /// Survey the workspace chores (what each would do if run). Deliberately on demand: two of the
+    /// three cost real work to measure, one of them a multi-MB tree fetch.
+    SurveyMaintenance,
+    /// Run one workspace chore, streaming `ChoreProgress` and finishing with `ChoreDone`.
+    RunChore {
+        chore: navigator_app::Chore,
+        /// Recompute what is already cached (private-Y only; the others have nothing to force).
+        force: bool,
+    },
     /// Check GitHub Releases for a newer installer and notify (no auto-update).
     CheckForUpdate,
     CreateProject(NewProject),
@@ -852,6 +861,21 @@ pub enum Event {
         sample: String,
         fraction: f32,
     },
+    /// The workspace-chore survey: what each chore would do if run now.
+    MaintenanceSurvey(Vec<navigator_app::ChoreSurvey>),
+    /// Per-item progress of a running chore. `label` is the subject currently being worked.
+    ChoreProgress {
+        chore: navigator_app::Chore,
+        done: usize,
+        total: usize,
+        label: String,
+        fraction: f32,
+    },
+    /// A chore finished (or was cancelled after doing `outcome.done` items).
+    ChoreDone {
+        chore: navigator_app::Chore,
+        outcome: navigator_app::ChoreOutcome,
+    },
     /// Per-sample progress of a streaming project-directory import: `done` of `total` samples
     /// written, `sample` is the sample id currently being imported, `fraction` drives the bar.
     ImportProgress {
@@ -1450,6 +1474,9 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::DeepAnalyzeProject(project_id) => {
             Event::Error(format!("internal: unrouted DeepAnalyzeProject {project_id}"))
         }
+        Command::SurveyMaintenance => ev(app.maintenance_survey().await, Event::MaintenanceSurvey),
+        // RunChore streams ChoreProgress from the spawn loop; reaching here is a bug.
+        Command::RunChore { chore, .. } => Event::Error(format!("internal: unrouted RunChore {}", chore.key())),
         Command::LoadSubjectStatus => ev(app.subject_analysis_status().await, Event::SubjectStatus),
         Command::LoadHaploSummary => ev(app.haplogroup_terminals().await, Event::HaploSummary),
         Command::LoadAllBiosamples => ev(app.list_all_biosamples().await, Event::AllBiosamples),
@@ -2531,6 +2558,138 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
 /// checked before each sample — a stop leaves the already-computed artifacts in place (the pass is
 /// additive and idempotent). Each `analyze_biosample` awaits internally, so the worker runtime
 /// stays free for quick UI queries between samples.
+/// Run one workspace chore, emitting progress per item.
+///
+/// The loop lives here rather than in `navigator-app` for the same reason `deep_analyze_project`'s
+/// does: the worker owns the event channel and the cancel token, and `App` stays free of UI
+/// plumbing. What each item *does* is an `App` method, shared with the CLI.
+async fn run_chore_streaming(
+    app: &App,
+    chore: navigator_app::Chore,
+    force: bool,
+    cancel: CancelToken,
+    evt_tx: &Sender<Event>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) {
+    use navigator_app::Chore;
+    let mut outcome = navigator_app::ChoreOutcome::default();
+
+    match chore {
+        Chore::PrivateY => {
+            let subjects = match app.list_all_biosamples().await {
+                Ok(v) => v,
+                Err(e) => return fail_chore(chore, e.to_string(), evt_tx, &wake),
+            };
+            let total = subjects.len();
+            let mut novel = 0usize;
+            for (i, b) in subjects.iter().enumerate() {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                progress(chore, i, total, &b.donor_identifier, evt_tx, &wake);
+                match app.refresh_private_y(b.guid, force).await {
+                    Ok(r) => {
+                        outcome.done += r.computed;
+                        outcome.skipped += r.skipped + r.missing_file;
+                        outcome.failed += r.failed;
+                        novel += r.novel;
+                    }
+                    Err(e) => {
+                        outcome.failed += 1;
+                        let _ = evt_tx.send(Event::Error(format!("{}: {e}", b.donor_identifier)));
+                        wake();
+                    }
+                }
+            }
+            outcome.summary = format!("{} computed · {} novel unique variants", outcome.done, novel);
+        }
+
+        Chore::StaleTree => {
+            let targets = match app.stale_tree_targets(false).await {
+                Ok(v) => v,
+                Err(e) => return fail_chore(chore, e.to_string(), evt_tx, &wake),
+            };
+            let total = targets.len();
+            // One lookup for the whole batch rather than a query per subject just to label a
+            // progress line.
+            let names: std::collections::HashMap<_, _> = app
+                .list_all_biosamples()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| (b.guid, b.donor_identifier))
+                .collect();
+            for (i, guid) in targets.iter().enumerate() {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                let label = names.get(guid).cloned().unwrap_or_else(|| guid.0.to_string());
+                progress(chore, i, total, &label, evt_tx, &wake);
+                // Rebuild both arms: a source-less lineage just yields an empty profile, and a
+                // subject can be stale on one arm while current on the other.
+                let y = app.build_y_profile(*guid).await;
+                let m = app.build_mt_profile(*guid).await;
+                match (y, m) {
+                    (Ok(_), Ok(_)) => outcome.done += 1,
+                    (Err(e), _) | (_, Err(e)) => {
+                        outcome.failed += 1;
+                        let _ = evt_tx.send(Event::Error(format!("{label}: {e}")));
+                        wake();
+                    }
+                }
+            }
+            outcome.summary = format!("{} subject(s) re-placed against the current tree", outcome.done);
+        }
+
+        Chore::PublishOrigins => match app.publish_ancestral_origins(navigator_app::Lineage::Y, false).await {
+            Ok(r) => {
+                outcome.done = r.publishable;
+                outcome.skipped = r.refused;
+                outcome.summary = format!(
+                    "{} queued · {} with a place, {} country only",
+                    r.publishable, r.with_place, r.country_only
+                );
+            }
+            Err(e) => return fail_chore(chore, e.to_string(), evt_tx, &wake),
+        },
+    }
+
+    let _ = evt_tx.send(Event::ChoreDone { chore, outcome });
+    wake();
+}
+
+fn progress(
+    chore: navigator_app::Chore,
+    done: usize,
+    total: usize,
+    label: &str,
+    evt_tx: &Sender<Event>,
+    wake: &Arc<dyn Fn() + Send + Sync>,
+) {
+    let _ = evt_tx.send(Event::ChoreProgress {
+        chore,
+        done,
+        total,
+        label: label.to_string(),
+        fraction: if total > 0 { done as f32 / total as f32 } else { 0.0 },
+    });
+    wake();
+}
+
+/// A chore that could not start at all — surface the reason and close it out, so the UI never
+/// leaves a spinner running on a job that never began.
+fn fail_chore(chore: navigator_app::Chore, err: String, evt_tx: &Sender<Event>, wake: &Arc<dyn Fn() + Send + Sync>) {
+    let _ = evt_tx.send(Event::Error(err.clone()));
+    let _ = evt_tx.send(Event::ChoreDone {
+        chore,
+        outcome: navigator_app::ChoreOutcome {
+            summary: err,
+            ..Default::default()
+        },
+    });
+    wake();
+}
+
 async fn deep_analyze_project_streaming(
     app: &App,
     project_id: i64,
@@ -3091,6 +3250,14 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             Command::DeepAnalyzeProject(project_id) => {
                                 let (gen, cancel) = cancels.begin();
                                 deep_analyze_project_streaming(&app, project_id, cancel, &evt_tx, wake.clone()).await;
+                                cancels.end(gen);
+                            }
+                            // Workspace chores stream ChoreProgress per item, then ChoreDone. They
+                            // walk the whole workspace, so running them inline would freeze the UI
+                            // for minutes with no sign of life.
+                            Command::RunChore { chore, force } => {
+                                let (gen, cancel) = cancels.begin();
+                                run_chore_streaming(&app, chore, force, cancel, &evt_tx, wake.clone()).await;
                                 cancels.end(gen);
                             }
                             // Streams ImportProgress per sample, then a final ProjectImported (or

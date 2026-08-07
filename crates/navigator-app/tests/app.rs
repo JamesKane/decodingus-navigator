@@ -3206,3 +3206,55 @@ mod full_analysis_plan {
         assert!(steps.contains(&AnalysisStep::StructuralVariants));
     }
 }
+
+/// The workspace-chore survey is what the Dashboard's maintenance panel renders, and every number
+/// on it has to mean something specific. An empty workspace must report *nothing due* rather than
+/// nothing found — the distinction is the whole point of showing `due` against `total`.
+#[tokio::test]
+async fn maintenance_survey_reports_every_chore() {
+    let app = app().await;
+    let survey = app.maintenance_survey().await.expect("survey");
+
+    // Every chore is present, in a fixed order, so the panel cannot silently lose one.
+    let chores: Vec<_> = survey.iter().map(|s| s.chore).collect();
+    assert_eq!(chores, navigator_app::Chore::ALL.to_vec());
+
+    for s in &survey {
+        assert!(s.due <= s.total || s.total == 0, "{:?}: due exceeds total", s.chore);
+    }
+
+    // Nothing to publish, and no account to publish with — the chore reports *why* it cannot run
+    // rather than offering a button that would fail.
+    let publish = survey
+        .iter()
+        .find(|s| s.chore == navigator_app::Chore::PublishOrigins)
+        .unwrap();
+    assert_eq!(publish.due, 0);
+    assert!(publish.blocked.is_some(), "not signed in is a reason, not a zero");
+
+    // An empty workspace has no alignments to compute private-Y for.
+    let private_y = survey
+        .iter()
+        .find(|s| s.chore == navigator_app::Chore::PrivateY)
+        .unwrap();
+    assert_eq!((private_y.due, private_y.total), (0, 0));
+    assert!(
+        private_y.blocked.is_none(),
+        "nothing to do is not the same as unavailable"
+    );
+}
+
+/// A subject with no alignment and no variant set is not a failure — it is a subject with nothing
+/// to compute, and counting it as an error would bury the real ones.
+#[tokio::test]
+async fn refresh_private_y_on_a_bare_subject_is_not_a_failure() {
+    let app = app().await;
+    let guid = app
+        .add_biosample(None, "BARE".to_string(), None, None)
+        .await
+        .expect("add biosample");
+    let r = app.refresh_private_y(guid.guid, false).await.expect("refresh");
+    assert_eq!(r.computed, 0);
+    assert_eq!(r.failed, 0, "nothing to compute is not a failure");
+    assert_eq!(r.missing_file, 0);
+}

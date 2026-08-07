@@ -300,6 +300,21 @@ dash.projects=Proyectos
 dash.subjects=Sujetos
 dash.alignments=Alineamientos
 
+# Workspace maintenance (Dashboard) — the chores that were CLI-only.
+maint.title=Mantenimiento del espacio de trabajo
+maint.hint=Tareas periódicas que mantienen este espacio al día. Nada se ejecuta hasta que lo pida, y comprobar qué falta lleva un momento.
+maint.check=Comprobar pendientes
+maint.checking=Comprobando…
+maint.run=Ejecutar
+maint.due=pendientes
+maint.blocked=No disponible
+maint.privateY=Variantes privadas
+maint.privateY.hint=Busca las mutaciones que cada sujeto lleva más allá de su rama asignada. Las vistas de cohorte no pueden distinguir una variante compartida de una aislada hasta que esto se recorre una vez.
+maint.staleTree=Reubicar en el árbol actual
+maint.staleTree.hint=Sujetos evaluados con un árbol anterior, o cuyo consenso nombra una rama que este árbol ya no contiene. La ubicación es bajo demanda, así que un árbol nuevo se detecta de uno en uno.
+maint.publishOrigins=Publicar orígenes ancestrales
+maint.publishOrigins.hint=Comparte el ancestro conocido más lejano de cada linaje — apellido, origen y fechas — con el AppView. Solo para sujetos cuyos datos posee este espacio y cuyo titular no se ha excluido.
+
 empty.projects.title=Proyectos
 empty.projects.hint=Cree o seleccione un proyecto a la izquierda.
 empty.subjects.title=Sujetos

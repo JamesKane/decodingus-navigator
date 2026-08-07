@@ -138,6 +138,16 @@ pub async fn publishable(pool: &SqlitePool, lineage: &str) -> Result<Vec<Mdka>, 
     rows.into_iter().map(Row::into_domain).collect()
 }
 
+/// How many MDKA rows exist for a lineage, publishable or not — the denominator that makes a
+/// publishable count readable.
+pub async fn count_for_lineage(pool: &SqlitePool, lineage: &str) -> Result<usize, StoreError> {
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM mdka WHERE lineage = ?")
+        .bind(lineage)
+        .fetch_one(pool)
+        .await?;
+    Ok(n as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

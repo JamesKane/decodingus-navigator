@@ -465,6 +465,7 @@ pub use ftdna_import::{
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaPlanRow, FtdnaPlanStats,
     FtdnaResolution, FtdnaSubjectInput, FuzzyCandidate, MatchKind,
 };
+pub use maintenance::{Chore, ChoreOutcome, ChoreSurvey, PrivateYRefresh};
 pub use navigator_domain::identity::{ExternalId, FtdnaMember, Lineage, Mdka};
 pub use navigator_domain::ystr_cluster::{BranchSuggestion, ClusteredMember, YstrCluster, YstrClustering};
 pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
@@ -2902,6 +2903,7 @@ mod import_unified;
 pub mod llm;
 pub use llm::{ChatTurn, NarratedBrief};
 pub use navigator_domain::results_context::SignalKind;
+mod maintenance;
 mod matching;
 mod publish;
 mod queries;
