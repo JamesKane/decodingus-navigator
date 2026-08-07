@@ -666,7 +666,7 @@ impl NavigatorApp {
                     }
                     painter.line_segment(
                         [egui::pos2(g.right() - 4.0 * zoom, y), egui::pos2(g.right(), y)],
-                        egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+                        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(80)),
                     );
                     painter.text(
                         egui::pos2(g.right() - 6.0 * zoom, y),
@@ -692,13 +692,13 @@ impl NavigatorApp {
                 }
 
                 let (bg, stroke) = match (b.candidate, b.members.is_empty()) {
-                    (true, _) => (BLOCK_BG_CANDIDATE, egui::Stroke::new(1.5, CANDIDATE_STROKE)),
-                    (false, true) => (BLOCK_BG, egui::Stroke::new(1.0, BLOCK_STROKE)),
-                    (false, false) => (BLOCK_BG_PLACED, egui::Stroke::new(1.0, BLOCK_STROKE)),
+                    (true, _) => (BLOCK_BG_CANDIDATE, egui::Stroke::new(1.5_f32, CANDIDATE_STROKE)),
+                    (false, true) => (BLOCK_BG, egui::Stroke::new(1.0_f32, BLOCK_STROKE)),
+                    (false, false) => (BLOCK_BG_PLACED, egui::Stroke::new(1.0_f32, BLOCK_STROKE)),
                 };
                 painter.rect_filled(rect, 3.0, bg);
                 let stroke = if selected == Some(b.node_id) {
-                    egui::Stroke::new(2.0, SELECTED_STROKE)
+                    egui::Stroke::new(2.0_f32, SELECTED_STROKE)
                 } else {
                     stroke
                 };
@@ -777,9 +777,9 @@ impl NavigatorApp {
                 // A suppressed donor is a fact about the branch, so the box says so rather than
                 // quietly reporting a mean over whoever survived.
                 let edge = if pv.suppressed > 0 {
-                    egui::Stroke::new(1.5, CANDIDATE_STROKE)
+                    egui::Stroke::new(1.5_f32, CANDIDATE_STROKE)
                 } else {
-                    egui::Stroke::new(1.0, PRIVATE_STROKE)
+                    egui::Stroke::new(1.0_f32, PRIVATE_STROKE)
                 };
                 painter.rect_stroke(rect, 2.0, edge);
 
@@ -877,7 +877,7 @@ impl NavigatorApp {
                 let a = egui::pos2(rect.center().x.clamp(from.left(), from.right()), from.bottom());
                 let z = egui::pos2(rect.center().x, rect.top());
                 if clip.intersects(egui::Rect::from_two_pos(a, z)) {
-                    let stroke = egui::Stroke::new(1.0, EDGE);
+                    let stroke = egui::Stroke::new(1.0_f32, EDGE);
                     let mid = z.y - (z.y - a.y) * 0.35;
                     painter.line_segment([a, egui::pos2(a.x, mid)], stroke);
                     painter.line_segment([egui::pos2(a.x, mid), egui::pos2(z.x, mid)], stroke);
@@ -888,7 +888,7 @@ impl NavigatorApp {
                 }
                 let m = &b.members[pm.member];
                 painter.rect_filled(rect, 2.0, MEMBER_BG);
-                painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, BLOCK_STROKE));
+                painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0_f32, BLOCK_STROKE));
                 painter.with_clip_rect(rect.shrink(1.0)).text(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
