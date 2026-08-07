@@ -23,9 +23,10 @@ pub use exchange::{Envelope, EphemeralKey, ExchangeKey};
 pub use oauth::{login, login_default, refresh, OAuthConfig};
 pub use publish::{dev_http_client, PdsClient, RecordRef, RemoteRecord};
 pub use records::{
-    AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord, IdentityVerificationRecord,
-    ManualOverrideRecord, PrivateVariantsRecord, ReconciliationStatusRecord, RecordMeta, RunHaplogroupCallRecord,
-    VariantCallEntry, HAPLOGROUP_RECONCILIATION_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
+    AncestralOriginRecord, AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord,
+    IdentityVerificationRecord, ManualOverrideRecord, OriginExternalId, PrivateVariantsRecord,
+    ReconciliationStatusRecord, RecordMeta, RunHaplogroupCallRecord, VariantCallEntry, ANCESTRAL_ORIGIN_COLLECTION,
+    HAPLOGROUP_RECONCILIATION_COLLECTION, PRIVATE_VARIANTS_COLLECTION,
 };
 pub use secret_store::{os_keychain_enabled, use_os_keychain};
 pub use sync::{AsyncSync, RetryPolicy};

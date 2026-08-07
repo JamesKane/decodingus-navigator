@@ -465,7 +465,7 @@ pub use ftdna_import::{
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaPlanRow, FtdnaPlanStats,
     FtdnaResolution, FtdnaSubjectInput, FuzzyCandidate, MatchKind,
 };
-pub use navigator_domain::identity::{ExternalId, FtdnaMember, Mdka};
+pub use navigator_domain::identity::{ExternalId, FtdnaMember, Lineage, Mdka};
 pub use navigator_domain::ystr_cluster::{BranchSuggestion, ClusteredMember, YstrCluster, YstrClustering};
 pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
 pub use navigator_refgenome::RefStatus;
@@ -485,9 +485,10 @@ use navigator_sync::{
 /// assert they are *not* on the real keychain.
 pub use navigator_sync::{os_keychain_enabled, use_os_keychain};
 pub use navigator_sync::{
-    AlignmentRecord, BiosampleRecord, ContigMetrics, FeedPostRecord, PdsClient, PopulationBreakdownRecord,
-    PrivateVariantsRecord, RecordRef, SequenceRunRecord, VariantCallEntry, NS_ALIGNMENT, NS_BIOSAMPLE, NS_FEED_POST,
-    NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN, PRIVATE_VARIANTS_COLLECTION,
+    AlignmentRecord, AncestralOriginRecord, BiosampleRecord, ContigMetrics, FeedPostRecord, OriginExternalId,
+    PdsClient, PopulationBreakdownRecord, PrivateVariantsRecord, RecordRef, SequenceRunRecord, VariantCallEntry,
+    ANCESTRAL_ORIGIN_COLLECTION, NS_ALIGNMENT, NS_BIOSAMPLE, NS_FEED_POST, NS_POPULATION_BREAKDOWN, NS_SEQUENCERUN,
+    PRIVATE_VARIANTS_COLLECTION,
 };
 use navigator_sync::{
     AuditEntryRecord, HaplogroupReconciliationRecord, HeteroplasmyObservationRecord, IdentityVerificationRecord,
@@ -919,7 +920,7 @@ pub use navigator_store::ibd_request::StoredIbdRequest;
 pub use navigator_store::source_file::SourceFile;
 use navigator_store::{
     alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_archaic,
-    consensus_archaic_segments, consensus_painting, consensus_profile, consensus_roh, haplogroup_call,
+    consensus_archaic_segments, consensus_painting, consensus_profile, consensus_roh, haplogroup_call, mdka,
     mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, source_file, str_profile, sync_history,
     sync_outbox, sync_state, variant_set, variant_set_genotype, variant_set_private_y, Store, StoreError,
 };
@@ -2130,6 +2131,26 @@ fn alignment_rkey(alignment_id: i64) -> String {
 /// The at:// URI a published biosample record has in `did`'s repo — the anchor child records link to.
 fn biosample_at_uri(did: &str, guid: SampleGuid) -> String {
     format!("at://{did}/{NS_BIOSAMPLE}/{}", biosample_rkey(guid))
+}
+
+/// What an ancestral-origin batch did. `considered` is every row the consent predicate allowed;
+/// `refused` is how many of those a field gate then rejected — a normal outcome, and the number
+/// worth watching, since a jump means the MDKA data changed shape.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct OriginPublishReport {
+    pub considered: usize,
+    pub publishable: usize,
+    pub refused: usize,
+    /// Of the publishable, how many carry a place (an ancestor with a birth year) …
+    pub with_place: usize,
+    /// … and how many were reduced to their country by the precision ladder.
+    pub country_only: usize,
+}
+
+/// Deterministic PDS record key for one lineage's ancestral-origin record. Stable per
+/// (subject, lineage) so a corrected MDKA overwrites rather than duplicating the same ancestor.
+fn origin_rkey(guid: SampleGuid, lineage: &str) -> String {
+    format!("origin-{}-{}", lineage.to_lowercase(), guid.0.simple())
 }
 
 /// The at:// URI a published sequence-run record has in `did`'s repo.

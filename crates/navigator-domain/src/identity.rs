@@ -220,6 +220,148 @@ pub struct NewMdka {
     pub notes: Option<String>,
 }
 
+/// Name particles that belong to the surname rather than to a given name — the tokens a surname
+/// may legitimately begin with. Without these, [`surname_of`] would refuse `van der Berg` and
+/// `de la Cruz`, which are surnames, while still refusing `Thomas Michael Kane`, which is not.
+const NAME_PARTICLES: &[&str] = &[
+    "van", "von", "der", "den", "de", "del", "della", "di", "da", "dos", "du", "la", "le", "les", "mac", "mc", "st",
+    "st.", "saint", "ter", "ten", "af", "av", "al", "bin", "ibn", "ap", "ó", "ni", "nic", "mag", "fitz", "o", "o'",
+];
+
+/// A token that starts the biographical tail rather than continuing the name: a year, a date, or
+/// the word that introduces one. Everything from here on is annotation.
+fn is_annotation(token: &str) -> bool {
+    let t = token.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    if matches!(
+        t.as_str(),
+        "b" | "d" | "born" | "died" | "abt" | "about" | "circa" | "c" | "of" | "in"
+    ) {
+        return true;
+    }
+    // Any run of four digits reading as a year (1000-2099) — covers `1770`, `~1770`, `1919-1996`
+    // and `11/25/1843`.
+    token.as_bytes().windows(4).any(|w| {
+        w.iter().all(u8::is_ascii_digit) && {
+            let y: i32 = std::str::from_utf8(w).unwrap_or("0").parse().unwrap_or(0);
+            (1000..=2099).contains(&y)
+        }
+    })
+}
+
+/// Decode the HTML entities the FTDNA CSV importer leaves in place (`L&#225;ire`, `Died&#160;26`).
+///
+/// The root cause is the importer, not this function — but this is the last point before a name is
+/// published, and shipping `mac L&#225;ire` as a surname is worse than decoding it here. 61 of the
+/// 6,218 names in the reference corpus carry one.
+fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i..];
+        let Some(end) = tail.find(';').filter(|&e| e <= 8) else {
+            out.push('&');
+            rest = &tail[1..];
+            continue;
+        };
+        let body = &tail[1..end];
+        let ch = match body {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            "nbsp" => Some(' '),
+            _ => body
+                .strip_prefix('#')
+                .and_then(|n| match n.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => n.parse::<u32>().ok(),
+                })
+                .and_then(char::from_u32),
+        };
+        match ch {
+            Some(c) => {
+                out.push(c);
+                rest = &tail[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Generational suffixes, dropped before the surname is taken.
+const NAME_SUFFIXES: &[&str] = &["jr", "jr.", "sr", "sr.", "i", "ii", "iii", "iv", "v", "esq", "esq."];
+
+/// Reduce a most-distant-known-ancestor's full name to a **surname**.
+///
+/// This is a privacy gate, not a formatting nicety. An MDKA's surname, origin and dates are
+/// genealogical context that may be published (`proposals/ancestral-origin-icicle.md` §2 in the
+/// AppView repo); a given name is not, and it is what turns a published record into a named
+/// individual. The split therefore happens here, at the edge, before anything is serialized — the
+/// full name never leaves the workspace.
+///
+/// Conservative by construction: it takes the **last** token plus any particles immediately
+/// preceding it, and returns `None` when there is nothing usable. A wrong split leaks a forename,
+/// so the AppView independently re-checks what arrives; this is the first of two gates, not the
+/// only one.
+///
+/// ```text
+/// "Thomas Michael Kane"      → "Kane"
+/// "Kane"                     → "Kane"
+/// "Pieter van der Berg"      → "van der Berg"
+/// "Juan de la Cruz"          → "de la Cruz"
+/// "Patrick O'Brien Jr."      → "O'Brien"
+/// "Kane, Thomas"             → "Kane"          (comma-first form)
+/// ```
+pub fn surname_of(full_name: &str) -> Option<String> {
+    let decoded = decode_entities(full_name);
+    // `Surname, Given` — genealogy files are full of it, and the plain last-token rule would take
+    // the given name.
+    let head = match decoded.split_once(',') {
+        Some((last, _)) if !last.trim().is_empty() => last.to_string(),
+        _ => decoded,
+    };
+    let mut tokens: Vec<&str> = head
+        .split_whitespace()
+        .filter(|t| !t.trim_matches(|c: char| !c.is_alphanumeric()).is_empty())
+        .collect();
+    // Cut at the first biographical annotation. A third of the reference corpus appends dates or a
+    // birthplace to the name — `William Macaulay ~1770 of Balnicol`, `Michael OConnell b1854 d1928
+    // St Louis` — and a plain last-token rule takes `Balnicol` and `Louis` as surnames.
+    if let Some(cut) = tokens.iter().position(|t| is_annotation(t)) {
+        tokens.truncate(cut);
+    }
+    // Drop trailing generational suffixes (`Jr.`, `III`).
+    while tokens.last().is_some_and(|t| {
+        NAME_SUFFIXES.contains(&t.to_lowercase().trim_end_matches('.').to_string().as_str())
+            || NAME_SUFFIXES.contains(&t.to_lowercase().as_str())
+    }) {
+        tokens.pop();
+    }
+    let last = tokens.pop()?;
+    // Walk back over particles so multi-token surnames survive intact.
+    let mut parts = vec![last];
+    while let Some(prev) = tokens.last() {
+        if NAME_PARTICLES.contains(&prev.to_lowercase().as_str()) {
+            parts.push(tokens.pop().unwrap());
+        } else {
+            break;
+        }
+    }
+    parts.reverse();
+    let surname = parts.join(" ");
+    (!surname.is_empty()).then_some(surname)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,5 +414,86 @@ mod tests {
         assert!(!IdSource::is_public("YSEQ"));
         assert!(!IdSource::is_public("WGS")); // vendor/background — the WGS229-style reconciliation case
         assert!(!IdSource::is_public("SOMETHING_NEW")); // unknown → private (safe default)
+    }
+
+    #[test]
+    fn surname_drops_the_given_name() {
+        assert_eq!(surname_of("Thomas Michael Kane").as_deref(), Some("Kane"));
+        assert_eq!(surname_of("Thomas Kane").as_deref(), Some("Kane"));
+        assert_eq!(surname_of("Kane").as_deref(), Some("Kane"));
+    }
+
+    /// Surnames that genuinely contain spaces must survive whole — refusing them would quietly
+    /// mangle Dutch, Spanish and Gaelic lines while the English ones sailed through.
+    #[test]
+    fn surname_keeps_its_particles() {
+        assert_eq!(surname_of("Pieter van der Berg").as_deref(), Some("van der Berg"));
+        assert_eq!(surname_of("Juan de la Cruz").as_deref(), Some("de la Cruz"));
+        assert_eq!(surname_of("Angus Mac Donald").as_deref(), Some("Mac Donald"));
+        assert_eq!(surname_of("Seán Ó Súilleabháin").as_deref(), Some("Ó Súilleabháin"));
+    }
+
+    /// `Surname, Given` is everywhere in genealogy exports, and the last-token rule would take
+    /// exactly the wrong half of it.
+    #[test]
+    fn surname_handles_the_comma_first_form() {
+        assert_eq!(surname_of("Kane, Thomas Michael").as_deref(), Some("Kane"));
+        assert_eq!(surname_of("van der Berg, Pieter").as_deref(), Some("van der Berg"));
+    }
+
+    #[test]
+    fn surname_drops_generational_suffixes() {
+        assert_eq!(surname_of("Patrick O'Brien Jr.").as_deref(), Some("O'Brien"));
+        assert_eq!(surname_of("John Smith III").as_deref(), Some("Smith"));
+        assert_eq!(surname_of("John Smith Sr").as_deref(), Some("Smith"));
+    }
+
+    /// A third of the reference corpus appends dates or a birthplace to the name. Without the cut
+    /// the last-token rule published `Balnicol` and `Louis` as surnames.
+    #[test]
+    fn surname_ignores_the_biographical_tail() {
+        assert_eq!(
+            surname_of("William Macaulay ~1770 of Balnicol, Uig, Lewis").as_deref(),
+            Some("Macaulay")
+        );
+        assert_eq!(
+            surname_of("Michael OConnell b1854 d1928 St Louis").as_deref(),
+            Some("OConnell")
+        );
+        assert_eq!(
+            surname_of("John A Moynihan 11/25/1843- 2/22/1920").as_deref(),
+            Some("Moynihan")
+        );
+        assert_eq!(surname_of("Elizabeth Van Brunt b 1687").as_deref(), Some("Van Brunt"));
+        assert_eq!(surname_of("Rosa Lee Aiken, 1919-1996").as_deref(), Some("Aiken"));
+        // A particle surname must survive the cut intact.
+        assert_eq!(
+            surname_of("John De Lacy 1648/1722 - Ballingarry").as_deref(),
+            Some("De Lacy")
+        );
+    }
+
+    /// The FTDNA importer leaves HTML entities in the value. Publishing `mac L&#225;ire` as a
+    /// surname is worse than decoding it at the last point before it leaves.
+    #[test]
+    fn surname_decodes_the_importers_html_entities() {
+        assert_eq!(surname_of("Conall Corc mac L&#225;ire").as_deref(), Some("mac Láire"));
+        assert_eq!(surname_of("Diarmaid &#211; Drisceoil").as_deref(), Some("Ó Drisceoil"));
+        assert_eq!(surname_of("Jos&#233; de Mello").as_deref(), Some("de Mello"));
+        // A bare ampersand is left alone rather than eating the rest of the string.
+        assert_eq!(surname_of("Smith & Sons").as_deref(), Some("Sons"));
+    }
+
+    /// Nothing usable yields nothing — never a stray fragment that would publish as a name.
+    #[test]
+    fn surname_of_nothing_is_none() {
+        assert_eq!(surname_of(""), None);
+        assert_eq!(surname_of("   "), None);
+        assert_eq!(surname_of("Jr."), None, "a suffix alone is not a surname");
+        assert_eq!(surname_of("?"), None);
+        // Junk the corpus actually contains — better nothing than a fragment published as a name.
+        assert_eq!(surname_of("trees.ancestry.com/tree/49418381/family"), None);
+        assert_eq!(surname_of("1846 Duplin County, NC"), None);
+        assert_eq!(surname_of("ABT. 1769 • Kilmalkedar, Co Kerry, Ireland"), None);
     }
 }
