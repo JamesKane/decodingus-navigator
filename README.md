@@ -30,6 +30,9 @@ A single native binary runs on macOS, Windows, and Linux with no runtime depende
 ### Workspace Management
 - Create and manage multiple projects and subjects (biosamples)
 - Subject-centric detail view: Overview, Y-DNA, mtDNA, Autosomal, Ancestry, IBD Matches, and Sources
+- Project view: Members, Report, Y-STR, and a cohort **Block tree**
+- Top-level **Matching** (federated relative discovery) and **Community** areas
+- **Simple** and **Advanced** interface modes — Simple presents one person's results as a guided brief
 - Persistent workspace stored locally in SQLite
 - Search and filter across projects and subjects
 
@@ -54,9 +57,11 @@ Imports automatically compute a checksum and detect platform (Illumina, PacBio, 
 - **Y-DNA & mtDNA Haplogroups** — terminal assignment with ranked candidates, across the DecodingUs and FTDNA tree providers; multi-source reconciliation into a single genome-level consensus per subject
 - **mtDNA Variants & Heteroplasmy** — rCRS-relative mutation list plus site-level depth and allele fraction
 - **Private Y Variants** — off-backbone calls (finer branches + novel candidates), reconciled across sources
+- **Project Block Tree** — the cohort Y haplotree for a whole project, drawn in the Big Tree style: block height is the branch's SNP count, so it reads as elapsed time, with a mutation ruler down the side. Members sharing unnamed variants surface as **candidate branches** the published tree does not carry yet, with their supporting evidence reviewable. Exports to TSV / HTML
 - **Diploid Variant Calling** — de-novo diploid SNV + indel caller, exportable as a whole-genome VCF (per alignment or per-subject consensus)
 - **Ancestry** — admixture (26 fine populations / 8 continents), PCA projection, geographic map, DNA-painting local ancestry
-- **IBD Detection** — pairwise shared-segment detection with a per-chromosome segment browser and relationship estimates, using a real recombination map. Federated match suggestions surface candidate relatives from the Federation, and an encrypted, consent-gated channel exchanges IBD segments and signed attestations between edges (end-to-end round-trip validation is gated on a live AppView broker).
+- **Deep & Archaic Ancestry** — qpAdm ancient-component fit (WHG / EEF / Steppe) and an archaic (Neanderthal / Denisovan) marker count reported as copies carried of copies assayed, never as a percentage
+- **IBD Detection** — pairwise shared-segment detection with a per-chromosome segment browser and relationship estimates, using a real recombination map. A top-level **Matching** area carries federated match suggestions, a durable request ledger, and results; an encrypted, consent-gated channel exchanges IBD segments and signed attestations between edges, validated end-to-end against a live AppView broker
 - **Structural Variants** — deletions, duplications, inversions, breakends (output unvalidated; needs ≥10× coverage)
 - **Liftover** — automatic coordinate conversion between GRCh38, GRCh37, and CHM13v2
 
@@ -129,7 +134,9 @@ navigator subjects --json
 navigator show --subject "Jane Doe"
 navigator projects
 navigator call --subject "Jane Doe" --out jane.vcf          # de-novo diploid SNV/indel VCF
-navigator liftvcf --in calls.GRCh38.vcf.gz --from GRCh38 --to chm13v2.0 --out calls.chm13.vcf.gz
+navigator lift-vcf --in calls.GRCh38.vcf.gz --from GRCh38 --to chm13v2.0 --out calls.chm13.vcf.gz
+navigator private-y --project "R1b-CTS4466Plus"             # private-Y for a whole cohort (feeds the block tree)
+navigator rebuild-signatures --stale-tree                   # re-place everyone placed against an older haplotree
 ```
 
 Additional subcommands cover PDS sign-in (`login`), diagnostics, and maintenance. See the **[User Guide](USER_GUIDE.md)** for full usage, and **[`crates/README.md`](crates/README.md)** for the crate topology and developer setup.

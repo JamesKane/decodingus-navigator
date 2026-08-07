@@ -10,7 +10,7 @@ Welcome to the **Decoding-Us Navigator**, your private, local companion for adva
 
 In a hurry? Here's the whole thing in five steps — the rest of this guide is detail you can come back to.
 
-1. **Download** the installer for your platform from the [latest GitHub release](https://github.com/JamesKane/decodingus-navigator/releases/latest): the `.dmg` for macOS, the `.exe` for Windows, or a `.deb` / `.AppImage` for Linux. It's one self-contained file (~60–85 MB); there is nothing else to install — no Java, no GATK, no samtools.
+1. **Download** the installer for your platform from the [latest GitHub release](https://github.com/JamesKane/decodingus-navigator/releases/latest): the `.dmg` for macOS, the `.exe` for Windows, or a `.deb` / `.AppImage` for Linux. It's one self-contained file (~105–135 MB); there is nothing else to install — no Java, no GATK, no samtools.
 2. **Install and launch it.** On first run Navigator creates its workspace at `~/.decodingus/` automatically. No configuration needed.
 3. **Add your DNA file.** Click **Add New Subject**, select it, open the **Sources** tab, and add your file — a BAM/CRAM, a VCF, a consumer chip export (23andMe/AncestryDNA), an mtDNA FASTA, or a Y-SNP/STR export. Navigator auto-detects the type and, on first use, downloads the reference genome it needs.
 4. **Let it run.** Import places what it can immediately; use **Full Analyze** on the subject for the complete pass (coverage, Y/mtDNA haplogroups, ancestry, and more). Results are cached, so re-running is instant.
@@ -24,6 +24,7 @@ That's the single-sample path, and for most people it's the entire app. Everythi
 2. [System Requirements](#system-requirements)
 3. [Installation & Setup](#installation--setup)
 4. [Getting Started](#getting-started)
+   - [Simple and Advanced modes](#simple-and-advanced-modes)
    - [First-Time Setup: Bringing Your Own Reference Genomes](#first-time-setup-bringing-your-own-reference-genomes)
 5. [Core Features](#core-features)
    - [Workspace Management](#workspace-management)
@@ -33,6 +34,8 @@ That's the single-sample path, and for most people it's the entire app. Everythi
    - [Importing an FTDNA group project](#importing-an-ftdna-group-project)
    - [Running Analyses](#running-analyses)
    - [The Branch Report tool](#the-branch-report-tool)
+   - [The project Block tree](#the-project-block-tree)
+   - [Finding relatives: the Matching tab](#finding-relatives-the-matching-tab)
    - [Exporting & Sharing Results](#exporting--sharing-results)
 6. [The Command Line](#the-command-line)
 7. [Data Management & Privacy](#data-management--privacy)
@@ -49,7 +52,7 @@ Decoding-Us Navigator runs a complete bioinformatics stack on your desktop. Unli
 
 - **Privacy First:** Your raw genomic files (BAM/CRAM, chip raw data, etc.) never leave your machine.
 - **Data Sovereignty:** You own your data. Only optional, anonymized summaries are shared if you choose to connect to the Decoding-Us Federation.
-- **No external tooling:** Navigator is a single self-contained Rust application. There is **no Java runtime, no GATK, no samtools/bcftools** to install — the analysis engine ([noodles](https://github.com/zaeleus/noodles)) is built in. That keeps the download tiny: each installer is one file of roughly **60–85 MB** (Windows ≈ 62 MB, the Linux `.deb`/AppImage packages ≈ 74–78 MB, the universal macOS `.dmg` ≈ 83 MB because it bundles both Apple Silicon and Intel), and that single file *is* the whole application. A conventional stack has to install a Java runtime — which by itself is larger than any of these — and then GATK, samtools, and bcftools on top of it: a full JDK runs ~150–300 MB, the GATK distribution ~300–400 MB, and samtools/bcftools/HTSlib another few tens of MB, so the traditional toolchain typically lands somewhere between **500 MB and well over 1 GB** installed. Navigator does the same work in a single sub-100 MB download.
+- **No external tooling:** Navigator is a single self-contained Rust application. There is **no Java runtime, no GATK, no samtools/bcftools** to install — the analysis engine ([noodles](https://github.com/zaeleus/noodles)) is built in. That keeps the download small: each installer is one file of roughly **105–135 MB** (Windows ≈ 104 MB, the Linux `.deb`/AppImage packages ≈ 123–130 MB, the universal macOS `.dmg` ≈ 136 MB because it bundles both Apple Silicon and Intel), and that single file *is* the whole application. A conventional stack has to install a Java runtime — which by itself is comparable — and then GATK, samtools, and bcftools on top of it: a full JDK runs ~150–300 MB, the GATK distribution ~300–400 MB, and samtools/bcftools/HTSlib another few tens of MB, so the traditional toolchain typically lands somewhere between **500 MB and well over 1 GB** installed. Navigator does the same work in a single download roughly a tenth that size.
 - **Accessibility:** Complex command-line bioinformatics is wrapped in an easy-to-use desktop interface, with an optional scriptable CLI for power users.
 
 ## System Requirements
@@ -100,16 +103,26 @@ The optimized binary is named `navigator` and lands at `target/release/navigator
 
 ### Running it
 
-Running `navigator` with no arguments opens the graphical Workbench. Running it with a subcommand (`ingest`, `subjects`, `show`, `projects`, `call`, `branch-report`, `liftvcf`) runs in headless mode against the same workspace — see [The Command Line](#the-command-line).
+Running `navigator` with no arguments opens the graphical Workbench. Running it with a subcommand (`ingest`, `subjects`, `show`, `projects`, `call`, `branch-report`, `lift-vcf`, `private-y`, `rebuild-signatures`, `doctor`, …) runs in headless mode against the same workspace — see [The Command Line](#the-command-line).
 
 ## Getting Started
 
+### Simple and Advanced modes
+Navigator has two interface modes, switchable at any time from **⚙ Settings**:
+
+- **Simple** — for reading one person's results. The subject's findings are laid out as a guided brief with a section rail down the side, ordered deepest-past to present: ancient ancestry, then haplogroups, then recent relatives. It is the mode to hand someone who wants to know what their DNA says, not to run an analysis.
+- **Advanced** — the full workbench described below, with every table, card, and export.
+
+Nothing is computed differently between them; Simple mode just presents a subset, in a narrative order, with plain-language framing.
+
 ### The Workbench
-When you launch Navigator you land in the **Workbench**, organized around three top-level tabs:
+In Advanced mode you land in the **Workbench**, organized around five top-level tabs:
 
 - **Dashboard** — A high-level overview of your projects and subjects.
-- **Subjects** — The master table of every research subject (biosample). Select a row to open its detail panel on the right.
-- **Projects** — Your project groupings and their member counts.
+- **Subjects** — The master table of every research subject (biosample). Select a row to open its detail panel on the right. (In Simple mode this is **My DNA**.)
+- **Projects** — Your project groupings, their member counts, and each project's [Block tree](#the-project-block-tree).
+- **Matching** — Federated relative discovery: suggestions, outgoing/incoming requests, and completed comparisons. See [Finding relatives](#finding-relatives-the-matching-tab).
+- **Community** — Federation social features: posts, direct messages, and project recruitment.
 
 The Subjects table shows each subject's ID, name, Y-DNA and mtDNA haplogroups, sex, originating center, and analysis status at a glance.
 
@@ -164,10 +177,10 @@ Organize your research:
   - **Y-DNA** — split into **Haplogroup** (placement and supporting branch evidence), **SNP** (the full genotyped-variant table, including **Private** off-backbone calls and **Imported** vendor Y-SNPs), and **STR** (Y-STR panel reports).
   - **mtDNA** — **Summary** (maternal haplogroup consensus) and **Variants** (rCRS-relative mutation list and heteroplasmy).
   - **Autosomal** — **Summary** plus a **Profile** diploid genotype table from the SNV/indel caller.
-  - **Ancestry** — admixture, PCA, fine-population breakdown, and DNA painting.
+  - **Ancestry** — admixture, PCA, fine-population breakdown, DNA painting, and the deep (ancient) and archaic components.
   - **IBD Matches** — shared-segment detection and network match suggestions.
   - **Sources** — the per-result hub where you add files and see every run, alignment, and profile attached to the subject.
-- **Projects:** Group related subjects (e.g. "Family Study", "Ancient DNA") and assign an administrator.
+- **Projects:** Group related subjects (e.g. "Family Study", "Ancient DNA") and assign an administrator. A project's own view has **Members**, a **Report**, a **Y-STR** chart, and the [**Block tree**](#the-project-block-tree) — the cohort haplotree.
 
 ### Importing Data
 Navigator auto-detects the type of any file you import and routes it appropriately. Supported sources:
@@ -365,8 +378,11 @@ Available analyses:
 | **mtDNA Variants & Heteroplasmy** | Validated (variants); screening (heteroplasmy) | rCRS-relative mutation list (HVR1/HVR2/coding) plus site-level heteroplasmy. Heteroplasmy is a screening pass, not a clinical caller. |
 | **Private Y Variants** | Validated | Off-backbone calls — finer branches and novel candidate variants, reconciled across sources. |
 | **Ancestry** | Validated | Admixture across fine populations / continental groups (ADMIXTURE, PCA projection + GMM, and an nMonte/G25-style estimate), a geographic map, fine-population breakdown, and DNA-painting local ancestry. |
+| **Deep (ancient) Ancestry** | Validated | qpAdm fit of ancient components — Western Hunter-Gatherer, Early European Farmer, Steppe — over the subject's pooled autosomal data. Needs the autosomal consensus built first. |
+| **Archaic Ancestry** | Validated (count); segments validated against an external callset | A Neanderthal/Denisovan marker **count** — copies carried of copies assayed, never a "% Neanderthal" — plus per-chromosome archaic segments. Compare the figure only with people of similar ancestry: it is measured against the four sequenced archaic genomes, which resemble some ancestries more closely than others. Which archaic lineage a segment came from is deliberately withheld as not reliable enough to report. |
 | **Diploid Variant Calling** | Validated on test data | De-novo **diploid** SNV + indel calls, exportable as a whole-genome VCF (per subject or per alignment). |
-| **IBD Detection** | Validated (detection) | Pairwise shared-segment detection and relationship estimates, using a real recombination map. The match-discovery / network UI is still in progress. |
+| **IBD Detection** | Validated (detection + exchange) | Pairwise shared-segment detection and relationship estimates, using a real recombination map. Federated discovery, the encrypted exchange, and signed attestations are in the [Matching](#finding-relatives-the-matching-tab) tab. |
+| **Project Block Tree** | Validated (structure); candidate branches are inferences | The cohort haplotree for a whole project, with block height as elapsed time and shared unnamed variants surfaced as candidate branches. See [The project Block tree](#the-project-block-tree). |
 | **Structural Variants (SV)** | Built, output unvalidated | Deletions, duplications, inversions, and breakends. Reliable output needs ≥10× coverage. |
 
 Navigator also reconciles Y/mtDNA haplogroups across multiple runs and alignments per subject into a single genome-level **consensus** assignment, rather than voting on per-run labels.
@@ -402,6 +418,48 @@ Read top to bottom it tells a clear story: the four markers that define `R-FGC29
 
 **Sharing it.** The **Export** button writes this TSV (the `GT` column is VCF-style: `1` derived, `0` ancestral, `.` no-call), which is the format to hand another researcher when you are cross-checking placements between labs — they load the same node on their own sample and diff the two files marker for marker.
 
+### The project Block tree
+The Branch Report above answers a question about *one* sample. The **Block tree** answers the question a group project exists to ask: **where do these members sit relative to one another?** Open any project and choose the **Block tree** tab.
+
+It is drawn in the style of Alex Williamson's Big Tree — the presentation FTDNA's Block Tree borrowed — and the whole layout follows from one idea:
+
+> Mutations accumulate at a roughly steady rate, so counting SNPs is a way of measuring **time**.
+
+Once you know that, the diagram reads itself:
+
+- **A block's height is its SNP count**, with nothing hidden. A tall block is a long stretch of history in which no branching happened — a lineage that ran a long time before it split.
+- **How far down the page a block sits** is the mutations accumulated getting there, so two branches at the same generation can sit at different depths, and that difference is real.
+- **A parent block spans all of its descendants.** Descent is shown by containment, so there are no connector lines to trace.
+- **A ruler down the left edge** graduates the deepest lineage in mutations, so a height is a quantity you can read off rather than an impression.
+- **Men are grey boxes** along the bottom, on a stem from the branch they sit on. Click one to jump to that subject.
+- **The path above the cohort is a breadcrumb**, not a block. A group project's members often share a thousand-plus SNPs of upstream backbone, and drawn to scale that single box would be taller than the entire project below it.
+
+**Private variants get their own blocks**, in teal, between a branch and its men — on the same vertical scale, because they measure the same thing: the mutations between that named branch and today. The figure shown is an average across the men placed on that branch who have private-Y computed; hover for the exact denominator.
+
+**Candidate branches** are the payoff. When two or more members share private variants that no branch in the tree names, that grouping is drawn in amber as a *candidate* — a branch that plausibly exists but has not been published. Click one to open its evidence: every member, position, read depth, and allele fraction behind it. Several filters sit between a mapping artefact and a claimed discovery (variants too close together to be independent, positions recurring across unrelated branches, and so on), and the header says how many groupings each rejected.
+
+Two things to know before you rely on it:
+
+- **Candidate branches and private-variant blocks need private-Y computed for the project first**, which is currently a command-line step:
+  ```bash
+  navigator private-y --project "R1b-CTS4466Plus"
+  ```
+  It is resumable, and `--force` recomputes. There is no button for it in the app yet.
+- **Private-variant counts from GRCh38/GRCh37 data are an upper bound.** Regions of the Y that are known to generate false variants are excluded, but the reference data doing that exclusion is less complete for those builds than for CHM13, so counts run high. Do not compare them directly against an FTDNA figure. Samples that look implausible are dropped from a branch's average and the block is outlined in amber to say so.
+
+The tab header also reports what it *could not* place — members with no Y placement, and members whose terminal branch this tree does not carry — rather than quietly drawing a smaller tree. **Export** writes the whole cohort as TSV or a self-contained HTML page.
+
+### Finding relatives: the Matching tab
+**Matching** is where federated relative-discovery lives. It is top-level rather than per-subject because a matching conversation belongs to your *account*, not to any one biosample — you choose which subject to compare only when it is time to exchange data.
+
+Three sub-tabs:
+
+- **Suggestions** — candidate relatives surfaced by the Federation, based on signed summaries other people have published. Each can be pursued or **dismissed**.
+- **Requests** — the durable ledger of conversations in progress, incoming and outgoing. A request is remembered from the moment you send it until the comparison completes, and survives restarting the app.
+- **Results** — completed comparisons, with the shared segments and a relationship estimate. From here you can **attest** to a result, which publishes a signed statement that the two of you matched — this is what lets other people's discovery searches find the connection.
+
+The exchange itself is end-to-end encrypted and consent-gated: nothing is compared until both sides agree, and your raw data never moves — only the segment dosages needed for the comparison.
+
 ### Exporting & Sharing Results
 Result cards carry an **Export** action that writes a shareable file via a save dialog. Available formats:
 
@@ -415,7 +473,7 @@ Result cards carry an **Export** action that writes a shareable file via a save 
 | IBD segments | TSV |
 | Diploid variants | VCF (per alignment, or a subject-level consensus across same-build alignments) |
 
-The same diploid VCF export is also available headlessly via the [`call`](#the-command-line) subcommand.
+The same diploid VCF export is also available headlessly via the [`call`](#the-command-line) subcommand, and the project Block tree exports from its own tab.
 
 ## The Command Line
 
@@ -443,8 +501,23 @@ navigator branch-report --subject "Jane Doe" --node R-FGC29071 --tree y
 navigator branch-report --subject "Jane Doe" --node H2a --tree mt --tsv jane.mt.branch.tsv
 
 # Lift a VCF from one reference build to another
-navigator liftvcf --in calls.GRCh38.vcf.gz --from GRCh38 --to chm13v2.0 --out calls.chm13.vcf.gz
+navigator lift-vcf --in calls.GRCh38.vcf.gz --from GRCh38 --to chm13v2.0 --out calls.chm13.vcf.gz
+
+# Private Y variants: one alignment's bucket, or a whole project (this is what the Block tree needs)
+navigator private-y --subject "Jane Doe"
+navigator private-y --project "R1b-CTS4466Plus"      # resumable; --force recomputes
+
+# Re-place everyone whose haplogroup was assigned against an older haplotree
+navigator rebuild-signatures --stale-tree --dry-run  # list who is affected
+navigator rebuild-signatures --stale-tree
+
+# Explain why an alignment can't be read (names the file actually at fault)
+navigator doctor --subject "Jane Doe"
 ```
+
+Deeper analyses are available headlessly too: `deep-ancestry` (qpAdm ancient components), `archaic` /
+`archaic-segments`, `genotype-panel`, and `analyze` (the full per-alignment pass with per-step
+timings). Run `navigator <command> --help` for each one's flags.
 
 Useful flags:
 - `--subject` / `-s` — donor identifier (found by exact match, or created on `ingest`).
@@ -455,8 +528,8 @@ Useful flags:
 - `--contig` / `-c` — (for `call`) restrict to a single contig (e.g. `chrM`, `chr21`); default is every primary chromosome.
 - `--node` / `-n`, `--tree` / `-t`, `--depth` — (for `branch-report`) the node to report (a haplogroup name like `R-FGC29071` or a defining marker like `FGC29071`), which tree to read (`y` or `mt`), and an optional cap on how many levels below the node to descend (default: the whole subtree).
 - `--tsv` — (for `branch-report`) write the report as TSV to a file instead of printing a table; `--json` emits JSON instead (the two are mutually exclusive).
-- `--out` / `-o` — (for `call` / `liftvcf`) write the VCF to a file instead of stdout.
-- `--in` / `-i`, `--to` / `-t`, `--from` / `-f`, `--filter-par` — (for `liftvcf`) input VCF, target build, optional source build (inferred from the header when omitted), and whether to drop variants landing in the target chrY PAR.
+- `--out` / `-o` — (for `call` / `lift-vcf`) write the VCF to a file instead of stdout.
+- `--in` / `-i`, `--to` / `-t`, `--from` / `-f`, `--filter-par` — (for `lift-vcf`) input VCF, target build, optional source build (inferred from the header when omitted), and whether to drop variants landing in the target chrY PAR.
 - `--db` — point at an alternate workspace database (defaults to `~/.decodingus/navigator-rs.db`).
 - `--json` — emit machine-readable JSON instead of a table (on `subjects`, `show`, `projects`, `branch-report`).
 
@@ -507,7 +580,7 @@ If you never sign in at all, Navigator remains a complete local analysis tool �
 Open the **⚙ Settings** dialog from the app bar to configure (saved to `~/.decodingus/config/settings.json`; environment variables take precedence over saved settings):
 
 - **Connection** — the Federation **AppView URL** for haplotree updates and publishing.
-- **Appearance** — light/dark **theme** and **UI scale**.
+- **Appearance** — **interface mode** (Simple / Advanced), light/dark **theme**, and **UI scale**.
 - **Reference** — the reference-genome cache directory and whether to **prompt before downloading** large reference files.
 - **Advanced** — the **Y-tree provider** (`decodingus` or `ftdna`) and the haplotree cache **TTL** (days before refetch; `0` = always refetch).
 - **AI assistant (local)** — turn the optional local AI helper on/off and point it at your model server. See [The Local AI Assistant](#the-local-ai-assistant-optional) below for the full setup.
@@ -599,8 +672,30 @@ A: Navigator downloads references on demand. If you are offline, run an analysis
 **Q: A haplogroup result looks out of date or under-placed.**
 A: Haplotrees are cached for `NAVIGATOR_TREE_TTL_DAYS` (default 7). Lower that value or set it to `0` in [Settings](#settings) (or via the environment) to force a fresh fetch, then re-run the analysis.
 
+**Q: The tree has been updated — how do I re-place everyone at once?**
+A: Placement happens per subject, so a workspace can end up with people placed against different generations of the tree. To find and fix them in bulk:
+
+```bash
+navigator rebuild-signatures --stale-tree --dry-run   # who is affected
+navigator rebuild-signatures --stale-tree             # re-place them
+```
+
+It looks for two separate symptoms: a test placed against an older tree, and a subject whose overall placement names a branch the current tree no longer carries. Subjects analyzed before Navigator recorded which tree it used cannot be told apart from current ones — add `--include-unknown` to sweep those too, but expect it to be much slower, since most of them mean re-reading the alignment.
+
 **Q: My file wasn't recognized on import.**
 A: Navigator auto-detects by extension and content fingerprint. Confirm the file is one of the [supported formats](#importing-data). Consumer chip exports from less common vendors may not be detected; the file is still recorded but won't be analyzed.
+
+**Q: The Block tree shows no private variants or candidate branches.**
+A: Those need private-Y computed for the project first — a command-line step for now:
+
+```bash
+navigator private-y --project "My Project"
+```
+
+It is resumable, so it can be re-run after adding members. See [The project Block tree](#the-project-block-tree).
+
+**Q: My private-variant counts are far higher than my FTDNA results.**
+A: Expected on GRCh38/GRCh37 data, and a known limitation rather than a fault in your sample. Navigator excludes the regions of the Y chromosome that generate false variants, but the reference data doing that exclusion is less complete for those builds than for CHM13, so counts run high. Treat them as an upper bound and don't compare them directly to a vendor figure. Samples that look implausible are dropped from a branch's average, and the Block tree outlines that block in amber to say so.
 
 **Q: A sample imported with only haplogroups and basic metrics.**
 A: That's the project-import [fast path](#the-sidecar-hot-path) using sidecar files. Run **Analyze All** (or analyze the subject) to add ancestry, the full coverage histogram, structural variants, the diploid caller, and IBD genotyping from the alignment itself.
