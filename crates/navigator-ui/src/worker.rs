@@ -2612,6 +2612,7 @@ async fn run_chore_streaming(
                 Err(e) => return fail_chore(chore, e.to_string(), evt_tx, &wake),
             };
             let total = targets.len();
+            let (mut calls_replaced, mut calls_failed) = (0usize, 0usize);
             // One lookup for the whole batch rather than a query per subject just to label a
             // progress line.
             let names: std::collections::HashMap<_, _> = app
@@ -2627,20 +2628,33 @@ async fn run_chore_streaming(
                 }
                 let label = names.get(guid).cloned().unwrap_or_else(|| guid.0.to_string());
                 progress(chore, i, total, &label, evt_tx, &wake);
-                // Rebuild both arms: a source-less lineage just yields an empty profile, and a
-                // subject can be stale on one arm while current on the other.
-                let y = app.build_y_profile(*guid).await;
-                let m = app.build_mt_profile(*guid).await;
-                match (y, m) {
-                    (Ok(_), Ok(_)) => outcome.done += 1,
-                    (Err(e), _) | (_, Err(e)) => {
+                // Re-place the per-alignment calls *and* rebuild the pooled profiles — see
+                // `App::replace_against_current_tree`. Rebuilding only the profiles (what this used
+                // to do) left every `haplogroup_call` row on its old tree, which is both the
+                // "sources diverge" conflicts on the Y card and the reason a swept subject stayed
+                // due forever.
+                match app.replace_against_current_tree(*guid).await {
+                    Ok(r) => {
+                        outcome.done += 1;
+                        calls_replaced += r.calls_replaced;
+                        calls_failed += r.calls_failed;
+                    }
+                    Err(e) => {
                         outcome.failed += 1;
                         let _ = evt_tx.send(Event::Error(format!("{label}: {e}")));
                         wake();
                     }
                 }
             }
-            outcome.summary = format!("{} subject(s) re-placed against the current tree", outcome.done);
+            outcome.summary = format!(
+                "{} subject(s) re-placed against the current tree · {calls_replaced} call(s) re-placed{}",
+                outcome.done,
+                if calls_failed > 0 {
+                    format!(" · {calls_failed} call(s) failed")
+                } else {
+                    String::new()
+                }
+            );
         }
 
         Chore::PublishOrigins => match app.publish_ancestral_origins(navigator_app::Lineage::Y, false).await {

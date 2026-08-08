@@ -465,7 +465,7 @@ pub use ftdna_import::{
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaPlanRow, FtdnaPlanStats,
     FtdnaResolution, FtdnaSubjectInput, FuzzyCandidate, MatchKind,
 };
-pub use maintenance::{Chore, ChoreOutcome, ChoreSurvey, PrivateYRefresh};
+pub use maintenance::{Chore, ChoreOutcome, ChoreSurvey, PrivateYRefresh, TreeReplace};
 pub use navigator_domain::identity::{ExternalId, FtdnaMember, Lineage, Mdka};
 pub use navigator_domain::ystr_cluster::{BranchSuggestion, ClusteredMember, YstrCluster, YstrClustering};
 pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
@@ -3403,6 +3403,12 @@ pub struct AnalysisError {
 /// Artifact key for [`AnalysisError`] markers.
 pub(crate) const ERROR_KIND: &str = "error";
 pub(crate) const ERROR_VERSION: &str = "1";
+
+/// Artifact key for the pipeline sidecar paths an alignment was ingested from — the record that
+/// lets [`App::replace_against_current_tree`] replay the fast path instead of re-scanning for files
+/// whose discovery only ever happened at import.
+pub(crate) const SIDECARS_KIND: &str = "sidecars";
+pub(crate) const SIDECARS_VERSION: &str = "1";
 
 /// One member row of a project's FTDNA-style Y-DNA STR overview: identity columns + the subject's
 /// consensus STR marker values (normalized marker name → value) + terminal Y haplogroup. Members
