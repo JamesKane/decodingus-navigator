@@ -1026,6 +1026,15 @@ pub struct NavigatorApp {
     analyzing: bool,
     /// Streaming deep-analyze progress: `(done, total, current_sample, fraction)` while running.
     deep_progress: Option<(usize, usize, String, f32)>,
+    /// Workspace-chore survey (Dashboard → Maintenance). `None` until the user asks for it: two of
+    /// the three chores cost real work to measure, one a multi-MB tree fetch.
+    maintenance: Option<Vec<navigator_app::ChoreSurvey>>,
+    /// True while the survey is in flight, so the button can say so.
+    maintenance_surveying: bool,
+    /// The chore currently running, with its progress line.
+    chore_running: Option<(navigator_app::Chore, usize, usize, String, f32)>,
+    /// What the last chore did, kept on screen so a finished job is not just a vanished bar.
+    chore_last: Option<(navigator_app::Chore, navigator_app::ChoreOutcome)>,
     /// The dry-run FTDNA import plan being reviewed (drives the review modal).
     ftdna_plan: Option<FtdnaImportPlan>,
     /// The admin's per-kit resolutions for the fuzzy rows in [`Self::ftdna_plan`].
@@ -1462,6 +1471,10 @@ impl NavigatorApp {
             update_info: None,
             analyzing: false,
             deep_progress: None,
+            maintenance: None,
+            maintenance_surveying: false,
+            chore_running: None,
+            chore_last: None,
             ftdna_plan: None,
             ftdna_resolutions: std::collections::BTreeMap::new(),
             genealogy: None,

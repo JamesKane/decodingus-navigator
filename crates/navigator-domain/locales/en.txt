@@ -311,6 +311,21 @@ dash.projects=Projects
 dash.subjects=Subjects
 dash.alignments=Alignments
 
+# Workspace maintenance (Dashboard) — the chores that were CLI-only.
+maint.title=Workspace maintenance
+maint.hint=Periodic jobs that keep this workspace current. Nothing runs until you ask, and checking what is due costs a moment.
+maint.check=Check what's due
+maint.checking=Checking…
+maint.run=Run
+maint.due=due
+maint.blocked=Unavailable
+maint.privateY=Private variants
+maint.privateY.hint=Find the mutations each subject carries beyond their assigned branch. Cohort views cannot tell a shared unnamed variant from a lone one until this has been walked once.
+maint.staleTree=Re-place against the current tree
+maint.staleTree.hint=Subjects scored against an older haplotree, or whose consensus names a branch this tree no longer carries. Placement is demand-driven, so a new tree is otherwise noticed one subject at a time.
+maint.publishOrigins=Publish ancestral origins
+maint.publishOrigins.hint=Share each lineage's most distant known ancestor — surname, origin and dates — with the AppView. Only for subjects whose data this workspace holds and whose tester has not opted out.
+
 # Empty states / hints
 empty.projects.title=Projects
 empty.projects.hint=Create or select a project from the left.

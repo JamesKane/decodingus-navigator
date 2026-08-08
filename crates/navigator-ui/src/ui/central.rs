@@ -829,6 +829,109 @@ impl NavigatorApp {
                 ui.label(egui::RichText::new("Not signed in — connect a PDS from the top bar to publish.").weak());
             }
         }
+        ui.add_space(20.0);
+        self.maintenance_section(ui);
+    }
+
+    /// i18n keys for a chore. Static because `tr` takes a `&'static str` — and because a chore
+    /// with no label should fail to compile rather than render a raw key.
+    fn chore_labels(chore: navigator_app::Chore) -> (&'static str, &'static str) {
+        match chore {
+            navigator_app::Chore::PrivateY => ("maint.privateY", "maint.privateY.hint"),
+            navigator_app::Chore::StaleTree => ("maint.staleTree", "maint.staleTree.hint"),
+            navigator_app::Chore::PublishOrigins => ("maint.publishOrigins", "maint.publishOrigins.hint"),
+        }
+    }
+
+    /// **Workspace maintenance** — the periodic batch jobs, in one place.
+    ///
+    /// These were CLI-only (`private-y --project`, `rebuild-signatures --stale-tree`,
+    /// `publish-origins`), and each design doc that noted the missing GUI trigger also noted that
+    /// they wanted *one* answer rather than a button apiece. So this is a table over
+    /// `navigator_app::Chore`: a fourth chore is a row, not a new surface.
+    ///
+    /// Nothing is surveyed until asked. Measuring what these would do costs real work — one walks
+    /// every alignment, another fetches and parses a multi-MB haplotree — and a dashboard must not
+    /// pay that on every visit.
+    fn maintenance_section(&mut self, ui: &mut egui::Ui) {
+        ui.heading(self.tr("maint.title"));
+        ui.label(egui::RichText::new(self.tr("maint.hint")).weak().small());
+        ui.add_space(6.0);
+
+        let busy = self.chore_running.is_some();
+        ui.horizontal(|ui| {
+            let label = if self.maintenance_surveying {
+                self.tr("maint.checking")
+            } else {
+                self.tr("maint.check")
+            };
+            if ui
+                .add_enabled(!self.maintenance_surveying && !busy, egui::Button::new(label))
+                .clicked()
+            {
+                self.maintenance_surveying = true;
+                let _ = self.tx.send(Command::SurveyMaintenance);
+            }
+            if let Some((chore, outcome)) = &self.chore_last {
+                let (title, _) = Self::chore_labels(*chore);
+                ui.label(
+                    egui::RichText::new(format!("{}: {}", self.tr(title), outcome.summary))
+                        .weak()
+                        .small(),
+                );
+            }
+        });
+        ui.add_space(6.0);
+
+        // The running chore's own line, so a long job shows life rather than a frozen panel.
+        if let Some((chore, done, total, label, fraction)) = self.chore_running.clone() {
+            ui.group(|ui| {
+                ui.label(egui::RichText::new(self.tr(Self::chore_labels(chore).0)).strong());
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+                ui.label(
+                    egui::RichText::new(format!("{done} / {total} — {label}"))
+                        .weak()
+                        .small(),
+                );
+            });
+            ui.add_space(6.0);
+        }
+
+        let Some(survey) = self.maintenance.clone() else {
+            return;
+        };
+        for s in &survey {
+            let (title, hint) = Self::chore_labels(s.chore);
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(self.tr(title)).strong());
+                        ui.label(egui::RichText::new(self.tr(hint)).weak().small());
+                        // `due of total` — what makes "0 due" read as "nothing to do" rather than
+                        // "nothing found".
+                        let line = match &s.blocked {
+                            Some(why) => format!("{} — {why}", self.tr("maint.blocked")),
+                            None => format!("{} / {} {}", s.due, s.total, self.tr("maint.due")),
+                        };
+                        ui.label(egui::RichText::new(line).weak().small());
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let runnable = s.blocked.is_none() && s.due > 0 && !busy;
+                        if ui
+                            .add_enabled(runnable, egui::Button::new(self.tr("maint.run")))
+                            .clicked()
+                        {
+                            self.chore_last = None;
+                            let _ = self.tx.send(Command::RunChore {
+                                chore: s.chore,
+                                force: false,
+                            });
+                        }
+                    });
+                });
+            });
+            ui.add_space(4.0);
+        }
     }
 
     /// The bottom action bar for the Subjects view: selection count + batch actions.

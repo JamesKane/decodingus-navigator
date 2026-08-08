@@ -43,6 +43,9 @@ pub enum Command {
     DebugCalls(DebugCallsArgs),
     /// Diagnostic: the filtered private-Y bucket for an alignment — DISPLAY vs PUBLISH counts.
     PrivateY(PrivateYArgs),
+    /// Publish the ancestral origins (MDKA surname / place / dates) of subjects this workspace may
+    /// publish for. Dry-run unless `--apply`.
+    PublishOrigins(PublishOriginsArgs),
     /// Diagnostic: deep (ancient) ancestry fitted over each view of a subject — the pooled
     /// consensus, each source alone, and thinned site sets. The stability gate: a 30x WGS and a
     /// consumer chip must agree, or the estimate is tracking the assay, not the donor.
@@ -236,6 +239,20 @@ pub struct PrivateYArgs {
     /// Recompute buckets that are already cached (default: skip them, so a batch is resumable).
     #[arg(long)]
     force: bool,
+    /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
+    #[arg(long)]
+    db: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct PublishOriginsArgs {
+    /// Lineage to publish: `y` (default) or `mt`.
+    #[arg(long, default_value = "y")]
+    lineage: String,
+    /// Actually enqueue the records. Without it nothing leaves the workspace and the command only
+    /// reports what would — genealogy is not something to publish by accident.
+    #[arg(long)]
+    apply: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
@@ -479,6 +496,7 @@ pub fn run(command: Command) -> i32 {
             Command::DebugDescent(a) => debug_descent(a).await,
             Command::DebugCalls(a) => debug_calls(a).await,
             Command::PrivateY(a) => private_y(a).await,
+            Command::PublishOrigins(a) => publish_origins(a).await,
             Command::DebugAncient(a) => debug_ancient(a).await,
             Command::DeepAncestry(a) => deep_ancestry(a).await,
             Command::Archaic(a) => archaic(a).await,
@@ -1536,6 +1554,48 @@ async fn private_y_batch(app: &App, project: &str, force: bool) -> i32 {
          {novel} novel unique-sequence variant(s); {publishable} clear the publish gate."
     );
     i32::from(failed > 0)
+}
+
+/// Publish ancestral origins for the subjects the consent predicate allows.
+///
+/// Two gates stand between an MDKA row and the wire, and this command reports both: the consent
+/// predicate (the workspace holds the subject's primary data, and the tester has not opted out of
+/// public sharing) decides `considered`; the field gates (surname only, birth year at or before
+/// 1900, country-only without one, coarsened coordinates) decide `refused`.
+async fn publish_origins(args: PublishOriginsArgs) -> i32 {
+    let lineage = match args.lineage.to_lowercase().as_str() {
+        "y" => navigator_app::Lineage::Y,
+        "mt" => navigator_app::Lineage::Mt,
+        other => {
+            eprintln!("error: --lineage must be \"y\" or \"mt\" (got \"{other}\")");
+            return 2;
+        }
+    };
+    let app = match open(args.db).await {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    let report = match app.publish_ancestral_origins(lineage, !args.apply).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
+    };
+    println!(
+        "{} subject(s) may publish; {} record(s) pass the field gates, {} refused",
+        report.considered, report.publishable, report.refused
+    );
+    println!(
+        "  {} with a place (ancestor has a birth year) · {} country only",
+        report.with_place, report.country_only
+    );
+    if args.apply {
+        println!("queued for the next sync.");
+    } else {
+        println!("dry run — nothing left the workspace. Re-run with --apply to queue them.");
+    }
+    0
 }
 
 async fn private_y(args: PrivateYArgs) -> i32 {

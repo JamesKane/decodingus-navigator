@@ -107,6 +107,47 @@ pub async fn list_for(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<Mdka>, 
     rows.into_iter().map(Row::into_domain).collect()
 }
 
+/// MDKA rows for one lineage that the workspace may publish.
+///
+/// The predicate is the whole consent story, and it is deliberately narrow:
+///
+/// - **the workspace holds primary data for the subject** — a `variant_set`, or a `sequence_run`
+///   with an `alignment`. A roster row alone is somebody else's kit that we happen to know of;
+///   publishing its genealogy would be republishing data the tester gave a vendor, not us.
+/// - **and the tester has not opted out.** `ftdna_member.publicly_shares` is the member's own FTDNA
+///   sharing setting, imported with the roster. A `0` there is an explicit "do not show me", and it
+///   wins over everything else. No roster row at all means no opt-out to honour.
+///
+/// Measured on the reference workspace: 583 Y rows sit on subjects with primary data, of which 558
+/// are publicly-sharing — the other 25 must never publish.
+pub async fn publishable(pool: &SqlitePool, lineage: &str) -> Result<Vec<Mdka>, StoreError> {
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLS} FROM mdka m \
+         WHERE m.lineage = ? \
+           AND ( EXISTS (SELECT 1 FROM variant_set v WHERE v.biosample_guid = m.biosample_guid) \
+              OR EXISTS (SELECT 1 FROM sequence_run r JOIN alignment a ON a.sequence_run_id = r.id \
+                          WHERE r.biosample_guid = m.biosample_guid) ) \
+           AND NOT EXISTS (SELECT 1 FROM ftdna_member f \
+                            WHERE f.biosample_guid = m.biosample_guid \
+                              AND COALESCE(f.publicly_shares, 0) = 0) \
+         ORDER BY m.biosample_guid"
+    ))
+    .bind(lineage)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter().map(Row::into_domain).collect()
+}
+
+/// How many MDKA rows exist for a lineage, publishable or not — the denominator that makes a
+/// publishable count readable.
+pub async fn count_for_lineage(pool: &SqlitePool, lineage: &str) -> Result<usize, StoreError> {
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM mdka WHERE lineage = ?")
+        .bind(lineage)
+        .fetch_one(pool)
+        .await?;
+    Ok(n as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +246,80 @@ mod tests {
         let rows = list_for(pool, g).await.unwrap();
         assert_eq!(rows.len(), 1, "only Mt remains");
         assert_eq!(rows[0].lineage, "Mt");
+    }
+
+    /// The consent predicate is the whole story of what may leave the workspace, so it is pinned
+    /// case by case. Measured against the reference workspace it selects 558 of 583 Y rows — the
+    /// 25 it drops are testers who told FTDNA not to share them publicly.
+    #[tokio::test]
+    async fn publishable_requires_primary_data_and_no_opt_out() {
+        let store = crate::Store::open_in_memory().await.unwrap();
+        let pool = store.pool();
+        let t = "2026-08-07T00:00:00Z";
+
+        let mk = |name: &str| NewMdka {
+            lineage: Lineage::Y.as_str().into(),
+            ancestor_name: Some(name.into()),
+            origin_country: Some("Ireland".into()),
+            ..Default::default()
+        };
+
+        // (a) primary data, no roster row — nothing to opt out of.
+        let owned = seed(pool).await;
+        upsert(pool, owned, &mk("Thomas Kane"), t).await.unwrap();
+        sqlx::query("INSERT INTO variant_set (biosample_guid, source_label, source_type, reference_build, call_schema, source_path) VALUES (?,?,?,?,?,?)")
+            .bind(owned.0.to_string()).bind("v").bind("VCF").bind("hs1").bind("s").bind("/tmp/v.vcf")
+            .execute(pool).await.unwrap();
+
+        // (b) primary data, and the tester shares publicly.
+        let sharing = seed(pool).await;
+        upsert(pool, sharing, &mk("Mary Sullivan"), t).await.unwrap();
+        sqlx::query("INSERT INTO variant_set (biosample_guid, source_label, source_type, reference_build, call_schema, source_path) VALUES (?,?,?,?,?,?)")
+            .bind(sharing.0.to_string()).bind("v").bind("VCF").bind("hs1").bind("s").bind("/tmp/w.vcf")
+            .execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO ftdna_member (biosample_guid, member_name, publicly_shares) VALUES (?,?,1)")
+            .bind(sharing.0.to_string())
+            .bind("M S")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // (c) primary data, but the tester opted OUT. Must never publish.
+        let opted_out = seed(pool).await;
+        upsert(pool, opted_out, &mk("Patrick Walsh"), t).await.unwrap();
+        sqlx::query("INSERT INTO variant_set (biosample_guid, source_label, source_type, reference_build, call_schema, source_path) VALUES (?,?,?,?,?,?)")
+            .bind(opted_out.0.to_string()).bind("v").bind("VCF").bind("hs1").bind("s").bind("/tmp/x.vcf")
+            .execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO ftdna_member (biosample_guid, member_name, publicly_shares) VALUES (?,?,0)")
+            .bind(opted_out.0.to_string())
+            .bind("P W")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // (d) a roster row and an MDKA, but the workspace holds no data of its own — somebody
+        // else's kit that we merely know of.
+        let roster_only = seed(pool).await;
+        upsert(pool, roster_only, &mk("Bridget Moore"), t).await.unwrap();
+        sqlx::query("INSERT INTO ftdna_member (biosample_guid, member_name, publicly_shares) VALUES (?,?,1)")
+            .bind(roster_only.0.to_string())
+            .bind("B M")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let out = publishable(pool, "Y").await.unwrap();
+        let guids: Vec<_> = out.iter().map(|m| m.biosample_guid).collect();
+        assert!(guids.contains(&owned), "primary data, no roster row");
+        assert!(guids.contains(&sharing), "primary data, sharing publicly");
+        assert!(!guids.contains(&opted_out), "an explicit opt-out wins over everything");
+        assert!(
+            !guids.contains(&roster_only),
+            "a roster row alone is not ours to publish"
+        );
+        assert_eq!(out.len(), 2);
+
+        // The lineage is honoured: an Mt row on a publishable subject is not a Y row.
+        assert!(publishable(pool, "Mt").await.unwrap().is_empty());
     }
 }

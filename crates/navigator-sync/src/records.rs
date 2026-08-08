@@ -362,3 +362,271 @@ mod tests {
         assert_eq!(back, rec);
     }
 }
+
+// ---- ancestral origin ----------------------------------------------------
+
+/// Collection NSID for a lineage's most distant known ancestor — surname, origin, dates.
+///
+/// This is an **atmosphere** collection, not a `navigator.*` one, because the AppView ingests it
+/// into `fed.ancestral_origin` and renders it as the genealogical-era origins icicle. See
+/// `proposals/ancestral-origin-icicle.md` in the AppView repo.
+pub const ANCESTRAL_ORIGIN_COLLECTION: &str = "com.decodingus.atmosphere.ancestralOrigin";
+
+/// A published external identifier — the key the AppView resolves a record to its tree sample by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OriginExternalId {
+    pub namespace: String,
+    pub value: String,
+}
+
+/// One lineage's most distant known ancestor, as published.
+///
+/// **This type is a privacy boundary.** An MDKA's surname, origin and dates are genealogical
+/// context and may be published; a given name is not, and the living tester never is. The fields
+/// here are the complete list of what may leave the workspace — there is deliberately no
+/// `ancestorName`, no `notes`, and no donor identifier. [`Self::build`] is the only constructor,
+/// so the gates cannot be bypassed by assembling one field-by-field.
+///
+/// **No floats:** DAG-CBOR has none, so the coordinate is a pair of strings (see the module
+/// header). The AppView parses numbers or numeric strings either way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AncestralOriginRecord {
+    #[serde(rename = "$type")]
+    pub record_type: String,
+    /// at-uri of the parent biosample record, when the sample is itself federated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub biosample_ref: Option<String>,
+    /// Vendor/catalog identifiers — the join that actually resolves on the AppView's tree, whose
+    /// tips were bulk-loaded and carry no at-uri.
+    pub external_ids: Vec<OriginExternalId>,
+    /// `Y_DNA` | `MT_DNA`.
+    pub lineage: String,
+    /// Family name only. Never a given name — see [`navigator_domain::identity::surname_of`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surname: Option<String>,
+    /// Place as recorded; the AppView normalizes it (one implementation, fixable without a client
+    /// release). Withheld entirely when there is no birth year.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_place: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub birth_year: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub death_year: Option<i32>,
+    /// Coarsened to 2dp (~1 km). Withheld when there is no birth year.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lat: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lon: Option<String>,
+    pub created_at: String,
+}
+
+/// The latest ancestor birth year that may carry place-level detail. Someone born in 1900 is 126
+/// today; this is the check that makes "an MDKA is not living-donor PII" verifiable rather than
+/// asserted. Mirrored by the AppView, which re-checks on ingest.
+pub const ANCESTOR_BIRTH_YEAR_MAX: i32 = 1900;
+const ANCESTOR_BIRTH_YEAR_MIN: i32 = 1000;
+
+/// Coarsen a coordinate to ~1 km before it leaves the workspace. A rooftop coordinate plus a
+/// surname narrows to one family; a county-scale view cannot use the precision anyway.
+fn coarsen(v: f64) -> String {
+    format!("{:.2}", (v * 100.0).round() / 100.0)
+}
+
+impl AncestralOriginRecord {
+    /// Build a publishable record, applying every field gate — or `None` when this MDKA must not
+    /// be published at all.
+    ///
+    /// Refuses when there is no join key (nothing could ever resolve it), when the ancestor's
+    /// birth year is outside the plausible range, and when nothing but the lineage survives the
+    /// gates. Withholds place and coordinate — but keeps the country — when there is no birth
+    /// year, since nothing then establishes that the ancestor is long dead.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build(
+        biosample_ref: Option<String>,
+        external_ids: Vec<OriginExternalId>,
+        lineage: &str,
+        ancestor_name: Option<&str>,
+        origin_place: Option<&str>,
+        origin_country: Option<&str>,
+        birth_year: Option<i32>,
+        death_year: Option<i32>,
+        coord: Option<(f64, f64)>,
+        created_at: impl Into<String>,
+    ) -> Option<Self> {
+        if biosample_ref.is_none() && external_ids.is_empty() {
+            return None;
+        }
+        if let Some(y) = birth_year {
+            if !(ANCESTOR_BIRTH_YEAR_MIN..=ANCESTOR_BIRTH_YEAR_MAX).contains(&y) {
+                return None;
+            }
+        }
+        let surname = ancestor_name.and_then(navigator_domain::identity::surname_of);
+        let dated = birth_year.is_some();
+        let origin_place = dated.then_some(origin_place).flatten().map(str::to_string);
+        let (lat, lon) = match (dated, coord) {
+            (true, Some((la, lo))) => (Some(coarsen(la)), Some(coarsen(lo))),
+            _ => (None, None),
+        };
+        let origin_country = origin_country.map(str::to_string);
+        // Nothing worth publishing: no name, no place, no country. The record would resolve to a
+        // sample and say nothing about it.
+        if surname.is_none() && origin_place.is_none() && origin_country.is_none() {
+            return None;
+        }
+        Some(AncestralOriginRecord {
+            record_type: ANCESTRAL_ORIGIN_COLLECTION.to_string(),
+            biosample_ref,
+            external_ids,
+            lineage: lineage.to_string(),
+            surname,
+            origin_place,
+            origin_country,
+            birth_year,
+            death_year: birth_year.and(death_year),
+            lat,
+            lon,
+            created_at: created_at.into(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod ancestral_origin_tests {
+    use super::*;
+
+    fn ids() -> Vec<OriginExternalId> {
+        vec![OriginExternalId {
+            namespace: "FTDNA".into(),
+            value: "B5163".into(),
+        }]
+    }
+
+    fn build(name: Option<&str>, year: Option<i32>) -> Option<AncestralOriginRecord> {
+        AncestralOriginRecord::build(
+            None,
+            ids(),
+            "Y_DNA",
+            name,
+            Some("Creegh South, Co. Clare, Ireland"),
+            Some("Ireland"),
+            year,
+            Some(1908),
+            Some((52.7534567, -9.4312345)),
+            "2026-08-07T00:00:00Z",
+        )
+    }
+
+    /// The type is a privacy boundary: only a surname crosses, never the given name it came from.
+    #[test]
+    fn only_the_surname_is_published() {
+        let r = build(Some("Thomas Michael Kane"), Some(1830)).expect("publishable");
+        assert_eq!(r.surname.as_deref(), Some("Kane"));
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("Thomas"), "the given name never leaves");
+        assert!(!json.contains("Michael"));
+        assert!(!json.contains("ancestorName"), "there is no field for it");
+    }
+
+    /// The check that makes "not living-donor PII" verifiable rather than asserted.
+    #[test]
+    fn an_ancestor_born_after_the_ceiling_is_not_published() {
+        assert!(build(Some("Thomas Kane"), Some(1975)).is_none());
+        assert!(build(Some("Thomas Kane"), Some(1901)).is_none());
+        assert!(build(Some("Thomas Kane"), Some(ANCESTOR_BIRTH_YEAR_MAX)).is_some());
+        assert!(
+            build(Some("Thomas Kane"), Some(0)).is_none(),
+            "a corrupt year is not very old"
+        );
+    }
+
+    /// Without a birth year nothing establishes the ancestor is long dead, so the country survives
+    /// and the precise place does not. The record is kept; the detail is not.
+    #[test]
+    fn without_a_birth_year_only_the_country_is_published() {
+        let r = build(Some("Thomas Kane"), None).expect("kept, not refused");
+        assert_eq!(r.origin_country.as_deref(), Some("Ireland"));
+        assert_eq!(r.origin_place, None, "place withheld");
+        assert_eq!(r.lat, None, "coordinate withheld");
+        assert_eq!(r.death_year, None, "an undated ancestor has no dates at all");
+    }
+
+    /// A rooftop coordinate plus a surname narrows to one family; a county-scale view cannot use
+    /// the precision anyway. Floats also cannot cross DAG-CBOR, hence the strings.
+    #[test]
+    fn coordinates_are_coarsened_and_sent_as_strings() {
+        let r = build(Some("Thomas Kane"), Some(1830)).expect("publishable");
+        assert_eq!(r.lat.as_deref(), Some("52.75"));
+        assert_eq!(r.lon.as_deref(), Some("-9.43"));
+        let json = serde_json::to_value(&r).unwrap();
+        assert!(json["lat"].is_string(), "DAG-CBOR has no float type");
+    }
+
+    /// A record with no way to reach a sample can never be rendered, and can still be read.
+    #[test]
+    fn a_record_with_no_join_key_is_not_published() {
+        assert!(AncestralOriginRecord::build(
+            None,
+            Vec::new(),
+            "Y_DNA",
+            Some("Thomas Kane"),
+            None,
+            Some("Ireland"),
+            Some(1830),
+            None,
+            None,
+            "2026-08-07T00:00:00Z"
+        )
+        .is_none());
+        // Either key alone is enough.
+        assert!(AncestralOriginRecord::build(
+            Some("at://x/bs/1".into()),
+            Vec::new(),
+            "Y_DNA",
+            Some("Thomas Kane"),
+            None,
+            Some("Ireland"),
+            Some(1830),
+            None,
+            None,
+            "2026-08-07T00:00:00Z"
+        )
+        .is_some());
+    }
+
+    /// An MDKA row that carries nothing but a lineage would resolve to a sample and say nothing
+    /// about it.
+    #[test]
+    fn a_record_with_nothing_to_say_is_not_published() {
+        assert!(AncestralOriginRecord::build(
+            None,
+            ids(),
+            "Y_DNA",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "2026-08-07T00:00:00Z"
+        )
+        .is_none());
+        // …but a bare country is worth publishing.
+        assert!(AncestralOriginRecord::build(
+            None,
+            ids(),
+            "Y_DNA",
+            None,
+            None,
+            Some("Ireland"),
+            None,
+            None,
+            None,
+            "2026-08-07T00:00:00Z"
+        )
+        .is_some());
+    }
+}

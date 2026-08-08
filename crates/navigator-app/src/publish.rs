@@ -298,6 +298,120 @@ impl App {
             .await?)
     }
 
+    /// Build an ancestral-origin record for one MDKA row, or `None` when it must not be published.
+    ///
+    /// Every field gate lives in [`AncestralOriginRecord::build`] — this only supplies the join
+    /// keys. The lineage is mapped to the AppView's `Y_DNA`/`MT_DNA` spelling; `Auto` is not
+    /// published at all, having no tree to hang from.
+    pub(crate) async fn ancestral_origin_record(
+        &self,
+        did: &str,
+        m: &Mdka,
+    ) -> Result<Option<serde_json::Value>, AppError> {
+        let Some(lineage) = (match m.lineage.as_str() {
+            "Y" => Some("Y_DNA"),
+            "Mt" => Some("MT_DNA"),
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+        let external_ids = self
+            .external_ids(m.biosample_guid)
+            .await?
+            .into_iter()
+            .map(|e| OriginExternalId {
+                namespace: e.source,
+                value: e.external_id,
+            })
+            .collect();
+        let coord = m.latitude.zip(m.longitude);
+        let record = AncestralOriginRecord::build(
+            Some(biosample_at_uri(did, m.biosample_guid)),
+            external_ids,
+            lineage,
+            m.ancestor_name.as_deref(),
+            m.origin_place.as_deref(),
+            m.origin_country.as_deref(),
+            m.birth_year,
+            m.death_year,
+            coord,
+            Utc::now().to_rfc3339(),
+        );
+        record
+            .map(|r| serde_json::to_value(&r))
+            .transpose()
+            .map_err(AppError::from)
+    }
+
+    /// Publish one MDKA's ancestral origin using an explicit `client`. `Ok(None)` means the row was
+    /// refused by a gate — a normal outcome, not an error.
+    ///
+    /// Uses `putRecord` at a deterministic rkey, so correcting an MDKA and re-running overwrites
+    /// that ancestor's record rather than accumulating duplicates of the same man.
+    pub async fn publish_ancestral_origin_with(
+        &self,
+        client: &PdsClient,
+        m: &Mdka,
+    ) -> Result<Option<RecordRef>, AppError> {
+        let Some(value) = self.ancestral_origin_record(client.did(), m).await? else {
+            return Ok(None);
+        };
+        let rkey = origin_rkey(m.biosample_guid, &m.lineage);
+        Ok(Some(
+            client.put_record(ANCESTRAL_ORIGIN_COLLECTION, &rkey, value).await?,
+        ))
+    }
+
+    /// Publish the ancestral origins of every subject this workspace may publish for.
+    ///
+    /// Enqueues rather than posting directly: the outbox retries, survives being offline, and maps
+    /// a deterministic rkey onto `putRecord`, so re-running after correcting an MDKA overwrites
+    /// that ancestor's record instead of accumulating duplicates. That makes the batch resumable by
+    /// construction — running it twice is a no-op on the AppView.
+    ///
+    /// `dry_run` builds and gates everything but enqueues nothing, so the counts can be inspected
+    /// before any genealogy leaves the machine. The consent predicate is in
+    /// [`navigator_store::mdka::publishable`]; the field gates are in
+    /// [`AncestralOriginRecord::build`].
+    pub async fn publish_ancestral_origins(
+        &self,
+        lineage: Lineage,
+        dry_run: bool,
+    ) -> Result<OriginPublishReport, AppError> {
+        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
+        let rows = mdka::publishable(self.store.pool(), lineage.as_str()).await?;
+        let mut report = OriginPublishReport {
+            considered: rows.len(),
+            ..Default::default()
+        };
+        for m in &rows {
+            let Some(value) = self.ancestral_origin_record(&did, m).await? else {
+                report.refused += 1;
+                continue;
+            };
+            // What the gates actually let through, so a dry run reports coverage rather than a
+            // bare total.
+            if value.get("originPlace").is_some() {
+                report.with_place += 1;
+            } else if value.get("originCountry").is_some() {
+                report.country_only += 1;
+            }
+            if !dry_run {
+                let rkey = origin_rkey(m.biosample_guid, &m.lineage);
+                self.enqueue_publish(
+                    "ancestralOrigin",
+                    &m.biosample_guid.0.to_string(),
+                    ANCESTRAL_ORIGIN_COLLECTION,
+                    Some(&rkey),
+                    value,
+                )
+                .await?;
+            }
+            report.publishable += 1;
+        }
+        Ok(report)
+    }
+
     /// Publish an alignment's cached de-novo calls for `contig` using an explicit `client`
     /// (the testable core; production callers use [`publish_variants`](Self::publish_variants)).
     pub async fn publish_private_variants(
