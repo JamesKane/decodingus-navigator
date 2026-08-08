@@ -70,7 +70,22 @@ pub struct ChoreOutcome {
 pub struct TreeReplace {
     pub calls_replaced: usize,
     pub calls_failed: usize,
+    /// Alignments skipped because their file is gone. Kept apart from `calls_failed` so a workspace
+    /// whose vendor downloads have been cleaned out does not report a wall of errors for the one
+    /// outcome that is expected and harmless.
+    pub calls_skipped: usize,
     pub profiles_rebuilt: usize,
+}
+
+impl TreeReplace {
+    /// Tally one per-alignment call, sorting "its file is gone" out of the failures.
+    fn record(&mut self, outcome: Result<(), AppError>) {
+        match outcome {
+            Ok(()) => self.calls_replaced += 1,
+            Err(e) if e.is_missing_alignment_file() => self.calls_skipped += 1,
+            Err(_) => self.calls_failed += 1,
+        }
+    }
 }
 
 /// Per-subject result of a private-Y refresh.
@@ -212,19 +227,16 @@ impl App {
             .into_iter()
             .flatten()
             {
-                match outcome {
-                    Ok(()) => r.calls_replaced += 1,
-                    Err(_) => r.calls_failed += 1,
-                }
+                r.record(outcome);
             }
+            // The CRAM-walk assignments. An alignment whose file has been removed since import
+            // reports `AlignmentFileMissing` here and is skipped — the sidecar calls above may still
+            // have re-placed the subject perfectly well without it.
             for outcome in [
                 self.assign_y_haplogroup(aln.id).await.map(|_| ()),
                 self.assign_mtdna_haplogroup_from_alignment(aln.id).await.map(|_| ()),
             ] {
-                match outcome {
-                    Ok(()) => r.calls_replaced += 1,
-                    Err(_) => r.calls_failed += 1,
-                }
+                r.record(outcome);
             }
         }
         // Both arms rebuild regardless: a source-less lineage just yields an empty profile, and a

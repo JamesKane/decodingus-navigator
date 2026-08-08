@@ -52,7 +52,7 @@ impl App {
         cancel: CancelToken,
     ) -> Result<CoverageResult, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let bam = Self::alignment_file(&aln)?;
         // The reference isn't asked for at import — resolve the alignment's build via the gateway
         // (cached, else download) when no FASTA was stored.
         let reference = match aln.reference_path {
@@ -332,9 +332,7 @@ impl App {
         // Copy off a slow/removable volume to local disk first — the walker's random-access record
         // iteration is far slower over a network/USB mount than a one-shot bulk copy.
         // Held for the whole walk: dropping it removes the local copy.
-        let bam = self
-            .localize(Path::new(&aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?))
-            .await;
+        let bam = self.localize(&Self::alignment_file(&aln)?).await;
         let bam = bam.path().to_path_buf();
         // The walker requires a reference (CRAM decode + reference-N detection); resolve the
         // build via the gateway when no FASTA was stored at import.
@@ -898,7 +896,7 @@ impl App {
     /// one (it follows from the header-detected build).
     pub(crate) async fn alignment_bam_reference(&self, alignment_id: i64) -> Result<(PathBuf, PathBuf), AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let bam = Self::alignment_file(&aln)?;
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
             None => {
@@ -921,7 +919,7 @@ impl App {
         alignment_id: i64,
     ) -> Result<(PathBuf, Option<PathBuf>), AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let bam = Self::alignment_file(&aln)?;
         let is_cram = bam.extension().is_some_and(|e| e.eq_ignore_ascii_case("cram"));
         let reference = match aln.reference_path {
             Some(p) => Some(PathBuf::from(p)),

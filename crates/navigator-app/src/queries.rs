@@ -856,7 +856,17 @@ impl App {
     ) -> Result<SampleAnalyzeOutcome, AppError> {
         let mut o = SampleAnalyzeOutcome::default();
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
-        let Some(aln) = alignments.iter().find(|a| a.bam_path.is_some()) else {
+        // Prefer an alignment whose file is actually still there. Selecting merely by "a path was
+        // recorded" meant a subject with two alignments — one whose vendor download has since been
+        // cleaned out, one intact — could pick the gone one, fail preflight, and be skipped whole,
+        // when the other would have analyzed fine. Falling back to any recorded path keeps the
+        // no-file-present case reporting a real preflight diagnosis rather than silently reading as
+        // "this subject has no alignment at all".
+        let Some(aln) = alignments
+            .iter()
+            .find(|a| Self::alignment_file(a).is_ok())
+            .or_else(|| alignments.iter().find(|a| a.bam_path.is_some()))
+        else {
             return Ok(o); // had_alignment stays false
         };
         o.had_alignment = true;

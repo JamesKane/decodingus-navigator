@@ -724,6 +724,9 @@ impl App {
         // report working when the AppView tree is unavailable or the build has no DecodingUs coords.
         let (tree, tree_calls) = match self.y_decodingus_tree_calls(alignment_id).await {
             Ok(tc) => tc,
+            // A gone alignment file is not a tree problem: the fallback reads the same absent file,
+            // so it can only fail again while logging a tree provider that was never at fault.
+            Err(e) if e.is_missing_alignment_file() => return Err(e),
             Err(e) => {
                 eprintln!("DecodingUs Y tree unavailable ({e}); private-Y classifying against FTDNA");
                 let tree_json = self.fetch_ftdna_y_tree().await?;

@@ -18,6 +18,18 @@ pub enum AppError {
     #[error("alignment {0} has no BAM/reference path recorded")]
     MissingPaths(i64),
 
+    /// The alignment's recorded file is no longer on disk — a superseded vendor download, a
+    /// deleted import, an unmounted volume. Distinct from [`AppError::MissingPaths`], which means
+    /// no path was ever recorded: here there is one, it just no longer resolves.
+    ///
+    /// Worth its own variant because it is the one read failure that is *expected* in a long-lived
+    /// workspace and is nobody's fault. Sweeps over many alignments skip on it
+    /// ([`AppError::is_missing_alignment_file`]) rather than counting a failure, and it is raised
+    /// before the expensive setup a walk implies rather than surfacing as an opaque io error from
+    /// deep inside the reader — where it had been misread as the *haplotree* being unavailable.
+    #[error("alignment {id} file is no longer at {path}")]
+    AlignmentFileMissing { id: i64, path: String },
+
     /// The ancestry reference panel file is missing — build it with `navigator-panelbuild`
     /// and install it (or set `$NAVIGATOR_ANCESTRY_PANEL`).
     #[error("ancestry panel not found at {0} — build it with navigator-panelbuild")]
@@ -81,6 +93,12 @@ impl AppError {
     /// than in the UI so the layers above never have to reach past `navigator-app` for it.
     pub fn is_cancellation(&self) -> bool {
         matches!(self, AppError::Analysis(navigator_analysis::AnalysisError::Cancelled))
+    }
+
+    /// Whether this failure is only "the alignment's file is gone", which a sweep should skip past
+    /// rather than record as a failure. See [`AppError::AlignmentFileMissing`].
+    pub fn is_missing_alignment_file(&self) -> bool {
+        matches!(self, AppError::AlignmentFileMissing { .. })
     }
 }
 

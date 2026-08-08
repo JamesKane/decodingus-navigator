@@ -256,6 +256,29 @@ impl App {
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("alignment {id}"))))
     }
 
+    /// The alignment's BAM/CRAM path, confirmed to still resolve on disk. The standard way a read
+    /// path turns an [`Alignment`] into a path to open.
+    ///
+    /// Both checks belong together and belong *early*. A recorded path that no longer resolves is
+    /// routine in a long-lived workspace — vendor downloads get cleaned out, volumes get unmounted —
+    /// but nothing checked for it, so the failure surfaced as a bare `No such file or directory`
+    /// from inside the reader, after the caller had already fetched a multi-MB haplotree. Worse, one
+    /// caller read that io error as *the tree* being unavailable and fell back to the FTDNA tree,
+    /// which then failed on the same absent file: a misleading log line, a wasted download, and a
+    /// silent change of tree provider, all from a deleted BAM.
+    ///
+    /// The existence check races anything that deletes the file a microsecond later; that is fine.
+    /// It is here to name the common case correctly and cheaply, not to make opening infallible —
+    /// callers still handle a read error from the open itself.
+    pub(crate) fn alignment_file(aln: &Alignment) -> Result<PathBuf, AppError> {
+        let path = aln.bam_path.clone().ok_or(AppError::MissingPaths(aln.id))?;
+        let p = PathBuf::from(&path);
+        if !p.exists() {
+            return Err(AppError::AlignmentFileMissing { id: aln.id, path });
+        }
+        Ok(p)
+    }
+
     /// Delete a sequence run and everything beneath it (its alignments + cached analysis
     /// artifacts). This is how a mistaken BAM/CRAM import is undone.
     pub async fn delete_sequence_run(&self, id: i64) -> Result<(), AppError> {
@@ -559,5 +582,50 @@ impl App {
             }
             None => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod alignment_file_tests {
+    use super::*;
+
+    fn aln(id: i64, bam_path: Option<String>) -> Alignment {
+        Alignment {
+            id,
+            sequence_run_id: 1,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa".into(),
+            variant_caller: None,
+            bam_path,
+            reference_path: None,
+            content_sha256: None,
+        }
+    }
+
+    #[test]
+    fn a_path_that_no_longer_resolves_is_told_apart_from_one_never_recorded() {
+        // The distinction the callers act on: `MissingPaths` means the import never recorded a
+        // file, which no sweep can do anything about; `AlignmentFileMissing` means it did and the
+        // file has since gone, which a sweep skips past.
+        assert!(matches!(
+            App::alignment_file(&aln(7, None)),
+            Err(AppError::MissingPaths(7))
+        ));
+
+        let gone = "/Users/nobody/Downloads/FTDNA/23771/2461/2461-gone.bam";
+        let err = App::alignment_file(&aln(9, Some(gone.into()))).unwrap_err();
+        assert!(err.is_missing_alignment_file(), "got {err:?}");
+        // The message names the path, since "which file?" is the user's first question.
+        assert!(err.to_string().contains(gone), "{err}");
+        assert!(!AppError::MissingPaths(9).is_missing_alignment_file());
+    }
+
+    #[test]
+    fn a_present_file_resolves() {
+        let f = std::env::temp_dir().join("navigator-alignment-file-test.bam");
+        std::fs::write(&f, b"x").unwrap();
+        let got = App::alignment_file(&aln(3, Some(f.to_string_lossy().into_owned()))).unwrap();
+        assert_eq!(got, f);
+        let _ = std::fs::remove_file(&f);
     }
 }

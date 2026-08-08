@@ -2612,7 +2612,7 @@ async fn run_chore_streaming(
                 Err(e) => return fail_chore(chore, e.to_string(), evt_tx, &wake),
             };
             let total = targets.len();
-            let (mut calls_replaced, mut calls_failed) = (0usize, 0usize);
+            let (mut calls_replaced, mut calls_failed, mut calls_skipped) = (0usize, 0usize, 0usize);
             // One lookup for the whole batch rather than a query per subject just to label a
             // progress line.
             let names: std::collections::HashMap<_, _> = app
@@ -2638,6 +2638,7 @@ async fn run_chore_streaming(
                         outcome.done += 1;
                         calls_replaced += r.calls_replaced;
                         calls_failed += r.calls_failed;
+                        calls_skipped += r.calls_skipped;
                     }
                     Err(e) => {
                         outcome.failed += 1;
@@ -2646,9 +2647,17 @@ async fn run_chore_streaming(
                     }
                 }
             }
+            // Skips are reported separately from failures: "file gone" is expected in a workspace
+            // whose vendor downloads have been cleaned out, and folding it into the error count
+            // makes a healthy run look broken.
             outcome.summary = format!(
-                "{} subject(s) re-placed against the current tree · {calls_replaced} call(s) re-placed{}",
+                "{} subject(s) re-placed against the current tree · {calls_replaced} call(s) re-placed{}{}",
                 outcome.done,
+                if calls_skipped > 0 {
+                    format!(" · {calls_skipped} skipped (file gone)")
+                } else {
+                    String::new()
+                },
                 if calls_failed > 0 {
                     format!(" · {calls_failed} call(s) failed")
                 } else {

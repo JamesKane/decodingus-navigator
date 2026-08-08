@@ -4371,6 +4371,10 @@ impl App {
         match y_tree_provider() {
             YTreeProvider::DecodingUs => match self.assign_y_decodingus(alignment_id).await {
                 Ok(a) => Ok(a),
+                // A gone alignment file is not a tree problem, and the fallback reads the same
+                // absent file — so it can only fail again, after another tree download, having
+                // logged that the DecodingUs tree was unavailable when it was not. Raise it.
+                Err(e) if e.is_missing_alignment_file() => Err(e),
                 Err(e) => {
                     // AppView unreachable / build unsupported / parse failure → FTDNA fallback.
                     eprintln!("DecodingUs Y tree unavailable ({e}); falling back to FTDNA");
@@ -4412,6 +4416,10 @@ impl App {
                 aln.reference_build
             ))
         })?;
+        // Before the tree fetch, not after: a gone alignment file cannot be genotyped against any
+        // tree, so downloading one first is pure waste — and its io error surfacing from *below* the
+        // fetch is what let `y_assignment_full` mistake it for the tree being unavailable.
+        Self::alignment_file(&aln)?;
         let tree_json = self.fetch_decodingus_y_tree().await?;
         let tree = navigator_analysis::haplo::parse_decodingus_json(&tree_json, build_key).map_err(AppError::Import)?;
         // Native build → no liftover (tree_source_build = None → direct query).
@@ -4907,9 +4915,7 @@ impl App {
         let aln = self.alignment_or_err(alignment_id).await?;
         // Copy off a slow/removable volume to local disk first — the per-locus genotyping read is a
         // network round-trip per record otherwise (see App::localize).
-        let bam = self
-            .localize(Path::new(&aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?))
-            .await;
+        let bam = self.localize(&Self::alignment_file(&aln)?).await;
         let bam = bam.path().to_path_buf();
         // Resolve the reference even when none was stored at import. A CRAM can't be decoded
         // without it, so resolve (download on a miss) via the gateway from the alignment's build —
