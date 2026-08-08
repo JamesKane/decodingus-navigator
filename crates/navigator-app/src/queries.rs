@@ -820,7 +820,6 @@ impl App {
             y_done: 0,
             sex_done: 0,
             metrics_done: 0,
-            sv_done: 0,
             errors: Vec::new(),
         };
         for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
@@ -838,15 +837,15 @@ impl App {
             summary.y_done += o.y_done as usize;
             summary.sex_done += o.sex_done as usize;
             summary.metrics_done += o.metrics_done as usize;
-            summary.sv_done += o.sv_done as usize;
             summary.errors.extend(o.errors);
         }
         Ok(summary)
     }
 
     /// Deep-analyze one biosample's primary (first BAM-bearing) alignment: coverage, Y
-    /// haplogroup, sex, read metrics, and SV (≥10× only). Idempotent — a *full* coverage and a
-    /// recorded Y/sex/metrics/SV are skipped; a `partial` (lite sidecar) coverage is upgraded by
+    /// haplogroup, sex, and read metrics. **Not** structural variants — see the note at the end of
+    /// the body. Idempotent — a *full* coverage and a recorded Y/sex/metrics are skipped; a
+    /// `partial` (lite sidecar) coverage is upgraded by
     /// the per-base walk, which overwrites it. Best-effort: a per-step failure is recorded in
     /// `errors` (prefixed with the donor id) and the remaining steps still run. This is the
     /// per-sample unit the project pass and the streaming deep-analyze job both drive.
@@ -963,33 +962,12 @@ impl App {
             }
         }
 
-        // SV is a whole-genome analysis that walks every read in the file. Skip it for targeted
-        // tests (Big Y / Y Elite / mtFull): SV is meaningless there, and over a targeted CRAM's
-        // millions of off-target reads the whole-file walk is pathologically slow. Gate on the
-        // run's target being whole-genome, plus the existing ≥10× depth threshold (avoids logging a
-        // "coverage too low" error for every low-coverage sample).
-        let is_wgs = match sequence_run::get(self.store.pool(), aln.sequence_run_id).await? {
-            Some(run) => matches!(
-                navigator_domain::testtype::target_of(&run.test_type),
-                Some(navigator_domain::testtype::TargetType::WholeGenome)
-            ),
-            None => false,
-        };
-        if self.cached_sv(aln.id).await?.is_some() {
-            o.sv_done = true;
-        } else if is_wgs
-            && self
-                .cached_coverage(aln.id)
-                .await?
-                .map(|c| c.mean_coverage >= 10.0)
-                .unwrap_or(false)
-        {
-            match self.run_sv(aln.id, cancel.clone()).await {
-                Ok(_) => o.sv_done = true,
-                Err(e) if e.is_cancellation() => return Ok(o),
-                Err(e) => o.errors.push(format!("{label} SV: {e}")),
-            }
-        }
+        // SV deliberately does NOT run here. It is experimental, nothing else consumes its output,
+        // and it is the one step that walks every read in the file for its own sake: measured at
+        // 2–5 h per whole-genome sample on this workspace's CRAMs, against ~1 h for everything
+        // above put together. In a 148-sample project that is the difference between a batch that
+        // finishes overnight and one that takes weeks. Run it deliberately instead — the "Call SV"
+        // button, or `analyze --sv` — via `plan_full_analysis(.., include_sv = true)`.
         Ok(o)
     }
 }

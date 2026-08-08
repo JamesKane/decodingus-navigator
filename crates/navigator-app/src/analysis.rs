@@ -1071,6 +1071,11 @@ pub enum AnalysisStep {
     /// Coverage + callable, read-level QC, and sex inference in one pass over the alignment.
     QualityMetrics,
     /// CNV + discordant pairs. Needs ≥10× — the step itself reports when the depth is too low.
+    ///
+    /// **Opt-in only.** SV is experimental and, alone among the steps, walks every read in the file
+    /// for a result nothing else consumes — hours per whole-genome sample. It is planned only when
+    /// a caller asks for it (`include_sv`); the GUI's "Call SV" button and `analyze --sv` are the
+    /// ways in. Nothing runs it unattended.
     StructuralVariants,
     /// De-novo calling on the mitochondrial contig (small and fully callable, unlike whole chrY).
     MitoDenovo { contig: String },
@@ -1128,10 +1133,14 @@ impl App {
     /// which makes the mitochondrial decision authoritative; pass `None` before that and the cached
     /// coverage (or, with none, the assumption that chrM is present) is used instead. Callers that
     /// show a step count should re-plan after the metrics step, as the count can drop.
+    ///
+    /// `include_sv` adds the experimental [`AnalysisStep::StructuralVariants`]; see that variant for
+    /// why it is off by default. `include_ancestry` likewise gates the two heaviest ancestry steps.
     pub async fn plan_full_analysis(
         &self,
         alignment_id: i64,
         include_ancestry: bool,
+        include_sv: bool,
         coverage: Option<&CoverageResult>,
     ) -> Result<Vec<AnalysisStep>, AppError> {
         // Skip the mitochondrial steps when the alignment has no chrM reads (e.g. an FTDNA Big Y):
@@ -1150,7 +1159,10 @@ impl App {
         // Subject-level steps need the owning subject; an unattached alignment simply skips them.
         let guid = self.biosample_of_alignment(alignment_id).await.ok();
 
-        let mut steps = vec![AnalysisStep::QualityMetrics, AnalysisStep::StructuralVariants];
+        let mut steps = vec![AnalysisStep::QualityMetrics];
+        if include_sv {
+            steps.push(AnalysisStep::StructuralVariants);
+        }
         if has_mtdna {
             steps.push(AnalysisStep::MitoDenovo { contig: "chrM".into() });
         }

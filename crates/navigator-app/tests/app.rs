@@ -3128,10 +3128,9 @@ mod full_analysis_plan {
         let app = app().await;
         let id = alignment(&app).await;
 
-        let steps = app.plan_full_analysis(id, false, None).await.unwrap();
+        let steps = app.plan_full_analysis(id, false, false, None).await.unwrap();
         assert_eq!(steps.first(), Some(&AnalysisStep::QualityMetrics), "metrics must lead");
         for expected in [
-            AnalysisStep::StructuralVariants,
             AnalysisStep::MitoDenovo { contig: "chrM".into() },
             AnalysisStep::YHaplogroup,
             AnalysisStep::MtHaplogroup,
@@ -3152,7 +3151,7 @@ mod full_analysis_plan {
         );
 
         // Opting in appends both ancestry steps, profile before estimate (the estimate reads it).
-        let with = app.plan_full_analysis(id, true, None).await.unwrap();
+        let with = app.plan_full_analysis(id, true, false, None).await.unwrap();
         let profile_at = with
             .iter()
             .position(|s| matches!(s, AnalysisStep::AutosomalProfile { .. }))
@@ -3190,12 +3189,15 @@ mod full_analysis_plan {
             ..Default::default()
         };
         let with_chrm = chrm_with(4_000);
-        let steps = app.plan_full_analysis(id, false, Some(&with_chrm)).await.unwrap();
+        let steps = app
+            .plan_full_analysis(id, false, false, Some(&with_chrm))
+            .await
+            .unwrap();
         assert!(steps.contains(&AnalysisStep::MtHaplogroup));
         assert!(steps.iter().any(|s| matches!(s, AnalysisStep::MitoDenovo { .. })));
 
         let no_chrm = chrm_with(0);
-        let steps = app.plan_full_analysis(id, false, Some(&no_chrm)).await.unwrap();
+        let steps = app.plan_full_analysis(id, false, false, Some(&no_chrm)).await.unwrap();
         assert!(!steps.contains(&AnalysisStep::MtHaplogroup), "{steps:?}");
         assert!(
             !steps.iter().any(|s| matches!(s, AnalysisStep::MitoDenovo { .. })),
@@ -3203,7 +3205,32 @@ mod full_analysis_plan {
         );
         // The rest of the pipeline is untouched.
         assert!(steps.contains(&AnalysisStep::YHaplogroup));
-        assert!(steps.contains(&AnalysisStep::StructuralVariants));
+    }
+
+    /// SV is opt-in, and this is the guard on that. It is experimental, nothing else consumes its
+    /// output, and it is the only step that walks every read in the file for its own sake — 2–5 h
+    /// per whole-genome sample, measured, against ~1 h for the whole rest of the pipeline. Folded
+    /// into a 148-sample batch that is the difference between overnight and weeks, which is exactly
+    /// what it cost before. It runs when a caller asks for it and not otherwise.
+    #[tokio::test]
+    async fn structural_variants_is_planned_only_when_asked_for() {
+        let app = app().await;
+        let id = alignment(&app).await;
+
+        let without = app.plan_full_analysis(id, false, false, None).await.unwrap();
+        assert!(
+            !without.contains(&AnalysisStep::StructuralVariants),
+            "SV must not be planned unless requested: {without:?}"
+        );
+
+        let with = app.plan_full_analysis(id, false, true, None).await.unwrap();
+        assert!(
+            with.contains(&AnalysisStep::StructuralVariants),
+            "SV must be planned when requested: {with:?}"
+        );
+        // Opting in adds SV and changes nothing else.
+        let added: Vec<_> = with.iter().filter(|s| !without.contains(s)).collect();
+        assert_eq!(added, vec![&AnalysisStep::StructuralVariants], "{with:?}");
     }
 }
 

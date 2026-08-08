@@ -301,7 +301,6 @@ impl NavigatorApp {
                     y_done,
                     sex_done,
                     metrics_done,
-                    sv_done,
                     errors,
                     cancelled,
                 } => {
@@ -309,7 +308,7 @@ impl NavigatorApp {
                     self.cancelling = false;
                     self.deep_progress = None;
                     self.status = format!(
-                        "{} {samples} sample(s): {coverage_done} coverage, {y_done} Y, {sex_done} sex, {metrics_done} metrics, {sv_done} SV{}",
+                        "{} {samples} sample(s): {coverage_done} coverage, {y_done} Y, {sex_done} sex, {metrics_done} metrics{}",
                         if cancelled { "Deep analysis cancelled after" } else { "Analyzed" },
                         if errors > 0 { format!(", {errors} error(s)") } else { String::new() }
                     );

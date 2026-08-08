@@ -316,6 +316,11 @@ pub struct AnalyzeArgs {
     /// steps, which the GUI folds in only for the one-click Simple flow.
     #[arg(long)]
     ancestry: bool,
+    /// Also call structural variants (experimental). Off by default: SV walks every read in the
+    /// file for its own sake, measured at 2–5 h per whole-genome sample, and nothing else consumes
+    /// the result. The GUI's equivalent is the Sources tab's "Call SV" button.
+    #[arg(long)]
+    sv: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
@@ -957,7 +962,7 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
     // The step list comes from `App::plan_full_analysis` — the same one the GUI's Full Analysis
     // uses, so the two cannot drift again. In particular this is what stops a `navigator analyze`
     // from re-genotyping Y over a trusted external call the user asked to prefer.
-    let mut steps = match app.plan_full_analysis(id, args.ancestry, None).await {
+    let mut steps = match app.plan_full_analysis(id, args.ancestry, args.sv, None).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: could not plan the analysis: {e}");
@@ -987,7 +992,10 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
                     app.clear_analysis_error(id).await;
                     // The mitochondrial steps depend on whether this coverage found chrM reads, so
                     // re-plan now that it exists (the pre-flight plan had to guess).
-                    if let Ok(replanned) = app.plan_full_analysis(id, args.ancestry, Some(&r.coverage)).await {
+                    if let Ok(replanned) = app
+                        .plan_full_analysis(id, args.ancestry, args.sv, Some(&r.coverage))
+                        .await
+                    {
                         steps = replanned;
                     }
                     Ok(format!("coverage mean {:.2}x", r.coverage.mean_coverage))

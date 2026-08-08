@@ -3503,7 +3503,6 @@ pub struct AnalyzeSummary {
     pub y_done: usize,
     pub sex_done: usize,
     pub metrics_done: usize,
-    pub sv_done: usize,
     /// Per-sample failures (best-effort: one sample's error doesn't abort the rest).
     pub errors: Vec<String>,
 }
@@ -3519,7 +3518,6 @@ pub struct SampleAnalyzeOutcome {
     pub y_done: bool,
     pub sex_done: bool,
     pub metrics_done: bool,
-    pub sv_done: bool,
     pub errors: Vec<String>,
 }
 

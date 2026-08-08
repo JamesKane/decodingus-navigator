@@ -527,9 +527,10 @@ pub enum Command {
         heteroplasmy: Vec<HeteroplasmySite>,
         identity: Option<IdentityVerification>,
     },
-    /// Run the full per-alignment analysis pipeline (coverage → sex → metrics → SV → variant
-    /// calling → Y haplogroup → ancestry), streaming `AnalysisProgress` per step. Each step's
-    /// own result event is forwarded too, so the detail tabs fill in as it runs.
+    /// Run the full per-alignment analysis pipeline (coverage → sex → metrics → variant calling →
+    /// Y haplogroup → ancestry), streaming `AnalysisProgress` per step. Each step's own result
+    /// event is forwarded too, so the detail tabs fill in as it runs. Structural variants are
+    /// **not** part of this — see [`Command::RunSv`], which the Sources tab dispatches on request.
     RunFullAnalysis {
         alignment_id: i64,
     },
@@ -848,7 +849,6 @@ pub enum Event {
         y_done: usize,
         sex_done: usize,
         metrics_done: usize,
-        sv_done: usize,
         errors: usize,
         cancelled: bool,
     },
@@ -2395,8 +2395,10 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     // alignment, or because it has no chrM reads — is decided by `App::plan_full_analysis`, the one
     // definition shared with the CLI. This fn only turns those steps into progress + result events.
     // Planned twice: the mitochondrial decision is a guess until step 1 has produced coverage.
+    // `include_sv = false`: SV is experimental and costs hours per whole-genome sample, so it is
+    // never folded into a Full Analysis. The Sources tab's "Call SV" button runs it on request.
     let mut steps = app
-        .plan_full_analysis(alignment_id, include_ancestry, None)
+        .plan_full_analysis(alignment_id, include_ancestry, false, None)
         .await
         .unwrap_or_else(|_| vec![AnalysisStep::QualityMetrics]);
     let mut total = steps.len();
@@ -2461,7 +2463,7 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                 // correctly drops the chrM de-novo + mt-placement steps (the pre-flight plan above
                 // ran before this coverage existed). Adjusts the remaining-step total.
                 steps = app
-                    .plan_full_analysis(alignment_id, include_ancestry, Some(&cov))
+                    .plan_full_analysis(alignment_id, include_ancestry, false, Some(&cov))
                     .await
                     .unwrap_or_else(|_| std::mem::take(&mut steps));
                 total = steps.len();
@@ -2706,8 +2708,8 @@ async fn deep_analyze_project_streaming(
         }
     };
     let total = biosamples.len();
-    let (mut samples, mut coverage_done, mut y_done, mut sex_done, mut metrics_done, mut sv_done, mut errors) =
-        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut samples, mut coverage_done, mut y_done, mut sex_done, mut metrics_done, mut errors) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
 
     for (i, biosample) in biosamples.iter().enumerate() {
         if cancel.is_cancelled() {
@@ -2728,7 +2730,6 @@ async fn deep_analyze_project_streaming(
                 y_done += o.y_done as usize;
                 sex_done += o.sex_done as usize;
                 metrics_done += o.metrics_done as usize;
-                sv_done += o.sv_done as usize;
                 errors += o.errors.len();
             }
             Ok(_) => {} // no BAM-bearing alignment — not counted
@@ -2748,7 +2749,6 @@ async fn deep_analyze_project_streaming(
         y_done,
         sex_done,
         metrics_done,
-        sv_done,
         errors,
         cancelled: cancel.is_cancelled(),
     });

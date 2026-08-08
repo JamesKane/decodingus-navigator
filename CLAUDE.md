@@ -77,7 +77,7 @@ Shared crates (`du-domain`, `du-atproto`, `du-bio`) live in the sibling repo `..
 1. A BAM/CRAM file (or VCF/GVCF, chip raw data, STR/Y-SNP export, mtDNA FASTA) is imported via the UI or the `ingest` CLI; `app.add_data` auto-detects the type.
 2. A header probe infers reference build / aligner / platform / test type.
 3. `navigator-refgenome` resolves/downloads the appropriate reference genome and chains.
-4. Analysis runs: coverage/callable, read metrics, sex, SV, Y/mtDNA haplogroups, ancestry (parallelized per contig via rayon).
+4. Analysis runs: coverage/callable, read metrics, sex, Y/mtDNA haplogroups, ancestry (parallelized per contig via rayon). **SV is opt-in and never automatic** — it walks every read for its own sake (2–5 h per WGS sample, vs ~1 h for all of the above); reach it via the "Call SV" button or `analyze --sv`.
 5. Results are persisted to SQLite and cached as on-disk artifacts under `~/.decodingus/`.
 6. Summary records can optionally be published to a PDS via `navigator-sync`.
 
