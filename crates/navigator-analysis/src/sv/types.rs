@@ -74,6 +74,10 @@ pub struct SvCallerConfig {
     pub min_split_read_support: u32,
     pub min_total_support: u32,
     pub min_quality: f64,
+    /// Ceiling on retained discordant pairs, and separately on retained split reads, for one walk.
+    /// A safety valve, not a filter: the point is that a pathological library cannot take the whole
+    /// process — and in a batch, the other 147 samples — down with an OOM. See the default.
+    pub max_evidence_records: u64,
 }
 
 impl Default for SvCallerConfig {
@@ -89,6 +93,11 @@ impl Default for SvCallerConfig {
             min_split_read_support: 1,
             min_total_support: 3,
             min_quality: 10.0,
+            // Chosen against the real spread, not a round number: across 33 analysed alignments the
+            // discordant-pair counts run 0.05–15.6 M (split reads 0–1.1 M), so 32 M is ~2x the
+            // worst case actually observed and does not fire on any of them. What it does is put a
+            // ~2 GB ceiling on evidence that was previously bounded only by the file.
+            max_evidence_records: 32_000_000,
         }
     }
 }
