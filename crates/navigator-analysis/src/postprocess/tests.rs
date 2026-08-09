@@ -555,3 +555,204 @@ fn marking_is_lossless() {
     assert_eq!(stats.records as usize, total);
     assert_eq!(duplicate_flags(&output).len(), total);
 }
+
+// ---- CRAM emit and index --------------------------------------------------
+
+use super::cram::{crai_path, index_cram, write_cram};
+
+/// CRAM stores reads as differences from the reference, so a test needs a real one — bases the
+/// records actually match, plus the `.fai` the repository reads. A stub would either fail to build
+/// or silently encode mismatches for every base.
+fn write_reference_fasta(dir: &Path, name: &str, len: usize) -> PathBuf {
+    let path = dir.join("ref.fa");
+    let bases: Vec<u8> = (0..len).map(|i| b"ACGT"[(i * 7 + 3) % 4]).collect();
+
+    let mut text = Vec::new();
+    text.extend_from_slice(format!(">{name}\n").as_bytes());
+    let line_width = 60;
+    for chunk in bases.chunks(line_width) {
+        text.extend_from_slice(chunk);
+        text.push(b'\n');
+    }
+    std::fs::write(&path, &text).unwrap();
+
+    // A minimal `.fai`: name, length, offset of the first base, bases per line, bytes per line.
+    let offset = name.len() + 2; // ">name\n"
+    std::fs::write(
+        dir.join("ref.fa.fai"),
+        format!("{name}\t{len}\t{offset}\t{line_width}\t{}\n", line_width + 1),
+    )
+    .unwrap();
+    path
+}
+
+fn reference_bases_at(len: usize) -> Vec<u8> {
+    (0..len).map(|i| b"ACGT"[(i * 7 + 3) % 4]).collect()
+}
+
+/// A record whose sequence matches the reference at `pos`, so CRAM has nothing to store but the
+/// position — which is the case worth testing, since a mismatch-heavy fixture would not exercise
+/// reference-based compression at all.
+fn matching_record(name: &str, pos: usize, len: usize, reference: &[u8]) -> RecordBuf {
+    RecordBuf::builder()
+        .set_name(name)
+        .set_flags(Flags::from(0u16))
+        .set_reference_sequence_id(0)
+        .set_alignment_start(noodles::core::Position::new(pos).unwrap())
+        .set_cigar(parse_cigar(&format!("{len}M")))
+        .set_sequence(Sequence::from(reference[pos - 1..pos - 1 + len].to_vec()))
+        .set_quality_scores(QualityScores::from(vec![30; len]))
+        .build()
+}
+
+/// A sorted BAM plus the reference it was aligned to.
+fn cram_fixture(dir: &Path, count: usize) -> (PathBuf, PathBuf, usize) {
+    let contig_len = 10_000;
+    let reference = write_reference_fasta(dir, "chr1", contig_len);
+    let bases = reference_bases_at(contig_len);
+
+    let hdr = header(&[("chr1", contig_len)]);
+    let mut records: Vec<RecordBuf> = (0..count)
+        .map(|i| matching_record(&format!("r{i:03}"), 1 + i * 50, 50, &bases))
+        .collect();
+    // Coordinate order is the precondition; the fixture is already in it, but stamp the header the
+    // way the sort would so the check under test sees what it expects.
+    records.sort_by_key(|r| r.alignment_start().map(|p| p.get()).unwrap_or(0));
+
+    let bam = dir.join("sorted.bam");
+    write_bam_sorted(&bam, &hdr, &records);
+    (bam, reference, count)
+}
+
+/// Like [`write_bam`], but stamping `@HD SO:coordinate` as the sort does.
+fn write_bam_sorted(path: &Path, header: &sam::Header, records: &[RecordBuf]) {
+    use noodles::sam::header::record::value::map::header::tag;
+    use noodles::sam::header::record::value::{map, Map};
+
+    let mut header = header.clone();
+    let mut hd = Map::<map::Header>::default();
+    hd.other_fields_mut()
+        .insert(tag::SORT_ORDER, b"coordinate".as_slice().into());
+    *header.header_mut() = Some(hd);
+    write_bam(path, &header, records);
+}
+
+/// The headline: a sorted BAM becomes a CRAM that reads back with the same records, and gets an
+/// index beside it.
+#[test]
+fn cram_round_trips_every_record_and_writes_an_index() {
+    let dir = scratch("cram");
+    let (bam, reference, count) = cram_fixture(&dir, 40);
+    let out = dir.join("out.cram");
+
+    let result =
+        write_cram(&bam, &out, &reference, &CancelToken::none(), &mut |_| {}).expect("CRAM emit should succeed");
+
+    assert_eq!(result.records as usize, count);
+    assert!(out.is_file());
+    assert_eq!(result.index, crai_path(&out));
+    assert!(result.index.is_file(), "the .crai must be written beside the CRAM");
+    assert!(
+        std::fs::metadata(&result.index).unwrap().len() > 0,
+        "an empty index would leave every query scanning the whole file"
+    );
+
+    // Read back through the same path Navigator uses for vendor CRAMs — if the realigned output
+    // is not readable that way, it is not usable by any existing analysis.
+    let (header, mut reader) = crate::reader::open_seq(&out, Some(&reference)).unwrap();
+    let names: Vec<String> = reader
+        .records(&header)
+        .map(|r| String::from_utf8_lossy(r.unwrap().name().unwrap_or_default()).to_string())
+        .collect();
+    assert_eq!(names.len(), count, "no record lost in compression");
+    assert_eq!(names[0], "r000");
+}
+
+/// CRAM reconstructs bases from the reference. If that round trip were wrong the sequences would
+/// come back altered rather than the read failing, so the bases are compared explicitly.
+#[test]
+fn sequences_survive_reference_based_compression() {
+    let dir = scratch("crambases");
+    let (bam, reference, _) = cram_fixture(&dir, 10);
+    let out = dir.join("out.cram");
+    write_cram(&bam, &out, &reference, &CancelToken::none(), &mut |_| {}).unwrap();
+
+    let expected = reference_bases_at(10_000);
+    let (header, mut reader) = crate::reader::open_seq(&out, Some(&reference)).unwrap();
+    for result in reader.records(&header) {
+        let record = result.unwrap();
+        let start = record.alignment_start().unwrap().get();
+        let seq = record.sequence().as_ref().to_vec();
+        assert_eq!(
+            seq,
+            expected[start - 1..start - 1 + seq.len()].to_vec(),
+            "CRAM must give back the bases that went in"
+        );
+    }
+}
+
+/// Compressing read-order input produces a file that is slow to write, larger than the BAM, and
+/// useless for region queries. Refusing up front beats discovering that after hours.
+#[test]
+fn unsorted_input_is_refused_before_compressing() {
+    let dir = scratch("cramunsorted");
+    let contig_len = 10_000;
+    let reference = write_reference_fasta(&dir, "chr1", contig_len);
+    let bases = reference_bases_at(contig_len);
+
+    // Written without the sort's @HD SO stamp.
+    let hdr = header(&[("chr1", contig_len)]);
+    let records = vec![matching_record("a", 1, 50, &bases)];
+    let bam = dir.join("unsorted.bam");
+    write_bam(&bam, &hdr, &records);
+
+    let out = dir.join("out.cram");
+    let err = write_cram(&bam, &out, &reference, &CancelToken::none(), &mut |_| {});
+    assert!(err.is_err(), "unsorted input must be refused");
+    match err.unwrap_err() {
+        AnalysisError::Message(m) => assert!(m.contains("coordinate"), "unhelpful message: {m}"),
+        other => panic!("expected a clear message, got {other:?}"),
+    }
+}
+
+/// Indexing reads the finished file back, so it is also the repair path for a CRAM whose index was
+/// lost or truncated. It must work standalone.
+#[test]
+fn an_index_can_be_rebuilt_from_a_finished_cram() {
+    let dir = scratch("reindex");
+    let (bam, reference, _) = cram_fixture(&dir, 20);
+    let out = dir.join("out.cram");
+    let result = write_cram(&bam, &out, &reference, &CancelToken::none(), &mut |_| {}).unwrap();
+
+    let original = std::fs::read(&result.index).unwrap();
+    std::fs::remove_file(&result.index).unwrap();
+
+    let rebuilt = index_cram(&out).unwrap();
+    assert_eq!(rebuilt, result.index);
+    assert_eq!(
+        std::fs::read(&rebuilt).unwrap(),
+        original,
+        "a rebuilt index must match the one written alongside"
+    );
+}
+
+/// The name every reader looks for.
+#[test]
+fn the_index_sits_beside_the_cram() {
+    assert_eq!(
+        crai_path(Path::new("/data/sample.cram")),
+        Path::new("/data/sample.cram.crai")
+    );
+}
+
+/// Compression is long enough to need a cancel that works.
+#[test]
+fn cancellation_stops_cram_emission() {
+    let dir = scratch("cramcancel");
+    let (bam, reference, _) = cram_fixture(&dir, 10);
+    let cancel = CancelToken::new();
+    cancel.cancel();
+
+    let err = write_cram(&bam, &dir.join("out.cram"), &reference, &cancel, &mut |_| {}).unwrap_err();
+    assert!(matches!(err, AnalysisError::Cancelled));
+}

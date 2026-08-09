@@ -168,11 +168,22 @@ external-tool decision (Decision 1).
 
 ### Stage C — post-processing
 
-- **Sort** by coordinate (external merge sort; noodles bam/cram writers).
+- **Sort** by coordinate (external merge sort; noodles bam/cram writers). Runs spill as ordinary
+  BAM files rather than a bespoke encoding — an alignment record carries a CIGAR, a tag
+  dictionary, and per-base sequence and quality, so inventing a serialization means re-deriving
+  BAM's encoding badly. Unplaced reads sort last, which matters more here than usual: recovering
+  reads the old reference could not place is much of why this module exists.
 - **Mark duplicates** for short-read data (coordinate+orientation+UMI-less grouping,
   samblaster-style). **Skip dup-marking for long reads** (HiFi/ONT) — standard practice.
+  Group on the **unclipped** 5' position: two copies of one molecule can be soft-clipped
+  differently, which moves the alignment start without moving the fragment, so grouping on the
+  alignment start looks right and silently misses them. Both ends of a template must receive the
+  same verdict — one end marked and the other not shows consumers half a pair — which holds
+  because the signature is symmetric and the sort is deterministic.
 - **Compress to CRAM** against the CHM13v2 reference (smaller; Navigator already reads CRAM
-  with a reference repository) and index (`.crai`).
+  with a reference repository) and index (`.crai`). The reference is part of the file, not a
+  tuning knob: compressing against the wrong one yields a CRAM that decodes to wrong bases rather
+  than failing, which is why the alignment row must record `reference_path` alongside `bam_path`.
 
 ### Stage D — registration & provenance
 
@@ -575,8 +586,11 @@ it never mutates or replaces the vendor's original.
    `minimap2_index` cache resolved against the shared cache root, single-end and paired-end
    mapping, and SAM/BAM/CRAM output through noodles (BAM by default). Split-vs-whole index
    equivalence is tested for both single and paired reads.
-3. **Stage C** (sort, short-read markdup, CRAM emit/index) + Stage D registration with the new
-   provenance columns (store migration).
+3. **Stage C** ✅ built (`navigator-analysis::postprocess`): coordinate sort, short-read-only
+   duplicate marking on unclipped 5' positions, and CRAM emit with a `.crai`. Both the sort and
+   the marking verify they are lossless, and CRAM emission refuses input that does not declare
+   `@HD SO:coordinate`. **Stage D still outstanding**: registration with the new provenance
+   columns (store migration).
 4. **App orchestration + UI**: opt-in cancellable background job, preflight, progress, badges;
    wire realigned alignments into the analysis selectors.
 5. **WGS-scale backend parity + MAPQ validation** (replaces the former Windows FFI spike, which
