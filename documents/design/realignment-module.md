@@ -421,11 +421,22 @@ Realignment needs a minimap2 index (`.mmi`) of CHM13v2, which **does not exist i
   `-I 1G` at ≥16 GB RAM, `-I 400M` at 8 GB. Record the chosen `-I` in the cache key and in the
   alignment's provenance, since it is not a purely cosmetic knob.
 
-- **Implement per-part mapping and merging.** Neither library API splits and merges for us — in
-  minimap2 that is CLI-level logic behind `--split-prefix`, which maps against each part, keeps
-  per-part intermediates, and merges at the end. `navigator-align` has to own the equivalent.
+- **Implement per-part mapping and merging.** `navigator-align` owns the orchestration, but not
+  the hard part: `minimap2-pure-rs` exposes `index::split::{create_split_tmp,
+  write_split_query_record, read_split_query_record, merge_split_query_records}`, so the
+  cross-part MAPQ recomputation — the piece that is easy to get subtly wrong — is reused rather
+  than reimplemented. What we must own is the loop and the output, because the crate's own
+  file-level split entry points (`map_file_pe_sam_split` and friends) write to **stdout** and take
+  `parts: &[MmIdx]`, i.e. they hold every part resident and so give up the memory bound this whole
+  decision exists to buy. `index::reader::IdxReader::read_next` is the part-at-a-time source.
   Building one whole-genome resident index instead is the failure mode that produced this
   document's original wrong estimate; don't reintroduce it.
+
+- **Part boundaries overshoot, and `mini_batch_size` is not the control.** Measured: a part
+  accumulates whole sequences until the running total *exceeds* `batch_size`, so parts land at or
+  above the batch and a reference only slightly larger than the batch still yields one part.
+  `mini_batch_size` does not affect the part count at all. Size progress bars from an upper bound,
+  not an equality.
 
 - **Known cost: MAPQ inflation, not misplacement.** Against a ~5-part split, 5,045 alignment
   records kept **identical target/start/end/strand**; 7 (0.14%) differed in MAPQ only, always
