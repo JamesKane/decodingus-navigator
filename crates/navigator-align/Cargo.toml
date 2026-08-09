@@ -12,6 +12,13 @@ license.workspace = true
 # (`ui -> app -> {analysis, ...}`) is unaffected by where callers wire it in.
 [dependencies]
 thiserror = { workspace = true }
+# `paths::decodingus_dir` — the one definition of the cache root, so the aligner-index cache lands
+# beside the reference cache instead of inventing a second answer. Same reason navigator-refgenome
+# depends on it.
+navigator-domain = { workspace = true }
+# Alignment output. The mapper hands us SAM text; noodles turns that into typed records and writes
+# BAM/CRAM, which is what every downstream stage actually consumes.
+noodles = { version = "0.111.0", features = ["sam", "bam", "cram", "bgzf", "fasta", "core"] }
 # Physical-RAM detection, so the index batch size sizes itself instead of asking the user for a
 # number they have no way to choose (see src/batch.rs). `default-features = false` + `system` takes
 # only the memory/CPU probe, leaving out the disk, network, component, and user modules.

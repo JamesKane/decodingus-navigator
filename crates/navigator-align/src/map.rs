@@ -52,6 +52,7 @@ use minimap2::options::{mapopt_update, MapOpt};
 
 use crate::error::AlignError;
 use crate::index::path_str;
+use crate::output::{AlignmentWriter, OutputFormat};
 use crate::preset::Preset;
 
 /// How often the read loop asks whether it has been cancelled — same reasoning as the analysis
@@ -66,6 +67,10 @@ pub struct MapParams {
     pub threads: usize,
     /// An `@RG` line to stamp into the header and onto each record, if the source had one.
     pub read_group: Option<String>,
+    /// Output container. BAM by default — see [`crate::output`] for why not CRAM here.
+    pub format: OutputFormat,
+    /// The reference FASTA, required only for CRAM output.
+    pub reference: Option<std::path::PathBuf>,
 }
 
 impl Default for MapParams {
@@ -74,6 +79,8 @@ impl Default for MapParams {
             preset: Preset::ShortRead,
             threads: 0,
             read_group: None,
+            format: OutputFormat::default(),
+            reference: None,
         }
     }
 }
@@ -207,7 +214,7 @@ fn map_single_part(
     let mut opt = map_opt.clone();
     mapopt_update(&mut opt, index);
 
-    let mut writer = open_sam(out, index, params)?;
+    let mut writer = open_output(out, index, params)?;
     let mut queries = BseqFile::open(&path_str(reads)?).map_err(|e| AlignError::io(reads, e))?;
     let pool = thread_pool(params)?;
     let mut stats = MapStats {
@@ -242,7 +249,7 @@ fn map_single_part(
         progress(stats.queries, 1, 1);
     }
 
-    writer.flush().map_err(|e| AlignError::io(out, e))?;
+    writer.finish(out)?;
     progress(stats.queries, 1, 1);
     Ok(stats)
 }
@@ -437,7 +444,7 @@ fn merge_parts(
         part_readers.push((path, r));
     }
 
-    let mut writer = open_sam(out, merged_header, params)?;
+    let mut writer = open_output(out, merged_header, params)?;
     let mut queries = BseqFile::open(&path_str(reads)?).map_err(|e| AlignError::io(reads, e))?;
     let mut stats = MapStats {
         parts,
@@ -472,7 +479,7 @@ fn merge_parts(
         }
     }
 
-    writer.flush().map_err(|e| AlignError::io(out, e))?;
+    writer.finish(out)?;
     progress(stats.queries, parts, parts);
     Ok(stats)
 }
@@ -485,7 +492,7 @@ fn merge_parts(
 /// old reference could not place, so which reads failed *here* is information, not noise.
 #[allow(clippy::too_many_arguments)]
 fn emit(
-    writer: &mut BufWriter<std::fs::File>,
+    writer: &mut AlignmentWriter,
     index: &MmIdx,
     record: &minimap2::bseq::BseqRecord,
     regs: &[minimap2::types::AlignReg],
@@ -506,7 +513,7 @@ fn emit(
             opt.flag,
             rep_len,
         );
-        writeln!(writer, "{line}").map_err(|e| AlignError::io(out, e))?;
+        writer.write_line_with(&line, out, |_, _| {})?;
         stats.unmapped += 1;
         return Ok(());
     }
@@ -523,20 +530,18 @@ fn emit(
             opt.flag,
             rep_len,
         );
-        writeln!(writer, "{line}").map_err(|e| AlignError::io(out, e))?;
+        writer.write_line_with(&line, out, |_, _| {})?;
     }
     stats.mapped += 1;
     Ok(())
 }
 
-pub(crate) fn open_sam(out: &Path, index: &MmIdx, params: &MapParams) -> Result<BufWriter<std::fs::File>, AlignError> {
-    let file = std::fs::File::create(out).map_err(|e| AlignError::io(out, e))?;
-    let mut writer = BufWriter::with_capacity(1 << 20, file);
+/// Open the output container and write the header the mapper describes.
+pub(crate) fn open_output(out: &Path, index: &MmIdx, params: &MapParams) -> Result<AlignmentWriter, AlignError> {
     // `@PG` args: the design asks the realigned header to carry a program record for this step.
     let args = vec!["navigator-align".to_string(), format!("-x{}", params.preset.as_str())];
     let header = minimap2::format::sam::write_sam_hdr(index, params.read_group.as_deref(), &args);
-    writeln!(writer, "{header}").map_err(|e| AlignError::io(out, e))?;
-    Ok(writer)
+    AlignmentWriter::create(out, params.format, &header, params.reference.as_deref())
 }
 
 pub(crate) fn part_opt(base: &MapOpt, part: &MmIdx) -> MapOpt {

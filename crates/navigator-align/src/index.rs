@@ -35,10 +35,25 @@ use crate::preset::Preset;
 /// written, so a caller can report "part 2 of ~4" against [`BatchSize::part_estimate`].
 pub type ProgressFn<'a> = &'a mut dyn FnMut(usize, u64);
 
+/// The cache root the aligner index lives under: `$NAVIGATOR_REFGENOME_DIR`, else `~/.decodingus`.
+///
+/// Deliberately the same answer `navigator-refgenome::cache::base_dir` gives, reached the same way
+/// — through `navigator_domain::paths::decodingus_dir`, the one definition of the cache root — so
+/// `minimap2_index/` lands beside `references/` and `liftover/` rather than in a second location
+/// that only this crate knows about. This crate is a leaf and cannot depend on `navigator-refgenome`
+/// (that would invert the layering), which is why the resolution is repeated rather than imported;
+/// the shared *definition* is what stops the two drifting.
+pub fn cache_root() -> PathBuf {
+    if let Some(dir) = std::env::var_os("NAVIGATOR_REFGENOME_DIR") {
+        return PathBuf::from(dir);
+    }
+    navigator_domain::paths::decodingus_dir()
+}
+
 /// Where the cached index for `(build, preset)` lives under `base`.
 ///
-/// `base` is the refgenome cache root (`~/.decodingus/` by default), passed in rather than
-/// resolved here so this crate stays a leaf and tests can point it anywhere.
+/// `base` is the refgenome cache root — [`cache_root`] resolves it, or a caller that already has
+/// one (the app, which resolves it once) passes it in. Tests point it anywhere.
 pub fn index_path(base: &Path, build: &str, preset: Preset) -> PathBuf {
     base.join("minimap2_index")
         .join(build)
@@ -63,6 +78,27 @@ pub fn ensure_index(
     }
     build_index(reference, &path, preset, batch, progress)?;
     Ok(path)
+}
+
+/// [`ensure_index`] against the real cache root, sizing the index for this machine.
+///
+/// This is the call a job should make: it resolves where the cache lives, picks a batch size from
+/// the machine's RAM, and returns a ready index — none of which the caller should have to know how
+/// to do. See [`BatchSize::for_this_machine`] for why the sizing is detected rather than asked.
+pub fn ensure_cached_index(
+    build: &str,
+    reference: &Path,
+    preset: Preset,
+    progress: ProgressFn<'_>,
+) -> Result<PathBuf, AlignError> {
+    ensure_index(
+        &cache_root(),
+        build,
+        reference,
+        preset,
+        BatchSize::for_this_machine(),
+        progress,
+    )
 }
 
 /// Build a `.mmi` for `reference` at `out`, one part at a time.
@@ -295,6 +331,33 @@ mod tests {
         assert!(!rebuilt, "a cached index must not be rebuilt");
         assert_eq!(stamp, std::fs::metadata(&second).unwrap().modified().unwrap());
     }
+
+    /// The aligner index has to land beside the reference cache, not in a second place only this
+    /// crate knows about. `navigator-refgenome` resolves its root the same way — env override
+    /// first, then the shared `decodingus_dir` — and this pins that agreement.
+    #[test]
+    fn the_cache_root_follows_the_refgenome_override() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: guarded by ENV_LOCK, so no other test reads the environment concurrently.
+        unsafe { std::env::set_var("NAVIGATOR_REFGENOME_DIR", "/tmp/dun-cache-probe") };
+        let overridden = cache_root();
+        unsafe { std::env::remove_var("NAVIGATOR_REFGENOME_DIR") };
+        let default = cache_root();
+
+        assert_eq!(overridden, Path::new("/tmp/dun-cache-probe"));
+        assert_eq!(
+            default,
+            navigator_domain::paths::decodingus_dir(),
+            "without the override it must be the shared cache root, not an invention"
+        );
+        assert!(
+            index_path(&default, "chm13v2.0", Preset::ShortRead).starts_with(&default),
+            "the index lives under the cache root"
+        );
+    }
+
+    /// `set_var` mutates process-global state, so the tests that touch it must not overlap.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Feeding something that is not a reference must fail loudly rather than caching an empty
     /// index that every later job would load and quietly map nothing against.

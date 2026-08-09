@@ -569,9 +569,12 @@ it never mutates or replaces the vendor's original.
 1. **Revert in pure Rust** (collate-by-name external sort → cleaned paired FASTQ/uBAM, unmapped
    included) + unit tests on small fixtures. This is the hard, backend-agnostic core, and it is
    worth building regardless of how the backend question settles.
-2. **`navigator-align` crate**: the mapper trait, `minimap2-pure-rs` as default backend, the C
-   FFI behind an off-by-default feature, part-by-part index build/map with `-I` sized from RAM,
-   and the `minimap2_index` cache; end-to-end on a small genome/region fixture.
+2. **`navigator-align` crate** ✅ built: `minimap2-pure-rs` as default backend with the C FFI
+   behind an off-by-default feature, preset selection from `test_type`/`platform_name`,
+   part-by-part index build and map with the batch size detected from the machine's RAM, the
+   `minimap2_index` cache resolved against the shared cache root, single-end and paired-end
+   mapping, and SAM/BAM/CRAM output through noodles (BAM by default). Split-vs-whole index
+   equivalence is tested for both single and paired reads.
 3. **Stage C** (sort, short-read markdup, CRAM emit/index) + Stage D registration with the new
    provenance columns (store migration).
 4. **App orchestration + UI**: opt-in cancellable background job, preflight, progress, badges;

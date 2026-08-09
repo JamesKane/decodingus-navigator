@@ -3425,6 +3425,8 @@ dependencies = [
  "minimap2",
  "minimap2-pure-rs",
  "minimap2-sys",
+ "navigator-domain",
+ "noodles",
  "rayon",
  "sysinfo",
  "thiserror 2.0.18",

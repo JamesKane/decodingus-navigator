@@ -80,6 +80,10 @@ fn run(index: &Path, reads: &Path, out: &Path, dir: &Path, preset: Preset) -> Ma
             preset,
             threads: 1,
             read_group: None,
+            // These assertions read columns out of SAM text, so keep the text container here;
+            // BAM output has its own round-trip test.
+            format: OutputFormat::Sam,
+            reference: None,
         },
         &no_cancel(),
         &mut |_, _, _| {},
@@ -422,6 +426,10 @@ fn cancellation_stops_the_mapping_pass() {
             preset: Preset::ShortRead,
             threads: 1,
             read_group: None,
+            // These assertions read columns out of SAM text, so keep the text container here;
+            // BAM output has its own round-trip test.
+            format: OutputFormat::Sam,
+            reference: None,
         },
         &|| true,
         &mut |_, _, _| {},
@@ -449,5 +457,144 @@ fn an_empty_index_is_an_error() {
         &no_cancel(),
         &mut |_, _, _| {},
     );
+    assert!(err.is_err());
+}
+
+// ---- output containers ----------------------------------------------------
+
+/// BAM is the default container, and it has to hold exactly what SAM did. Read back through
+/// noodles as *typed* records, so this asserts on fields rather than on column positions — the
+/// same reason the writer exists.
+#[test]
+fn bam_output_round_trips_the_same_records_as_sam() {
+    let dir = scratch("bam");
+    let (contigs, len) = (2, 300_000);
+    let reference = write_reference(&dir, contigs, len);
+    let reads = write_reads(&dir, contigs, len, 20, 150);
+    let index = dir.join("ref.mmi");
+    build_index(
+        &reference,
+        &index,
+        Preset::ShortRead,
+        BatchSize::default(),
+        &mut |_, _| {},
+    )
+    .unwrap();
+
+    let params = |format| MapParams {
+        preset: Preset::ShortRead,
+        threads: 1,
+        read_group: None,
+        format,
+        reference: None,
+    };
+
+    let sam = dir.join("out.sam");
+    map_reads(
+        &index,
+        &reads,
+        &sam,
+        &dir.join("s1"),
+        &params(OutputFormat::Sam),
+        &no_cancel(),
+        &mut |_, _, _| {},
+    )
+    .unwrap();
+
+    let bam = dir.join("out.bam");
+    map_reads(
+        &index,
+        &reads,
+        &bam,
+        &dir.join("s2"),
+        &params(OutputFormat::Bam),
+        &no_cancel(),
+        &mut |_, _, _| {},
+    )
+    .unwrap();
+
+    let (sam_header, sam_records) = crate::output::read_all(&sam).unwrap();
+    let (bam_header, bam_records) = crate::output::read_all_bam(&bam).unwrap();
+
+    assert_eq!(
+        sam_header.reference_sequences().len(),
+        bam_header.reference_sequences().len(),
+        "both headers describe the same references"
+    );
+    assert_eq!(sam_records.len(), bam_records.len());
+    assert!(!bam_records.is_empty());
+    for (s, b) in sam_records.iter().zip(&bam_records) {
+        assert_eq!(s.name(), b.name());
+        assert_eq!(s.flags(), b.flags());
+        assert_eq!(s.reference_sequence_id(), b.reference_sequence_id());
+        assert_eq!(s.alignment_start(), b.alignment_start());
+        assert_eq!(s.mapping_quality(), b.mapping_quality());
+        assert_eq!(s.cigar(), b.cigar(), "CIGAR must survive the BAM encode");
+        assert_eq!(s.sequence(), b.sequence());
+    }
+}
+
+/// A BAM whose BGZF end-of-file block is missing reads as truncated. Writing it is the writer's
+/// job on `finish`, and nothing else in the test suite would notice if it stopped happening.
+#[test]
+fn bam_output_is_a_complete_bgzf_stream() {
+    let dir = scratch("bgzf");
+    let (contigs, len) = (1, 200_000);
+    let reference = write_reference(&dir, contigs, len);
+    let reads = write_reads(&dir, contigs, len, 5, 150);
+    let index = dir.join("ref.mmi");
+    build_index(
+        &reference,
+        &index,
+        Preset::ShortRead,
+        BatchSize::default(),
+        &mut |_, _| {},
+    )
+    .unwrap();
+
+    let bam = dir.join("out.bam");
+    map_reads(
+        &index,
+        &reads,
+        &bam,
+        &dir.join("scratch"),
+        &MapParams {
+            preset: Preset::ShortRead,
+            threads: 1,
+            read_group: None,
+            format: OutputFormat::Bam,
+            reference: None,
+        },
+        &no_cancel(),
+        &mut |_, _, _| {},
+    )
+    .unwrap();
+
+    // The 28-byte BGZF EOF marker, which every reader uses to tell "done" from "truncated".
+    const EOF: &[u8] = &[
+        0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00, 0x1b, 0x00,
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ];
+    let bytes = std::fs::read(&bam).unwrap();
+    assert!(bytes.ends_with(EOF), "BAM is missing its BGZF EOF block");
+}
+
+/// The container follows the filename when a caller does not say otherwise.
+#[test]
+fn the_output_format_can_be_read_off_the_path() {
+    use crate::output::OutputFormat as F;
+    assert_eq!(F::from_path(Path::new("x.sam")), F::Sam);
+    assert_eq!(F::from_path(Path::new("x.bam")), F::Bam);
+    assert_eq!(F::from_path(Path::new("x.cram")), F::Cram);
+    assert_eq!(F::from_path(Path::new("x.CRAM")), F::Cram, "case-insensitive");
+    assert_eq!(F::from_path(Path::new("x")), F::Bam, "BAM is the default");
+}
+
+/// CRAM cannot be written without the reference it is compressed against, and saying so up front
+/// beats failing partway through a multi-hour job.
+#[test]
+fn cram_without_a_reference_is_refused_before_any_work() {
+    let dir = scratch("cramref");
+    let err = crate::output::AlignmentWriter::create(&dir.join("out.cram"), OutputFormat::Cram, "@HD\tVN:1.6\n", None);
     assert!(err.is_err());
 }

@@ -34,21 +34,28 @@
 //!
 //! [`preset`] (which mapper preset a run's reads need), [`batch`] (the memory control), [`index`]
 //! (the `.mmi` cache and the part-by-part build), [`map`] (single-end mapping, including the
-//! cross-part merge that makes a split index produce the same alignments as a whole one), and
-//! [`pe`] (paired-end, which is what `sr` and most vendor WGS need).
+//! cross-part merge that makes a split index produce the same alignments as a whole one), [`pe`]
+//! (paired-end, which is what `sr` and most vendor WGS need), and [`output`] (SAM/BAM/CRAM through
+//! noodles).
 //!
-//! Still outstanding for the module: BAM/CRAM output rather than SAM text, and resolving the
-//! index cache against the refgenome cache root instead of taking a base path from the caller.
+//! The entry point a job wants is [`index::ensure_cached_index`] followed by [`map::map_reads`] or
+//! [`pe::map_pairs`]: the first resolves the cache location and sizes the index for the machine,
+//! and the second two write BAM by default.
+//!
+//! What stage B does not do, by design, is sort or mark duplicates — those are stage C, and CRAM
+//! belongs after the sort rather than here.
 
 pub mod batch;
 pub mod error;
 pub mod index;
 pub mod map;
+pub mod output;
 pub mod pe;
 pub mod preset;
 
 pub use batch::BatchSize;
 pub use error::AlignError;
 pub use map::{map_reads, MapParams, MapStats};
+pub use output::OutputFormat;
 pub use pe::map_pairs;
 pub use preset::Preset;

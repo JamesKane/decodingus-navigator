@@ -35,12 +35,16 @@ use minimap2::index::MmIdx;
 use minimap2::map::MapResult;
 use minimap2::options::{mapopt_update, MapOpt};
 use minimap2::types::AlignReg;
+use noodles::core::Position;
+use noodles::sam::alignment::record::Flags;
+use noodles::sam::alignment::RecordBuf;
 
 use crate::error::AlignError;
 use crate::map::{
-    append_header, header_only, open_index, open_sam, part_opt, path_str_of, prepared_map_opt, thread_pool, CancelFn,
-    MapParams, MapStats, ProgressFn, ScratchGuard,
+    append_header, header_only, open_index, open_output, part_opt, path_str_of, prepared_map_opt, thread_pool,
+    CancelFn, MapParams, MapStats, ProgressFn, ScratchGuard,
 };
+use crate::output::AlignmentWriter;
 
 /// SAM flag bits this module sets. Named because a bare `0x20` in flag arithmetic is unreadable
 /// and the difference between `0x20` and `0x10` is a silently wrong strand.
@@ -109,7 +113,7 @@ fn map_pairs_single_part(
     let mut opt = map_opt.clone();
     mapopt_update(&mut opt, index);
 
-    let mut writer = open_sam(out, index, params)?;
+    let mut writer = open_output(out, index, params)?;
     let mut pairs = PairReader::open(reads1, reads2)?;
     let pool = thread_pool(params)?;
     let mut stats = MapStats {
@@ -143,7 +147,7 @@ fn map_pairs_single_part(
         progress(stats.queries, 1, 1);
     }
 
-    writer.flush().map_err(|e| AlignError::io(out, e))?;
+    writer.finish(out)?;
     progress(stats.queries, 1, 1);
     Ok(stats)
 }
@@ -249,7 +253,7 @@ fn merge_pairs(
         readers.push((path, r));
     }
 
-    let mut writer = open_sam(out, merged_header, params)?;
+    let mut writer = open_output(out, merged_header, params)?;
     let mut pairs = PairReader::open(reads1, reads2)?;
     let mut stats = MapStats {
         parts,
@@ -299,7 +303,7 @@ fn merge_pairs(
         progress(stats.queries, parts, parts);
     }
 
-    writer.flush().map_err(|e| AlignError::io(out, e))?;
+    writer.finish(out)?;
     progress(stats.queries, parts, parts);
     Ok(stats)
 }
@@ -418,7 +422,7 @@ fn repair(opt: &MapOpt, res1: &mut MapResult, res2: &mut MapResult, r1: &BseqRec
 
 #[allow(clippy::too_many_arguments)]
 fn emit_pair(
-    writer: &mut BufWriter<std::fs::File>,
+    writer: &mut AlignmentWriter,
     index: &MmIdx,
     opt: &MapOpt,
     r1: &BseqRecord,
@@ -435,7 +439,7 @@ fn emit_pair(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_end(
-    writer: &mut BufWriter<std::fs::File>,
+    writer: &mut AlignmentWriter,
     index: &MmIdx,
     opt: &MapOpt,
     record: &BseqRecord,
@@ -461,8 +465,7 @@ fn emit_end(
             opt.flag,
             own.rep_len,
         );
-        let line = set_pair_fields(line, index, None, mate_primary, is_first);
-        writeln!(writer, "{line}").map_err(|e| AlignError::io(out, e))?;
+        writer.write_line_with(&line, out, |rec, _| set_pair_fields(rec, None, mate_primary, is_first))?;
         stats.unmapped += 1;
         return Ok(());
     }
@@ -479,8 +482,9 @@ fn emit_end(
             opt.flag,
             own.rep_len,
         );
-        let line = set_pair_fields(line, index, Some(reg), mate_primary, is_first);
-        writeln!(writer, "{line}").map_err(|e| AlignError::io(out, e))?;
+        writer.write_line_with(&line, out, |rec, _| {
+            set_pair_fields(rec, Some(reg), mate_primary, is_first)
+        })?;
     }
     stats.mapped += 1;
     Ok(())
@@ -491,23 +495,15 @@ fn primary(result: &MapResult) -> Option<&AlignReg> {
     result.regs.iter().find(|r| r.sam_pri).or_else(|| result.regs.first())
 }
 
-/// Fill in the paired half of a SAM line: flags, `RNEXT`, `PNEXT`, `TLEN`.
+/// Fill in the paired half of a record: flags, `RNEXT`, `PNEXT`, `TLEN`.
 ///
-/// The single-end writer produced everything else. Fields are positional (0-based): 1 FLAG,
-/// 2 RNAME, 3 POS, 6 RNEXT, 7 PNEXT, 8 TLEN.
-fn set_pair_fields(
-    line: String,
-    index: &MmIdx,
-    own: Option<&AlignReg>,
-    mate: Option<&AlignReg>,
-    is_first: bool,
-) -> String {
-    let mut f: Vec<String> = line.split('\t').map(str::to_string).collect();
-    if f.len() < 11 {
-        return line;
-    }
-
-    let mut flags: u16 = f[1].parse().unwrap_or(0);
+/// The single-end writer produced everything else. This used to patch the formatted SAM text by
+/// column position; it now mutates a typed [`RecordBuf`], so a mate position cannot end up in the
+/// template-length field however the formatter's layout changes.
+///
+/// `own` is this record's region (`None` for an unmapped read) and `mate` is the mate's primary.
+fn set_pair_fields(record: &mut RecordBuf, own: Option<&AlignReg>, mate: Option<&AlignReg>, is_first: bool) {
+    let mut flags = record.flags().bits();
     flags |= flag::PAIRED | if is_first { flag::FIRST } else { flag::LAST };
     match mate {
         Some(m) => {
@@ -518,48 +514,43 @@ fn set_pair_fields(
         None => flags |= flag::MATE_UNMAPPED,
     }
     if let (Some(o), Some(m)) = (own, mate) {
-        // `proper_frag` is `pe::pair`'s verdict that these two ends form a concordant fragment;
-        // it is the only thing entitled to set 0x2.
+        // `proper_frag` is `pe::pair`'s verdict that these two ends form a concordant fragment; it
+        // is the only thing entitled to set 0x2.
         if o.proper_frag && m.proper_frag {
             flags |= flag::PROPER_PAIR;
         }
     }
-    f[1] = flags.to_string();
+    *record.flags_mut() = Flags::from(flags);
 
     match (own, mate) {
-        (Some(o), Some(m)) => {
-            let same = o.rid == m.rid;
-            f[6] = if same {
-                "=".to_string()
-            } else {
-                contig_name(index, m.rid)
-            };
-            f[7] = (m.rs + 1).to_string();
-            f[8] = if same { tlen(o, m) } else { 0 }.to_string();
+        (Some(_), Some(m)) => {
+            *record.mate_reference_sequence_id_mut() = Some(m.rid as usize);
+            *record.mate_alignment_start_mut() = Position::new(m.rs as usize + 1);
         }
         (Some(o), None) => {
-            // An unmapped mate is conventionally reported at this record's own position, so the
-            // pair stays together when the file is sorted.
-            f[6] = "=".to_string();
-            f[7] = (o.rs + 1).to_string();
-            f[8] = "0".to_string();
+            // An unmapped mate is conventionally reported at this record's own locus, so the pair
+            // stays together once the file is coordinate-sorted.
+            *record.mate_reference_sequence_id_mut() = Some(o.rid as usize);
+            *record.mate_alignment_start_mut() = Position::new(o.rs as usize + 1);
         }
         (None, Some(m)) => {
             // Likewise in reverse: place the unmapped read at its mapped mate's locus.
-            f[2] = contig_name(index, m.rid);
-            f[3] = (m.rs + 1).to_string();
-            f[6] = "=".to_string();
-            f[7] = (m.rs + 1).to_string();
-            f[8] = "0".to_string();
+            *record.reference_sequence_id_mut() = Some(m.rid as usize);
+            *record.alignment_start_mut() = Position::new(m.rs as usize + 1);
+            *record.mate_reference_sequence_id_mut() = Some(m.rid as usize);
+            *record.mate_alignment_start_mut() = Position::new(m.rs as usize + 1);
         }
         (None, None) => {
-            f[6] = "*".to_string();
-            f[7] = "0".to_string();
-            f[8] = "0".to_string();
+            *record.mate_reference_sequence_id_mut() = None;
+            *record.mate_alignment_start_mut() = None;
         }
     }
 
-    f.join("\t")
+    *record.template_length_mut() = match (own, mate) {
+        // Only meaningful when both ends sit on the same reference sequence.
+        (Some(o), Some(m)) if o.rid == m.rid => tlen(o, m) as i32,
+        _ => 0,
+    };
 }
 
 /// Signed observed template length: the span from the leftmost start to the rightmost end,
@@ -574,14 +565,6 @@ fn tlen(own: &AlignReg, mate: &AlignReg) -> i64 {
         std::cmp::Ordering::Greater => -span,
         std::cmp::Ordering::Equal => 0,
     }
-}
-
-fn contig_name(index: &MmIdx, rid: i32) -> String {
-    index
-        .seqs
-        .get(rid as usize)
-        .map(|s| s.name.clone())
-        .unwrap_or_else(|| "*".to_string())
 }
 
 /// Both ends of a template must share a QNAME, so a trailing `/1` or `/2` has to go.

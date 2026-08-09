@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::batch::BatchSize;
 use crate::index::build_index;
+use crate::output::OutputFormat;
 use crate::preset::Preset;
 
 fn scratch(tag: &str) -> PathBuf {
@@ -108,6 +109,10 @@ fn run(index: &Path, r1: &Path, r2: &Path, out: &Path, dir: &Path) -> MapStats {
             preset: Preset::ShortRead,
             threads: 1,
             read_group: None,
+            // These assertions read columns out of SAM text, so keep the text container here;
+            // BAM output has its own round-trip test.
+            format: OutputFormat::Sam,
+            reference: None,
         },
         &|| false,
         &mut |_, _, _| {},
@@ -414,6 +419,10 @@ fn mismatched_read_counts_are_refused() {
             preset: Preset::ShortRead,
             threads: 1,
             read_group: None,
+            // These assertions read columns out of SAM text, so keep the text container here;
+            // BAM output has its own round-trip test.
+            format: OutputFormat::Sam,
+            reference: None,
         },
         &|| false,
         &mut |_, _, _| {},
