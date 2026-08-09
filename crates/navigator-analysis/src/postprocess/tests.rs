@@ -258,3 +258,300 @@ fn an_already_sorted_file_is_unchanged() {
 
     assert_eq!(read_back(&once).1, read_back(&twice).1);
 }
+
+// ---- duplicate marking ----------------------------------------------------
+
+use super::markdup::{mark_duplicates, MarkDupParams};
+
+/// A paired record. `pos` is the alignment start, `mate_pos` the mate's.
+#[allow(clippy::too_many_arguments)]
+fn pair_record(
+    name: &str,
+    ref_id: usize,
+    pos: usize,
+    reverse: bool,
+    first: bool,
+    mate_ref: usize,
+    mate_pos: usize,
+    mate_reverse: bool,
+    cigar: &str,
+) -> RecordBuf {
+    let mut flags = 0x1u16 | if first { 0x40 } else { 0x80 };
+    if reverse {
+        flags |= 0x10;
+    }
+    if mate_reverse {
+        flags |= 0x20;
+    }
+    RecordBuf::builder()
+        .set_name(name)
+        .set_flags(Flags::from(flags))
+        .set_reference_sequence_id(ref_id)
+        .set_alignment_start(noodles::core::Position::new(pos).unwrap())
+        .set_cigar(parse_cigar(cigar))
+        .set_mate_reference_sequence_id(mate_ref)
+        .set_mate_alignment_start(noodles::core::Position::new(mate_pos).unwrap())
+        // SEQ must be exactly as long as the CIGAR's query consumption — soft clips count, hard
+        // clips do not. noodles rejects the record otherwise, which is how this was caught.
+        .set_sequence(Sequence::from(vec![b'A'; query_len(cigar)]))
+        .set_quality_scores(QualityScores::from(vec![30; query_len(cigar)]))
+        .build()
+}
+
+/// Bases of the read a CIGAR accounts for: `M`/`I`/`S`/`=`/`X` consume query, `D`/`N`/`H` do not.
+fn query_len(spec: &str) -> usize {
+    let mut total = 0;
+    let mut digits = String::new();
+    for c in spec.chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+        } else {
+            let n: usize = digits.parse().unwrap();
+            digits.clear();
+            if matches!(c, 'M' | 'I' | 'S' | '=' | 'X') {
+                total += n;
+            }
+        }
+    }
+    total
+}
+
+/// Minimal CIGAR parser for the fixtures, e.g. "3S10M".
+fn parse_cigar(spec: &str) -> noodles::sam::alignment::record_buf::Cigar {
+    use noodles::sam::alignment::record::cigar::op::{Kind, Op};
+    let mut ops = Vec::new();
+    let mut digits = String::new();
+    for c in spec.chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+        } else {
+            let n: usize = digits.parse().unwrap();
+            digits.clear();
+            let kind = match c {
+                'M' => Kind::Match,
+                'S' => Kind::SoftClip,
+                'H' => Kind::HardClip,
+                'D' => Kind::Deletion,
+                'I' => Kind::Insertion,
+                other => panic!("unhandled cigar op {other}"),
+            };
+            ops.push(Op::new(kind, n));
+        }
+    }
+    noodles::sam::alignment::record_buf::Cigar::from(ops)
+}
+
+/// `(name, is_duplicate)` for every record, in file order.
+fn duplicate_flags(path: &Path) -> Vec<(String, bool)> {
+    let file = std::fs::File::open(path).unwrap();
+    let mut reader = bam::io::Reader::new(file);
+    let header = reader.read_header().unwrap();
+    reader
+        .record_bufs(&header)
+        .map(|r| {
+            let r = r.unwrap();
+            (
+                String::from_utf8_lossy(r.name().unwrap_or_default()).to_string(),
+                r.flags().is_duplicate(),
+            )
+        })
+        .collect()
+}
+
+fn mark(input: &Path, dir: &Path, params: MarkDupParams) -> (PathBuf, super::MarkDupStats) {
+    let output = dir.join("marked.bam");
+    let stats =
+        mark_duplicates(input, &output, &params, &CancelToken::none(), &mut |_| {}).expect("marking should succeed");
+    (output, stats)
+}
+
+/// Two templates from the same molecule: same endpoints, same strands. One survives unmarked, the
+/// other is flagged — and an independent template at another position is untouched.
+#[test]
+fn identical_fragments_are_marked_and_one_representative_is_kept() {
+    let dir = scratch("dupes");
+    let hdr = header(&[("chr1", 100_000)]);
+    let records = vec![
+        pair_record("a", 0, 100, false, true, 0, 500, true, "10M"),
+        pair_record("b", 0, 100, false, true, 0, 500, true, "10M"),
+        pair_record("other", 0, 900, false, true, 0, 1500, true, "10M"),
+    ];
+    let input = dir.join("in.bam");
+    write_bam(&input, &hdr, &records);
+
+    let (output, stats) = mark(&input, &dir, MarkDupParams::default());
+    let flags = duplicate_flags(&output);
+
+    assert_eq!(stats.records, 3);
+    assert_eq!(stats.duplicates, 1, "exactly one of the two copies is marked");
+    assert_eq!(flags[0], ("a".into(), false), "the first seen is the representative");
+    assert_eq!(flags[1], ("b".into(), true));
+    assert_eq!(
+        flags[2],
+        ("other".into(), false),
+        "an independent fragment is untouched"
+    );
+}
+
+/// **The property the module docs argue for.** A template with one end marked and the other not
+/// would show consumers half a pair. Both ends of a duplicate template must agree.
+#[test]
+fn both_ends_of_a_duplicate_template_are_marked_alike() {
+    let dir = scratch("bothends");
+    let hdr = header(&[("chr1", 100_000)]);
+    // Two duplicate templates, each with both ends present, in coordinate order.
+    let records = vec![
+        pair_record("a", 0, 100, false, true, 0, 500, true, "10M"),
+        pair_record("b", 0, 100, false, true, 0, 500, true, "10M"),
+        pair_record("a", 0, 500, true, false, 0, 100, false, "10M"),
+        pair_record("b", 0, 500, true, false, 0, 100, false, "10M"),
+    ];
+    let input = dir.join("in.bam");
+    write_bam(&input, &hdr, &records);
+
+    let (output, _) = mark(&input, &dir, MarkDupParams::default());
+    let flags = duplicate_flags(&output);
+
+    let verdicts = |name: &str| -> Vec<bool> { flags.iter().filter(|(n, _)| n == name).map(|(_, d)| *d).collect() };
+    assert_eq!(verdicts("a"), vec![false, false], "both ends of 'a' agree");
+    assert_eq!(verdicts("b"), vec![true, true], "both ends of 'b' agree");
+}
+
+/// Copies of one molecule can be clipped differently — a mismatch near an end is enough. Grouping
+/// on the alignment start would miss them; grouping on the unclipped 5' position finds them.
+#[test]
+fn differently_clipped_copies_of_one_fragment_are_still_duplicates() {
+    let dir = scratch("clipping");
+    let hdr = header(&[("chr1", 100_000)]);
+    // Both molecules begin at 100: one aligns from 100 with no clip, the other is clipped by 3 and
+    // so *starts* at 103 while describing the same fragment.
+    let records = vec![
+        pair_record("plain", 0, 100, false, true, 0, 500, true, "10M"),
+        pair_record("clipped", 0, 103, false, true, 0, 500, true, "3S10M"),
+    ];
+    let input = dir.join("in.bam");
+    write_bam(&input, &hdr, &records);
+
+    let (output, stats) = mark(&input, &dir, MarkDupParams::default());
+    assert_eq!(stats.duplicates, 1, "clipping must not hide a duplicate");
+    assert!(duplicate_flags(&output)[1].1, "the clipped copy is the duplicate");
+}
+
+/// Same start, different mate — two independent molecules that happen to share one endpoint. A
+/// signature that ignored the mate would collapse them and delete real coverage.
+#[test]
+fn fragments_sharing_one_end_but_not_the_other_are_not_duplicates() {
+    let dir = scratch("mate");
+    let hdr = header(&[("chr1", 100_000)]);
+    let records = vec![
+        pair_record("a", 0, 100, false, true, 0, 500, true, "10M"),
+        pair_record("b", 0, 100, false, true, 0, 900, true, "10M"),
+    ];
+    let input = dir.join("in.bam");
+    write_bam(&input, &hdr, &records);
+
+    let (_, stats) = mark(&input, &dir, MarkDupParams::default());
+    assert_eq!(stats.duplicates, 0, "different mates means different molecules");
+}
+
+/// Same endpoints on opposite strands are different molecules, not copies.
+#[test]
+fn opposite_strands_are_not_duplicates() {
+    let dir = scratch("strand");
+    let hdr = header(&[("chr1", 100_000)]);
+    let records = vec![
+        pair_record("fwd", 0, 100, false, true, 0, 500, true, "10M"),
+        pair_record("rev", 0, 100, true, true, 0, 500, true, "10M"),
+    ];
+    let input = dir.join("in.bam");
+    write_bam(&input, &hdr, &records);
+
+    let (_, stats) = mark(&input, &dir, MarkDupParams::default());
+    assert_eq!(stats.duplicates, 0);
+}
+
+/// Long-read libraries are usually PCR-free and long reads rarely share endpoints by chance, so
+/// marking them would throw away real coverage. Disabling must actually disable.
+#[test]
+fn marking_can_be_turned_off_for_long_reads() {
+    let dir = scratch("disabled");
+    let hdr = header(&[("chr1", 100_000)]);
+    let records = vec![
+        pair_record("a", 0, 100, false, true, 0, 500, true, "10M"),
+        pair_record("b", 0, 100, false, true, 0, 500, true, "10M"),
+    ];
+    let input = dir.join("in.bam");
+    write_bam(&input, &hdr, &records);
+
+    let (output, stats) = mark(
+        &input,
+        &dir,
+        MarkDupParams {
+            enabled: false,
+            ..Default::default()
+        },
+    );
+    assert!(stats.skipped);
+    assert_eq!(stats.duplicates, 0);
+    assert!(duplicate_flags(&output).iter().all(|(_, d)| !d));
+}
+
+/// Unmapped, secondary, and supplementary records have no molecule of their own to represent —
+/// their primary already does. They pass through unmarked and are counted as ineligible.
+#[test]
+fn ineligible_records_pass_through_unmarked() {
+    let dir = scratch("ineligible");
+    let hdr = header(&[("chr1", 100_000)]);
+    let mut secondary = pair_record("sec", 0, 100, false, true, 0, 500, true, "10M");
+    *secondary.flags_mut() = Flags::from(0x1u16 | 0x40 | 0x100);
+    let mut supplementary = pair_record("sup", 0, 100, false, true, 0, 500, true, "10M");
+    *supplementary.flags_mut() = Flags::from(0x1u16 | 0x40 | 0x800);
+
+    let records = vec![
+        pair_record("a", 0, 100, false, true, 0, 500, true, "10M"),
+        secondary,
+        supplementary,
+        record("unmapped", None, 0),
+    ];
+    let input = dir.join("in.bam");
+    write_bam(&input, &hdr, &records);
+
+    let (output, stats) = mark(&input, &dir, MarkDupParams::default());
+    assert_eq!(stats.ineligible, 3);
+    assert_eq!(stats.duplicates, 0, "none of them may be marked");
+    assert!(duplicate_flags(&output).iter().all(|(_, d)| !d));
+}
+
+/// A re-run, or an input a vendor already marked, must get this pass's verdict rather than
+/// inheriting one it did not reach.
+#[test]
+fn pre_existing_duplicate_flags_are_recomputed() {
+    let dir = scratch("recompute");
+    let hdr = header(&[("chr1", 100_000)]);
+    // Flagged on input, but not a duplicate of anything.
+    let mut stale = pair_record("stale", 0, 100, false, true, 0, 500, true, "10M");
+    *stale.flags_mut() = Flags::from(0x1u16 | 0x40 | 0x400);
+    let input = dir.join("in.bam");
+    write_bam(&input, &hdr, &[stale]);
+
+    let (output, stats) = mark(&input, &dir, MarkDupParams::default());
+    assert_eq!(stats.duplicates, 0);
+    assert!(
+        !duplicate_flags(&output)[0].1,
+        "a stale flag must be cleared, not carried"
+    );
+}
+
+/// Marking never drops a record — it only changes a flag.
+#[test]
+fn marking_is_lossless() {
+    let dir = scratch("mdlossless");
+    let (input, _, total) = unsorted_fixture(&dir);
+    let sorted_dir = dir.join("sorted");
+    std::fs::create_dir_all(&sorted_dir).unwrap();
+    let (sorted, _) = run(&input, &sorted_dir, SortParams::default());
+
+    let (output, stats) = mark(&sorted, &dir, MarkDupParams::default());
+    assert_eq!(stats.records as usize, total);
+    assert_eq!(duplicate_flags(&output).len(), total);
+}

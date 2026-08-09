@@ -22,8 +22,10 @@
 //! marking them would discard real coverage. This matches standard practice and the design's
 //! Stage C note.
 
+pub mod markdup;
 pub mod sort;
 
+pub use markdup::{mark_duplicates, MarkDupParams, MarkDupStats};
 pub use sort::{sort_alignment, SortParams, SortStats};
 
 #[cfg(test)]
