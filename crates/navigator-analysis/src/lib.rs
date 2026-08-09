@@ -39,6 +39,7 @@ pub mod mastervar;
 pub use du_bio::mt as mtvariants;
 pub mod parity;
 pub mod phasing;
+pub mod postprocess;
 pub mod preflight;
 pub mod probe;
 pub mod read_metrics;
