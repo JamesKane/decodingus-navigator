@@ -107,10 +107,21 @@ Code exists or the design is settled; these are the near-term threads.
 
 Verified 2026-07-26 to have no implementation in the tree.
 
-### 2.1 Realignment module
-- **Design:** [`design/realignment-module.md`](design/realignment-module.md)
+### 2.1 Realignment module — **in progress** (phase 1 landed 2026-08-08)
+- **Design:** [`design/realignment-module.md`](design/realignment-module.md) — revised 2026-08-08
+  after a phase 0 spike that **retracted the module's motivating premise** (ancestry is *not*
+  build-locked; off-build samples already estimate ancestry through the multi-build IBD panel) and
+  reversed the backend decision to pure-Rust `minimap2-pure-rs`. Read the correction blocks before
+  planning further work — whether the remaining payoff justifies the module is an open product
+  question.
 - **Scope:** revert + realign GRCh37/38 vendor WGS to CHM13v2 / hs1; aligner-index cache in
   `navigator-refgenome`, job orchestration + provenance, opt-in background job with warnings.
+- **Done:** phase 0 spikes; **phase 1** — `navigator-analysis/src/revert/` (stage A): primaries-only
+  revert with orientation restore and `OQ` preference, a disk-backed external merge sort that
+  collates by read name, and synchronized paired-FASTQ output. 19 tests including BAM/CRAM parity.
+- **Next:** phase 2 — a `navigator-align` crate wrapping the mapper, with part-by-part index
+  build/map (`-I` sized from RAM; see Decision 4 — a monolithic index costs ~19 GB and is the
+  failure mode to avoid).
 - **Do not confuse** with `navigator-analysis/src/realign.rs`, which is *indel local realignment*
   (plan §4b) and is a different thing entirely.
 
