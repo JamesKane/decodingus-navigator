@@ -3425,6 +3425,7 @@ dependencies = [
  "minimap2",
  "minimap2-pure-rs",
  "minimap2-sys",
+ "rayon",
  "sysinfo",
  "thiserror 2.0.18",
 ]

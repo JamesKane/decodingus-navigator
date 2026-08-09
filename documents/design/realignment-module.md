@@ -431,16 +431,29 @@ Realignment needs a minimap2 index (`.mmi`) of CHM13v2, which **does not exist i
   and its permanent MAPQ cost — into the cache. Available memory is reported separately, for the
   preflight's "can this start now" question. `NAVIGATOR_ALIGN_BATCH_MBASE` overrides both.
 
-- **Implement per-part mapping and merging.** `navigator-align` owns the orchestration, but not
-  the hard part: `minimap2-pure-rs` exposes `index::split::{create_split_tmp,
-  write_split_query_record, read_split_query_record, merge_split_query_records}`, so the
-  cross-part MAPQ recomputation — the piece that is easy to get subtly wrong — is reused rather
-  than reimplemented. What we must own is the loop and the output, because the crate's own
-  file-level split entry points (`map_file_pe_sam_split` and friends) write to **stdout** and take
-  `parts: &[MmIdx]`, i.e. they hold every part resident and so give up the memory bound this whole
-  decision exists to buy. `index::reader::IdxReader::read_next` is the part-at-a-time source.
-  Building one whole-genome resident index instead is the failure mode that produced this
-  document's original wrong estimate; don't reintroduce it.
+- **Implement per-part mapping and merging.** ✅ Built (`navigator-align::map`).
+  `navigator-align` owns the orchestration, but not the hard part: `minimap2-pure-rs` exposes
+  `index::split::{create_split_tmp, write_split_query_record, read_split_query_record,
+  merge_split_query_records}`, so the cross-part MAPQ recomputation — the piece that is easy to
+  get subtly wrong — is reused rather than reimplemented. What we own is the loop and the output,
+  because the crate's own file-level split entry points (`map_file_pe_sam_split` and friends)
+  write to **stdout** and take `parts: &[MmIdx]`, i.e. they hold every part resident and so give
+  up the memory bound this whole decision exists to buy.
+  `index::reader::IdxReader::read_next` is the part-at-a-time source. Building one whole-genome
+  resident index instead is the failure mode that produced this document's original wrong
+  estimate; don't reintroduce it.
+
+  **The equivalence is now tested, not assumed.** `a_split_index_places_reads_exactly_where_a
+  _whole_index_does` maps the same reads against a 1-part and a multi-part index of the same
+  reference and requires byte-identical placements and MAPQ. That test is what makes the memory
+  table above safe to rely on; if it ever fails, splitting has become an accuracy decision and
+  Decision 4 has to be re-argued.
+
+  Two traps found while building it, both worth knowing before touching this code. Mapping must
+  set `MapFlags::CIGAR`: without it `map_query` stops at chaining, so records carry coordinates
+  but no CIGAR *and* the block that assigns primary/secondary never runs, leaving every record
+  flagged supplementary. And per-part scratch is joined to reads **positionally**, so any
+  batching must preserve input order.
 
 - **Part boundaries overshoot, and `mini_batch_size` is not the control.** Measured: a part
   accumulates whole sequences until the running total *exceeds* `batch_size`, so parts land at or

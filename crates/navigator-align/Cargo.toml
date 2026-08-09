@@ -21,6 +21,10 @@ thiserror = { workspace = true }
 # no C toolchain, no build script compiling C. Add the `disk` feature when the realignment
 # preflight needs free-space checks; it is the same dependency.
 sysinfo = { version = "0.36", default-features = false, features = ["system"] }
+# Batch-parallel mapping. Mapping is the pipeline's dominant cost and is embarrassingly parallel
+# per read; rayon is already the workspace's data-parallelism crate (navigator-analysis uses it
+# per contig), and minimap2-pure-rs depends on it too, so this adds no new tree.
+rayon = "1"
 # Default backend: a pure-Rust translation of minimap2 v2.31. Chosen over the C FFI because it
 # needs no C toolchain (so Windows and every other Rust target build unchanged) and measured
 # 99.74% byte-identical to the C implementation with zero MAPQ>0 disagreements. See Decision 1.

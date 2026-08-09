@@ -40,8 +40,10 @@
 pub mod batch;
 pub mod error;
 pub mod index;
+pub mod map;
 pub mod preset;
 
 pub use batch::BatchSize;
 pub use error::AlignError;
+pub use map::{map_reads, MapParams, MapStats};
 pub use preset::Preset;
