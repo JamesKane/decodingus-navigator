@@ -17,6 +17,8 @@ struct Row {
     bam_path: Option<String>,
     reference_path: Option<String>,
     content_sha256: Option<String>,
+    derived_from_alignment_id: Option<i64>,
+    derivation: Option<String>,
 }
 
 impl Row {
@@ -30,17 +32,20 @@ impl Row {
             bam_path: self.bam_path,
             reference_path: self.reference_path,
             content_sha256: self.content_sha256,
+            derived_from_alignment_id: self.derived_from_alignment_id,
+            derivation: self.derivation,
         }
     }
 }
 
-const COLS: &str =
-    "id, sequence_run_id, reference_build, aligner, variant_caller, bam_path, reference_path, content_sha256";
+const COLS: &str = "id, sequence_run_id, reference_build, aligner, variant_caller, bam_path, reference_path, \
+     content_sha256, derived_from_alignment_id, derivation";
 
 pub async fn create(pool: &SqlitePool, a: &NewAlignment) -> Result<Alignment, StoreError> {
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO alignment (sequence_run_id, reference_build, aligner, variant_caller, bam_path, reference_path, content_sha256) \
-         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        "INSERT INTO alignment (sequence_run_id, reference_build, aligner, variant_caller, bam_path, reference_path, \
+         content_sha256, derived_from_alignment_id, derivation) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
     )
     .bind(a.sequence_run_id)
     .bind(&a.reference_build)
@@ -49,6 +54,8 @@ pub async fn create(pool: &SqlitePool, a: &NewAlignment) -> Result<Alignment, St
     .bind(&a.bam_path)
     .bind(&a.reference_path)
     .bind(&a.content_sha256)
+    .bind(a.derived_from_alignment_id)
+    .bind(&a.derivation)
     .fetch_one(pool)
     .await?;
     Ok(Alignment {
@@ -60,6 +67,8 @@ pub async fn create(pool: &SqlitePool, a: &NewAlignment) -> Result<Alignment, St
         bam_path: a.bam_path.clone(),
         reference_path: a.reference_path.clone(),
         content_sha256: a.content_sha256.clone(),
+        derived_from_alignment_id: a.derived_from_alignment_id,
+        derivation: a.derivation.clone(),
     })
 }
 

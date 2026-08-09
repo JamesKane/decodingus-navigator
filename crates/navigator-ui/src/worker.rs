@@ -3534,6 +3534,8 @@ mod tests {
                 bam_path: Some(fixtures.join("coverage.bam").to_string_lossy().into_owned()),
                 reference_path: Some(fixtures.join("ref.fa").to_string_lossy().into_owned()),
                 content_sha256: None,
+                derived_from_alignment_id: None,
+                derivation: None,
             })
             .await
             .unwrap();
@@ -3718,6 +3720,8 @@ mod tests {
                 bam_path: None,
                 reference_path: None,
                 content_sha256: None,
+                derived_from_alignment_id: None,
+                derivation: None,
             }),
             &CancelToken::none(),
         )
@@ -4133,6 +4137,8 @@ mod tests {
                 bam_path: None,
                 reference_path: None,
                 content_sha256: None,
+                derived_from_alignment_id: None,
+                derivation: None,
             }),
             &CancelToken::none(),
         )

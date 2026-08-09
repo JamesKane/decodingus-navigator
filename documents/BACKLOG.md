@@ -116,12 +116,16 @@ Verified 2026-07-26 to have no implementation in the tree.
   question.
 - **Scope:** revert + realign GRCh37/38 vendor WGS to CHM13v2 / hs1; aligner-index cache in
   `navigator-refgenome`, job orchestration + provenance, opt-in background job with warnings.
-- **Done:** phase 0 spikes; **phase 1** — `navigator-analysis/src/revert/` (stage A): primaries-only
+- **Done:** phase 0 spikes; **phase 1** (stage A, `navigator-analysis/src/revert/`) — primaries-only
   revert with orientation restore and `OQ` preference, a disk-backed external merge sort that
-  collates by read name, and synchronized paired-FASTQ output. 19 tests including BAM/CRAM parity.
-- **Next:** phase 2 — a `navigator-align` crate wrapping the mapper, with part-by-part index
-  build/map (`-I` sized from RAM; see Decision 4 — a monolithic index costs ~19 GB and is the
-  failure mode to avoid).
+  collates by read name, synchronized paired-FASTQ output; **phase 2** (stage B,
+  `navigator-align`) — pure-Rust minimap2 backend, preset selection, RAM-sized part-by-part index
+  build and map with cross-part merge, single- and paired-end, BAM/CRAM output via noodles;
+  **phase 3** (stages C and D) — coordinate sort, short-read duplicate marking, CRAM + `.crai`,
+  and the provenance migration with registration in `navigator-app::realign`.
+- **Next:** phase 4 — app orchestration and UI: the opt-in cancellable background job, preflight,
+  progress, badges, and wiring realigned alignments into the analysis selectors. Then phase 5,
+  WGS-scale backend parity and MAPQ validation, which is the gate before users see this.
 - **Do not confuse** with `navigator-analysis/src/realign.rs`, which is *indel local realignment*
   (plan §4b) and is a different thing entirely.
 

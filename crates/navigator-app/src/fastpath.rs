@@ -812,6 +812,8 @@ mod gvcf_discovery_tests {
             aligner: "bwa".into(),
             variant_caller: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         }
     }
 

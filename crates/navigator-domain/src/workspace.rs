@@ -119,6 +119,28 @@ pub struct Alignment {
     /// analysis for batch-imported files). The file's content identity — used to invalidate
     /// cached analyses only when the file actually changes. `None` until computed.
     pub content_sha256: Option<String>,
+    /// The alignment this one was produced from, for a row Navigator derived rather than imported.
+    /// `None` means this is an original — a vendor's alignment, or anything imported directly.
+    ///
+    /// Set by realignment, which re-maps a vendor alignment's reads to another reference and
+    /// registers the result under the same `sequence_run_id`: the same physical library, mapped
+    /// differently. Without this a subject with both builds present has two alignments and no way
+    /// to tell which came from which.
+    pub derived_from_alignment_id: Option<i64>,
+    /// How it was derived, as `realign:<backend>-<preset>` (e.g. `realign:minimap2-sr`). `None`
+    /// alongside a `None` parent. [`Alignment::aligner`] still carries the mapper alone.
+    pub derivation: Option<String>,
+}
+
+impl Alignment {
+    /// Whether Navigator produced this alignment from another one, rather than importing it.
+    ///
+    /// The distinction is user-facing: a derived alignment can be deleted and rebuilt from its
+    /// source, and the UI has to say where it came from rather than presenting it as something the
+    /// vendor supplied.
+    pub fn is_derived(&self) -> bool {
+        self.derived_from_alignment_id.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +153,10 @@ pub struct NewAlignment {
     pub reference_path: Option<String>,
     /// Content SHA-256 if already known at creation (else `None`; filled in lazily).
     pub content_sha256: Option<String>,
+    /// The alignment this was derived from; see [`Alignment::derived_from_alignment_id`].
+    pub derived_from_alignment_id: Option<i64>,
+    /// How it was derived; see [`Alignment::derivation`].
+    pub derivation: Option<String>,
 }
 
 /// A persisted analysis result, keyed by `(alignment, kind, algorithm_version)`. The

@@ -178,6 +178,10 @@ impl App {
             bam_path: Some(path.to_string_lossy().into_owned()),
             reference_path,
             content_sha256: None,
+            // An imported alignment is an original — nothing derived it. Only realignment sets
+            // these, and it registers its own row.
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await?;
         Ok(())
@@ -405,6 +409,9 @@ impl App {
                 bam_path: Some(path_str),
                 reference_path,
                 content_sha256: None,
+                // An imported alignment is an original; see above.
+                derived_from_alignment_id: None,
+                derivation: None,
             })
             .await?;
             summary.alignments_created += 1;
@@ -814,6 +821,9 @@ impl App {
                 // Batch import: hash lazily on first analysis (don't stall a bulk NAS import
                 // hashing every multi-GB file up front).
                 content_sha256: None,
+                // An imported alignment is an original; see above.
+                derived_from_alignment_id: None,
+                derivation: None,
             })
             .await?;
             summary.alignments_created += 1;

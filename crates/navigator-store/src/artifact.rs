@@ -287,6 +287,8 @@ mod tests {
                 bam_path: None,
                 reference_path: None,
                 content_sha256: None,
+                derived_from_alignment_id: None,
+                derivation: None,
             },
         )
         .await

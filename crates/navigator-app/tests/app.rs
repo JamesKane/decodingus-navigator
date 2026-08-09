@@ -410,6 +410,8 @@ async fn validate_hg002_haplogroups() {
             bam_path: Some(bam),
             reference_path: std::env::var("B38_REF").ok(), // needed for the private (de-novo) bucket
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -556,6 +558,8 @@ async fn validate_gfx_chm13_haplogroups() {
             bam_path: Some(bam),
             reference_path: Some(reference),
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -667,6 +671,8 @@ async fn validate_gfx_decodingus_y() {
             bam_path: Some(bam),
             reference_path: Some(reference),
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -736,6 +742,8 @@ async fn gvcf_y_placement_smoke() {
             bam_path: Some("/nonexistent.cram".into()), // native Y path never reads the CRAM
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -810,6 +818,8 @@ async fn gvcf_fast_path_matches_cram_walk() {
             bam_path: Some(cram),
             reference_path: Some(reference),
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -884,6 +894,8 @@ async fn analysis_provenance_roundtrips_and_defaults_full_walk() {
             bam_path: Some("/x.cram".into()),
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -945,6 +957,8 @@ async fn save_analysis_no_downgrade_keeps_the_fuller_result() {
             bam_path: Some("/x.cram".into()),
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -1101,6 +1115,8 @@ async fn assign_haplogroup_from_alignment_calls_and_ranks() {
             bam_path: Some(dir.join("coverage.bam").to_string_lossy().into_owned()),
             reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -1253,6 +1269,8 @@ async fn alignment_id(app: &App) -> i64 {
         bam_path: None,
         reference_path: None,
         content_sha256: None,
+        derived_from_alignment_id: None,
+        derivation: None,
     })
     .await
     .unwrap()
@@ -1308,6 +1326,8 @@ async fn command_flow_and_overview() {
             bam_path: None,
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap();
@@ -1357,6 +1377,8 @@ async fn typed_analysis_artifact_round_trips_and_versions() {
             bam_path: None,
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap();
@@ -1480,6 +1502,8 @@ async fn diploid_alignment(app: &App) -> i64 {
         bam_path: Some(bam),
         reference_path: None,
         content_sha256: None,
+        derived_from_alignment_id: None,
+        derivation: None,
     })
     .await
     .unwrap()
@@ -1918,6 +1942,8 @@ async fn assign_y_haplogroup_lifts_grch38_tree_onto_chm13_alignment() {
             bam_path: Some(dir.join("ychr.bam").to_string_lossy().into_owned()),
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -1998,6 +2024,8 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
         bam_path: Some(dir.join("coverage.cram").to_string_lossy().into_owned()),
         reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
         content_sha256: None,
+        derived_from_alignment_id: None,
+        derivation: None,
     })
     .await
     .unwrap();
@@ -2197,6 +2225,8 @@ async fn compare_mt_grch38_vs_chm13() {
             bam_path: Some(bam),
             reference_path: reference,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -2296,6 +2326,8 @@ async fn sex_and_read_metrics_persist_and_reload() {
             bam_path: Some(fixtures().join("sex.bam").to_string_lossy().into_owned()),
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -2343,6 +2375,8 @@ async fn gfx_sex_is_male() {
             bam_path: Some(bam),
             reference_path: std::env::var("GFX_CHM13_REF").ok(),
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -2391,6 +2425,8 @@ async fn cached_artifact_invalidated_when_source_file_changes() {
             bam_path: Some(bam.to_string_lossy().into_owned()),
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -2744,6 +2780,8 @@ async fn deleting_run_purges_derived_haplogroup_and_consensus() {
             bam_path: None,
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap();
@@ -2832,6 +2870,8 @@ async fn branch_report_genotypes_the_mt_subtree_end_to_end() {
             bam_path: Some(dir.join("coverage.bam").to_string_lossy().into_owned()),
             reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -2927,6 +2967,8 @@ async fn mt_alignment_pick_skips_a_y_only_run() {
             bam_path: Some("/nonexistent.bam".into()),
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -2956,6 +2998,8 @@ async fn mt_alignment_pick_skips_a_y_only_run() {
             bam_path: Some("/nonexistent.bam".into()),
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -3115,6 +3159,8 @@ mod full_analysis_plan {
             bam_path: Some("/nonexistent/plan.bam".into()),
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()
@@ -3284,4 +3330,212 @@ async fn refresh_private_y_on_a_bare_subject_is_not_a_failure() {
     assert_eq!(r.computed, 0);
     assert_eq!(r.failed, 0, "nothing to compute is not a failure");
     assert_eq!(r.missing_file, 0);
+}
+
+// ---- realignment provenance (stage D) --------------------------------------
+
+/// A biosample with one sequence run — the minimum context an alignment needs.
+async fn subject_with_run(
+    app: &App,
+) -> (
+    navigator_domain::workspace::Biosample,
+    navigator_domain::workspace::SequenceRun,
+) {
+    let b = app
+        .add_biosample(None, "provenance-subject", None, Some("male".into()))
+        .await
+        .unwrap();
+    let run = app
+        .record_sequence_run(NewSequenceRun {
+            biosample_guid: b.guid,
+            platform_name: "ILLUMINA".into(),
+            instrument_model: None,
+            test_type: "WGS".into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        })
+        .await
+        .unwrap();
+    (b, run)
+}
+
+/// A realigned alignment is a new row under the *same* library, pointing back at what it came
+/// from. Nothing about the source may change — that is what makes realignment safe to offer.
+#[tokio::test]
+async fn registering_a_realignment_is_additive_and_records_its_source() {
+    let app = app().await;
+    let (_, run) = subject_with_run(&app).await;
+
+    let source = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa-mem2".into(),
+            variant_caller: None,
+            bam_path: Some("/tmp/vendor.bam".into()),
+            reference_path: None,
+            content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
+        })
+        .await
+        .unwrap();
+    assert!(!source.is_derived(), "an imported alignment is an original");
+
+    // Stand in for stage C's output.
+    let dir = std::env::temp_dir().join(format!("dun-stage-d-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cram = dir.join("realigned.cram");
+    std::fs::write(&cram, b"not really a cram, but a real file").unwrap();
+    let reference = dir.join("chm13v2.0.fa");
+    std::fs::write(&reference, b">chr1\nACGT\n").unwrap();
+
+    let realigned = app
+        .register_realigned_alignment(source.id, &cram, &reference, "chm13v2.0", "minimap2", "sr")
+        .await
+        .expect("registration should succeed");
+
+    assert_eq!(
+        realigned.sequence_run_id, source.sequence_run_id,
+        "the same physical library, mapped differently"
+    );
+    assert_eq!(realigned.reference_build, "chm13v2.0");
+    assert_eq!(realigned.derived_from_alignment_id, Some(source.id));
+    assert_eq!(realigned.derivation.as_deref(), Some("realign:minimap2-sr"));
+    assert!(realigned.is_derived());
+    assert!(
+        realigned.reference_path.is_some(),
+        "a CRAM is unreadable without the reference it was compressed against"
+    );
+    assert!(
+        realigned.content_sha256.is_some(),
+        "the file was just written, so hashing it now is nearly free"
+    );
+
+    // The source is untouched.
+    let source_now = app.alignment(source.id).await.unwrap().unwrap();
+    assert_eq!(source_now, source, "realignment must not modify its source");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Realigning to the build a sample is already on costs hours and produces a duplicate. The rule
+/// lives in the app rather than the UI so the CLI is covered by it too.
+#[tokio::test]
+async fn realigning_to_the_same_build_is_refused() {
+    let app = app().await;
+    let (_, run) = subject_with_run(&app).await;
+
+    let source = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "minimap2".into(),
+            variant_caller: None,
+            bam_path: Some("/tmp/already.cram".into()),
+            reference_path: None,
+            content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
+        })
+        .await
+        .unwrap();
+
+    let err = app
+        .register_realigned_alignment(
+            source.id,
+            std::path::Path::new("/tmp/whatever.cram"),
+            std::path::Path::new("/tmp/ref.fa"),
+            "CHM13v2.0", // same build, different case
+            "minimap2",
+            "sr",
+        )
+        .await
+        .expect_err("same-build realignment must be refused");
+    assert!(format!("{err}").contains("already on"), "unhelpful message: {err}");
+}
+
+/// The UI asks this before offering "Realign", so a sample is not silently given a second copy.
+#[tokio::test]
+async fn derived_alignments_are_discoverable_from_their_source() {
+    let app = app().await;
+    let (_, run) = subject_with_run(&app).await;
+
+    let source = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa-mem2".into(),
+            variant_caller: None,
+            bam_path: Some("/tmp/vendor.bam".into()),
+            reference_path: None,
+            content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        app.derived_alignments(source.id).await.unwrap().is_empty(),
+        "nothing derived from it yet"
+    );
+
+    let derived = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "minimap2".into(),
+            variant_caller: None,
+            bam_path: Some("/tmp/realigned.cram".into()),
+            reference_path: Some("/tmp/chm13.fa".into()),
+            content_sha256: None,
+            derived_from_alignment_id: Some(source.id),
+            derivation: Some("realign:minimap2-sr".into()),
+        })
+        .await
+        .unwrap();
+
+    let found = app.derived_alignments(source.id).await.unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, derived.id);
+
+    // And the reverse direction.
+    let parent = app.derivation_source(derived.id).await.unwrap();
+    assert_eq!(parent.map(|a| a.id), Some(source.id));
+    assert!(
+        app.derivation_source(source.id).await.unwrap().is_none(),
+        "an original has no source"
+    );
+}
+
+/// Every row that predates the migration is an original, and must read back that way rather than
+/// as something with unknown provenance.
+#[tokio::test]
+async fn existing_alignments_read_back_as_originals() {
+    let app = app().await;
+    let (_, run) = subject_with_run(&app).await;
+
+    let aln = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa-mem2".into(),
+            variant_caller: None,
+            bam_path: Some("/tmp/x.bam".into()),
+            reference_path: None,
+            content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
+        })
+        .await
+        .unwrap();
+
+    let read_back = app.alignment(aln.id).await.unwrap().unwrap();
+    assert_eq!(read_back.derived_from_alignment_id, None);
+    assert_eq!(read_back.derivation, None);
+    assert!(!read_back.is_derived());
 }

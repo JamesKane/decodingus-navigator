@@ -2605,6 +2605,9 @@ impl NavigatorApp {
                     bam_path: opt(&self.forms.aln_bam),
                     reference_path: None, // resolved on demand from the build
                     content_sha256: None,
+                    // Added by hand in the UI, so it is an original by definition.
+                    derived_from_alignment_id: None,
+                    derivation: None,
                 }));
                 self.forms.aln_reference_build.clear();
                 self.forms.aln_aligner.clear();

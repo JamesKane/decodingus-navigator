@@ -502,10 +502,16 @@ The current `Alignment` has **no parent/derived-from field** — alignments are 
 keyed only to a `SequenceRun`. A realigned alignment must record its lineage:
 
 ```rust
-// proposed addition (navigator-domain::workspace::Alignment) + store migration
+// navigator-domain::workspace::Alignment — added by migration 0045_alignment_derivation
 pub derived_from_alignment_id: Option<i64>,  // source alignment this was realigned from
 pub derivation: Option<String>,              // e.g. "realign:minimap2-sr" | "realign:minimap2-map-hifi"
 ```
+
+Built. `Alignment::is_derived()` answers the UI's question directly, and
+`App::{register_realigned_alignment, derived_alignments, derivation_source}` are the write and
+read paths. The derivation string is assembled inside `register_realigned_alignment` from a
+backend and a preset rather than passed in ready-made, so callers cannot invent a spelling that
+later queries fail to recognise.
 
 - New nullable columns via a `navigator-store` migration (follows the `0017`/`0018` numbering);
   existing rows default to `NULL` (= not derived).
@@ -586,11 +592,13 @@ it never mutates or replaces the vendor's original.
    `minimap2_index` cache resolved against the shared cache root, single-end and paired-end
    mapping, and SAM/BAM/CRAM output through noodles (BAM by default). Split-vs-whole index
    equivalence is tested for both single and paired reads.
-3. **Stage C** ✅ built (`navigator-analysis::postprocess`): coordinate sort, short-read-only
-   duplicate marking on unclipped 5' positions, and CRAM emit with a `.crai`. Both the sort and
-   the marking verify they are lossless, and CRAM emission refuses input that does not declare
-   `@HD SO:coordinate`. **Stage D still outstanding**: registration with the new provenance
-   columns (store migration).
+3. **Stage C + Stage D** ✅ built. Stage C is `navigator-analysis::postprocess`: coordinate sort,
+   short-read-only duplicate marking on unclipped 5' positions, and CRAM emit with a `.crai`.
+   Both the sort and the marking verify they are lossless, and CRAM emission refuses input that
+   does not declare `@HD SO:coordinate`. Stage D is migration `0045_alignment_derivation` plus
+   `navigator-app::realign`: the realigned row is inserted under the source's `sequence_run_id`
+   with `derived_from_alignment_id` and `derivation` set, the source untouched, and realigning to
+   a build the sample is already on is refused.
 4. **App orchestration + UI**: opt-in cancellable background job, preflight, progress, badges;
    wire realigned alignments into the analysis selectors.
 5. **WGS-scale backend parity + MAPQ validation** (replaces the former Windows FFI spike, which
