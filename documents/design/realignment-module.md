@@ -417,9 +417,19 @@ Realignment needs a minimap2 index (`.mmi`) of CHM13v2, which **does not exist i
   index, 5.4 GB against a 4-part one.
 
   Pick the batch size from detected physical RAM — largest that fits the budget, not smallest
-  that fits the machine, because a coarser split costs MAPQ fidelity (below). A first cut:
-  `-I 1G` at ≥16 GB RAM, `-I 400M` at 8 GB. Record the chosen `-I` in the cache key and in the
-  alignment's provenance, since it is not a purely cosmetic knob.
+  that fits the machine, because a coarser split costs MAPQ fidelity (below). The shipped table:
+  200 Mbase under 8 GiB, 400 Mbase at 8–15, 1 Gbase at 16–31, unsplit at 32+. Record the chosen
+  batch in the cache key and in the alignment's provenance, since it is not a cosmetic knob.
+
+  **Detected, not asked.** The module's audience clicks a button; "bases per index part" is not a
+  question they can answer, and a wrong answer is an out-of-memory failure rather than a
+  preference. `navigator-align` takes `sysinfo` (`default-features = false`, `system` only) to
+  read physical memory — Windows-clean, since it binds through the pure-Rust `windows` crate on
+  Windows, `objc2-*` on macOS, and `libc` on Linux, with no C toolchain. Sizing uses **total**
+  memory rather than currently-available: the `.mmi` is cached and reused for every later job, so
+  a machine that happens to be busy at the first click would otherwise bake a more-split index —
+  and its permanent MAPQ cost — into the cache. Available memory is reported separately, for the
+  preflight's "can this start now" question. `NAVIGATOR_ALIGN_BATCH_MBASE` overrides both.
 
 - **Implement per-part mapping and merging.** `navigator-align` owns the orchestration, but not
   the hard part: `minimap2-pure-rs` exposes `index::split::{create_split_tmp,

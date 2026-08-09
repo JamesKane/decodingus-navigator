@@ -26,6 +26,10 @@
 //! 1 Gbase parts costs 11.7 GiB, produces the same output, and takes the same wall time. See
 //! [`batch`] for the measured table and for why bigger parts are preferred within the budget.
 //!
+//! [`BatchSize::for_this_machine`] reads the machine's RAM and picks for itself. That is the
+//! intended entry point: this module's users click a button, and "bases per index part" is not a
+//! question they can be asked — a wrong answer is an out-of-memory failure, not a preference.
+//!
 //! ## What is here so far
 //!
 //! [`preset`] (which mapper preset a run's reads need), [`batch`] (the memory control), and
