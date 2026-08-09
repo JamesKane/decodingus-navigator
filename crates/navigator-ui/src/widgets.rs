@@ -70,10 +70,12 @@ impl TableControls {
     fn arrow(&self, col: usize) -> &'static str {
         match self.sort_col {
             Some(c) if c == col => {
+                // ⏶/⏷ (U+23F6/U+23F7), not ▲/▼ (U+25B2/U+25BC): only the former pair has glyphs in
+                // egui's Proportional family — see `every_source_string_literal_is_renderable`.
                 if self.ascending {
-                    " ▲"
+                    " ⏶"
                 } else {
-                    " ▼"
+                    " ⏷"
                 }
             }
             _ => "",

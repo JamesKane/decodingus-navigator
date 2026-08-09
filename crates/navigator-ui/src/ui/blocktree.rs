@@ -760,7 +760,7 @@ impl NavigatorApp {
                         tip.push_str(&format!(
                             "\n\n{} branch(es) folded in: {}",
                             b.collapsed.len(),
-                            b.collapsed.join(" → ")
+                            b.collapsed.join(" › ")
                         ));
                     }
                     resp.on_hover_text(tip);

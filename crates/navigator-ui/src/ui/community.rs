@@ -124,7 +124,7 @@ impl NavigatorApp {
             return;
         }
         for t in self.support_threads.clone() {
-            let dot = if t.unread { "● " } else { "" };
+            let dot = if t.unread { "⚫ " } else { "" };
             let subject = t.subject.as_deref().unwrap_or("(no subject)");
             let label = format!("{dot}{subject}   [{}]", t.status);
             if ui.selectable_label(false, label).clicked() {
@@ -345,7 +345,7 @@ impl NavigatorApp {
             return;
         }
         for c in self.dm_conversations.clone() {
-            let dot = if c.unread > 0 { "● " } else { "" };
+            let dot = if c.unread > 0 { "⚫ " } else { "" };
             let preview = c.last_body.as_deref().unwrap_or("");
             let label = format!("{dot}{}  —  {}", short_did(&c.partner_did), preview);
             if ui.selectable_label(false, label).clicked() {
@@ -412,7 +412,7 @@ impl NavigatorApp {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     if n.unread {
-                        ui.colored_label(ACCENT, "●");
+                        ui.colored_label(ACCENT, "⚫");
                     }
                     ui.label(egui::RichText::new(&n.title).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

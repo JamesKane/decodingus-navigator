@@ -538,7 +538,7 @@ impl App {
                     });
                     if c.haplogroup != placed {
                         c.warnings
-                            .push(format!("per-run calls vary; genome-consensus placement → {placed}"));
+                            .push(format!("per-run calls vary; genome-consensus placement › {placed}"));
                         c.haplogroup = placed;
                     }
                     consensus = Some(c);

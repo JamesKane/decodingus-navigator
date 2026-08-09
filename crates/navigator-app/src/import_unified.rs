@@ -642,15 +642,15 @@ impl App {
             }
 
             let note = match (&path, defaulted) {
-                (Some(p), false) => format!("{detected_build}: {count} alignment(s) → {p} ({source})"),
+                (Some(p), false) => format!("{detected_build}: {count} alignment(s) › {p} ({source})"),
                 (Some(p), true) => format!(
-                    "{detected_build}: {count} alignment(s) → {effective} default → {p} ({source}; build undetectable from header/filename)"
+                    "{detected_build}: {count} alignment(s) › {effective} default › {p} ({source}; build undetectable from header/filename)"
                 ),
                 (None, _) if needs.iter().any(|n| n.build == effective) => {
-                    format!("{detected_build}: {count} alignment(s) → {effective} (needs download)")
+                    format!("{detected_build}: {count} alignment(s) › {effective} (needs download)")
                 }
                 (None, _) => format!(
-                    "{detected_build}: {count} alignment(s) → {effective} (no reference available; resolved on demand)"
+                    "{detected_build}: {count} alignment(s) › {effective} (no reference available; resolved on demand)"
                 ),
             };
             eprintln!("project import: {note}");

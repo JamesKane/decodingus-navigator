@@ -784,7 +784,7 @@ impl NavigatorApp {
                 (
                     egui::Color32::from_rgb(28, 56, 36),
                     egui::Color32::from_rgb(120, 200, 140),
-                    "✓",
+                    "✔",
                 )
             } else {
                 (
@@ -942,9 +942,9 @@ impl RelativeRow {
         score: f64,
     ) -> Self {
         let (dots, strength_key) = match strength {
-            MatchStrength::Strong => ("●●●", "brief.matchStrong"),
-            MatchStrength::Likely => ("●●○", "brief.matchLikely"),
-            MatchStrength::Possible => ("●○○", "brief.matchPossible"),
+            MatchStrength::Strong => ("⚫⚫⚫", "brief.matchStrong"),
+            MatchStrength::Likely => ("⚫⚫⚪", "brief.matchLikely"),
+            MatchStrength::Possible => ("⚫⚪⚪", "brief.matchPossible"),
         };
         RelativeRow {
             handle: id.chars().take(12).collect(),

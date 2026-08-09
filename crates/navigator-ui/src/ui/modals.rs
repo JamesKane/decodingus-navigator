@@ -1139,7 +1139,7 @@ impl NavigatorApp {
                     .striped(true)
                     .show(ui, |ui| {
                         for (name, kind) in &summary.imported {
-                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "✓");
+                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "✔");
                             ui.label(format!("{name} — {kind}"));
                             ui.end_row();
                         }
@@ -1358,7 +1358,7 @@ impl NavigatorApp {
                             for src in &v.sources {
                                 ui.label(
                                     egui::RichText::new(format!(
-                                        "{} ({}, tier {:.2}) → {}",
+                                        "{} ({}, tier {:.2}) › {}",
                                         src.label,
                                         src.source_type.as_str(),
                                         src.source_type.snp_weight(),
@@ -1801,7 +1801,7 @@ impl NavigatorApp {
                     ui.collapsing(format!("{} ({n_merge})", self.tr("ftdna.autoMerged")), |ui| {
                         for row in plan.rows.iter() {
                             if let MatchKind::AutoMerge { donor_identifier, .. } = &row.kind {
-                                ui.label(format!("{} → {donor_identifier}", row.kit_number));
+                                ui.label(format!("{} › {donor_identifier}", row.kit_number));
                             }
                         }
                     });

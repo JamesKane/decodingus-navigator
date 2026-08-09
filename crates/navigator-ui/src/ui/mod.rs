@@ -1807,7 +1807,7 @@ fn str_all_markers_view(
                 .hint_text("marker")
                 .desired_width(120.0),
         );
-        if !filter.is_empty() && ui.button("✕").clicked() {
+        if !filter.is_empty() && ui.button("✖").clicked() {
             filter.clear();
         }
     });
@@ -1933,7 +1933,7 @@ fn draw_consensus_profile(
                 .hint_text("filter SNP / pos")
                 .desired_width(140.0),
         );
-        if !query.is_empty() && ui.small_button("✕").clicked() {
+        if !query.is_empty() && ui.small_button("✖").clicked() {
             query.clear();
         }
     });
@@ -2026,7 +2026,7 @@ fn draw_consensus_profile(
                                         _ => "src",
                                     };
                                     let glyph = match src.state {
-                                        YState::Derived => "✓",
+                                        YState::Derived => "✔",
                                         YState::Ancestral => "·",
                                         YState::NoCall => "?",
                                     };
@@ -2097,7 +2097,7 @@ fn draw_diploid_profile(
                 .hint_text("filter rsID / site")
                 .desired_width(140.0),
         );
-        if !query.is_empty() && ui.small_button("✕").clicked() {
+        if !query.is_empty() && ui.small_button("✖").clicked() {
             query.clear();
         }
     });
@@ -2341,15 +2341,21 @@ mod icon_glyph_tests {
     #[test]
     fn probe_agrees_with_known_bad_glyphs() {
         // Guards the test itself: if these ever start reporting renderable, the check has broken
-        // rather than the fonts having improved.
-        for c in ['◆', '⚭', '✓', '🧬'] {
+        // rather than the fonts having improved. The second row is the near-miss set — each one is
+        // a character someone reached for because it looked right, and each shipped a box: `✕`
+        // beside `✖`, `✎` beside `✏`, `●` beside `⚫`, `▲▼▸` beside `⏶⏷▶`.
+        for c in ['◆', '⚭', '✓', '🧬', '✕', '✎', '✗', '●', '▲', '▼', '▸', '→'] {
             assert!(
                 !renderable(c),
                 "{c} (U+{:04X}) should be missing from Proportional",
                 c as u32
             );
         }
-        assert!(renderable('♂'), "sanity: ♂ is present");
+        // And the replacements they were traded for, so a font change that drops one is caught here
+        // rather than in a screenshot.
+        for c in ['♂', '✖', '✏', '⚫', '⚪', '⏶', '⏷', '▶', '›'] {
+            assert!(renderable(c), "sanity: {c} (U+{:04X}) is present", c as u32);
+        }
     }
 
     /// Prints coverage for the characters the app already uses plus a candidate set — run this when
@@ -2367,7 +2373,7 @@ mod icon_glyph_tests {
         }
         for c in [
             '•', '·', '▪', '▫', '■', '◻', '◼', '⚫', '⚪', '🔴', '⏺', '☑', '☐', '✔', '✖', '★', '☆', '±', '‹', '›', '«',
-            '»', '▶', '⏷', '⬇', '🔽', '↘', '☰', '…', '≥', '×', '➕', '📁', '📥', '🔍', '🗑',
+            '»', '▶', '⏶', '⏷', '⬇', '🔽', '↘', '☰', '…', '≥', '×', '➕', '📁', '📥', '🔍', '🗑', '✏', '➡',
         ] {
             chars.insert(c);
         }
@@ -2405,6 +2411,126 @@ mod icon_glyph_tests {
         assert!(
             bad.is_empty(),
             "these strings contain characters egui cannot draw; they render as empty boxes:\n{}",
+            bad.join("\n")
+        );
+    }
+
+    /// Every string literal this crate draws must be drawable.
+    ///
+    /// `every_translated_string_is_renderable` covers the catalogs, which is where user-facing copy
+    /// belongs — but icons don't live there. A button label like `ui.small_button("✎")` is a bare
+    /// literal in the source, invisible to the catalog scan, and that is where the second round of
+    /// tofu boxes was found: the MDKA edit/remove buttons and the kit-remove button on the
+    /// Genealogy card, every clear-filter `✕`, the Y-STR agreement `✓`/`✗`, the sortable-table
+    /// arrows, and the match-strength meter. Listing those by hand is the failure mode this test
+    /// exists to remove — it reads the sources themselves, so a new icon is covered the moment it
+    /// is typed.
+    ///
+    /// Parsing rather than grepping is what makes that safe. Comments and doc comments are full of
+    /// characters that are never drawn (`→`, `⇒`, `◆` naming the bug they describe), so the AST —
+    /// which has literals and no comments — is the right input, with `visit_attribute` overridden
+    /// to drop `#[doc = "…"]` as well.
+    ///
+    /// Two things are deliberately out of scope, because egui never draws them: `cli.rs`, whose
+    /// output goes to a terminal rendering in the user's own font, and `#[cfg(test)]` modules,
+    /// whose literals are assertion messages.
+    ///
+    /// So is the rest of the workspace, and that is a real gap rather than an oversight: two of the
+    /// boxes this round fixed were built in `navigator-app` (a consensus warning, the reference
+    /// notes on an import summary) and only rendered here. The invariant can't simply be lifted to
+    /// that crate — it serves the CLI and the HTML exporter too, where `→` and `✓` are correct —
+    /// and which of its strings reach a window is a dataflow question, not a syntactic one. When a
+    /// lower crate builds a string for the UI, it is on the author to check it; `report_glyph_coverage`
+    /// is the tool for that.
+    #[test]
+    fn every_source_string_literal_is_renderable() {
+        use syn::visit::Visit;
+
+        /// Collects `(literal, offending char)` for every undrawable character in a file's literals.
+        #[derive(Default)]
+        struct Scan(Vec<(String, char)>);
+        impl<'ast> Visit<'ast> for Scan {
+            fn visit_lit_str(&mut self, lit: &'ast syn::LitStr) {
+                let value = lit.value();
+                for c in value.chars().filter(|c| !c.is_ascii() && !renderable(*c)) {
+                    self.0.push((value.clone(), c));
+                }
+            }
+            /// Doc comments arrive as `#[doc = "…"]`; nothing in any attribute is ever drawn.
+            fn visit_attribute(&mut self, _: &'ast syn::Attribute) {}
+            /// Assertion messages in `#[cfg(test)] mod tests` reach a terminal, not a window.
+            fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+                if !m.attrs.iter().any(is_cfg_test) {
+                    syn::visit::visit_item_mod(self, m);
+                }
+            }
+            /// A macro body is an unparsed `TokenStream`, and syn's visitor skips it — which would
+            /// hide most of what this test is for, since nearly every label is built by `format!`.
+            /// Walking the tokens by hand costs one recursion and needs no guess about the macro's
+            /// grammar: a `LitStr` is a `LitStr` wherever it sits.
+            fn visit_macro(&mut self, m: &'ast syn::Macro) {
+                self.tokens(m.tokens.clone());
+            }
+        }
+
+        impl Scan {
+            fn tokens(&mut self, stream: proc_macro2::TokenStream) {
+                for tree in stream {
+                    match tree {
+                        proc_macro2::TokenTree::Group(g) => self.tokens(g.stream()),
+                        tree @ proc_macro2::TokenTree::Literal(_) => {
+                            // Only string literals parse; numbers, chars and byte strings just fail.
+                            if let Ok(lit) = syn::parse2::<syn::LitStr>(tree.into()) {
+                                self.visit_lit_str(&lit);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        /// True for `#[cfg(test)]` — matched on the token text, which is stable enough for an
+        /// attribute this conventional and avoids pulling in a nested-meta parser.
+        fn is_cfg_test(attr: &syn::Attribute) -> bool {
+            attr.path().is_ident("cfg") && attr.parse_args::<syn::Path>().is_ok_and(|p| p.is_ident("test"))
+        }
+
+        /// Every `.rs` file under `dir`, recursively.
+        fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read src dir").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    sources(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        sources(&root, &mut files);
+        files.retain(|p| p.file_name().is_none_or(|n| n != "cli.rs"));
+        files.sort();
+        assert!(!files.is_empty(), "found no sources under {}", root.display());
+
+        let mut bad: Vec<String> = Vec::new();
+        for path in &files {
+            let text = std::fs::read_to_string(path).expect("read source");
+            let file = syn::parse_file(&text).expect("parse source");
+            let mut scan = Scan::default();
+            scan.visit_file(&file);
+            let name = path.strip_prefix(&root).unwrap_or(path).display();
+            for (value, c) in scan.0 {
+                bad.push(format!("  {name} / {value:?} -> {c:?} (U+{:04X})", c as u32));
+            }
+        }
+        bad.sort();
+        bad.dedup();
+        assert!(
+            bad.is_empty(),
+            "these source literals contain characters egui cannot draw; they render as empty boxes:\n{}",
             bad.join("\n")
         );
     }

@@ -630,7 +630,7 @@ impl NavigatorApp {
                     .iter()
                     .find(|o| o.project.id == pid)
                     .map(|o| o.project.name.as_str());
-                ui.label(format!("→ project: {}", name.unwrap_or("(open)")));
+                ui.label(format!("› project: {}", name.unwrap_or("(open)")));
             } else {
                 ui.label(self.tr("projects.noProject"));
             }

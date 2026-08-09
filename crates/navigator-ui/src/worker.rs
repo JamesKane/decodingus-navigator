@@ -1550,8 +1550,8 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         }
         Command::VerifyReference { build } => ev(app.verify_reference(&build).await, |outcome| {
             let status = match outcome {
-                navigator_app::VerifyOutcome::Verified => "✓ verified".to_string(),
-                navigator_app::VerifyOutcome::Mismatch { .. } => "✗ mismatch (corrupted?)".to_string(),
+                navigator_app::VerifyOutcome::Verified => "✔ verified".to_string(),
+                navigator_app::VerifyOutcome::Mismatch { .. } => "✖ mismatch (corrupted?)".to_string(),
                 navigator_app::VerifyOutcome::NoSidecar => "• no checksum on record".to_string(),
                 navigator_app::VerifyOutcome::NotCached => "not cached".to_string(),
             };
@@ -1577,7 +1577,7 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                             .await,
                         |s| Event::VcfLifted {
                             summary: format!(
-                                "Lifted {}/{} variants ({} unmapped, {} ref-mismatch) → {}",
+                                "Lifted {}/{} variants ({} unmapped, {} ref-mismatch) › {}",
                                 s.lifted,
                                 s.total,
                                 s.unmapped,
