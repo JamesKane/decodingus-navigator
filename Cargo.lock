@@ -3393,8 +3393,10 @@ dependencies = [
  "navigator-app",
  "navigator-domain",
  "navigator-store",
+ "proc-macro2 1.0.106",
  "rfd",
  "serde_json",
+ "syn 2.0.117",
  "tokio",
 ]
 

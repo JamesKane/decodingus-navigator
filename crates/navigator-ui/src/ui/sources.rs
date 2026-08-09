@@ -389,7 +389,7 @@ impl NavigatorApp {
             let hg = hg_field.trim().to_string();
             let reason = reason_field.trim().to_string();
             if ui.add_enabled(!hg.is_empty(), egui::Button::new(set_lbl)).clicked() {
-                self.status = format!("Overriding {label} consensus → {hg}");
+                self.status = format!("Overriding {label} consensus › {hg}");
                 let _ = self.tx.send(Command::SetHaploOverride {
                     biosample_guid: guid,
                     dna_type,

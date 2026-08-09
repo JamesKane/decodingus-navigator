@@ -70,3 +70,12 @@ navigator-store = { workspace = true }
 # Reads the cmap of egui's own bundled fonts so `icon_glyphs_are_renderable` can prove an icon
 # actually has a glyph. Already in the tree via epaint, so this adds no new build unit.
 ab_glyph = "0.2"
+# Parses this crate's own sources so `every_source_string_literal_is_renderable` can find every
+# icon literal, rather than the handful someone remembered to list. Parsing (not grepping) is what
+# separates a `"✎"` button label from the `→` in the comment above it: the AST has string literals
+# and no comments, and `visit_attribute` is overridden to drop doc comments too. Already in the
+# tree as a proc-macro dependency.
+syn = { version = "2", features = ["full", "visit", "parsing"] }
+# syn's visitor hands macro bodies over as an unparsed `TokenStream`, so the same test walks those
+# tokens itself — `format!` is where most labels are actually built. Comes in with syn.
+proc-macro2 = "1"

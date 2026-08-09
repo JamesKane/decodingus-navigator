@@ -37,7 +37,7 @@ impl NavigatorApp {
                         .hint_text("filter marker")
                         .desired_width(140.0),
                 );
-                if !self.str_seq_query.is_empty() && ui.small_button("✕").clicked() {
+                if !self.str_seq_query.is_empty() && ui.small_button("✖").clicked() {
                     self.str_seq_query.clear();
                 }
             });
@@ -96,9 +96,9 @@ impl NavigatorApp {
                     // Agreement marker only for calibrated, comparable rows.
                     if r.calibrated && r.called.is_some() && r.imported.is_some() {
                         if r.agree {
-                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "✓");
+                            ui.colored_label(egui::Color32::from_rgb(60, 160, 60), "✔");
                         } else {
-                            ui.colored_label(egui::Color32::from_rgb(200, 90, 90), "✗");
+                            ui.colored_label(egui::Color32::from_rgb(200, 90, 90), "✖");
                         }
                     } else {
                         ui.label("");
@@ -169,7 +169,7 @@ impl NavigatorApp {
                         .hint_text("filter")
                         .desired_width(140.0),
                 );
-                if !self.y_match_query.is_empty() && ui.small_button("✕").clicked() {
+                if !self.y_match_query.is_empty() && ui.small_button("✖").clicked() {
                     self.y_match_query.clear();
                 }
             });
@@ -309,9 +309,9 @@ impl NavigatorApp {
         ui.horizontal_wrapped(|ui| {
             for (name, filled) in strpanel::tier_badges(&sel_provider, marker_count) {
                 let (glyph, color) = if filled {
-                    ("●", egui::Color32::from_rgb(120, 180, 120))
+                    ("⚫", egui::Color32::from_rgb(120, 180, 120))
                 } else {
-                    ("○", egui::Color32::from_gray(110))
+                    ("⚪", egui::Color32::from_gray(110))
                 };
                 ui.colored_label(color, format!("{glyph} {name}"))
                     .on_hover_text(if filled { "reached" } else { "not reached" });
@@ -963,7 +963,7 @@ impl NavigatorApp {
                 ui.horizontal(|ui| {
                     ui.label(format!("{}: {}", e.source, e.external_id));
                     if ui
-                        .small_button("✕")
+                        .small_button("✖")
                         .on_hover_text(self.tr("geneal.removeKit"))
                         .clicked()
                     {
@@ -1020,11 +1020,11 @@ impl NavigatorApp {
                         if !bits.is_empty() {
                             ui.label(egui::RichText::new(bits.join(" · ")).weak().small());
                         }
-                        if ui.small_button("✎").on_hover_text(self.tr("geneal.editMdka")).clicked() {
+                        if ui.small_button("✏").on_hover_text(self.tr("geneal.editMdka")).clicked() {
                             want_edit_mdka = Some(edit_from(mk));
                         }
                         if ui
-                            .small_button("✕")
+                            .small_button("✖")
                             .on_hover_text(self.tr("geneal.removeMdka"))
                             .clicked()
                         {
@@ -1144,7 +1144,7 @@ impl NavigatorApp {
                     .hint_text("filter pos / name")
                     .desired_width(160.0),
             );
-            if !self.private_y_query.is_empty() && ui.small_button("✕").clicked() {
+            if !self.private_y_query.is_empty() && ui.small_button("✖").clicked() {
                 self.private_y_query.clear();
             }
         });
@@ -1974,7 +1974,7 @@ impl NavigatorApp {
                     StrRowKind::Group => {
                         row.col(|ui| {
                             ui.add_space(indent);
-                            ui.label(egui::RichText::new(format!("▸ {}", r.label)).strong().color(ACCENT));
+                            ui.label(egui::RichText::new(format!("▶ {}", r.label)).strong().color(ACCENT));
                         });
                         // Remaining columns empty (banner sits in the name column).
                         for _ in 0..3 + n_marker_cols {
@@ -2043,7 +2043,7 @@ impl NavigatorApp {
                     .hint_text(member_hint)
                     .desired_width(260.0),
             );
-            if !self.member_filter.is_empty() && ui.button("✕").clicked() {
+            if !self.member_filter.is_empty() && ui.button("✖").clicked() {
                 self.member_filter.clear();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2183,14 +2183,14 @@ impl NavigatorApp {
                         let resp = ui.selectable_label(selected, &m.label);
                         if let Some(b) = &m.branch {
                             ui.indent(("c", m.guid), |ui| {
-                                ui.colored_label(confirmed_col, egui::RichText::new(format!("✓ {b}")).small());
+                                ui.colored_label(confirmed_col, egui::RichText::new(format!("✔ {b}")).small());
                             });
                         } else if let Some(s) = &m.suggested {
                             ui.indent(("s", m.guid), |ui| {
                                 ui.colored_label(
                                     suggest_col,
                                     egui::RichText::new(format!(
-                                        "→ {} ({:.0}% · GD {}/{})",
+                                        "› {} ({:.0}% · GD {}/{})",
                                         s.branch,
                                         s.confidence * 100.0,
                                         s.gd,

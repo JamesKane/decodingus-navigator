@@ -170,7 +170,7 @@ impl NavigatorApp {
                     }
                 }
                 Event::UpdateAvailable(info) => {
-                    self.status = format!("Update available: {} → {}", info.current_version, info.latest_version);
+                    self.status = format!("Update available: {} › {}", info.current_version, info.latest_version);
                     self.update_info = Some(*info);
                 }
                 Event::UpToDate => {
@@ -1102,7 +1102,7 @@ impl NavigatorApp {
                 }
                 Event::SyncPending(n) => self.sync_pending = n,
                 Event::Exported { label, path } => {
-                    self.status = format!("Exported {label} → {}", path.display());
+                    self.status = format!("Exported {label} › {}", path.display());
                 }
                 Event::SyncOnline(online) => self.online = online,
                 Event::PullDone {
