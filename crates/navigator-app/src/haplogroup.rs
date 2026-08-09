@@ -1559,18 +1559,6 @@ impl App {
         Ok(out)
     }
 
-    /// The DecodingUs coordinate key (`hs1` / `GRCh38` / `GRCh37`) for a subject's Y data, taken from
-    /// its first alignment's reference build. Defaults to `hs1` (CHM13, the DecodingUs native build)
-    /// when the subject has no build-resolvable alignment. Used to parse the DecodingUs tree in the
-    /// subject's own coordinate space for the descent report.
-    async fn subject_y_build_key(&self, biosample_guid: SampleGuid) -> &'static str {
-        alignment::list_for_biosample(self.store.pool(), biosample_guid)
-            .await
-            .ok()
-            .and_then(|alns| alns.iter().find_map(|a| decodingus_build_key(&a.reference_build)))
-            .unwrap_or("hs1")
-    }
-
     /// Assemble a subject's lightweight [`YMatchProfile`] from **cached** data only (no re-genotyping):
     /// the persisted consensus Y profile (derived/novel SNP-name sets + terminal), the terminal's
     /// root→tip lineage from `tree`, and the first imported Y-STR panel's markers. `Ok(None)` when the
@@ -1828,8 +1816,26 @@ impl App {
             DnaType::Y => match y_tree_provider() {
                 YTreeProvider::DecodingUs => {
                     let json = self.fetch_decodingus_y_tree().await?;
-                    let build_key = self.subject_y_build_key(biosample_guid).await;
-                    navigator_analysis::haplo::parse_decodingus_json(&json, build_key).map_err(AppError::Import)?
+                    // Parse in the tree's **native** hs1 space, not the subject's alignment build.
+                    //
+                    // This report joins the profile to the tree by SNP *name* (`state_by_name`
+                    // below); the loci positions it carries are for display and export only. So
+                    // parsing under a narrower build buys nothing and costs loci: a variant with no
+                    // coordinate in the parse build is silently dropped
+                    // (`flatten_du_node`'s `coordinates.get(build_key)?`), and a node whose every
+                    // defining variant is dropped survives as a real node with no SNPs — which the
+                    // renderer then correctly hides as an empty block.
+                    //
+                    // That is not hypothetical. hs1 covers 99.8% of the tree's ~204k variants,
+                    // GRCh38 only 86.5%: most DecodingUs-discovered (`DU`-named) SNPs exist in CHM13
+                    // coordinates alone, since only a few hundred were ever mapped back to the older
+                    // references. `1087` is placed at `R-DU17762`, whose sole defining variant
+                    // `DU17762` has an hs1 coordinate and nothing else — so parsing that subject
+                    // under GRCh38 (which it was, its first alignment being GRCh38) emptied the
+                    // terminal block and the descent visibly stopped one branch short, at
+                    // `R-BY57568`, while the terminal name itself was right.
+                    navigator_analysis::haplo::parse_decodingus_json(&json, DECODINGUS_NATIVE_BUILD)
+                        .map_err(AppError::Import)?
                 }
                 YTreeProvider::Ftdna => {
                     let json = self.fetch_ftdna_y_tree().await?;

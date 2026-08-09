@@ -1386,6 +1386,66 @@ mod tests {
     }
 
     #[test]
+    fn a_node_whose_every_variant_lacks_the_build_survives_with_no_snps() {
+        // The shape behind `1087`'s truncated descent. Most DecodingUs-discovered (`DU`-named) SNPs
+        // exist in CHM13 coordinates alone — only a few hundred were mapped back to the older
+        // references — so a terminal defined by one of them has *nothing* under GRCh38. Dropping the
+        // loci does not drop the node: it stays, named and on the path, with an empty `loci`, and
+        // `descent_by_node` faithfully reports it with no SNPs. A renderer that hides empty blocks
+        // (correctly — the root is genuinely empty) then shows the lineage stopping one branch
+        // short, while the terminal *name* remains right. Hence `DECODINGUS_NATIVE_BUILD`: parse in
+        // hs1 wherever the join is by SNP name.
+        let json = r#"{
+          "roots": [
+            {"id": 1, "name": "R-BY57568", "variants": [
+                {"canonical_name": "BY57568", "link_ancestral": "C", "link_derived": "A",
+                 "coordinates": {
+                    "hs1":    {"contig":"chrY","position":3150089,"ancestral":"C","derived":"A"},
+                    "GRCh38": {"contig":"chrY","position":3472892,"ancestral":"C","derived":"A"}}}],
+             "children": [
+               {"id": 2, "name": "R-DU17762", "variants": [
+                   {"canonical_name": "DU17762", "link_ancestral": "G", "link_derived": "A",
+                    "coordinates": {
+                       "hs1": {"contig":"chrY","position":27785335,"ancestral":"G","derived":"A"}}}],
+                "children": []}
+             ]}
+          ]
+        }"#;
+        let states: HashMap<String, CallState> = [
+            ("BY57568".to_string(), CallState::Derived),
+            ("DU17762".to_string(), CallState::Derived),
+        ]
+        .into_iter()
+        .collect();
+
+        // GRCh38: the terminal is on the path, named, and empty — the bug.
+        let g38 = parse_decodingus_json(json, "GRCh38").unwrap();
+        assert!(g38.nodes.contains_key(&2), "the node itself is never dropped");
+        assert!(g38.nodes[&2].loci.is_empty(), "its only locus has no GRCh38 coordinate");
+        let d = descent_by_node(&g38, 2, &states);
+        let terminal = d.last().expect("terminal is reported");
+        assert_eq!(terminal.name, "R-DU17762");
+        assert!(
+            terminal.snps.is_empty(),
+            "so a hide-empty-blocks renderer stops at R-BY57568"
+        );
+
+        // hs1: the same descent carries the marker, so the terminal block renders.
+        let hs1 = parse_decodingus_json(json, DECODINGUS_NATIVE_BUILD_FOR_TEST).unwrap();
+        let d = descent_by_node(&hs1, 2, &states);
+        let terminal = d.last().unwrap();
+        assert_eq!(terminal.name, "R-DU17762");
+        let named: Vec<&str> = terminal.snps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(named, vec!["DU17762"]);
+        assert_eq!(terminal.snps[0].position, 27785335);
+        assert_eq!(terminal.snps[0].state, CallState::Derived);
+    }
+
+    /// Mirrors `navigator_app::DECODINGUS_NATIVE_BUILD`, which this crate sits below and so cannot
+    /// import. The test above is the reason that constant exists.
+    const DECODINGUS_NATIVE_BUILD_FOR_TEST: &str = "hs1";
+
+    #[test]
     fn perfect_match_picks_the_deepest_node() {
         // sample carries all three derived alleles -> H2a is the best (matched 3 of 3).
         let t = parse_ftdna_json(TREE).unwrap();

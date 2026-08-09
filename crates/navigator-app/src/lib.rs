@@ -3006,6 +3006,17 @@ pub struct SequencerLabInfo {
     pub website_url: Option<String>,
 }
 
+/// The DecodingUs tree's own coordinate space, and the only one that carries substantially all of
+/// it: hs1 has coordinates for 99.8% of the tree's ~204k variants against GRCh38's 86.5%, because
+/// most DecodingUs-discovered (`DU`-named) SNPs were called in CHM13 and only a few hundred were
+/// ever mapped back to the older references.
+///
+/// Parse under this whenever the tree is joined to data by SNP **name** — where a locus position is
+/// display, not lookup — since any narrower build silently drops the variants it lacks. Placement
+/// is the opposite case: it queries an alignment by position and must use *that* alignment's build
+/// ([`decodingus_build_key`]).
+pub(crate) const DECODINGUS_NATIVE_BUILD: &str = "hs1";
+
 /// Map an alignment's reference build to the DecodingUs coordinate key (`"hs1"` for CHM13,
 /// `"GRCh38"`, `"GRCh37"`). `None` for builds the tree has no coordinates for. Drives the
 /// native-build (no-liftover) placement in `assign_y_decodingus`.
