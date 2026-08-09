@@ -823,7 +823,14 @@ impl NavigatorApp {
         match &self.account {
             Some(did) => {
                 ui.label(format!("Signed in as {did}"));
-                ui.label(if self.online { "● online" } else { "○ offline" });
+                // Via the catalog, not a literal: this line duplicated `account.online`/`.offline`
+                // in English-only text, and its hand-written dot was a character with no glyph in
+                // egui's font — an empty box next to "online" on the dashboard.
+                ui.label(self.tr(if self.online {
+                    "account.online"
+                } else {
+                    "account.offline"
+                }));
             }
             None => {
                 ui.label(egui::RichText::new("Not signed in — connect a PDS from the top bar to publish.").weak());

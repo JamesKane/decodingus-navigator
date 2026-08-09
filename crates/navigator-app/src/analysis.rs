@@ -52,7 +52,7 @@ impl App {
         cancel: CancelToken,
     ) -> Result<CoverageResult, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let bam = Self::alignment_file(&aln)?;
         // The reference isn't asked for at import — resolve the alignment's build via the gateway
         // (cached, else download) when no FASTA was stored.
         let reference = match aln.reference_path {
@@ -261,15 +261,39 @@ impl App {
             return LocalAlignment::borrowed(remote);
         }
         let local = Self::align_cache_dir().join(local_cache_name(remote));
+
+        // Serialize the cache-check-then-copy per destination. The worker `tokio::spawn`s every
+        // command, so a batch walk and a per-alignment command genuinely overlap on one alignment;
+        // without this both miss the cache and both copy, writing a second full 40 GB pull over the
+        // network for nothing, after which the loser of the rename reads from the remote anyway.
+        //
+        // The gate is held across the copy, so it must not be taken re-entrantly — no `localize`
+        // may be called while another is outstanding *on the same path in the same task*. The three
+        // call sites are sequential today (`debug_y_calls` awaits `base_calls` to completion before
+        // localizing itself); keep it that way.
+        let gate = copy_gate(&local);
+        let _copying = gate.lock().await;
+
+        // Size the remote once: it decides both whether an existing copy can be trusted and whether
+        // the one we make arrived whole.
+        let remote_len = tokio::fs::metadata(remote).await.ok().map(|m| m.len());
+
         // Another holder is already using this copy — share it and bump the count.
-        if LocalAlignment::retain(&local) {
+        if LocalAlignment::retain(&local, remote_len) {
             return LocalAlignment::owned(local);
         }
         let (remote_owned, local2) = (remote.to_path_buf(), local.clone());
-        match tokio::task::spawn_blocking(move || copy_with_index(&remote_owned, &local2)).await {
+        match tokio::task::spawn_blocking(move || copy_with_index(&remote_owned, &local2, remote_len)).await {
+            // Registering can still fail if the copy was removed in the gap (a concurrent holder
+            // finishing and dropping to zero). Returning an `owned` handle to a missing path would
+            // fail the walk with a confusing ENOENT and then "clean up" a file that isn't there.
+            Ok(Ok(())) if LocalAlignment::retain(&local, remote_len) => LocalAlignment::owned(local),
             Ok(Ok(())) => {
-                LocalAlignment::retain(&local);
-                LocalAlignment::owned(local)
+                eprintln!(
+                    "localize: the copy at {} went away before it could be used; reading from the original (slow)",
+                    local.display()
+                );
+                LocalAlignment::borrowed(remote)
             }
             Ok(Err(e)) => {
                 eprintln!("localize: copy failed ({e}); reading from the original (slow)");
@@ -308,9 +332,7 @@ impl App {
         // Copy off a slow/removable volume to local disk first — the walker's random-access record
         // iteration is far slower over a network/USB mount than a one-shot bulk copy.
         // Held for the whole walk: dropping it removes the local copy.
-        let bam = self
-            .localize(Path::new(&aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?))
-            .await;
+        let bam = self.localize(&Self::alignment_file(&aln)?).await;
         let bam = bam.path().to_path_buf();
         // The walker requires a reference (CRAM decode + reference-N detection); resolve the
         // build via the gateway when no FASTA was stored at import.
@@ -874,7 +896,7 @@ impl App {
     /// one (it follows from the header-detected build).
     pub(crate) async fn alignment_bam_reference(&self, alignment_id: i64) -> Result<(PathBuf, PathBuf), AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let bam = Self::alignment_file(&aln)?;
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
             None => {
@@ -897,7 +919,7 @@ impl App {
         alignment_id: i64,
     ) -> Result<(PathBuf, Option<PathBuf>), AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
-        let bam = PathBuf::from(aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?);
+        let bam = Self::alignment_file(&aln)?;
         let is_cram = bam.extension().is_some_and(|e| e.eq_ignore_ascii_case("cram"));
         let reference = match aln.reference_path {
             Some(p) => Some(PathBuf::from(p)),
@@ -1038,29 +1060,73 @@ fn local_cache_name(remote: &Path) -> String {
     format!("{:016x}.{ext}", h.finish())
 }
 
+/// A scratch name for one caller's in-progress copy of `local`. **Unique per call**: a temp path
+/// derived from the destination alone (`<dest>.partial`) is shared by every concurrent copier of
+/// that alignment, which lets two of them open the same inode — one truncating what the other is
+/// writing, and continuing to write into it after the other has renamed it into place and started
+/// reading. Uniqueness makes that unrepresentable rather than merely unlikely.
+fn partial_path(local: &Path) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stem = local.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    local.with_file_name(format!("{stem}.partial.{}.{n}", std::process::id()))
+}
+
 /// Copy `remote` → `local` plus its index sibling. The index is copied **first** and the main file
 /// last (via a temp + rename), so a present `local` always implies its index is present too — the
-/// `is_file` cache check in [`App::localize`] can't see a half-copied pair.
-fn copy_with_index(remote: &Path, local: &Path) -> std::io::Result<()> {
+/// cache check in [`App::localize`] can't see a half-copied pair.
+///
+/// `expect_len` is the remote's size; when known, a copy that doesn't match it is rejected rather
+/// than published. A short copy is otherwise indistinguishable from corrupt data: it surfaces as a
+/// decode error ("unexpected end of file", a bad container checksum) tens of gigabytes into a walk,
+/// naming the cache path, and the copy is deleted on drop before anyone can look at it.
+///
+/// Nothing partial survives a failure — neither the temp nor the index copied ahead of it. A
+/// leftover `.partial` used to sit in the cache indefinitely, occupying the disk while satisfying
+/// no one.
+fn copy_with_index(remote: &Path, local: &Path, expect_len: Option<u64>) -> std::io::Result<()> {
     if let Some(parent) = local.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let (rstr, lstr) = (remote.to_string_lossy(), local.to_string_lossy());
-    for suffix in [".crai", ".bai"] {
-        let ri = PathBuf::from(format!("{rstr}{suffix}"));
-        if ri.is_file() {
-            std::fs::copy(&ri, PathBuf::from(format!("{lstr}{suffix}")))?;
+    let mut indexes: Vec<PathBuf> = Vec::new();
+    let mut copy_index = |from: PathBuf, to: PathBuf| -> std::io::Result<()> {
+        if from.is_file() {
+            std::fs::copy(&from, &to)?;
+            indexes.push(to);
+        }
+        Ok(())
+    };
+    let mut copied_indexes = || -> std::io::Result<()> {
+        for suffix in [".crai", ".bai"] {
+            copy_index(
+                PathBuf::from(format!("{rstr}{suffix}")),
+                PathBuf::from(format!("{lstr}{suffix}")),
+            )?;
+        }
+        // BAM index sometimes drops the .bam: `<stem>.bai`.
+        copy_index(remote.with_extension("bai"), local.with_extension("bai"))
+    };
+
+    let tmp = partial_path(local);
+    let result = copied_indexes().and_then(|()| {
+        std::fs::copy(remote, &tmp)?;
+        let got = std::fs::metadata(&tmp)?.len();
+        match expect_len {
+            Some(want) if got != want => Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("copy of {} is {got} bytes, expected {want}", remote.display()),
+            )),
+            _ => std::fs::rename(&tmp, local),
+        }
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        for i in &indexes {
+            let _ = std::fs::remove_file(i);
         }
     }
-    // BAM index sometimes drops the .bam: `<stem>.bai`.
-    let ri = remote.with_extension("bai");
-    if ri.is_file() {
-        std::fs::copy(&ri, local.with_extension("bai"))?;
-    }
-    let tmp = local.with_extension("partial");
-    std::fs::copy(remote, &tmp)?;
-    std::fs::rename(&tmp, local)?;
-    Ok(())
+    result
 }
 
 /// One step of a full analysis of a single alignment, in the order [`App::plan_full_analysis`]
@@ -1071,6 +1137,11 @@ pub enum AnalysisStep {
     /// Coverage + callable, read-level QC, and sex inference in one pass over the alignment.
     QualityMetrics,
     /// CNV + discordant pairs. Needs ≥10× — the step itself reports when the depth is too low.
+    ///
+    /// **Opt-in only.** SV is experimental and, alone among the steps, walks every read in the file
+    /// for a result nothing else consumes — hours per whole-genome sample. It is planned only when
+    /// a caller asks for it (`include_sv`); the GUI's "Call SV" button and `analyze --sv` are the
+    /// ways in. Nothing runs it unattended.
     StructuralVariants,
     /// De-novo calling on the mitochondrial contig (small and fully callable, unlike whole chrY).
     MitoDenovo { contig: String },
@@ -1128,10 +1199,14 @@ impl App {
     /// which makes the mitochondrial decision authoritative; pass `None` before that and the cached
     /// coverage (or, with none, the assumption that chrM is present) is used instead. Callers that
     /// show a step count should re-plan after the metrics step, as the count can drop.
+    ///
+    /// `include_sv` adds the experimental [`AnalysisStep::StructuralVariants`]; see that variant for
+    /// why it is off by default. `include_ancestry` likewise gates the two heaviest ancestry steps.
     pub async fn plan_full_analysis(
         &self,
         alignment_id: i64,
         include_ancestry: bool,
+        include_sv: bool,
         coverage: Option<&CoverageResult>,
     ) -> Result<Vec<AnalysisStep>, AppError> {
         // Skip the mitochondrial steps when the alignment has no chrM reads (e.g. an FTDNA Big Y):
@@ -1150,7 +1225,10 @@ impl App {
         // Subject-level steps need the owning subject; an unattached alignment simply skips them.
         let guid = self.biosample_of_alignment(alignment_id).await.ok();
 
-        let mut steps = vec![AnalysisStep::QualityMetrics, AnalysisStep::StructuralVariants];
+        let mut steps = vec![AnalysisStep::QualityMetrics];
+        if include_sv {
+            steps.push(AnalysisStep::StructuralVariants);
+        }
         if has_mtdna {
             steps.push(AnalysisStep::MitoDenovo { contig: "chrM".into() });
         }
@@ -1207,6 +1285,21 @@ fn localized_registry() -> &'static std::sync::Mutex<HashMap<PathBuf, usize>> {
     REG.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+/// The lock serializing cache copies for one destination path — see [`App::localize`], which holds
+/// it across the copy so a second caller waits for the first rather than duplicating it.
+///
+/// Async, because it is held across the copy's `await`. Entries are never removed: one small entry
+/// per distinct alignment localized in this process, bounded by the workspace's alignment count,
+/// which is cheaper than the bookkeeping needed to retire them safely.
+fn copy_gate(local: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    #[allow(clippy::type_complexity)]
+    static GATES: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>>> =
+        std::sync::OnceLock::new();
+    let gates = GATES.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut gates = gates.lock().unwrap();
+    std::sync::Arc::clone(gates.entry(local.to_path_buf()).or_default())
+}
+
 /// An alignment path to read from, owning any local copy made for it.
 ///
 /// The previous design cached copies in a directory cleared by one caller — `analyze_biosample` —
@@ -1233,21 +1326,42 @@ impl LocalAlignment {
         Self { path, owned: true }
     }
 
-    /// Register interest in an existing copy; `true` when one was already present and is now
-    /// retained. A copy in progress is not registered, so callers race only on the copy itself.
-    fn retain(local: &Path) -> bool {
+    /// Register interest in an existing copy; `true` when one was present and is now retained.
+    ///
+    /// A file with no registry entry is a **leftover from an earlier process** — `Drop` never ran,
+    /// so the run was killed — and is validated against `expect_len` (the remote's size) before
+    /// being trusted, then discarded if it doesn't match. Adopting a leftover on its existence
+    /// alone is how a truncated copy gets read as though it were the alignment: the failure then
+    /// appears as a decode error deep into a walk, pointing at a cache path whose file is deleted
+    /// moments later. A wrong-sized copy is worth exactly one re-copy to be rid of.
+    ///
+    /// An entry that *is* registered belongs to a live holder in this process and was validated
+    /// when it was made, so it is shared without re-statting.
+    fn retain(local: &Path, expect_len: Option<u64>) -> bool {
         let mut reg = localized_registry().lock().unwrap();
-        match reg.get_mut(local) {
-            Some(n) => {
-                *n += 1;
-                true
-            }
-            None if local.is_file() => {
-                reg.insert(local.to_path_buf(), 1);
-                true
-            }
-            None => false,
+        if let Some(n) = reg.get_mut(local) {
+            *n += 1;
+            return true;
         }
+        let Ok(md) = std::fs::metadata(local) else {
+            return false;
+        };
+        if !md.is_file() {
+            return false;
+        }
+        if let Some(want) = expect_len {
+            if md.len() != want {
+                eprintln!(
+                    "localize: discarding a stale cache copy at {} ({} bytes, expected {want})",
+                    local.display(),
+                    md.len()
+                );
+                let _ = std::fs::remove_file(local);
+                return false;
+            }
+        }
+        reg.insert(local.to_path_buf(), 1);
+        true
     }
 
     /// The path to read from — the local copy when one was made, else the original.
@@ -1302,7 +1416,7 @@ mod local_alignment_tests {
         std::fs::write(&cram, "x").unwrap();
         std::fs::write(&crai, "i").unwrap();
 
-        assert!(LocalAlignment::retain(&cram), "an existing copy registers");
+        assert!(LocalAlignment::retain(&cram, None), "an existing copy registers");
         drop(LocalAlignment::owned(cram.clone()));
         assert!(!cram.is_file(), "the copy is removed when the last holder drops");
         assert!(!crai.is_file(), "and so is its index");
@@ -1316,15 +1430,131 @@ mod local_alignment_tests {
         let cram = d.join("b.cram");
         std::fs::write(&cram, "x").unwrap();
 
-        assert!(LocalAlignment::retain(&cram));
+        assert!(LocalAlignment::retain(&cram, None));
         let first = LocalAlignment::owned(cram.clone());
-        assert!(LocalAlignment::retain(&cram), "a second holder shares the copy");
+        assert!(LocalAlignment::retain(&cram, None), "a second holder shares the copy");
         let second = LocalAlignment::owned(cram.clone());
 
         drop(first);
         assert!(cram.is_file(), "still held by the second");
         drop(second);
         assert!(!cram.is_file(), "removed once nobody holds it");
+    }
+
+    /// A leftover from a killed run must be checked, not trusted. Adopting a short copy is how a
+    /// truncated cache entry gets read as though it were the alignment — surfacing as a decode
+    /// failure tens of gigabytes into a walk, blamed on a cache file that is deleted moments later.
+    #[test]
+    fn a_wrong_sized_leftover_is_discarded_rather_than_adopted() {
+        let d = scratch("stale");
+        let cram = d.join("d.cram");
+        std::fs::write(&cram, "truncated").unwrap();
+
+        assert!(
+            !LocalAlignment::retain(&cram, Some(9_999)),
+            "a copy that doesn't match the remote's size must not be adopted"
+        );
+        assert!(!cram.is_file(), "and it is removed, so the next attempt re-copies");
+    }
+
+    #[test]
+    fn a_correctly_sized_leftover_is_adopted() {
+        let d = scratch("stale-ok");
+        let cram = d.join("e.cram");
+        std::fs::write(&cram, "123456789").unwrap();
+
+        assert!(LocalAlignment::retain(&cram, Some(9)), "a matching copy is reusable");
+        drop(LocalAlignment::owned(cram.clone()));
+    }
+
+    /// Two concurrent copiers must never be able to name the same scratch file: sharing one let
+    /// them open a single inode, where one truncates what the other is writing — and keeps writing
+    /// into it after the other renames it into place and starts reading.
+    #[test]
+    fn each_copy_gets_its_own_partial_path() {
+        let local = PathBuf::from("/tmp/nav-cache/abc.cram");
+        let (a, b) = (partial_path(&local), partial_path(&local));
+        assert_ne!(a, b, "two callers must not share a scratch path");
+        assert_eq!(a.parent(), local.parent(), "the scratch stays beside its destination");
+        for p in [&a, &b] {
+            let name = p.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(name.starts_with("abc.cram.partial."), "{name}");
+        }
+    }
+
+    /// A copy that arrives short is rejected instead of published, and leaves nothing behind — not
+    /// the scratch file, and not the index copied ahead of it. Both used to accumulate in the cache.
+    #[test]
+    fn a_short_copy_is_rejected_and_leaves_no_debris() {
+        let d = scratch("short");
+        let (remote, local) = (d.join("src.cram"), d.join("dst.cram"));
+        std::fs::write(&remote, "0123456789").unwrap();
+        std::fs::write(d.join("src.cram.crai"), "idx").unwrap();
+
+        // Claim the remote is larger than it is — the same shape as a copy cut short.
+        let err = copy_with_index(&remote, &local, Some(64)).expect_err("a short copy must fail");
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof, "{err}");
+
+        assert!(!local.is_file(), "a rejected copy is not published");
+        assert!(!d.join("dst.cram.crai").is_file(), "nor is the index that preceded it");
+        let debris: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|n| n.contains(".partial"))
+            .collect();
+        assert!(debris.is_empty(), "scratch files left behind: {debris:?}");
+    }
+
+    /// The gate is what stops two overlapping callers from both copying the same alignment. Every
+    /// worker command is `tokio::spawn`ed, so that overlap is real, and the duplicate was a second
+    /// full pull of a 40 GB CRAM over the network whose only outcome was a failed rename.
+    #[tokio::test]
+    async fn one_destination_copies_at_a_time_and_others_are_not_blocked() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let path = PathBuf::from("/tmp/nav-cache/gate.cram");
+        let (inside, max_seen) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let (path, inside, max_seen) = (path.clone(), inside.clone(), max_seen.clone());
+            tasks.push(tokio::spawn(async move {
+                let gate = copy_gate(&path);
+                let _held = gate.lock().await;
+                let now = inside.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                inside.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            1,
+            "two callers were inside the copy for one destination at once"
+        );
+
+        // A different alignment must not queue behind it, or a batch would serialize on the cache.
+        let first = copy_gate(&path);
+        let _held = first.lock().await;
+        let other = copy_gate(&PathBuf::from("/tmp/nav-cache/other.cram"));
+        assert!(
+            other.try_lock().is_ok(),
+            "an unrelated destination must not wait on this one"
+        );
+    }
+
+    #[test]
+    fn a_matching_copy_is_published_with_its_index() {
+        let d = scratch("good");
+        let (remote, local) = (d.join("src.cram"), d.join("dst.cram"));
+        std::fs::write(&remote, "0123456789").unwrap();
+        std::fs::write(d.join("src.cram.crai"), "idx").unwrap();
+
+        copy_with_index(&remote, &local, Some(10)).expect("a whole copy succeeds");
+        assert_eq!(std::fs::read(&local).unwrap(), b"0123456789");
+        assert!(d.join("dst.cram.crai").is_file(), "the index lands beside it");
     }
 
     #[test]

@@ -116,6 +116,17 @@ pub fn tr_fmt(lang: Lang, key: &'static str, args: &[&str]) -> String {
     out
 }
 
+/// Every `(key, translation)` pair for `lang`.
+///
+/// Exists for checks that must see *every* string the app can display rather than the ones a test
+/// happens to name — the UI's glyph-coverage test being the case in point: a character with no
+/// glyph renders as an empty box, which no other test and no compiler can see.
+pub fn entries(lang: Lang) -> Vec<(&'static str, &'static str)> {
+    let mut v: Vec<_> = catalog(lang).iter().map(|(k, val)| (*k, *val)).collect();
+    v.sort_unstable();
+    v
+}
+
 /// Translate `key` for `lang`, falling back to English then the key itself.
 pub fn tr(lang: Lang, key: &'static str) -> &'static str {
     if let Some(v) = catalog(lang).get(key).copied() {

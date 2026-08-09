@@ -11,6 +11,7 @@
 //! render path. The UI asks once, when a user asks it to.
 
 use super::*;
+use crate::fastpath::{chr_m_gvcf_for_alignment, chr_y_gvcf_for_alignment};
 
 /// A workspace chore. The order is the order a fresh workspace wants them in: compute what the
 /// cohort views need, re-place anything a new tree invalidated, then publish.
@@ -60,6 +61,31 @@ pub struct ChoreOutcome {
     pub failed: usize,
     /// One line for the status bar — chore-specific, since "12 done" means different things.
     pub summary: String,
+}
+
+/// What [`App::replace_against_current_tree`] did for one subject. Per-alignment call failures are
+/// counted rather than raised: an alignment whose file is gone is a superseded vendor download, not
+/// a reason to leave the subject un-replaced.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TreeReplace {
+    pub calls_replaced: usize,
+    pub calls_failed: usize,
+    /// Alignments skipped because their file is gone. Kept apart from `calls_failed` so a workspace
+    /// whose vendor downloads have been cleaned out does not report a wall of errors for the one
+    /// outcome that is expected and harmless.
+    pub calls_skipped: usize,
+    pub profiles_rebuilt: usize,
+}
+
+impl TreeReplace {
+    /// Tally one per-alignment call, sorting "its file is gone" out of the failures.
+    fn record(&mut self, outcome: Result<(), AppError>) {
+        match outcome {
+            Ok(()) => self.calls_replaced += 1,
+            Err(e) if e.is_missing_alignment_file() => self.calls_skipped += 1,
+            Err(_) => self.calls_failed += 1,
+        }
+    }
 }
 
 /// Per-subject result of a private-Y refresh.
@@ -140,6 +166,85 @@ impl App {
         let mut v: Vec<SampleGuid> = set.into_iter().collect();
         v.sort_by_key(|g| g.0);
         Ok(v)
+    }
+
+    /// Re-place one subject against the current tree: its per-alignment Y/mt calls first, then the
+    /// pooled profiles built from them.
+    ///
+    /// The per-alignment step is the half that was missing. Rebuilding only the profiles refreshes
+    /// `consensus_profile` while leaving every `haplogroup_call` row untouched, so a call carrying a
+    /// name from an older tree survives every sweep — `1087` held `aln:903` reading
+    /// `CP086569.2:27785335 G->A` against a current `aln:864` of `R-BY66248`, which is what the Y
+    /// card reported as "sources diverge below root". Worse, the sweep selects subjects *by* those
+    /// call fingerprints ([`Self::stale_tree_targets`]), so a subject it never corrected stayed due
+    /// forever and the count never fell.
+    ///
+    /// Order matters: the calls are the profile's input, so re-placing them after the build would
+    /// leave the profile a version behind. Each step is best-effort and independent — an alignment
+    /// whose file is gone must not stop the rest of the subject from being brought current.
+    ///
+    /// Re-scoring is guarded by the alignment's own fingerprint (file hash + tree hash), so a
+    /// subject already current costs a fingerprint comparison rather than a walk. When the tree
+    /// genuinely changed, doing that work *is* the chore.
+    pub async fn replace_against_current_tree(&self, guid: SampleGuid) -> Result<TreeReplace, AppError> {
+        let mut r = TreeReplace::default();
+        for aln in self.list_alignments_for_biosample(guid).await.unwrap_or_default() {
+            // Fast-path (sidecar GVCF) calls first, and only then the CRAM-walk assignment.
+            //
+            // These are the `external`-provenance rows, but "external" here means the pipeline's
+            // caller, not an authority we merely relay: `assign_y_from_gvcf` places the GVCF's
+            // calls against *our* tree, so the stored name is only as current as the tree cached
+            // the day it was imported — `altai363p` carried `chrY:5216846A>C [Node721]` from one.
+            // They are ours to re-derive. Skipping them would leave the very rows the internal
+            // assignment defers to (see `has_preferred_external_call`) as the only stale ones left,
+            // which is the case that prompted this.
+            // Prefer the recorded paths; fall back to locating the GVCFs beside the alignment.
+            // The fallback is what makes this work on the existing corpus at all — every alignment
+            // imported before the paths were recorded has none, so keying solely on the record
+            // would have fixed only future imports and left the subjects that prompted this
+            // permanently stale.
+            let recorded = self.recorded_sidecars(aln.id).await.ok().flatten();
+            let y_gvcf = recorded
+                .as_ref()
+                .and_then(|s| s.chr_y_gvcf.clone())
+                .or_else(|| chr_y_gvcf_for_alignment(&aln));
+            let m_gvcf = recorded
+                .as_ref()
+                .and_then(|s| s.chr_m_gvcf.clone())
+                .or_else(|| chr_m_gvcf_for_alignment(&aln));
+            // A GVCF that has since gone (superseded vendor download, unmounted volume) is skipped
+            // rather than counted against the subject.
+            for outcome in [
+                match y_gvcf.filter(|p| p.is_file()) {
+                    Some(p) => Some(self.assign_y_from_gvcf(aln.id, &p).await.map(|_| ())),
+                    None => None,
+                },
+                match m_gvcf.filter(|p| p.is_file()) {
+                    Some(p) => Some(self.assign_mt_from_gvcf(aln.id, &p).await.map(|_| ())),
+                    None => None,
+                },
+            ]
+            .into_iter()
+            .flatten()
+            {
+                r.record(outcome);
+            }
+            // The CRAM-walk assignments. An alignment whose file has been removed since import
+            // reports `AlignmentFileMissing` here and is skipped — the sidecar calls above may still
+            // have re-placed the subject perfectly well without it.
+            for outcome in [
+                self.assign_y_haplogroup(aln.id).await.map(|_| ()),
+                self.assign_mtdna_haplogroup_from_alignment(aln.id).await.map(|_| ()),
+            ] {
+                r.record(outcome);
+            }
+        }
+        // Both arms rebuild regardless: a source-less lineage just yields an empty profile, and a
+        // subject can be stale on one arm while current on the other.
+        self.build_y_profile(guid).await?;
+        self.build_mt_profile(guid).await?;
+        r.profiles_rebuilt = 2;
+        Ok(r)
     }
 
     /// Refresh one subject's private-Y: every alignment, or — when there is none — every

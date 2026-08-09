@@ -527,9 +527,10 @@ pub enum Command {
         heteroplasmy: Vec<HeteroplasmySite>,
         identity: Option<IdentityVerification>,
     },
-    /// Run the full per-alignment analysis pipeline (coverage → sex → metrics → SV → variant
-    /// calling → Y haplogroup → ancestry), streaming `AnalysisProgress` per step. Each step's
-    /// own result event is forwarded too, so the detail tabs fill in as it runs.
+    /// Run the full per-alignment analysis pipeline (coverage → sex → metrics → variant calling →
+    /// Y haplogroup → ancestry), streaming `AnalysisProgress` per step. Each step's own result
+    /// event is forwarded too, so the detail tabs fill in as it runs. Structural variants are
+    /// **not** part of this — see [`Command::RunSv`], which the Sources tab dispatches on request.
     RunFullAnalysis {
         alignment_id: i64,
     },
@@ -848,7 +849,6 @@ pub enum Event {
         y_done: usize,
         sex_done: usize,
         metrics_done: usize,
-        sv_done: usize,
         errors: usize,
         cancelled: bool,
     },
@@ -2395,8 +2395,10 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     // alignment, or because it has no chrM reads — is decided by `App::plan_full_analysis`, the one
     // definition shared with the CLI. This fn only turns those steps into progress + result events.
     // Planned twice: the mitochondrial decision is a guess until step 1 has produced coverage.
+    // `include_sv = false`: SV is experimental and costs hours per whole-genome sample, so it is
+    // never folded into a Full Analysis. The Sources tab's "Call SV" button runs it on request.
     let mut steps = app
-        .plan_full_analysis(alignment_id, include_ancestry, None)
+        .plan_full_analysis(alignment_id, include_ancestry, false, None)
         .await
         .unwrap_or_else(|_| vec![AnalysisStep::QualityMetrics]);
     let mut total = steps.len();
@@ -2461,7 +2463,7 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                 // correctly drops the chrM de-novo + mt-placement steps (the pre-flight plan above
                 // ran before this coverage existed). Adjusts the remaining-step total.
                 steps = app
-                    .plan_full_analysis(alignment_id, include_ancestry, Some(&cov))
+                    .plan_full_analysis(alignment_id, include_ancestry, false, Some(&cov))
                     .await
                     .unwrap_or_else(|_| std::mem::take(&mut steps));
                 total = steps.len();
@@ -2610,6 +2612,7 @@ async fn run_chore_streaming(
                 Err(e) => return fail_chore(chore, e.to_string(), evt_tx, &wake),
             };
             let total = targets.len();
+            let (mut calls_replaced, mut calls_failed, mut calls_skipped) = (0usize, 0usize, 0usize);
             // One lookup for the whole batch rather than a query per subject just to label a
             // progress line.
             let names: std::collections::HashMap<_, _> = app
@@ -2625,20 +2628,42 @@ async fn run_chore_streaming(
                 }
                 let label = names.get(guid).cloned().unwrap_or_else(|| guid.0.to_string());
                 progress(chore, i, total, &label, evt_tx, &wake);
-                // Rebuild both arms: a source-less lineage just yields an empty profile, and a
-                // subject can be stale on one arm while current on the other.
-                let y = app.build_y_profile(*guid).await;
-                let m = app.build_mt_profile(*guid).await;
-                match (y, m) {
-                    (Ok(_), Ok(_)) => outcome.done += 1,
-                    (Err(e), _) | (_, Err(e)) => {
+                // Re-place the per-alignment calls *and* rebuild the pooled profiles — see
+                // `App::replace_against_current_tree`. Rebuilding only the profiles (what this used
+                // to do) left every `haplogroup_call` row on its old tree, which is both the
+                // "sources diverge" conflicts on the Y card and the reason a swept subject stayed
+                // due forever.
+                match app.replace_against_current_tree(*guid).await {
+                    Ok(r) => {
+                        outcome.done += 1;
+                        calls_replaced += r.calls_replaced;
+                        calls_failed += r.calls_failed;
+                        calls_skipped += r.calls_skipped;
+                    }
+                    Err(e) => {
                         outcome.failed += 1;
                         let _ = evt_tx.send(Event::Error(format!("{label}: {e}")));
                         wake();
                     }
                 }
             }
-            outcome.summary = format!("{} subject(s) re-placed against the current tree", outcome.done);
+            // Skips are reported separately from failures: "file gone" is expected in a workspace
+            // whose vendor downloads have been cleaned out, and folding it into the error count
+            // makes a healthy run look broken.
+            outcome.summary = format!(
+                "{} subject(s) re-placed against the current tree · {calls_replaced} call(s) re-placed{}{}",
+                outcome.done,
+                if calls_skipped > 0 {
+                    format!(" · {calls_skipped} skipped (file gone)")
+                } else {
+                    String::new()
+                },
+                if calls_failed > 0 {
+                    format!(" · {calls_failed} call(s) failed")
+                } else {
+                    String::new()
+                }
+            );
         }
 
         Chore::PublishOrigins => match app.publish_ancestral_origins(navigator_app::Lineage::Y, false).await {
@@ -2706,8 +2731,8 @@ async fn deep_analyze_project_streaming(
         }
     };
     let total = biosamples.len();
-    let (mut samples, mut coverage_done, mut y_done, mut sex_done, mut metrics_done, mut sv_done, mut errors) =
-        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut samples, mut coverage_done, mut y_done, mut sex_done, mut metrics_done, mut errors) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
 
     for (i, biosample) in biosamples.iter().enumerate() {
         if cancel.is_cancelled() {
@@ -2728,7 +2753,6 @@ async fn deep_analyze_project_streaming(
                 y_done += o.y_done as usize;
                 sex_done += o.sex_done as usize;
                 metrics_done += o.metrics_done as usize;
-                sv_done += o.sv_done as usize;
                 errors += o.errors.len();
             }
             Ok(_) => {} // no BAM-bearing alignment — not counted
@@ -2748,7 +2772,6 @@ async fn deep_analyze_project_streaming(
         y_done,
         sex_done,
         metrics_done,
-        sv_done,
         errors,
         cancelled: cancel.is_cancelled(),
     });

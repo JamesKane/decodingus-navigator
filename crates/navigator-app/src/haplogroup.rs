@@ -487,6 +487,9 @@ impl App {
 
     /// The reconciled donor-level haplogroup consensus across all recorded sources. A user
     /// manual override, when set, replaces the computed terminal (flagged `overridden`).
+    ///
+    /// See [`names_a_branch`] for why the placed-label rule below is not simply
+    /// `prefer_external && has_external`.
     pub async fn haplogroup_consensus(
         &self,
         biosample_guid: SampleGuid,
@@ -506,7 +509,18 @@ impl App {
         // label already agrees with the external call. We still skip it here so a *stale* label left
         // by a pre-Phase-2 (CRAM-pooled) build cannot resurface before the profile is rebuilt — the
         // external reconcile is the safe authority for these subjects.
-        let use_placed_label = !(prefer_external && has_external);
+        //
+        // …*unless* the reconcile has no branch name to offer. A call whose stored haplogroup is a
+        // variant string rather than a branch (see [`names_a_branch`]) is not an authority worth
+        // protecting: `altai363p` held one external call reading `chrY:5216846A>C [Node721]` while a
+        // freshly re-placed profile said `R-YP1507`, and this guard suppressed the good label in
+        // favour of the raw one — so a re-place appeared to do nothing to the assigned branch name
+        // even though it had rewritten it correctly. Skipping the placed label is only ever right
+        // when what replaces it is better.
+        // Read it as: skip the placed label only when a preferred external call offers a real
+        // branch name to skip it *for*.
+        let reconciled_names_a_branch = consensus.as_ref().is_some_and(|c| names_a_branch(&c.haplogroup));
+        let use_placed_label = !(prefer_external && has_external && reconciled_names_a_branch);
         if use_placed_label && matches!(dna_type, DnaType::Y | DnaType::Mt) {
             if let Some(stored) =
                 navigator_store::consensus_profile::get(self.store.pool(), biosample_guid, dna_type.as_str()).await?
@@ -1545,18 +1559,6 @@ impl App {
         Ok(out)
     }
 
-    /// The DecodingUs coordinate key (`hs1` / `GRCh38` / `GRCh37`) for a subject's Y data, taken from
-    /// its first alignment's reference build. Defaults to `hs1` (CHM13, the DecodingUs native build)
-    /// when the subject has no build-resolvable alignment. Used to parse the DecodingUs tree in the
-    /// subject's own coordinate space for the descent report.
-    async fn subject_y_build_key(&self, biosample_guid: SampleGuid) -> &'static str {
-        alignment::list_for_biosample(self.store.pool(), biosample_guid)
-            .await
-            .ok()
-            .and_then(|alns| alns.iter().find_map(|a| decodingus_build_key(&a.reference_build)))
-            .unwrap_or("hs1")
-    }
-
     /// Assemble a subject's lightweight [`YMatchProfile`] from **cached** data only (no re-genotyping):
     /// the persisted consensus Y profile (derived/novel SNP-name sets + terminal), the terminal's
     /// root→tip lineage from `tree`, and the first imported Y-STR panel's markers. `Ok(None)` when the
@@ -1814,8 +1816,26 @@ impl App {
             DnaType::Y => match y_tree_provider() {
                 YTreeProvider::DecodingUs => {
                     let json = self.fetch_decodingus_y_tree().await?;
-                    let build_key = self.subject_y_build_key(biosample_guid).await;
-                    navigator_analysis::haplo::parse_decodingus_json(&json, build_key).map_err(AppError::Import)?
+                    // Parse in the tree's **native** hs1 space, not the subject's alignment build.
+                    //
+                    // This report joins the profile to the tree by SNP *name* (`state_by_name`
+                    // below); the loci positions it carries are for display and export only. So
+                    // parsing under a narrower build buys nothing and costs loci: a variant with no
+                    // coordinate in the parse build is silently dropped
+                    // (`flatten_du_node`'s `coordinates.get(build_key)?`), and a node whose every
+                    // defining variant is dropped survives as a real node with no SNPs — which the
+                    // renderer then correctly hides as an empty block.
+                    //
+                    // That is not hypothetical. hs1 covers 99.8% of the tree's ~204k variants,
+                    // GRCh38 only 86.5%: most DecodingUs-discovered (`DU`-named) SNPs exist in CHM13
+                    // coordinates alone, since only a few hundred were ever mapped back to the older
+                    // references. `1087` is placed at `R-DU17762`, whose sole defining variant
+                    // `DU17762` has an hs1 coordinate and nothing else — so parsing that subject
+                    // under GRCh38 (which it was, its first alignment being GRCh38) emptied the
+                    // terminal block and the descent visibly stopped one branch short, at
+                    // `R-BY57568`, while the terminal name itself was right.
+                    navigator_analysis::haplo::parse_decodingus_json(&json, DECODINGUS_NATIVE_BUILD)
+                        .map_err(AppError::Import)?
                 }
                 YTreeProvider::Ftdna => {
                     let json = self.fetch_ftdna_y_tree().await?;
@@ -4357,6 +4377,10 @@ impl App {
         match y_tree_provider() {
             YTreeProvider::DecodingUs => match self.assign_y_decodingus(alignment_id).await {
                 Ok(a) => Ok(a),
+                // A gone alignment file is not a tree problem, and the fallback reads the same
+                // absent file — so it can only fail again, after another tree download, having
+                // logged that the DecodingUs tree was unavailable when it was not. Raise it.
+                Err(e) if e.is_missing_alignment_file() => Err(e),
                 Err(e) => {
                     // AppView unreachable / build unsupported / parse failure → FTDNA fallback.
                     eprintln!("DecodingUs Y tree unavailable ({e}); falling back to FTDNA");
@@ -4398,6 +4422,10 @@ impl App {
                 aln.reference_build
             ))
         })?;
+        // Before the tree fetch, not after: a gone alignment file cannot be genotyped against any
+        // tree, so downloading one first is pure waste — and its io error surfacing from *below* the
+        // fetch is what let `y_assignment_full` mistake it for the tree being unavailable.
+        Self::alignment_file(&aln)?;
         let tree_json = self.fetch_decodingus_y_tree().await?;
         let tree = navigator_analysis::haplo::parse_decodingus_json(&tree_json, build_key).map_err(AppError::Import)?;
         // Native build → no liftover (tree_source_build = None → direct query).
@@ -4893,9 +4921,7 @@ impl App {
         let aln = self.alignment_or_err(alignment_id).await?;
         // Copy off a slow/removable volume to local disk first — the per-locus genotyping read is a
         // network round-trip per record otherwise (see App::localize).
-        let bam = self
-            .localize(Path::new(&aln.bam_path.ok_or(AppError::MissingPaths(alignment_id))?))
-            .await;
+        let bam = self.localize(&Self::alignment_file(&aln)?).await;
         let bam = bam.path().to_path_buf();
         // Resolve the reference even when none was stored at import. A CRAM can't be decoded
         // without it, so resolve (download on a miss) via the gateway from the alignment's build —
@@ -5277,6 +5303,35 @@ mod lifted_targets_tests {
             .await
             .expect("same build is not an error");
         assert!(lifted.is_none(), "no chain needed when the builds agree");
+    }
+}
+
+/// Whether `label` names a branch, as opposed to the variant string a placement falls back to when
+/// the node it landed on carried no usable name.
+///
+/// Branch names are alphanumeric with hyphens and dots — `R-DU17762`, `A0-T`, `E-FT400514:n0`. The
+/// fallback renders the defining variant instead: `chrY:5216846A>C [Node721]`,
+/// `CP086569.2:27785335 G->A`. Keys on `>`, which every `ref>alt` rendering contains and no
+/// haplogroup name does — a colon alone would misjudge `E-FT400514:n0`, which is a real label.
+///
+/// Both examples are real rows from this workspace, on an external call and a navigator-walk call
+/// respectively, so the fallback is not confined to one code path.
+fn names_a_branch(label: &str) -> bool {
+    !label.contains('>')
+}
+
+#[cfg(test)]
+mod names_a_branch_tests {
+    use super::names_a_branch;
+
+    #[test]
+    fn branch_names_and_variant_fallbacks_are_told_apart() {
+        for good in ["R-DU17762", "A0-T", "R-YP1507", "E-FT400514:n0", "R-BY66248", "A1b"] {
+            assert!(names_a_branch(good), "{good} is a branch name");
+        }
+        for bad in ["chrY:5216846A>C [Node721]", "CP086569.2:27785335 G->A"] {
+            assert!(!names_a_branch(bad), "{bad} is a variant string, not a branch name");
+        }
     }
 }
 

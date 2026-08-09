@@ -2352,6 +2352,78 @@ mod icon_glyph_tests {
         assert!(renderable('♂'), "sanity: ♂ is present");
     }
 
+    /// Prints coverage for the characters the app already uses plus a candidate set — run this when
+    /// choosing an icon instead of picking one that merely looks right:
+    /// `cargo test -p navigator-ui --bin navigator report_glyph_coverage -- --ignored --nocapture`
+    #[test]
+    #[ignore = "diagnostic, not a gate — see the doc comment for how to run it"]
+    fn report_glyph_coverage() {
+        use std::collections::BTreeSet;
+        let mut chars: BTreeSet<char> = BTreeSet::new();
+        for lang in navigator_domain::i18n::Lang::all() {
+            for (_, v) in navigator_domain::i18n::entries(*lang) {
+                chars.extend(v.chars().filter(|c| !c.is_ascii()));
+            }
+        }
+        for c in [
+            '•', '·', '▪', '▫', '■', '◻', '◼', '⚫', '⚪', '🔴', '⏺', '☑', '☐', '✔', '✖', '★', '☆', '±', '‹', '›', '«',
+            '»', '▶', '⏷', '⬇', '🔽', '↘', '☰', '…', '≥', '×', '➕', '📁', '📥', '🔍', '🗑',
+        ] {
+            chars.insert(c);
+        }
+        for c in &chars {
+            println!(
+                "  {} U+{:04X} {c}",
+                if renderable(*c) { "ok  " } else { "TOFU" },
+                *c as u32
+            );
+        }
+    }
+
+    /// Every character of every translated string must be drawable.
+    ///
+    /// The rail and nav icons below were checked individually, which left the ~1,900 strings in the
+    /// catalogs unchecked — and those held eight more undrawable characters (`←→▾◆●✓✗🗂`), including
+    /// the status dot on the dashboard and the check/cross on the exchange screen. Scanning the
+    /// whole catalog is the only version of this test that can't be outgrown by new copy.
+    #[test]
+    fn every_translated_string_is_renderable() {
+        let mut bad: Vec<String> = Vec::new();
+        for lang in navigator_domain::i18n::Lang::all() {
+            for (key, value) in navigator_domain::i18n::entries(*lang) {
+                for c in value.chars().filter(|c| !c.is_ascii() && !renderable(*c)) {
+                    bad.push(format!(
+                        "  {} / {key} = {value:?} -> {c:?} (U+{:04X})",
+                        lang.code(),
+                        c as u32
+                    ));
+                }
+            }
+        }
+        bad.sort();
+        bad.dedup();
+        assert!(
+            bad.is_empty(),
+            "these strings contain characters egui cannot draw; they render as empty boxes:\n{}",
+            bad.join("\n")
+        );
+    }
+
+    /// The marks in the asset-status line, which are built inline rather than translated.
+    #[test]
+    fn asset_status_marks_are_renderable() {
+        use crate::charts::{MARK_ABSENT, MARK_PRESENT, MARK_VERIFIED};
+        for mark in [MARK_VERIFIED, MARK_PRESENT, MARK_ABSENT] {
+            for c in mark.chars() {
+                assert!(
+                    renderable(c),
+                    "asset mark {c:?} (U+{:04X}) has no glyph — it renders as a tofu box",
+                    c as u32
+                );
+            }
+        }
+    }
+
     #[test]
     fn icon_glyphs_are_renderable() {
         for (panel, icon, _) in SimplePanel::ALL {

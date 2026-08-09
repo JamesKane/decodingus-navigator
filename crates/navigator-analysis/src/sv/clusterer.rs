@@ -40,14 +40,11 @@ pub fn cluster(
 
     let mut pairs_by_chrom: BTreeMap<&str, Vec<DiscordantPair>> = BTreeMap::new();
     for p in &intra {
-        pairs_by_chrom.entry(p.chrom1.as_str()).or_default().push((*p).clone());
+        pairs_by_chrom.entry(&*p.chrom1).or_default().push((*p).clone());
     }
     let mut splits_by_chrom: BTreeMap<&str, Vec<SplitRead>> = BTreeMap::new();
     for s in &evidence.split_reads {
-        splits_by_chrom
-            .entry(s.primary_chrom.as_str())
-            .or_default()
-            .push(s.clone());
+        splits_by_chrom.entry(&*s.primary_chrom).or_default().push(s.clone());
     }
     let chroms: BTreeSet<&str> = pairs_by_chrom.keys().chain(splits_by_chrom.keys()).copied().collect();
 
@@ -74,7 +71,7 @@ fn cluster_translocations(pairs: &[DiscordantPair], config: &SvCallerConfig) -> 
     let mut by_chrom_pair: BTreeMap<(&str, &str), Vec<DiscordantPair>> = BTreeMap::new();
     for p in pairs {
         by_chrom_pair
-            .entry((p.chrom1.as_str(), p.chrom2.as_str()))
+            .entry((&*p.chrom1, &*p.chrom2))
             .or_default()
             .push(p.clone());
     }

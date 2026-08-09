@@ -32,7 +32,7 @@ pub fn call_structural_variants(
         )));
     }
 
-    let evidence = walker::collect_evidence(
+    let evidence = walker::collect_evidence_parallel(
         bam_path,
         reference,
         contig_lengths,

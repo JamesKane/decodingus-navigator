@@ -65,7 +65,11 @@ pub struct DiscoveredFile {
 /// The `ytree` pipeline's per-sample sidecars, matched by name suffix. Present only when the
 /// sample was processed by that workflow; absent for a plain alignment-only directory. The
 /// app's fast-path ingest reads these instead of walking the CRAM.
-#[derive(Debug, Clone, Default)]
+///
+/// Serializable so the app can record which files an alignment was ingested from. Discovery is a
+/// directory scan performed once at import; without a record of the result, re-running the fast
+/// path later — to re-place a haplogroup against a newer tree — would have nothing to run against.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SampleSidecars {
     /// `*.chrY.g.vcf.gz` — ploidy-1 chrY GVCF (males).
     pub chr_y_gvcf: Option<PathBuf>,

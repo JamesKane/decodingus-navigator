@@ -544,8 +544,17 @@ pub(crate) fn parse_hex_color(hex: &str) -> egui::Color32 {
     egui::Color32::from_gray(128)
 }
 
+/// Marks for [`asset_status_line`]: verified · present-but-unverified · absent.
+///
+/// Named constants rather than literals so the glyph test can assert them. A character with no
+/// glyph in egui's Proportional family renders as an empty box that no other test and no compiler
+/// can see — which is how this line shipped with `✓` and `✗`, neither of which egui can draw.
+pub(crate) const MARK_VERIFIED: &str = "✔";
+pub(crate) const MARK_PRESENT: &str = "•";
+pub(crate) const MARK_ABSENT: &str = "✖";
+
 /// A compact "data sources" line: which ancestry/IBD reference assets are present and
-/// integrity-verified (✓ verified · • present-but-unverified · ✗ absent).
+/// integrity-verified.
 pub(crate) fn asset_status_line(ui: &mut egui::Ui, assets: &[AssetStatus]) {
     if assets.is_empty() {
         return;
@@ -554,11 +563,19 @@ pub(crate) fn asset_status_line(ui: &mut egui::Ui, assets: &[AssetStatus]) {
         ui.label(egui::RichText::new("Data sources:").small().weak());
         for a in assets {
             let (mark, col, hover) = if a.verified {
-                ("✓", egui::Color32::from_rgb(80, 170, 90), "present, integrity-verified")
+                (
+                    MARK_VERIFIED,
+                    egui::Color32::from_rgb(80, 170, 90),
+                    "present, integrity-verified",
+                )
             } else if a.present {
-                ("•", egui::Color32::from_gray(150), "present (no manifest to verify)")
+                (
+                    MARK_PRESENT,
+                    egui::Color32::from_gray(150),
+                    "present (no manifest to verify)",
+                )
             } else {
-                ("✗", egui::Color32::from_rgb(170, 90, 90), "not installed")
+                (MARK_ABSENT, egui::Color32::from_rgb(170, 90, 90), "not installed")
             };
             ui.colored_label(col, egui::RichText::new(format!("{} {mark}", a.name)).small())
                 .on_hover_text(hover);

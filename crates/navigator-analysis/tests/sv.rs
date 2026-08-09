@@ -41,13 +41,13 @@ fn walker_extracts_discordant_pairs_split_reads_and_depth() {
     // One inter pair is chr1->chr2 from r_inter.
     assert!(inter
         .iter()
-        .any(|p| p.chrom1 == "chr1" && p.chrom2 == "chr2" && p.pos1 == 100));
+        .any(|p| &*p.chrom1 == "chr1" && &*p.chrom2 == "chr2" && p.pos1 == 100));
 
     // One split read with 20 bp clip, supplementary on chr1:2000.
     assert_eq!(ev.total_split_reads(), 1);
     let sr = &ev.split_reads[0];
     assert_eq!(sr.clip_length, 20);
-    assert_eq!(sr.supp_chrom, "chr1");
+    assert_eq!(&*sr.supp_chrom, "chr1");
     assert_eq!(sr.supp_pos, 2000);
 
     // Depth bins.
@@ -90,22 +90,109 @@ fn walker_reads_cram_with_the_same_result_as_bam() {
     assert_eq!(from_cram.total_split_reads(), from_bam.total_split_reads());
 
     // Compare the evidence itself, not just the counts — the split read carries the fields that
-    // come from the accessors CRAM implements differently (name, SA tag, CIGAR clip length).
+    // come from the accessors CRAM implements differently (SA tag, CIGAR clip length).
     let (b, c) = (&from_bam.split_reads[0], &from_cram.split_reads[0]);
     assert_eq!(
-        (&c.read_name, c.clip_length, &c.supp_chrom, c.supp_pos),
-        (&b.read_name, b.clip_length, &b.supp_chrom, b.supp_pos)
+        (c.clip_length, &c.supp_chrom, c.supp_pos, c.primary_pos),
+        (b.clip_length, &b.supp_chrom, b.supp_pos, b.primary_pos)
     );
-    let names = |e: &SvEvidenceCollection| {
+    let placed = |e: &SvEvidenceCollection| {
         let mut v: Vec<_> = e
             .discordant_pairs
             .iter()
-            .map(|p| (p.read_name.clone(), p.pos1, format!("{:?}", p.reason)))
+            .map(|p| (p.chrom1.clone(), p.pos1, p.pos2, format!("{:?}", p.reason)))
             .collect();
         v.sort();
         v
     };
-    assert_eq!(names(&from_cram), names(&from_bam));
+    assert_eq!(placed(&from_cram), placed(&from_bam));
+}
+
+/// The per-contig parallel fan-out must be a pure speedup: identical depth bins, discordant pairs
+/// and split reads, in identical order. SV was the last whole-genome analysis still decoding on one
+/// thread (2–5 h per 30x CRAM in a batch), so the fan-out is only worth having if it changes nothing
+/// but the wall clock. Run over BAM *and* CRAM — they take different decode paths into the same sink.
+#[test]
+fn parallel_walk_matches_sequential_on_bam_and_cram() {
+    let lengths = BTreeMap::from([("chr1".to_string(), 5000i64), ("chr2".to_string(), 5000)]);
+    let config = SvCallerConfig::default();
+    let cases = [("sv.bam", None), ("sv.cram", Some(fixtures().join("svref.fa")))];
+
+    for (file, reference) in cases {
+        let path = fixtures().join(file);
+        // Without an index the parallel entry point falls back to the sequential walk, which would
+        // make this test compare a walk against itself and pass no matter what the fan-out does.
+        assert!(
+            navigator_analysis::reader::has_region_index(&path),
+            "{file} needs its .bai/.crai for this test to exercise the parallel path"
+        );
+
+        let seq = walker::collect_evidence(
+            &path,
+            reference.as_deref(),
+            &lengths,
+            400.0,
+            50.0,
+            &config,
+            &navigator_analysis::CancelToken::none(),
+        )
+        .unwrap_or_else(|e| panic!("{file} sequential walk: {e}"));
+        let par = walker::collect_evidence_parallel(
+            &path,
+            reference.as_deref(),
+            &lengths,
+            400.0,
+            50.0,
+            &config,
+            &navigator_analysis::CancelToken::none(),
+        )
+        .unwrap_or_else(|e| panic!("{file} parallel walk: {e}"));
+
+        assert_eq!(par.depth_bins, seq.depth_bins, "{file} depth bins");
+        assert_eq!(par.discordant_pairs, seq.discordant_pairs, "{file} discordant pairs");
+        assert_eq!(par.split_reads, seq.split_reads, "{file} split reads");
+    }
+}
+
+/// The evidence cap must truncate what is *retained* without falsifying what was *found*. A cap
+/// that quietly lowered `total_discordant_pairs` would make a truncated run read as a clean sample,
+/// which is the one failure mode a safety valve must not have. Exercised on both walks, since each
+/// claims against the shared budget separately.
+#[test]
+fn evidence_cap_truncates_retained_evidence_but_not_the_reported_totals() {
+    let lengths = BTreeMap::from([("chr1".to_string(), 5000i64), ("chr2".to_string(), 5000)]);
+    let capped = SvCallerConfig {
+        max_evidence_records: 1,
+        ..SvCallerConfig::default()
+    };
+
+    for parallel in [false, true] {
+        let walk = if parallel {
+            walker::collect_evidence_parallel
+        } else {
+            walker::collect_evidence
+        };
+        let ev = walk(
+            &fixtures().join("sv.bam"),
+            None,
+            &lengths,
+            400.0,
+            50.0,
+            &capped,
+            &navigator_analysis::CancelToken::none(),
+        )
+        .expect("capped walk should succeed");
+
+        // 4 discordant pairs exist (see the uncapped test); the cap keeps 1 and counts the rest.
+        assert_eq!(ev.discordant_pairs.len(), 1, "parallel={parallel} retained");
+        assert_eq!(ev.discordant_pairs_dropped, 3, "parallel={parallel} dropped");
+        assert_eq!(ev.total_discordant_pairs(), 4, "parallel={parallel} reported total");
+        // Only 1 split read exists, so its cap is met exactly and nothing is dropped.
+        assert_eq!(ev.split_reads.len(), 1, "parallel={parallel} split retained");
+        assert_eq!(ev.split_reads_dropped, 0, "parallel={parallel} split dropped");
+        // Depth bins are not evidence records and are never capped.
+        assert_eq!(ev.depth_bins["chr1"], vec![2, 1, 0, 0, 1], "parallel={parallel} depth");
+    }
 }
 
 // ---- segmenter (pure) ------------------------------------------------------
@@ -160,7 +247,6 @@ fn merge_nearby_segments_joins_same_type_within_gap() {
 
 fn pair(pos1: i64, pos2: i64, s1: char, s2: char, reason: DiscordantReason) -> DiscordantPair {
     DiscordantPair {
-        read_name: "r".into(),
         chrom1: "chr1".into(),
         pos1,
         strand1: s1,
@@ -185,6 +271,8 @@ fn collection(pairs: Vec<DiscordantPair>) -> SvEvidenceCollection {
         sample_name: "test".into(),
         expected_insert_size: 400.0,
         insert_size_sd: 50.0,
+        discordant_pairs_dropped: 0,
+        split_reads_dropped: 0,
     }
 }
 

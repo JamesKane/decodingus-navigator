@@ -316,6 +316,11 @@ pub struct AnalyzeArgs {
     /// steps, which the GUI folds in only for the one-click Simple flow.
     #[arg(long)]
     ancestry: bool,
+    /// Also call structural variants (experimental). Off by default: SV walks every read in the
+    /// file for its own sake, measured at 2–5 h per whole-genome sample, and nothing else consumes
+    /// the result. The GUI's equivalent is the Sources tab's "Call SV" button.
+    #[arg(long)]
+    sv: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
@@ -806,23 +811,40 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
                 continue;
             }
         }
-        // Rebuild both signatures; a source-less DNA type just produces an empty profile.
+        // Re-place the per-alignment calls *and* rebuild the signatures built from them — the same
+        // `replace_against_current_tree` the GUI chore runs, so the two surfaces cannot drift.
+        // Rebuilding only the profiles (what this did) left every `haplogroup_call` row on the tree
+        // it was placed against, which is both the "sources diverge" conflicts on the Y card and the
+        // reason `--stale-tree` re-selected the same subjects forever: it selects *by* those call
+        // fingerprints, so a subject it had just "re-placed" was still due on the next run.
+        //
+        // Still cheap for an already-analyzed subject: each call is fingerprint-guarded, so an
+        // unchanged file and tree cost a comparison rather than a walk.
         let t = Instant::now();
-        let y = app.build_y_profile(b.guid).await;
-        let m = app.build_mt_profile(b.guid).await;
-        match (&y, &m) {
-            (Err(e), _) | (_, Err(e)) => {
+        match app.replace_against_current_tree(b.guid).await {
+            Err(e) => {
                 failed += 1;
                 eprintln!("FAIL {label:<24} {e}");
             }
-            (Ok(yp), Ok(mp)) => {
+            Ok(r) => {
                 rebuilt += 1;
+                let y = app.cached_y_profile(b.guid).await.ok().flatten();
+                let m = app.cached_mt_profile(b.guid).await.ok().flatten();
                 println!(
-                    "OK   {label:<24} Y {:<12} mt {:<10} ({}Y/{}mt variants) [{:.1?}]",
-                    yp.terminal.as_deref().unwrap_or("(none)"),
-                    mp.terminal.as_deref().unwrap_or("(none)"),
-                    yp.variants.len(),
-                    mp.variants.len(),
+                    "OK   {label:<24} Y {:<12} mt {:<10} ({} call(s) re-placed{}{}) [{:.1?}]",
+                    y.as_ref().and_then(|p| p.terminal.as_deref()).unwrap_or("(none)"),
+                    m.as_ref().and_then(|p| p.terminal.as_deref()).unwrap_or("(none)"),
+                    r.calls_replaced,
+                    if r.calls_skipped > 0 {
+                        format!(", {} skipped: file gone", r.calls_skipped)
+                    } else {
+                        String::new()
+                    },
+                    if r.calls_failed > 0 {
+                        format!(", {} failed", r.calls_failed)
+                    } else {
+                        String::new()
+                    },
                     t.elapsed()
                 );
             }
@@ -957,7 +979,7 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
     // The step list comes from `App::plan_full_analysis` — the same one the GUI's Full Analysis
     // uses, so the two cannot drift again. In particular this is what stops a `navigator analyze`
     // from re-genotyping Y over a trusted external call the user asked to prefer.
-    let mut steps = match app.plan_full_analysis(id, args.ancestry, None).await {
+    let mut steps = match app.plan_full_analysis(id, args.ancestry, args.sv, None).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: could not plan the analysis: {e}");
@@ -987,7 +1009,10 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
                     app.clear_analysis_error(id).await;
                     // The mitochondrial steps depend on whether this coverage found chrM reads, so
                     // re-plan now that it exists (the pre-flight plan had to guess).
-                    if let Ok(replanned) = app.plan_full_analysis(id, args.ancestry, Some(&r.coverage)).await {
+                    if let Ok(replanned) = app
+                        .plan_full_analysis(id, args.ancestry, args.sv, Some(&r.coverage))
+                        .await
+                    {
                         steps = replanned;
                     }
                     Ok(format!("coverage mean {:.2}x", r.coverage.mean_coverage))

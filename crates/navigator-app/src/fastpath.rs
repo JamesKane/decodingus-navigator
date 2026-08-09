@@ -290,6 +290,18 @@ impl App {
         Ok(assignment)
     }
 
+    /// The sidecar paths this alignment was ingested from, as recorded by [`Self::ingest_sidecars`].
+    ///
+    /// Read directly, with no source-mtime freshness check: this is a record of *what was used*,
+    /// not a derived result that a changed CRAM invalidates. `None` for an alignment that never
+    /// went through the fast path (imported before this was recorded, or with no sidecars at all).
+    pub async fn recorded_sidecars(&self, alignment_id: i64) -> Result<Option<SampleSidecars>, AppError> {
+        match artifact::get(self.store.pool(), alignment_id, SIDECARS_KIND, SIDECARS_VERSION).await? {
+            Some(a) => Ok(serde_json::from_str(&a.payload).ok()),
+            None => Ok(None),
+        }
+    }
+
     /// Fast-path ingest of a sample's pipeline sidecars onto one alignment: place Y + mt from
     /// the GVCFs, and fill sex / read-metrics / lite-coverage from the text sidecars — all
     /// without touching the CRAM. Each step is independent and best-effort: a failure is
@@ -301,6 +313,23 @@ impl App {
         sidecars: &SampleSidecars,
     ) -> Result<SidecarIngest, AppError> {
         let mut out = SidecarIngest::default();
+
+        // Record which files this alignment was ingested from, before using them. Discovery is a
+        // directory scan done once at import, so without this the fast path is a one-shot: a Y
+        // placement made from a GVCF against the tree of the day could never be re-derived, and the
+        // resulting `haplogroup_call` row outlived every tree it was placed against. See
+        // `App::replace_against_current_tree`, which replays this. Best-effort — a workspace that
+        // cannot record the paths should still get the ingest.
+        let _ = self
+            .save_analysis_with_provenance(
+                alignment_id,
+                SIDECARS_KIND,
+                SIDECARS_VERSION,
+                sidecars,
+                "sidecar",
+                "full",
+            )
+            .await;
 
         if let Some(gvcf) = &sidecars.chr_y_gvcf {
             match self.assign_y_from_gvcf(alignment_id, gvcf).await {
@@ -695,6 +724,9 @@ impl App {
         // report working when the AppView tree is unavailable or the build has no DecodingUs coords.
         let (tree, tree_calls) = match self.y_decodingus_tree_calls(alignment_id).await {
             Ok(tc) => tc,
+            // A gone alignment file is not a tree problem: the fallback reads the same absent file,
+            // so it can only fail again while logging a tree provider that was never at fault.
+            Err(e) if e.is_missing_alignment_file() => return Err(e),
             Err(e) => {
                 eprintln!("DecodingUs Y tree unavailable ({e}); private-Y classifying against FTDNA");
                 let tree_json = self.fetch_ftdna_y_tree().await?;

@@ -465,7 +465,7 @@ pub use ftdna_import::{
     FtdnaGenealogy, FtdnaImportOptions, FtdnaImportPlan, FtdnaImportSummary, FtdnaPlanRow, FtdnaPlanStats,
     FtdnaResolution, FtdnaSubjectInput, FuzzyCandidate, MatchKind,
 };
-pub use maintenance::{Chore, ChoreOutcome, ChoreSurvey, PrivateYRefresh};
+pub use maintenance::{Chore, ChoreOutcome, ChoreSurvey, PrivateYRefresh, TreeReplace};
 pub use navigator_domain::identity::{ExternalId, FtdnaMember, Lineage, Mdka};
 pub use navigator_domain::ystr_cluster::{BranchSuggestion, ClusteredMember, YstrCluster, YstrClustering};
 pub use navigator_refgenome::vcf_lift::infer_source_build as infer_vcf_source_build;
@@ -3006,6 +3006,17 @@ pub struct SequencerLabInfo {
     pub website_url: Option<String>,
 }
 
+/// The DecodingUs tree's own coordinate space, and the only one that carries substantially all of
+/// it: hs1 has coordinates for 99.8% of the tree's ~204k variants against GRCh38's 86.5%, because
+/// most DecodingUs-discovered (`DU`-named) SNPs were called in CHM13 and only a few hundred were
+/// ever mapped back to the older references.
+///
+/// Parse under this whenever the tree is joined to data by SNP **name** — where a locus position is
+/// display, not lookup — since any narrower build silently drops the variants it lacks. Placement
+/// is the opposite case: it queries an alignment by position and must use *that* alignment's build
+/// ([`decodingus_build_key`]).
+pub(crate) const DECODINGUS_NATIVE_BUILD: &str = "hs1";
+
 /// Map an alignment's reference build to the DecodingUs coordinate key (`"hs1"` for CHM13,
 /// `"GRCh38"`, `"GRCh37"`). `None` for builds the tree has no coordinates for. Drives the
 /// native-build (no-liftover) placement in `assign_y_decodingus`.
@@ -3404,6 +3415,12 @@ pub struct AnalysisError {
 pub(crate) const ERROR_KIND: &str = "error";
 pub(crate) const ERROR_VERSION: &str = "1";
 
+/// Artifact key for the pipeline sidecar paths an alignment was ingested from — the record that
+/// lets [`App::replace_against_current_tree`] replay the fast path instead of re-scanning for files
+/// whose discovery only ever happened at import.
+pub(crate) const SIDECARS_KIND: &str = "sidecars";
+pub(crate) const SIDECARS_VERSION: &str = "1";
+
 /// One member row of a project's FTDNA-style Y-DNA STR overview: identity columns + the subject's
 /// consensus STR marker values (normalized marker name → value) + terminal Y haplogroup. Members
 /// without any STR profile are omitted by the query.
@@ -3503,7 +3520,6 @@ pub struct AnalyzeSummary {
     pub y_done: usize,
     pub sex_done: usize,
     pub metrics_done: usize,
-    pub sv_done: usize,
     /// Per-sample failures (best-effort: one sample's error doesn't abort the rest).
     pub errors: Vec<String>,
 }
@@ -3519,7 +3535,6 @@ pub struct SampleAnalyzeOutcome {
     pub y_done: bool,
     pub sex_done: bool,
     pub metrics_done: bool,
-    pub sv_done: bool,
     pub errors: Vec<String>,
 }
 

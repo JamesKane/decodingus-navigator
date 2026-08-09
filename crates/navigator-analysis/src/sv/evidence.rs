@@ -2,6 +2,7 @@
 //! depth segments, the evidence collection, and breakpoint clusters).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use super::types::SvType;
 
@@ -14,13 +15,18 @@ pub enum DiscordantReason {
 }
 
 /// A discordant read pair (potential SV breakpoint evidence).
+///
+/// Contig names are `Arc<str>` rather than `String`, and there is no read name. A 30x WGS retains
+/// 3–16 M of these (measured across the workspace), and both choices are about that scale: the
+/// walker interns one `Arc` per contig and clones a pointer instead of allocating a name per
+/// record, and the read name — which nothing downstream ever read — cost an allocation and ~55
+/// bytes each to carry evidence that clustering identifies purely by position.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscordantPair {
-    pub read_name: String,
-    pub chrom1: String,
+    pub chrom1: Arc<str>,
     pub pos1: i64,
     pub strand1: char,
-    pub chrom2: String,
+    pub chrom2: Arc<str>,
     pub pos2: i64,
     pub strand2: char,
     pub insert_size: i32,
@@ -28,14 +34,14 @@ pub struct DiscordantPair {
     pub reason: DiscordantReason,
 }
 
-/// A split read (alignment split across two loci, from the SA tag).
+/// A split read (alignment split across two loci, from the SA tag). Interned contig names and no
+/// read name, for the reasons in [`DiscordantPair`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct SplitRead {
-    pub read_name: String,
-    pub primary_chrom: String,
+    pub primary_chrom: Arc<str>,
     pub primary_pos: i64,
     pub primary_strand: char,
-    pub supp_chrom: String,
+    pub supp_chrom: Arc<str>,
     pub supp_pos: i64,
     pub supp_strand: char,
     pub clip_length: i32,
@@ -64,15 +70,20 @@ pub struct SvEvidenceCollection {
     pub sample_name: String,
     pub expected_insert_size: f64,
     pub insert_size_sd: f64,
+    /// Evidence seen but not retained, because `SvCallerConfig::max_evidence_records` was already
+    /// met. Zero in every normal run — see that field. Kept so the `total_*` counts below stay the
+    /// number of items *found*, which is what the walker's stats mean, capped or not.
+    pub discordant_pairs_dropped: u64,
+    pub split_reads_dropped: u64,
 }
 
 impl SvEvidenceCollection {
     pub fn total_discordant_pairs(&self) -> u64 {
-        self.discordant_pairs.len() as u64
+        self.discordant_pairs.len() as u64 + self.discordant_pairs_dropped
     }
 
     pub fn total_split_reads(&self) -> u64 {
-        self.split_reads.len() as u64
+        self.split_reads.len() as u64 + self.split_reads_dropped
     }
 
     pub fn inter_chromosomal_pairs(&self) -> Vec<DiscordantPair> {
