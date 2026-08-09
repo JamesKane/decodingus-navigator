@@ -8,6 +8,12 @@ pub enum AppError {
     #[error(transparent)]
     Analysis(#[from] navigator_analysis::AnalysisError),
 
+    /// Read mapping (realignment stage B). Its own variant rather than folded into `Analysis`
+    /// because `navigator-align` is a separate crate with its own error type, and a mapping
+    /// failure points somewhere different from an analysis one.
+    #[error("{0}")]
+    Align(#[from] navigator_align::AlignError),
+
     #[error("serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 

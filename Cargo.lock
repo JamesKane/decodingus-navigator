@@ -3460,6 +3460,8 @@ dependencies = [
  "du-atproto",
  "du-bio",
  "du-domain",
+ "libc",
+ "navigator-align",
  "navigator-analysis",
  "navigator-domain",
  "navigator-refgenome",

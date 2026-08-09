@@ -11,6 +11,9 @@ license.workspace = true
 navigator-domain = { workspace = true }
 navigator-store = { workspace = true }
 navigator-analysis = { workspace = true }
+# Stage B of the realignment module (design/realignment-module.md). Its own crate so the optional
+# C FFI backend cannot affect this one's build.
+navigator-align = { workspace = true }
 navigator-sync = { workspace = true }
 navigator-refgenome = { workspace = true }
 du-domain = { workspace = true }
@@ -34,3 +37,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Build a synthetic mtDNA FASTA from the bundled rCRS for the import test.
 navigator-analysis = { workspace = true }
+
+# `statvfs`, for the realignment preflight's free-space check. Bindings only, no C toolchain — the
+# same reason the rest of the workspace is comfortable with `windows`/`objc2` crates elsewhere.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
