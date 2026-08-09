@@ -32,18 +32,23 @@
 //!
 //! ## What is here so far
 //!
-//! [`preset`] (which mapper preset a run's reads need), [`batch`] (the memory control), and
-//! [`index`] (the `.mmi` cache and the part-by-part build). The mapping pass itself — running
-//! reads against each part and merging the per-part results, which is what makes a split index
-//! produce the same alignments as a whole one — is the next piece.
+//! [`preset`] (which mapper preset a run's reads need), [`batch`] (the memory control), [`index`]
+//! (the `.mmi` cache and the part-by-part build), [`map`] (single-end mapping, including the
+//! cross-part merge that makes a split index produce the same alignments as a whole one), and
+//! [`pe`] (paired-end, which is what `sr` and most vendor WGS need).
+//!
+//! Still outstanding for the module: BAM/CRAM output rather than SAM text, and resolving the
+//! index cache against the refgenome cache root instead of taking a base path from the caller.
 
 pub mod batch;
 pub mod error;
 pub mod index;
 pub mod map;
+pub mod pe;
 pub mod preset;
 
 pub use batch::BatchSize;
 pub use error::AlignError;
 pub use map::{map_reads, MapParams, MapStats};
+pub use pe::map_pairs;
 pub use preset::Preset;

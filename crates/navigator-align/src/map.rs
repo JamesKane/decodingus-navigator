@@ -35,9 +35,9 @@
 //!
 //! ## Scope
 //!
-//! Single-end today, which covers the long-read presets completely. Paired-end (`sr`, and so most
-//! vendor WGS) needs the mate-rescue and pairing step applied after the merge, and is the next
-//! piece — see [`crate::preset::Preset::is_paired`].
+//! Single-end, which is what the long-read presets need. Paired-end — `sr`, and so most vendor
+//! WGS — lives in [`crate::pe`], which reuses the part-by-part machinery here and adds fragment
+//! mapping, pairing, and the mate-facing SAM fields.
 
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -177,7 +177,7 @@ pub fn map_reads(
 
 /// Open the cached `.mmi`. `is_idx = true` — this is a prebuilt index, not a FASTA to sketch, so
 /// the sketching parameters are read back from the file rather than supplied.
-fn open_index(index_path: &Path, preset: Preset) -> Result<IdxReader, AlignError> {
+pub(crate) fn open_index(index_path: &Path, preset: Preset) -> Result<IdxReader, AlignError> {
     let (idx_opt, _) = minimap2::prelude::preset(preset.as_str())
         .map_err(|e| AlignError::Message(format!("preset {}: {e}", preset.as_str())))?;
     IdxReader::open(
@@ -268,9 +268,25 @@ fn map_batch(
     })
 }
 
+/// The mapping options a preset implies, with the flags SAM output requires.
+///
+/// `CIGAR` is load-bearing: without it `map_query` stops at chaining, emitting records with no
+/// CIGAR *and* skipping the step that assigns primary/secondary status.
+pub(crate) fn prepared_map_opt(preset: Preset) -> Result<MapOpt, AlignError> {
+    let (_idx, mut opt) = minimap2::prelude::preset(preset.as_str())
+        .map_err(|e| AlignError::Message(format!("preset {}: {e}", preset.as_str())))?;
+    opt.flag |= MapFlags::OUT_SAM | MapFlags::CIGAR;
+    Ok(opt)
+}
+
+/// A path as the mapper's `&str` API wants it.
+pub(crate) fn path_str_of(path: &Path) -> Result<String, AlignError> {
+    crate::index::path_str(path)
+}
+
 /// Mapping is the pipeline's dominant cost and is per-read independent, so it gets a pool sized to
 /// the machine (or to `NAVIGATOR_ALIGN_THREADS`).
-fn thread_pool(params: &MapParams) -> Result<rayon::ThreadPool, AlignError> {
+pub(crate) fn thread_pool(params: &MapParams) -> Result<rayon::ThreadPool, AlignError> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(params.thread_count())
         .build()
@@ -513,7 +529,7 @@ fn emit(
     Ok(())
 }
 
-fn open_sam(out: &Path, index: &MmIdx, params: &MapParams) -> Result<BufWriter<std::fs::File>, AlignError> {
+pub(crate) fn open_sam(out: &Path, index: &MmIdx, params: &MapParams) -> Result<BufWriter<std::fs::File>, AlignError> {
     let file = std::fs::File::create(out).map_err(|e| AlignError::io(out, e))?;
     let mut writer = BufWriter::with_capacity(1 << 20, file);
     // `@PG` args: the design asks the realigned header to carry a program record for this step.
@@ -523,7 +539,7 @@ fn open_sam(out: &Path, index: &MmIdx, params: &MapParams) -> Result<BufWriter<s
     Ok(writer)
 }
 
-fn part_opt(base: &MapOpt, part: &MmIdx) -> MapOpt {
+pub(crate) fn part_opt(base: &MapOpt, part: &MmIdx) -> MapOpt {
     // Per-part thresholds: `mapopt_update` derives occurrence cutoffs from the index's own
     // statistics, so a part must be scored against its own, not the whole reference's.
     let mut opt = base.clone();
@@ -536,13 +552,13 @@ fn part_opt(base: &MapOpt, part: &MmIdx) -> MapOpt {
 /// SAM needs `RNAME` and `@SQ` for every contig across every part, and after the merge a region's
 /// `rid` indexes that concatenation. Carrying names and lengths for a few hundred contigs costs
 /// nothing; carrying the parts themselves would undo the whole design.
-fn header_only(part: &MmIdx) -> MmIdx {
+pub(crate) fn header_only(part: &MmIdx) -> MmIdx {
     let mut header = MmIdx::new(part.w, part.k, part.bucket_bits, IdxFlags::empty());
     append_header(&mut header, part);
     header
 }
 
-fn append_header(header: &mut MmIdx, part: &MmIdx) {
+pub(crate) fn append_header(header: &mut MmIdx, part: &MmIdx) {
     let mut offset = header.seqs.last().map(|s| s.offset + s.len as u64).unwrap_or(0);
     for seq in &part.seqs {
         let mut seq = seq.clone();
@@ -563,9 +579,15 @@ fn check_cancel(seen: u64, cancel: CancelFn<'_>) -> Result<(), AlignError> {
 }
 
 /// Removes the per-part scratch on the way out, including on an error or a cancel.
-struct ScratchGuard {
+pub(crate) struct ScratchGuard {
     prefix: String,
-    parts: usize,
+    pub(crate) parts: usize,
+}
+
+impl ScratchGuard {
+    pub(crate) fn new(prefix: String) -> Self {
+        Self { prefix, parts: 0 }
+    }
 }
 
 impl Drop for ScratchGuard {
