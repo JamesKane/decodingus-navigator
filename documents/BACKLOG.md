@@ -132,8 +132,10 @@ Verified 2026-07-26 to have no implementation in the tree.
   private-Y filter stack, so it is material. **Paired-end re-run against upstream 2.31 widened the
   gap** (1.09% of records differ in MAPQ vs 0.72% single-end; 96.6% of differences are Rust
   higher), and does not reproduce the upstream crate's own claim of exact `sr` PAF parity.
-  **Decision 1 (backend choice) is reopened.** Do not run a full WGS realignment as validation
-  until it is resolved.
+  **But it does not reach the output**: run through the shipped stage C and de-novo caller over
+  the worst-case window, upstream produced 232 calls and the Rust backend 233 — every upstream
+  call reproduced, one extra at depth 3 that the `depth >= 4` callable gate removes. Decision 1
+  re-settled on the pure-Rust backend with the divergence documented.
 - **Purpose:** Y-chromosome variant discovery. A private-Y call set is only usable on CHM13 —
   the callable mask, non-PAR restriction, recurrent blocklist, and de-novo tree are all defined
   there — and liftover cannot help with *discovery*, where the variant is not in any site list

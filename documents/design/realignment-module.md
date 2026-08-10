@@ -408,13 +408,60 @@ exists to map.
 - The failure is specific and bounded: **MAPQ, on repeat-structured sequence**. That is unlucky,
   because it is the one number the Y filter stack gates on and the one chromosome it gates.
 
+### The measurement that decides it: do the calls change?
+
+The MAPQ divergence only matters if it reaches the output. It does not.
+
+Both SAMs — the same 168k read pairs, mapped by upstream 2.31 and by
+`minimap2-pure-rs` — were put through the shipped stage C (sort, mark duplicates) and the shipped
+de-novo caller over `chrY:2,800,000-6,000,000`. That window is deliberately the unfavourable one:
+it contains the X-transposed region and carries the highest density of mapping disagreement found
+anywhere in the parity runs.
+
+| | calls |
+|---|---:|
+| Upstream minimap2 | 232 |
+| `minimap2-pure-rs` | 233 |
+| **Shared** | **232** |
+| Only upstream | **0** |
+| Only pure-Rust | 1 |
+| Shared, differing depth | 6 |
+| Shared, differing allele fraction | 1 |
+
+**Every call upstream makes, the Rust backend also makes.** The one extra call is
+`chrY:5,120,338 T>G` at depth 3 — below the cohort callable mask's `depth >= 4` gate, so the
+filter stack the private-Y path already applies removes it. Duplicate marking was identical on
+both (19,101 records), so stage C is stable across the backends too.
+
+So the divergence is real, measurable, and confined to a quantity the downstream thresholds
+absorb. A MAPQ that is systematically ~7 points high does not move a call across a `MQ >= 20`
+gate often enough to matter once `depth >= 4` is also required — the reads it promotes are the
+thin, ambiguous ones that the depth gate was there to catch regardless.
+
+### Verdict
+
+**Ship the pure-Rust backend, with the divergence documented.** This is Decision 1 option 4, chosen
+because options 2 and 3 both fail the project's constraints — a desktop application for
+non-specialists cannot require minimap2 on `PATH`, and linking the C library reintroduces the
+toolchain, `unsafe` surface, htslib trap, and unproven Windows build that Decision 1 rejected.
+
+What this rests on, stated so a later reader can judge it:
+
+- One donor (WGS229), one 3.2 Mb window, ~168k read pairs. The window was chosen to be the worst
+  case, not a representative one, which strengthens a null result but does not make it genome-wide.
+- SNV calls under default `HaploidCallerParams`. Indels were not separately compared.
+- The six shared calls with differing depth are the visible edge of the effect: the evidence behind
+  a call can shift even when the call does not. At a different depth or coverage that margin could
+  tip.
+
+Re-run this comparison if the backend is upgraded, the caller's thresholds change, or the callable
+mask is rebuilt — those are the three things that could turn an absorbed divergence into a visible
+one.
+
 ### Consequence
 
-Do not run the full WGS realignment as a validation until this is resolved — a private-Y count
-derived from a MAPQ distribution that does not match the reference implementation would not be
-evidence of anything.
-
-**Decision 1 has to be reopened.** It chose the pure-Rust backend on phase 0 evidence of "zero
+**Decision 1 was reopened and re-settled on the same backend**, for a better reason than the one
+that originally chose it. It chose the pure-Rust backend on phase 0 evidence of "zero
 MAPQ>0 disagreements", measured on simulated reads over a pseudo-random reference — sequence with
 no repeat structure, and therefore no second-best alignments to disagree about. That evidence does
 not survive contact with chrY. The options:
@@ -430,11 +477,8 @@ not survive contact with chrY. The options:
 3. **Link the C library** (Decision 1b, previously rejected). Correct by construction and no PATH
    dependency, but reintroduces a C toolchain, an `unsafe` surface, the htslib trap, and an
    unproven Windows build.
-4. **Ship anyway with the divergence documented.** Only defensible if the affected reads turn out
-   not to change private-Y calls in practice — which is measurable, by running the full pipeline
-   both ways on WGS229 and comparing the private-Y sets rather than the MAPQ distributions. That
-   is a real experiment and may well show the difference does not propagate; it should not be
-   assumed either way.
+4. **Ship anyway with the divergence documented.** ✅ **Chosen** — the experiment was run and the
+   divergence does not propagate to calls. See "the measurement that decides it" above.
 
 ## Decision 1 — aligner backend integration
 
