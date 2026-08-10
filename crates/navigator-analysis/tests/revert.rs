@@ -26,10 +26,12 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 fn lines(path: &Path) -> Vec<String> {
-    std::fs::read_to_string(path)
+    use std::io::BufRead;
+    // Gzipped output; read it the way the mapper does.
+    navigator_analysis::gzio::open_maybe_gz(path)
         .unwrap()
         .lines()
-        .map(str::to_string)
+        .map(|l| l.unwrap())
         .collect()
 }
 

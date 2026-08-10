@@ -161,7 +161,7 @@ impl App {
         report(RealignStage::Preflight, "");
         cancel.check()?;
         let source_size = std::fs::metadata(&source_bam).map(|m| m.len()).unwrap_or(0);
-        let plan = preflight(scratch.path(), source_size)?;
+        let plan = preflight(scratch.path(), Path::new(&source_bam), source_size)?;
 
         // ---- stage A: revert ----
         report(RealignStage::Revert, "");
@@ -247,6 +247,16 @@ impl App {
             .map_err(|e| AppError::Join(e.to_string()))??;
         }
 
+        // Every stage's input is dead once the next stage has read it, and at WGS scale each is
+        // tens of GB. Holding them all until the job ends — which is what this did first — roughly
+        // doubles the peak and is the difference between fitting on a normal disk and not.
+        let discard = |path: &Path| {
+            let _ = std::fs::remove_file(path);
+        };
+        discard(&reverted.read1);
+        discard(&reverted.read2);
+        discard(&reverted.singletons);
+
         // ---- stage C: sort, mark duplicates, compress ----
         report(RealignStage::Sort, "");
         let sorted = scratch.path().join("sorted.bam");
@@ -260,6 +270,8 @@ impl App {
             .await
             .map_err(|e| AppError::Join(e.to_string()))??
         };
+
+        discard(&mapped);
 
         report(RealignStage::MarkDuplicates, "");
         let marked = scratch.path().join("marked.bam");
@@ -279,6 +291,8 @@ impl App {
             .map_err(|e| AppError::Join(e.to_string()))??
         };
 
+        discard(&sorted);
+
         report(RealignStage::Compress, "");
         let cram = {
             let (input, out) = (marked.clone(), output.clone());
@@ -294,6 +308,8 @@ impl App {
         // Last, deliberately. The row is only inserted once the artifact it points at exists, so a
         // job that fails or is cancelled leaves no alignment referring to a file that was never
         // finished.
+        discard(&marked);
+
         report(RealignStage::Register, "");
         cancel.check()?;
         let alignment = self
@@ -342,19 +358,37 @@ pub struct RealignPlan {
     pub scratch_free: u64,
 }
 
-/// Scratch multiple of the source size.
+/// Scratch multiple of the source's **uncompressed** volume.
 ///
-/// The revert's FASTQ is roughly the size of the source, the mapped BAM again, and the sort holds a
-/// sorted copy while merging — so three simultaneous copies is the realistic peak, and the margin
-/// covers the index and the output.
-const SCRATCH_MULTIPLE: u64 = 4;
+/// Sized against measured stage peaks with intermediates deleted as they are consumed (see
+/// [`Stage`]): gzipped FASTQ and the mapped BAM coexist, then the mapped BAM and the sort's runs
+/// and output. Three simultaneous copies of the read data is the realistic peak.
+const SCRATCH_MULTIPLE: u64 = 3;
+
+/// How much larger the data is than the file holding it.
+///
+/// This is the correction that matters, and getting it wrong is not a rounding error. A CRAM is
+/// reference-compressed: 17 GB of CRAM is ~70 GB of BAM-equivalent data and, reverted to FASTQ,
+/// larger still — FASTQ spends an ASCII byte per base on quality where BAM packs. Estimating
+/// scratch from the *file* size would have told a user that a job needing ~200 GB needed 69, and
+/// the disk would have filled somewhere in the third hour.
+fn expansion_factor(source: &Path) -> u64 {
+    match source.extension().and_then(|e| e.to_str()) {
+        Some(e) if e.eq_ignore_ascii_case("cram") => 4,
+        // BAM is bgzf-compressed at roughly 4x, but the reverted FASTQ that comes out of it is
+        // gzipped too, so the ratio between them is far closer to 1.
+        _ => 2,
+    }
+}
 
 /// Check that the job can finish before starting it.
 ///
 /// Running out of disk in hour three fails the job *and* leaves the machine wedged until someone
 /// finds the scratch directory. The RAM figure is needed regardless, to size the index.
-pub fn preflight(scratch: &Path, source_size: u64) -> Result<RealignPlan, AppError> {
-    let needed = source_size.saturating_mul(SCRATCH_MULTIPLE);
+pub fn preflight(scratch: &Path, source: &Path, source_size: u64) -> Result<RealignPlan, AppError> {
+    let needed = source_size
+        .saturating_mul(expansion_factor(source))
+        .saturating_mul(SCRATCH_MULTIPLE);
     let free = free_space(scratch);
 
     if !has_room(needed, free) {
@@ -476,7 +510,7 @@ mod tests {
     fn preflight_refuses_when_the_disk_is_too_small() {
         let dir = std::env::temp_dir();
         // A source larger than any plausible free space.
-        let err = preflight(&dir, u64::MAX / SCRATCH_MULTIPLE).expect_err("must refuse");
+        let err = preflight(&dir, Path::new("x.bam"), u64::MAX / 8).expect_err("must refuse");
         let message = format!("{err}");
         assert!(message.contains("working space"), "unhelpful: {message}");
         assert!(message.contains("free"), "unhelpful: {message}");
@@ -484,9 +518,25 @@ mod tests {
 
     #[test]
     fn preflight_accepts_a_small_job_and_sizes_the_index() {
-        let plan = preflight(&std::env::temp_dir(), 1024).expect("a 1 KB source always fits");
-        assert_eq!(plan.scratch_needed, 1024 * SCRATCH_MULTIPLE);
+        let plan = preflight(&std::env::temp_dir(), Path::new("x.bam"), 1024).expect("a 1 KB source always fits");
+        assert_eq!(plan.scratch_needed, 1024 * 2 * SCRATCH_MULTIPLE);
         assert!(plan.batch.bases() > 0);
+    }
+
+    /// The correction that matters: a CRAM holds several times its own size in read data, so
+    /// estimating scratch from the file size understates a WGS job by well over 100 GB.
+    #[test]
+    fn a_cram_is_estimated_larger_than_a_bam_of_the_same_size() {
+        let dir = std::env::temp_dir();
+        let bam = preflight(&dir, Path::new("s.bam"), 1_000_000).unwrap();
+        let cram = preflight(&dir, Path::new("s.cram"), 1_000_000).unwrap();
+        assert!(
+            cram.scratch_needed > bam.scratch_needed,
+            "a CRAM expands more than a BAM: {} vs {}",
+            cram.scratch_needed,
+            bam.scratch_needed
+        );
+        assert_eq!(cram.scratch_needed, 1_000_000 * 4 * SCRATCH_MULTIPLE);
     }
 
     /// Free space is a check, not a gate on the check working: if the platform will not say, the

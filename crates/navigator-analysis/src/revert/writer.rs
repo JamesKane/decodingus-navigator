@@ -11,6 +11,9 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use flate2::write::GzEncoder;
+use flate2::Compression;
+
 use super::collate::Merged;
 use super::transform::{Mate, RevertedRead};
 use super::RevertStats;
@@ -20,6 +23,21 @@ use crate::error::AnalysisError;
 /// Output buffer per FASTQ file. FASTQ is small records and many of them, so the write path is
 /// syscall-bound without a generous buffer.
 const FASTQ_BUFFER: usize = 1024 * 1024;
+
+/// The reverted reads are written **gzipped**, and that is not an optimisation.
+///
+/// A 30x WGS reverted to plain FASTQ is on the order of 200 GB — larger than the free space on a
+/// normal machine, and several times the source alignment it came from, because FASTQ stores one
+/// ASCII quality byte per base with none of BAM's packing. Compressed it is nearer 55 GB, which is
+/// the difference between the pipeline running and filling the disk in its second stage.
+///
+/// `fast` rather than `default`: this is a temporary file consumed once by the mapper, so trading
+/// a few percent of ratio for materially less CPU in a job already measured in hours is the right
+/// side of that curve. minimap2 detects gzip from the magic bytes, so nothing downstream changes.
+const FASTQ_COMPRESSION: Compression = Compression::fast();
+
+/// A gzip-compressing FASTQ sink.
+type FastqWriter = GzEncoder<BufWriter<File>>;
 
 /// Phred offset for FASTQ's ASCII quality encoding (Sanger / Illumina 1.8+).
 const PHRED_OFFSET: u8 = 33;
@@ -36,9 +54,9 @@ pub fn write_fastq(
     stats: &mut RevertStats,
     cancel: &CancelToken,
 ) -> Result<(PathBuf, PathBuf, PathBuf), AnalysisError> {
-    let p1 = out_dir.join("reverted_1.fastq");
-    let p2 = out_dir.join("reverted_2.fastq");
-    let ps = out_dir.join("reverted_singletons.fastq");
+    let p1 = out_dir.join("reverted_1.fastq.gz");
+    let p2 = out_dir.join("reverted_2.fastq.gz");
+    let ps = out_dir.join("reverted_singletons.fastq.gz");
 
     let mut w1 = open(&p1)?;
     let mut w2 = open(&p2)?;
@@ -73,9 +91,9 @@ pub fn write_fastq(
         }
     }
 
-    flush(&mut w1, &p1)?;
-    flush(&mut w2, &p2)?;
-    flush(&mut ws, &ps)?;
+    finish(w1, &p1)?;
+    finish(w2, &p2)?;
+    finish(ws, &ps)?;
 
     Ok((p1, p2, ps))
 }
@@ -102,20 +120,27 @@ fn pair_of(group: &[RevertedRead]) -> Option<(usize, usize)> {
     }
 }
 
-fn open(path: &Path) -> Result<BufWriter<File>, AnalysisError> {
+fn open(path: &Path) -> Result<FastqWriter, AnalysisError> {
     let file = File::create(path).map_err(|e| AnalysisError::io(path, e))?;
-    Ok(BufWriter::with_capacity(FASTQ_BUFFER, file))
+    Ok(GzEncoder::new(
+        BufWriter::with_capacity(FASTQ_BUFFER, file),
+        FASTQ_COMPRESSION,
+    ))
 }
 
-fn flush(w: &mut BufWriter<File>, path: &Path) -> Result<(), AnalysisError> {
-    w.flush().map_err(|e| AnalysisError::io(path, e))
+/// Finish the gzip stream, not merely flush it. A gzip member without its trailer is truncated,
+/// and a reader would stop early rather than error — the same class of bug as a missing BGZF EOF
+/// block, and just as quiet.
+fn finish(w: FastqWriter, path: &Path) -> Result<(), AnalysisError> {
+    let mut inner = w.finish().map_err(|e| AnalysisError::io(path, e))?;
+    inner.flush().map_err(|e| AnalysisError::io(path, e))
 }
 
 /// One FASTQ record. Names are written bare — no `/1` or `/2` — so R1/R2 pair by position; see the
 /// module docs on why. Qualities are shifted into ASCII here, the inverse of the decode in
 /// [`super::transform`], through `scratch` so the shift costs no allocation per read.
 fn write_record(
-    w: &mut BufWriter<File>,
+    w: &mut FastqWriter,
     read: &RevertedRead,
     path: &Path,
     scratch: &mut Vec<u8>,
@@ -123,7 +148,7 @@ fn write_record(
     scratch.clear();
     scratch.extend(read.qualities.iter().map(|q| q.saturating_add(PHRED_OFFSET)));
 
-    let write = |w: &mut BufWriter<File>| -> std::io::Result<()> {
+    let write = |w: &mut FastqWriter| -> std::io::Result<()> {
         w.write_all(b"@")?;
         w.write_all(&read.name)?;
         w.write_all(b"\n")?;
