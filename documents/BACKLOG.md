@@ -125,9 +125,12 @@ Verified 2026-07-26 to have no implementation in the tree.
   and the provenance migration with registration in `navigator-app::realign`.
   **Phase 4** — the cancellable job with preflight, the per-alignment and per-project cards, the
   realigned badge, and selector preference — is built too.
-- **Next:** phase 5 — WGS-scale backend parity and MAPQ validation on a real donor, which is the
-  gate before users are allowed near this. Everything so far is tested on simulated reads against
-  synthetic references: the mechanics are proven, real-world behaviour is not.
+- **Phase 5 in progress, and it found something.** Backend parity on 168k real WGS229 chrY reads:
+  99.2% identical placements, but `minimap2-pure-rs` reports **systematically higher MAPQ** than C
+  minimap2 (1,157 up vs 47 down, median +10), concentrated on chrY at 15x the off-chrY rate, and
+  111 reads per 168k cross the MQ>=20 callable threshold upward. That is the input to the
+  private-Y filter stack, so it is material. Single-end only so far — **re-run paired-end before
+  concluding**. Do not run a full WGS realignment as validation until it is resolved.
 - **Purpose:** Y-chromosome variant discovery. A private-Y call set is only usable on CHM13 —
   the callable mask, non-PAR restriction, recurrent blocklist, and de-novo tree are all defined
   there — and liftover cannot help with *discovery*, where the variant is not in any site list

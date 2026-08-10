@@ -309,6 +309,89 @@ callers filter on MAPQ; and the project self-describes as an **"LLM-mediated fai
 translation"** that is **"experimental"**, is not endorsed by minimap2's author, and
 *deliberately replicates upstream bugs* for reproducibility.
 
+## Phase 5 results — backend parity on real reads (2026-08-10)
+
+**Verdict: the pure-Rust backend does not pass the gate on this evidence.** It is not wrong about
+*where* reads go; it is systematically more confident about it, concentrated on chrY, in a way
+that would change the callable set the private-Y filter stack depends on.
+
+### What was run
+
+168,184 real reads from **WGS229** (`WGS229.bwa-mem2.b38.cram`, GRCh38, bwa-mem2) — the donor
+[`private-y-variant-filtering.md`](private-y-variant-filtering.md) measures — extracted from
+`chrY:2,800,000-6,000,000` through the shipped revert stage, then mapped against CHM13v2 with the
+`sr` preset by both `minimap2-pure-rs` and C minimap2 via FFI. Single-end, R1 only.
+
+Stage A on real vendor data for the first time: 338,511 records in, 168,184 pairs, 1,304
+singletons, 142 unmapped carried through, 839 secondary and 0 supplementary dropped, 0
+hard-clipped primaries.
+
+### Agreement
+
+| | reads | share |
+|---|---:|---:|
+| Identical | 166,837 | 99.20% |
+| Differ in MAPQ only (same locus) | 1,204 | 0.72% |
+| Differ in locus, both MAPQ 0 | 92 | 0.055% |
+| **Differ in locus, MAPQ > 0** | **51** | **0.030%** |
+
+Neither implementation mapped a read the other could not. Phase 0's simulated comparison found
+*zero* MAPQ>0 disagreements; real reads find 51.
+
+### The finding: MAPQ is systematically inflated, on chrY
+
+Of the 1,204 same-locus MAPQ differences, **1,157 have the Rust value higher and only 47 lower** —
+median `+10`, mean `+8.55`. That is a one-directional bias, not noise.
+
+It is concentrated where the module lives. 89.0% of these reads map to chrY, but the
+MAPQ-difference *rate* is **0.80% on chrY against 0.053% elsewhere — a 15x enrichment**, so the
+concentration is real rather than an artifact of having sampled a chrY region.
+
+**111 reads cross the MQ>=20 callable threshold upward** (3 downward). The cohort callable mask is
+defined as `depth >= 4, MQ >= 20`, so those are reads that would newly enter the callable set on
+the strength of a confidence the reference implementation does not share. Admitting artifact reads
+to the callable set is the documented mechanism of the fake-private flood this module's whole
+filter stack exists to prevent — the private-Y doc measures it at hundreds of spurious privates
+per tip when filtering is inadequate.
+
+A plausible mechanism, consistent with both halves of the data: the two differ in how the
+second-best alignment is scored. Where there is no real competitor the Rust version rates the hit
+higher; where there is a strong one it finds it and the C version does not. chrY's ampliconic and
+palindromic structure produces near-equal competitors constantly, which is why the divergence
+concentrates there.
+
+### The second finding: chrX/chrY swaps in the X-transposed region
+
+Of the 51 confident placement disagreements, 32 involve chrY and **17 are chrY<->chrX swaps**, all
+in the X-transposed region (chrY ~2.8-5.7 Mb against chrX ~88-91 Mb, where the two are ~99%
+identical). The pattern runs both ways, and in each case one implementation is confident (MAPQ up
+to 60) while the other reports MAPQ 1. For Y variant discovery these are the reads whose assignment
+decides whether a Y variant has support at all.
+
+### What this does and does not establish
+
+- It is **single-end**. The shipped path is paired-end, and pairing changes MAPQ materially —
+  mate rescue and the proper-pair bonus both feed it. The PE numbers could be better or worse, and
+  the comparison must be re-run that way before any final verdict.
+- It is **one donor and one 3.2 Mb window**. The direction and concentration are consistent enough
+  to act on, but the magnitude is not yet a genome-wide figure.
+- It says nothing about *placement* accuracy: 99.2% identical, no read mapped by one and not the
+  other, and the confident locus disagreements are 0.03%.
+
+### Consequence
+
+Do not run the full WGS realignment as a validation until this is resolved — a private-Y count
+derived from a MAPQ distribution that does not match the reference implementation would not be
+evidence of anything. The open options, in order of preference:
+
+1. **Re-run in paired-end mode** and see whether pairing closes the gap. Cheapest, and the shipped
+   path.
+2. **Find the divergence** in the MAPQ/second-best-score path. `minimap2-pure-rs` ships a
+   `tracehash` feature built for exactly this — stage-by-stage hash comparison against C minimap2 —
+   which is the tool for it, and its existence suggests upstream expects such divergences.
+3. **Fall back to shelling out to a real minimap2**, reopening Decision 1a's PATH and
+   binary-shipping problems, which is the outcome Decision 1 was chosen to avoid.
+
 ## Decision 1 — aligner backend integration
 
 The project's defining constraint: **"no external tools."** Today that is *strictly* true — the
