@@ -327,7 +327,7 @@ realistic" and that no pure-Rust production mapper existed. Spike S4 falsified t
 | Option | How | Verdict |
 |--------|-----|---------|
 | **1a. Shell out to a minimap2 binary** | `Command::new("minimap2")`, discover on PATH or a managed tools dir | Rejected — adds a PATH/version dependency and per-OS binary shipping for no benefit over linking the same code in-process |
-| **1b. minimap2 via FFI (static)** | Link `libminimap2` in-process via the `minimap2-rs` crate (`minimap2` + `minimap2-sys`), `simde` + `minimap2-sys/static` | **Retained as an off-by-default validation backend.** Works (S1), but needs a C toolchain, is unproven on Windows, carries an `unsafe` surface, and the obvious feature spelling silently links htslib |
+| **1b. minimap2 via FFI (static)** | Link `libminimap2` in-process via the `minimap2-rs` crate (`minimap2` + `minimap2-sys`), `simde` + `minimap2-sys/static` | **Rejected, including as a bundled cross-check.** Works (S1), but needs a C toolchain, is unproven on Windows, carries an `unsafe` surface, and the obvious feature spelling silently links htslib. Validating against the original does not require shipping it — see below |
 | **1c. Pure-Rust aligner** (`minimap2-pure-rs`) | A faithful translation of minimap2 v2.31, pinned to an upstream commit; full preset set, paired-end, CIGAR/SAM/PAF, `.mmi` I/O | **Chosen as default** — 99.74% byte-identical to the C implementation with **zero MAPQ>0 disagreements** and identical accuracy against truth (S4); no `-sys` crates, no `cc`, no build script; indexes CHM13 ~40% faster at the same RAM |
 
 Choosing 1c buys three things at once: **Windows works** with no spike and no graceful
@@ -335,12 +335,18 @@ degradation (Decision 3 mostly dissolves), the **single-artifact / no-external-t
 preserved intact** rather than bent, and the htslib trap in S1 never arises. Its cost is the
 maturity risk below.
 
-**Put the mapper in a new `navigator-align` crate**, not in `navigator-analysis`. The surface is
-small — build/load an index, map reads — so a thin internal trait with two implementations is
-cheap. That trait is also the *mitigation* for the maturity risk: it lets a suspicious
-realignment be re-run through the C backend and diffed, which is what makes a pure-Rust default
-defensible rather than a leap of faith. Isolating it in its own crate also means that if the FFI
-feature is ever switched on, only that crate needs a C toolchain.
+**Put the mapper in a new `navigator-align` crate**, not in `navigator-analysis`: it is a distinct
+concern with its own dependency set, and a leaf crate keeps the layering rule intact.
+
+**The cross-check is out-of-band, not a bundled backend.** An earlier revision proposed carrying
+the C FFI behind an off-by-default feature so a suspicious realignment could be re-run through it.
+That was the wrong shape. Checking a translation against its original is a *development* activity;
+building it into the shipped crate would put a C toolchain, an `unsafe` surface, and a
+Windows-unproven dependency into an artifact no user ever exercises. Upstream minimap2 is a
+perfectly good reference implementation run the ordinary way — over the same FASTQ, diffing the
+output — and that is how phase 5 validates. (It was also, in practice, broken: `minimap2-pure-rs`
+publishes its lib target as `minimap2`, the same extern name the FFI crate uses, so enabling both
+did not resolve. That is a symptom of the shape being wrong, not a reason to work around it.)
 
 **Maturity risk, stated plainly.** `minimap2-pure-rs` self-describes as an **"LLM-mediated
 faithful translation"** that is **"experimental"** and asks users to "stay vigilant to possible
@@ -516,41 +522,29 @@ Realignment needs a minimap2 index (`.mmi`) of CHM13v2, which **does not exist i
 
 | Scope | What | Verdict |
 |-------|------|---------|
-| **Whole-genome** | Re-map every read | **Built, and the safe default.** Conceptually simple, and the only scope that also delivers genome-wide coverage/callable/SV on hs1. Costs hours per sample. |
-| **Y/mt-only** | Re-map only chrY+chrM reads (+ unmapped) | **The scope the module's actual purpose calls for** — see the re-argument below. Cuts per-sample cost by roughly the ratio of chrY+chrM to the genome. Not yet built. |
+| **Whole-genome** | Re-map every read | **Built, and the only correct scope.** See below: a read subset cannot be chosen without already knowing the answer. Costs hours per sample. |
+| **Y/mt-only** | Re-map only chrY+chrM reads (+ unmapped) | **Withdrawn.** Would return the reads GRCh38 already agreed were Y — the ones needing realignment least — and miss the mismapped ones that are the point. |
 | **Targeted (panel ± flanks)** | Extract reads near lifted AIM/IBD sites and realign just those | **Not recommended.** AIM/IBD panels are genome-wide (tens of thousands of sites across all chromosomes), so "targeted" still touches most reads while adding edge-effect risk and missing reads that *moved* between builds — the very signal realignment exists to recover. |
 
-> ### Re-argument (2026-08-10): Y/mt-only is the point, not the add-on
+> ### Withdrawn (2026-08-10): there is no useful Y-only scope
 >
-> This decision was made while the module was believed to be about unlocking genome-wide
-> ancestry. With the purpose corrected to **Y-chromosome variant discovery** (see
-> [Problem](#problem)), the ranking inverts: chrY plus chrM *is* the target, and re-mapping the
-> other 98% of the genome is incidental work that happens to be easier to implement.
+> A previous revision of this section argued that, since the module is for Y variant discovery,
+> Y/mt-only should be the primary scope. That was wrong, and the reason is worth recording so it
+> is not proposed again.
 >
-> The saving is per-sample and large. chrY (~62 Mbp) and chrM (~16.6 kb) are a fraction of a
-> 3.1 Gbp genome, and the stages that scale with read count — revert, map, sort, mark — shrink
-> with it. What does **not** shrink is the index: it is per-`(build, preset)` and cached, so its
-> one-time ~12 GB cost is paid once for the machine, not once per sample. That makes Y/mt-only
-> cheap in exactly the dimension that matters for a batch across a project.
+> **You cannot choose the read subset without already knowing the answer.** The reads that belong
+> on the T2T Y are exactly the ones GRCh38 placed wrongly — on chrX, on Y-homologous autosomal
+> regions, or nowhere. Identifying them requires letting every read compete against the whole
+> reference, which is the computation being asked for. Selecting by source coordinate can only
+> return reads GRCh38 already agreed were Y, which is the subset that needed realigning least.
 >
-> Two things must not be got wrong when it is built, and both are ways to manufacture false
-> private Y variants — the precise failure the filter stack in
-> [`private-y-variant-filtering.md`](private-y-variant-filtering.md) exists to prevent:
+> The costs a subset would avoid do not exist either. Revert collates by read name across the
+> entire file, so the source BAM is read in full whatever the scope. The index is
+> per-`(build, preset)` and cached, so it is paid once for the machine regardless. What remains is
+> the mapping pass, and that is the part that cannot be safely narrowed.
 >
-> - **Map against the whole CHM13 reference, never a Y-only index.** A Y-only index has nowhere
->   else to put a read, so autosomal and X paralogues of Y sequence would be forced onto chrY and
->   called as novel Y variants. Restricting the *reads* is the optimisation; restricting the
->   *reference* is a correctness bug.
-> - **Selecting reads by source coordinate loses the mismapped ones.** Taking chrY + unmapped from
->   a GRCh38 alignment recovers reads that failed to map, but not reads that mapped *confidently
->   to the wrong chromosome* — and GRCh38's collapsed ampliconic and palindromic Y is exactly
->   where that happens. Those reads are part of what realignment is supposed to rescue, so the
->   extraction has to be wider than "chrY plus unmapped": at minimum chrY, chrX, the Y-homologous
->   autosomal regions, and unmapped. Whether that widening leaves enough saving to be worth the
->   complexity is the open question, and it should be measured before the mode is built.
->
-> Until that is settled, **whole-genome remains the shipped scope**: it is slower but has neither
-> failure mode, and it is what phases 1–4 built.
+> **Whole-genome is the only correct scope.** The genome-wide results — coverage, callable, SV on
+> hs1 — come along with it rather than being a reason for it.
 
 ---
 
@@ -672,9 +666,7 @@ it never mutates or replaces the vendor's original.
    breadth and depth.
 5. **WGS-scale backend parity + MAPQ validation** (replaces the former Windows FFI spike, which
    Decision 1 made unnecessary) — the gate before this is exposed to users.
-6. **Y/mt-only mode** — reclassified from "lightweight add-on" to the scope the module's purpose
-   actually calls for (see Decision 5). Gated on measuring whether a read selection wide enough
-   to be correct still saves enough to be worth building.
+6. ~~**Y/mt-only mode**~~ — withdrawn; see Decision 5. Every read has to be realigned anyway.
 
 All five desktop platforms are in scope from phase 2 — Windows, macOS (Intel and Apple Silicon),
 and Linux (x86_64 and arm64) — because the default backend needs no C toolchain. Phases 1–2 prove
@@ -689,8 +681,9 @@ correctness in isolation before any UI; phase 4 is the first user-visible delive
 - ~~Does minimap2 / `minimap2-rs` build on Windows?~~ **Moot** — the default backend is pure Rust
   (Decision 1). Only relevant if someone enables the FFI validation backend on Windows.
 - **Is `minimap2-pure-rs` trustworthy enough to be the default?** Phase 0 says yes at small scale
-  (S4); phase 5 has to say yes at WGS scale. The fallback if it doesn't: flip the default to the
-  FFI and accept the Windows gap and htslib linkage after all.
+  (S4); phase 5 has to say yes at WGS scale, on real reads, against upstream minimap2 run
+  normally. The fallback if it doesn't is to shell out to a real minimap2 — which reopens
+  Decision 1a's PATH-and-binary-shipping problems, and is the reason phase 5 is the gate.
 - uBAM vs FASTQ as the revert interchange default (RG fidelity vs simplicity)?
 - Mark-duplicates: implement in Rust, or fold into the chosen backend's ecosystem? (With a
   pure-Rust mapper the no-external-tools posture now holds for the *whole* pipeline, so this is

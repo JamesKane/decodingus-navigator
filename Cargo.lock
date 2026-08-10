@@ -3105,18 +3105,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libz-sys"
-version = "1.1.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
- "vcpkg",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3278,16 +3266,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "minimap2"
-version = "0.1.31+minimap2.2.30"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ba9456bc1fc790617e793e9c684ae2e6a4bd475dacc6d64ea4f36aafdb161d8"
-dependencies = [
- "libc",
- "minimap2-sys",
-]
-
-[[package]]
 name = "minimap2-pure-rs"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3302,18 +3280,6 @@ dependencies = [
  "memchr",
  "rayon",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "minimap2-sys"
-version = "0.1.30+minimap2.2.30"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0daecfcba542b29dab8ae9516581fa3595bb5a3704389ab5a7ed3ee6aacea58"
-dependencies = [
- "cc",
- "libz-sys",
- "paste",
- "pkg-config",
 ]
 
 [[package]]
@@ -3422,9 +3388,7 @@ dependencies = [
 name = "navigator-align"
 version = "0.1.0"
 dependencies = [
- "minimap2",
  "minimap2-pure-rs",
- "minimap2-sys",
  "navigator-domain",
  "noodles",
  "rayon",

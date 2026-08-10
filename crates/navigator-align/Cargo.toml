@@ -5,11 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# Read mapping for the realignment module (design/realignment-module.md, Decision 1). Deliberately
-# its own crate rather than a module in navigator-analysis: the optional C FFI backend needs a C
-# toolchain, and confining it here means enabling that feature cannot break the analysis crate's
-# build on a platform without one. A leaf crate — no internal dependencies — so the layering rule
-# (`ui -> app -> {analysis, ...}`) is unaffected by where callers wire it in.
+# Read mapping for the realignment module (design/realignment-module.md, Decision 1). Its own crate
+# rather than a module in navigator-analysis because it is a distinct concern with its own
+# dependency set — a mapper and an index cache, not a walker over an existing alignment. A leaf
+# crate with no internal dependencies, so the layering rule (`ui -> app -> {analysis, ...}`) is
+# unaffected by where callers wire it in.
 [dependencies]
 thiserror = { workspace = true }
 # `paths::decodingus_dir` — the one definition of the cache root, so the aligner-index cache lands
@@ -36,27 +36,3 @@ rayon = "1"
 # needs no C toolchain (so Windows and every other Rust target build unchanged) and measured
 # 99.74% byte-identical to the C implementation with zero MAPQ>0 disagreements. See Decision 1.
 minimap2-pure-rs = "0.5.3"
-
-# The C minimap2 via FFI, as a cross-check for the pure-Rust default — the mitigation for its
-# "LLM-mediated translation" provenance. Off by default: it needs a C toolchain and is unproven on
-# Windows.
-#
-# Note the feature spelling. `minimap2/static` is declared upstream as
-# `static = [minimap2-sys/static, rust-htslib/static]`, which *activates the optional rust-htslib
-# dependency* and compiles hts-sys — silently linking htslib, the C library noodles exists to
-# replace. Enabling `minimap2-sys/static` directly gets the same static libminimap2 without it.
-[dependencies.minimap2]
-version = "0.1.31"
-optional = true
-default-features = false
-features = ["simde"]
-
-[dependencies.minimap2-sys]
-version = "0.1.30"
-optional = true
-default-features = false
-features = ["static", "simde"]
-
-[features]
-default = []
-ffi = ["dep:minimap2", "dep:minimap2-sys"]

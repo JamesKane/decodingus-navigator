@@ -133,10 +133,9 @@ Verified 2026-07-26 to have no implementation in the tree.
   there — and liftover cannot help with *discovery*, where the variant is not in any site list
   yet. Autosomal fixed-site matching was never the motivation; two earlier revisions of the
   design said otherwise and have been corrected.
-- **Open:** Decision 5's scope ranking is being re-argued — if the purpose is the Y, then
-  Y/mt-only is the point rather than an add-on, gated on measuring whether a read selection wide
-  enough to be correct (chrY + chrX + Y-homologous autosomal regions + unmapped, not just
-  chrY + unmapped) still saves enough to be worth building.
+- **Settled:** whole-genome is the only correct scope. A Y-only mode was proposed and withdrawn —
+  the reads that need realigning are the ones GRCh38 placed wrongly, so selecting them by source
+  coordinate requires the answer being computed. Revert reads the whole file anyway.
 - **Do not confuse** with `navigator-analysis/src/realign.rs`, which is *indel local realignment*
   (plan §4b) and is a different thing entirely.
 

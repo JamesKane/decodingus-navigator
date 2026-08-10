@@ -14,10 +14,11 @@
 //! 99.74% byte-identical to the C implementation with **zero disagreements at MAPQ > 0**.
 //!
 //! That crate describes itself as an "LLM-mediated faithful translation" and asks users to stay
-//! alert to bugs. The mitigation is the `ffi` feature: the same work can be run through the C
-//! minimap2 and the results diffed. It is off by default because enabling it requires a C
-//! toolchain — and note the feature spelling in `Cargo.toml`, because the obvious one silently
-//! links htslib.
+//! alert to bugs, so its output has to be checked against the original. That check is done
+//! **out-of-band**, by running upstream minimap2 over the same reads and diffing — not by
+//! carrying a second backend in here. Linking the C library would put a C toolchain, an `unsafe`
+//! surface, and a Windows-unproven dependency into the shipped artifact to serve a development
+//! activity, which is a poor trade for something no user ever runs.
 //!
 //! ## Memory
 //!
