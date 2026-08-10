@@ -123,9 +123,14 @@ Verified 2026-07-26 to have no implementation in the tree.
   build and map with cross-part merge, single- and paired-end, BAM/CRAM output via noodles;
   **phase 3** (stages C and D) — coordinate sort, short-read duplicate marking, CRAM + `.crai`,
   and the provenance migration with registration in `navigator-app::realign`.
-- **Next:** phase 4 — app orchestration and UI: the opt-in cancellable background job, preflight,
-  progress, badges, and wiring realigned alignments into the analysis selectors. Then phase 5,
-  WGS-scale backend parity and MAPQ validation, which is the gate before users see this.
+  **Phase 4** — the cancellable job with preflight, the per-alignment and per-project cards, the
+  realigned badge, and selector preference — is built too.
+- **Next:** phase 5 — WGS-scale backend parity and MAPQ validation on a real donor, which is the
+  gate before users are allowed near this. Everything so far is tested on simulated reads against
+  synthetic references: the mechanics are proven, real-world behaviour is not.
+- **Open, and not technical:** the phase 0 spike retracted this module's motivating premise
+  (ancestry is not build-locked). Whether read recovery and native hs1 analysis justify shipping
+  it is a product call, and it is now in front of users behind a button.
 - **Do not confuse** with `navigator-analysis/src/realign.rs`, which is *indel local realignment*
   (plan §4b) and is a different thing entirely.
 

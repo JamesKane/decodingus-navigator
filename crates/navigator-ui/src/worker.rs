@@ -551,6 +551,15 @@ pub enum Command {
     /// Stop a running realignment. Shares the cancellation registry with the analysis pipeline —
     /// only one long job runs at a time, by design.
     CancelRealign,
+    /// Realign every eligible alignment in a project, one after another.
+    ///
+    /// Sequential, not parallel: each job already saturates the machine's cores and wants ~12 GB,
+    /// so running two would be slower than running them in turn and might exhaust memory. Cancel
+    /// stops the current job and abandons the rest of the queue.
+    StartProjectRealign {
+        project_id: i64,
+        target_build: String,
+    },
     /// Update a subject's editable fields. Empty optional values clear the column.
     UpdateBiosample {
         guid: SampleGuid,
@@ -1123,6 +1132,14 @@ pub enum Event {
         total: usize,
         label: String,
         detail: String,
+    },
+    /// A project-wide realignment finished. Separate from `RealignDone` (which fires per sample)
+    /// because a batch has its own outcome: how many of the queue actually completed, and whether
+    /// the rest were abandoned. An empty queue reports `queued: 0` rather than saying nothing.
+    RealignBatchDone {
+        queued: usize,
+        completed: usize,
+        cancelled: bool,
     },
     /// A realignment finished, was cancelled, or failed. `new_alignment_id` is present only on
     /// success — the row is inserted last, so its absence means nothing was registered.
@@ -1913,6 +1930,9 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             Event::Error(format!("internal: unrouted StartRealign {alignment_id}"))
         }
         Command::CancelRealign => Event::Error("internal: unrouted CancelRealign".into()),
+        Command::StartProjectRealign { project_id, .. } => {
+            Event::Error(format!("internal: unrouted StartProjectRealign {project_id}"))
+        }
         Command::FindPrivateY { alignment_id, mask } => {
             let result = match mask {
                 YMask::SelfReferential => app.private_y_variants_self_masked(alignment_id).await,
@@ -3401,6 +3421,45 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 run_realign_streaming(&app, alignment_id, target_build, cancel, &evt_tx, wake.clone())
                                     .await;
                                 cancels.end(gen);
+                            }
+                            Command::StartProjectRealign {
+                                project_id,
+                                target_build,
+                            } => {
+                                let queue = app
+                                    .realignable_in_project(project_id, &target_build)
+                                    .await
+                                    .unwrap_or_default();
+                                let queued = queue.len();
+                                let mut completed = 0usize;
+                                let mut abandoned = false;
+                                for alignment_id in queue {
+                                    let (gen, cancel) = cancels.begin();
+                                    run_realign_streaming(
+                                        &app,
+                                        alignment_id,
+                                        target_build.clone(),
+                                        cancel.clone(),
+                                        &evt_tx,
+                                        wake.clone(),
+                                    )
+                                    .await;
+                                    let was_cancelled = cancel.is_cancelled();
+                                    cancels.end(gen);
+                                    // Cancel abandons the queue, not just the current sample —
+                                    // someone stopping a multi-day batch means all of it.
+                                    if was_cancelled {
+                                        abandoned = true;
+                                        break;
+                                    }
+                                    completed += 1;
+                                }
+                                let _ = evt_tx.send(Event::RealignBatchDone {
+                                    queued,
+                                    completed,
+                                    cancelled: abandoned,
+                                });
+                                wake();
                             }
                             Command::CancelRealign => {
                                 cancels.cancel_current();

@@ -249,6 +249,7 @@ hint.noVariantsTrack=No hay variantes llamadas para graficar — primero constru
 hint.autoProfileTable=Abra la subpestaña Perfil para ver la tabla completa por sitio.
 card.sexMetrics=Sexo y métricas de lectura
 card.realign=Ensamblaje de referencia
+card.realignProject=Ensamblaje de referencia (todo el proyecto)
 card.yHaplogroup=Haplogrupo Y
 card.descentReport=Informe de descendencia
 card.branchReport=Informe de rama

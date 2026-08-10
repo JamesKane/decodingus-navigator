@@ -259,6 +259,7 @@ hint.noVariantsTrack=No called variants to plot — build the variant profile fi
 hint.autoProfileTable=Open the Profile sub-tab for the full per-site table.
 card.sexMetrics=Sex & read metrics
 card.realign=Reference build
+card.realignProject=Reference build (whole project)
 card.yHaplogroup=Y haplogroup
 card.descentReport=Descent report
 card.branchReport=Branch report

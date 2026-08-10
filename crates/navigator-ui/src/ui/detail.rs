@@ -1658,6 +1658,94 @@ impl NavigatorApp {
 
     /// A per-sample coverage/haplogroup table for the open project, with per-row coverage
     /// recompute and a CSV export. Coverage/haplogroup cells show "—" until computed.
+    /// Realign a whole project, as a card rather than a dialog for the same reason the per-alignment
+    /// one is: this runs for *days*, and nothing that long should own the screen.
+    ///
+    /// The card leads with how many alignments it would actually touch. A batch measured in days
+    /// deserves a real number before it starts, not after — and the count excludes everything that
+    /// would be skipped anyway, so it is the honest figure rather than an upper bound.
+    pub(crate) fn project_realign_section(&mut self, ui: &mut egui::Ui) {
+        let Some(project_id) = self.selected_project else {
+            return;
+        };
+        let target = "chm13v2.0";
+
+        // Counted from what is already loaded rather than by asking the worker: this card redraws
+        // every frame, and a query per frame for a number that changes only when alignments do
+        // would be wasteful.
+        let eligible: Vec<i64> = self
+            .all_alignments
+            .iter()
+            .filter(|a| {
+                a.bam_path.is_some()
+                    && !a.is_derived()
+                    && !a.reference_build.eq_ignore_ascii_case(target)
+                    && !self
+                        .all_alignments
+                        .iter()
+                        .any(|d| d.derived_from_alignment_id == Some(a.id))
+            })
+            .map(|a| a.id)
+            .collect();
+
+        if eligible.is_empty() {
+            ui.label(format!(
+                "Every alignment in this project is already on {target}, or has been realigned."
+            ));
+            return;
+        }
+
+        ui.label(format!(
+            "{} alignment(s) in this project could be re-mapped to {target}.",
+            eligible.len()
+        ));
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(
+                "They run one after another, each taking hours. Stopping ends the whole batch;                  everything already finished is kept, and no original is changed.",
+            )
+            .weak()
+            .size(12.0),
+        );
+        ui.add_space(8.0);
+
+        let busy = self.realign.as_ref().is_some_and(|r| r.finished.is_none());
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !busy,
+                    egui::Button::new(format!("Realign {} to {target}", eligible.len())),
+                )
+                .clicked()
+            {
+                let _ = self.tx.send(Command::StartProjectRealign {
+                    project_id,
+                    target_build: target.to_string(),
+                });
+                self.status = format!("Realigning {} alignment(s) to {target}…", eligible.len());
+            }
+            if busy && ui.button("Stop").clicked() {
+                let _ = self.tx.send(Command::CancelRealign);
+                self.status = "Stopping the realignment…".into();
+            }
+        });
+
+        // While a batch runs, the same per-stage detail the single-alignment card shows.
+        if let Some(state) = self.realign.as_ref().filter(|r| r.finished.is_none()) {
+            ui.add_space(6.0);
+            ui.label(format!(
+                "Alignment #{} — {} (step {} of {})",
+                state.alignment_id, state.label, state.step, state.total
+            ));
+            let fraction = if state.total > 0 {
+                state.step as f32 / state.total as f32
+            } else {
+                0.0
+            };
+            ui.add(egui::ProgressBar::new(fraction).desired_width(ui.available_width()));
+        }
+    }
+
     pub(crate) fn project_report_section(&mut self, ui: &mut egui::Ui) {
         if self.project_report.is_empty() {
             ui.add_space(8.0);
@@ -2444,6 +2532,14 @@ impl NavigatorApp {
                                 let mut del_btn: Option<egui::Response> = None;
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(&a.reference_build).color(ACCENT).strong());
+                                    // A realigned alignment sits next to the one it came from, on the
+                                    // same run, often with the same aligner — so without a mark the two
+                                    // rows are indistinguishable and the user cannot tell which is the
+                                    // vendor's file.
+                                    if let Some(source) = a.derived_from_alignment_id {
+                                        chip(ui, "realigned", ui.visuals().selection.bg_fill, egui::Color32::WHITE)
+                                            .on_hover_text(format!("Produced by Navigator from alignment #{source}"));
+                                    }
                                     ui.label(
                                         egui::RichText::new(if a.bam_path.is_some() {
                                             a.aligner.as_str()
@@ -2477,7 +2573,11 @@ impl NavigatorApp {
                             want_delete = Some(DataDelete::Alignment {
                                 id: a.id,
                                 run_id: r.id,
-                                label: format!("alignment {} ({})", a.id, a.reference_build),
+                                label: if a.is_derived() {
+                                    format!("alignment {} ({}, realigned)", a.id, a.reference_build)
+                                } else {
+                                    format!("alignment {} ({})", a.id, a.reference_build)
+                                },
                             });
                         } else if row_clicked {
                             pick_aln = Some(a.id);

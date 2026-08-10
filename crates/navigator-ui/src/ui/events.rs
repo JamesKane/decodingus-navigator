@@ -988,6 +988,19 @@ impl NavigatorApp {
                     }
                     self.running_denovo = false;
                 }
+                Event::RealignBatchDone {
+                    queued,
+                    completed,
+                    cancelled,
+                } => {
+                    self.status = if queued == 0 {
+                        "Nothing in this project needs realigning.".into()
+                    } else if cancelled {
+                        format!("Realignment stopped after {completed} of {queued}.")
+                    } else {
+                        format!("Realigned {completed} of {queued} alignments.")
+                    };
+                }
                 Event::RealignProgress {
                     alignment_id,
                     step,

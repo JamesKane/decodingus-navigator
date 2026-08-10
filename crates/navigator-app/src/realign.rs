@@ -118,6 +118,33 @@ impl App {
         }
     }
 
+    /// The alignments in `project_id` that a realignment to `target_build` would actually act on.
+    ///
+    /// Computed up front rather than discovered while running, because the honest thing to tell
+    /// someone before a job measured in *days* is how many samples it covers. Skips what would be
+    /// refused anyway — anything already on the target build, anything already realigned, and
+    /// anything with no file to read — so the count is the real one rather than an upper bound.
+    pub async fn realignable_in_project(&self, project_id: i64, target_build: &str) -> Result<Vec<i64>, AppError> {
+        let mut out = Vec::new();
+        for subject in self.list_biosamples(project_id).await? {
+            let alignments = navigator_store::alignment::list_for_biosample(self.store.pool(), subject.guid).await?;
+            for a in &alignments {
+                if a.bam_path.is_none() || a.is_derived() {
+                    continue;
+                }
+                if builds_match(&a.reference_build, target_build) {
+                    continue;
+                }
+                // Already realigned by an earlier run: its output is sitting in this same list.
+                if alignments.iter().any(|d| d.derived_from_alignment_id == Some(a.id)) {
+                    continue;
+                }
+                out.push(a.id);
+            }
+        }
+        Ok(out)
+    }
+
     /// The cached FASTA for `build`, if it has already been fetched.
     ///
     /// Public because the realignment job needs the reference *before* it starts: mapping to a

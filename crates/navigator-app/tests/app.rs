@@ -3539,3 +3539,150 @@ async fn existing_alignments_read_back_as_originals() {
     assert_eq!(read_back.derivation, None);
     assert!(!read_back.is_derived());
 }
+
+/// When a realignment exists, the subject's default alignment is its output rather than the source
+/// it came from. Both describe the same library at the same breadth, so without a rule the winner
+/// is whichever the list happened to yield first — and a default that changes between runs is
+/// worse than either choice.
+#[tokio::test]
+async fn a_realigned_alignment_becomes_the_subjects_default() {
+    let app = app().await;
+    let (b, run) = subject_with_run(&app).await;
+
+    let source = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa-mem2".into(),
+            variant_caller: None,
+            bam_path: Some("/tmp/vendor.bam".into()),
+            reference_path: None,
+            content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
+        })
+        .await
+        .unwrap();
+
+    // Before realigning, the source is the default.
+    assert_eq!(
+        app.default_alignment_for_subject(b.guid).await.unwrap(),
+        Some((run.id, source.id))
+    );
+
+    let realigned = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "chm13v2.0".into(),
+            aligner: "minimap2".into(),
+            variant_caller: None,
+            bam_path: Some("/tmp/realigned.cram".into()),
+            reference_path: Some("/tmp/chm13.fa".into()),
+            content_sha256: None,
+            derived_from_alignment_id: Some(source.id),
+            derivation: Some("realign:minimap2-sr".into()),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        app.default_alignment_for_subject(b.guid).await.unwrap(),
+        Some((run.id, realigned.id)),
+        "the realignment the user asked for should drive the analysis tabs"
+    );
+
+    // A default, not a restriction: the source is still there and still selectable.
+    assert!(
+        app.alignment(source.id).await.unwrap().is_some(),
+        "the source must remain available"
+    );
+}
+
+/// A batch counts only what it would really act on, so the number shown before a job measured in
+/// days is the honest one rather than an upper bound.
+#[tokio::test]
+async fn a_project_batch_skips_what_it_would_refuse() {
+    let app = app().await;
+    let project = app
+        .create_project(NewProject {
+            name: "batch".into(),
+            description: None,
+            administrator: "tester".into(),
+        })
+        .await
+        .unwrap();
+
+    let (b, run) = subject_with_run(&app).await;
+    app.add_biosample_to_project(b.guid, Some(project.id)).await.unwrap();
+
+    // Eligible: an off-build alignment with a file.
+    let eligible = app
+        .record_alignment(NewAlignment {
+            sequence_run_id: run.id,
+            reference_build: "GRCh38".into(),
+            aligner: "bwa-mem2".into(),
+            variant_caller: None,
+            bam_path: Some("/tmp/a.bam".into()),
+            reference_path: None,
+            content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
+        })
+        .await
+        .unwrap();
+
+    // Skipped: already on the target build.
+    app.record_alignment(NewAlignment {
+        sequence_run_id: run.id,
+        reference_build: "chm13v2.0".into(),
+        aligner: "minimap2".into(),
+        variant_caller: None,
+        bam_path: Some("/tmp/b.cram".into()),
+        reference_path: None,
+        content_sha256: None,
+        derived_from_alignment_id: None,
+        derivation: None,
+    })
+    .await
+    .unwrap();
+
+    // Skipped: no file to read.
+    app.record_alignment(NewAlignment {
+        sequence_run_id: run.id,
+        reference_build: "GRCh37".into(),
+        aligner: "bwa".into(),
+        variant_caller: None,
+        bam_path: None,
+        reference_path: None,
+        content_sha256: None,
+        derived_from_alignment_id: None,
+        derivation: None,
+    })
+    .await
+    .unwrap();
+
+    let queue = app.realignable_in_project(project.id, "chm13v2.0").await.unwrap();
+    assert_eq!(queue, vec![eligible.id]);
+
+    // Once it has been realigned, a second batch has nothing left to do.
+    app.record_alignment(NewAlignment {
+        sequence_run_id: run.id,
+        reference_build: "chm13v2.0".into(),
+        aligner: "minimap2".into(),
+        variant_caller: None,
+        bam_path: Some("/tmp/c.cram".into()),
+        reference_path: None,
+        content_sha256: None,
+        derived_from_alignment_id: Some(eligible.id),
+        derivation: Some("realign:minimap2-sr".into()),
+    })
+    .await
+    .unwrap();
+    assert!(
+        app.realignable_in_project(project.id, "chm13v2.0")
+            .await
+            .unwrap()
+            .is_empty(),
+        "an already-realigned alignment must not be queued again"
+    );
+}

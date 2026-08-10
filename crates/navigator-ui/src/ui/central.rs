@@ -95,7 +95,13 @@ impl NavigatorApp {
         self.project_tab = self.sub_bar(ui, self.project_tab, &ProjectTab::ALL);
         match self.project_tab {
             ProjectTab::Members => self.samples_section(ui),
-            ProjectTab::Report => self.project_report_section(ui),
+            ProjectTab::Report => {
+                card(ui, self.tr("card.realignProject"), |ui| {
+                    self.project_realign_section(ui)
+                });
+                ui.add_space(10.0);
+                self.project_report_section(ui)
+            }
             ProjectTab::Ystr => self.project_ystr_section(ui),
             ProjectTab::Tree => self.project_blocktree_section(ui),
         }

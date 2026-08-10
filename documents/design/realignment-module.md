@@ -599,8 +599,13 @@ it never mutates or replaces the vendor's original.
    `navigator-app::realign`: the realigned row is inserted under the source's `sequence_run_id`
    with `derived_from_alignment_id` and `derivation` set, the source untouched, and realigning to
    a build the sample is already on is refused.
-4. **App orchestration + UI**: opt-in cancellable background job, preflight, progress, badges;
-   wire realigned alignments into the analysis selectors.
+4. **App orchestration + UI** ✅ built. `navigator-app::realign_job` drives stages A–D as one
+   cancellable job with a disk preflight; the UI is **cards, not a modal** — a job running for
+   hours (or days, for a project) must not own the screen. A per-alignment card offers, reports
+   progress, and states the outcome, and on a derived row shows its provenance; a project card
+   does the same for a sequential batch. Realigned rows are badged in the alignment list, and
+   `default_alignment_for_subject` prefers a realignment over its source as a tie-break after
+   breadth and depth.
 5. **WGS-scale backend parity + MAPQ validation** (replaces the former Windows FFI spike, which
    Decision 1 made unnecessary) — the gate before this is exposed to users.
 6. **Y/mt-only mode** as a lightweight scope.
