@@ -7,26 +7,54 @@ Scope if built: `navigator-analysis` (revert + post-process), a new `navigator-a
 (job orchestration + provenance), `navigator-store` (alignment provenance migration),
 `navigator-ui` (opt-in background job + warnings).
 
-> **The spike invalidated three of this document's load-bearing claims** — the motivating
-> ancestry premise, the aligner-backend decision, and the Windows strategy — and put a
-> condition on a fourth, the index cost, which holds only if the index batch size (`-I`) is set
-> deliberately. Each is corrected in place below and the measurements are in
-> [Phase 0 spike results](#phase-0-spike-results-2026-08-08). Read that section before treating
-> any decision here as settled.
+> **The purpose of this module is Y-chromosome variant discovery** (2026-08-10). Earlier revisions
+> argued it from autosomal ancestry, and an intermediate one from generic read recovery; both were
+> wrong, and Decision 5's scope ranking is being re-argued as a result. See [Problem](#problem).
+>
+> Separately, the phase 0 spike invalidated three technical claims — the aligner-backend decision
+> and the Windows strategy — and put a condition on the index cost, which holds only if the index
+> batch size (`-I`) is set deliberately. Each is corrected in place below and the measurements are
+> in [Phase 0 spike results](#phase-0-spike-results-2026-08-08).
 
 ## Problem
 
-Most vendor whole-genome data arrives aligned to **GRCh37 or GRCh38** (Dante, Nebula,
-Sequencing.com, YSEQ, clinical labs). Navigator's modern analyses increasingly want
-**CHM13v2 / hs1** (`Build::Chm13v2`):
+**This module exists for Y-chromosome variant discovery.** Everything else it enables is a
+side benefit; if Y discovery did not need it, it would not be worth building.
 
-- **Coverage / callable / SV** computed on GRCh38 describe the *old* reference — they miss
-  the ~200 Mbp of sequence CHM13 adds and the ~thousands of collapsed-duplication and gap
-  regions T2T resolves.
-- **Reads unmapped or mismapped on GRCh38** are invisible to every analysis. The ones that
-  belong in CHM13-resolved sequence can only be recovered by re-mapping.
-- **Genotypes carry GRCh38 reference bias** and that build's indel representation, whatever
-  coordinate system they are later expressed in.
+Most vendor whole-genome data arrives aligned to **GRCh37 or GRCh38** (Dante, Nebula,
+Sequencing.com, YSEQ, clinical labs). Discovering a sample's private and novel Y-SNPs — placing
+it on the tree, and producing claims an AppView curator can accept — requires it to be on
+**CHM13v2 / hs1** instead, for three reasons that compound:
+
+- **GRCh38's chrY is not a usable discovery substrate.** It is gap-ridden and partly collapsed,
+  while CHM13v2's Y is a complete T2T assembly (HG002's). Discovery means finding variants at
+  positions nobody enumerated in advance, so the parts of the Y a reference *fails to represent*
+  are exactly the parts that never yield a call.
+- **Every curated Y asset is CHM13-defined.** The cohort callable mask
+  (`chrY.callable_mask.chm13v2.bed`), the non-PAR restriction (`chrY_nonPAR.chm13v2.bed`), the
+  recurrent-site blocklist, and the de-novo tree itself all come from a pipeline that
+  joint-genotyped ~3,352 **CHM13-aligned** males (see
+  [`private-y-variant-filtering.md`](private-y-variant-filtering.md)). A GRCh38-aligned sample
+  cannot be filtered by any of them, and the private-Y doc's own evidence is that *without* that
+  filter stack a WGS sample leaks hundreds of fake privates per tip — so an unfiltered call set
+  is not a weaker result, it is an unusable one.
+- **Liftover cannot substitute, specifically here.** It moves a *fixed site list* across builds,
+  which is why Y-haplogroup placement already uses it. Discovery is the opposite problem: the
+  variant is not in any list yet, and sequence T2T resolves that GRCh38 lacks has no source
+  coordinate to lift *from*. Reads that mismapped in GRCh38's collapsed ampliconic and
+  palindromic regions are likewise not where a lifted query looks.
+
+Two consequences follow that are worth stating plainly, because they are easy to over-claim:
+
+- Realignment puts a sample **into the coordinate system where the filters and the tree live**.
+  It does not by itself solve reference polarity — CHM13's Y is haplogroup J, so the reference
+  base is the *derived* allele at many Y-SNP sites (`registry.rs::reference_polarity`), and an
+  R sample still needs the carrier filter to avoid reporting the whole J-vs-R divergence.
+- The same argument applies to **mtDNA**, which travels with the Y in every uniparental product,
+  and only weakly to the autosomes.
+
+Genome-wide benefits do come along — native coverage/callable/SV on hs1, and reads GRCh38 could
+not place — but they are consequences, not the reason.
 
 > ### ⚠️ Correction (2026-08-08): ancestry is *not* build-locked
 >
@@ -49,14 +77,12 @@ Sequencing.com, YSEQ, clinical labs). Navigator's modern analyses increasingly w
 >   runs the estimators off that consensus with the build pinned to `Chm13v2`.
 >
 > Off-build vendor samples therefore **already produce ancestry estimates today**, via the
-> multi-build panel and the consensus. The architecture routed around the problem this module
-> was conceived to solve.
+> multi-build panel and the consensus.
 >
-> What survives is the read-level case listed above — recovered reads, native hs1
-> coverage/callable/SV, and bias-free genotypes. Those are real and liftover cannot deliver
-> them. But they are a **narrower and less urgent** payoff than "ancestry is impossible without
-> this," and the cost/benefit in [Resource profile](#resource-profile--ux) should be judged
-> against them, not against the retracted claim.
+> Correcting the correction (2026-08-10): the retraction above is accurate, but an intermediate
+> revision then re-argued the module from generic read recovery, which was also wrong. **Fixed-site
+> autosomal matching was never the point.** The module is for Y-chromosome variant discovery — see
+> [Problem](#problem). Ancestry is mentioned here only so nobody reinstates it as a justification.
 
 We already have **liftover** (UCSC chains via `ReferenceGateway::load_liftover` /
 `lift_positions`) and it is the right tool for *coordinates of a fixed site list* — it is how
@@ -81,15 +107,18 @@ import fast path.
 
 ## Goals
 
-1. Take a vendor `Alignment` on GRCh37/GRCh38 and produce a new `Alignment` on `Build::Chm13v2`
+1. **Make an off-build sample eligible for Y variant discovery** — on the reference the callable
+   mask, the non-PAR restriction, the recurrent blocklist, and the de-novo tree are all defined
+   on. This is the goal the module is measured against.
+2. Take a vendor `Alignment` on GRCh37/GRCh38 and produce a new `Alignment` on `Build::Chm13v2`
    (or `Chm13v2MaskedRcrs`) whose reads are *actually mapped* to that reference.
-2. Make the realigned alignment a first-class workspace row so every existing analysis runs on
-   it natively (no liftover): coverage, callable, SV, haplogroups — and ancestry/IBD at their
-   native loci rather than through the multi-build panel's GRCh38 coordinates.
-3. Preserve provenance — the realigned alignment must point back to its source.
-4. Be correct for the read technologies Navigator already classifies (Illumina short read;
+3. Make the realigned alignment a first-class workspace row so every existing analysis runs on
+   it natively (no liftover): private-Y and haplogroup placement first, then coverage, callable,
+   and SV.
+4. Preserve provenance — the realigned alignment must point back to its source.
+5. Be correct for the read technologies Navigator already classifies (Illumina short read;
    PacBio HiFi / ONT long read).
-5. Degrade honestly where realignment is unavailable (notably Windows — see platform options).
+6. Degrade honestly where realignment is unavailable.
 
 ## Non-goals
 
@@ -487,12 +516,41 @@ Realignment needs a minimap2 index (`.mmi`) of CHM13v2, which **does not exist i
 
 | Scope | What | Verdict |
 |-------|------|---------|
-| **Whole-genome** | Re-map every read | **Recommended for v1.** The only scope that delivers genome-wide coverage/callable/SV on hs1 and recovers reads across the whole genome; conceptually simple. |
-| **Y/mt-only** | Re-map only chrY+chrM reads (+ unmapped) | **Useful add-on.** Cheap; good for Big-Y / mt-only products and structurally complex Y. Small enough to run anywhere. |
+| **Whole-genome** | Re-map every read | **Built, and the safe default.** Conceptually simple, and the only scope that also delivers genome-wide coverage/callable/SV on hs1. Costs hours per sample. |
+| **Y/mt-only** | Re-map only chrY+chrM reads (+ unmapped) | **The scope the module's actual purpose calls for** — see the re-argument below. Cuts per-sample cost by roughly the ratio of chrY+chrM to the genome. Not yet built. |
 | **Targeted (panel ± flanks)** | Extract reads near lifted AIM/IBD sites and realign just those | **Not recommended.** AIM/IBD panels are genome-wide (tens of thousands of sites across all chromosomes), so "targeted" still touches most reads while adding edge-effect risk and missing reads that *moved* between builds — the very signal realignment exists to recover. |
 
-Recommend: ship **whole-genome** as the core, with **Y/mt-only** as a lightweight mode for
-uniparental products and for users who can't afford a full WGS realignment.
+> ### Re-argument (2026-08-10): Y/mt-only is the point, not the add-on
+>
+> This decision was made while the module was believed to be about unlocking genome-wide
+> ancestry. With the purpose corrected to **Y-chromosome variant discovery** (see
+> [Problem](#problem)), the ranking inverts: chrY plus chrM *is* the target, and re-mapping the
+> other 98% of the genome is incidental work that happens to be easier to implement.
+>
+> The saving is per-sample and large. chrY (~62 Mbp) and chrM (~16.6 kb) are a fraction of a
+> 3.1 Gbp genome, and the stages that scale with read count — revert, map, sort, mark — shrink
+> with it. What does **not** shrink is the index: it is per-`(build, preset)` and cached, so its
+> one-time ~12 GB cost is paid once for the machine, not once per sample. That makes Y/mt-only
+> cheap in exactly the dimension that matters for a batch across a project.
+>
+> Two things must not be got wrong when it is built, and both are ways to manufacture false
+> private Y variants — the precise failure the filter stack in
+> [`private-y-variant-filtering.md`](private-y-variant-filtering.md) exists to prevent:
+>
+> - **Map against the whole CHM13 reference, never a Y-only index.** A Y-only index has nowhere
+>   else to put a read, so autosomal and X paralogues of Y sequence would be forced onto chrY and
+>   called as novel Y variants. Restricting the *reads* is the optimisation; restricting the
+>   *reference* is a correctness bug.
+> - **Selecting reads by source coordinate loses the mismapped ones.** Taking chrY + unmapped from
+>   a GRCh38 alignment recovers reads that failed to map, but not reads that mapped *confidently
+>   to the wrong chromosome* — and GRCh38's collapsed ampliconic and palindromic Y is exactly
+>   where that happens. Those reads are part of what realignment is supposed to rescue, so the
+>   extraction has to be wider than "chrY plus unmapped": at minimum chrY, chrX, the Y-homologous
+>   autosomal regions, and unmapped. Whether that widening leaves enough saving to be worth the
+>   complexity is the open question, and it should be measured before the mode is built.
+>
+> Until that is settled, **whole-genome remains the shipped scope**: it is slower but has neither
+> failure mode, and it is what phases 1–4 built.
 
 ---
 
@@ -558,14 +616,20 @@ it never mutates or replaces the vendor's original.
   alignment must match the liftover-based call on the validated donor (GFX → R-FGC29071 +
   U5a1b1g) and the HG00096 fast-path result (R1b1a1b1a1a). Realignment must not regress the
   uniparental calls.
-- **Ancestry non-regression** (reframed — ancestry is not blocked today, see
+- **Private-Y discovery is the acceptance test.** A GRCh38 vendor sample that cannot be filtered
+  by the CHM13 callable mask today should, after realignment, produce a private-Y set of the right
+  order of magnitude — **dozens, not hundreds** — once the standard filter stack is applied. The
+  private-Y doc measures WGS229 at ~12 privates against a de-novo tree that expects a 3–39 median;
+  a realigned sample landing far outside that range means the realignment is manufacturing
+  artifacts, not recovering signal. This is the number the module lives or dies by.
+- **Ancestry non-regression** (ancestry is not blocked today, and was never the point — see
   [Problem](#problem)): a GRCh38 vendor sample's ancestry estimate via the multi-build panel and
   the estimate from its realigned hs1 alignment must **agree**. Realignment must not move a
   result users have already seen; if it does, that is a finding about one of the two paths.
-- **Read-recovery sanity:** measure reads that were unmapped on GRCh38 and now map into
-  CHM13-resolved regions — the realignment payoff should be visible and non-trivial. With the
-  ancestry claim retracted this is now the module's **primary** justification, so quantify it on
-  a real donor before phase 4 rather than assuming it.
+- **Read-recovery sanity, scoped to the Y:** measure reads that were unmapped or mismapped on
+  GRCh38 and now place into chrY — particularly the ampliconic and palindromic regions GRCh38
+  collapses. Genome-wide recovery is worth reporting too, but the Y number is the one tied to the
+  purpose.
 - **Coverage parity:** genome-wide coverage on the realigned hs1 alignment vs the
   pipeline/native expectation for the same sample.
 - **Backend parity at WGS scale:** re-run the S4 comparison (pure Rust vs C FFI) on a whole
@@ -608,7 +672,9 @@ it never mutates or replaces the vendor's original.
    breadth and depth.
 5. **WGS-scale backend parity + MAPQ validation** (replaces the former Windows FFI spike, which
    Decision 1 made unnecessary) — the gate before this is exposed to users.
-6. **Y/mt-only mode** as a lightweight scope.
+6. **Y/mt-only mode** — reclassified from "lightweight add-on" to the scope the module's purpose
+   actually calls for (see Decision 5). Gated on measuring whether a read selection wide enough
+   to be correct still saves enough to be worth building.
 
 All five desktop platforms are in scope from phase 2 — Windows, macOS (Intel and Apple Silicon),
 and Linux (x86_64 and arm64) — because the default backend needs no C toolchain. Phases 1–2 prove

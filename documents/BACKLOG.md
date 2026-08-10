@@ -128,9 +128,15 @@ Verified 2026-07-26 to have no implementation in the tree.
 - **Next:** phase 5 — WGS-scale backend parity and MAPQ validation on a real donor, which is the
   gate before users are allowed near this. Everything so far is tested on simulated reads against
   synthetic references: the mechanics are proven, real-world behaviour is not.
-- **Open, and not technical:** the phase 0 spike retracted this module's motivating premise
-  (ancestry is not build-locked). Whether read recovery and native hs1 analysis justify shipping
-  it is a product call, and it is now in front of users behind a button.
+- **Purpose:** Y-chromosome variant discovery. A private-Y call set is only usable on CHM13 —
+  the callable mask, non-PAR restriction, recurrent blocklist, and de-novo tree are all defined
+  there — and liftover cannot help with *discovery*, where the variant is not in any site list
+  yet. Autosomal fixed-site matching was never the motivation; two earlier revisions of the
+  design said otherwise and have been corrected.
+- **Open:** Decision 5's scope ranking is being re-argued — if the purpose is the Y, then
+  Y/mt-only is the point rather than an add-on, gated on measuring whether a read selection wide
+  enough to be correct (chrY + chrX + Y-homologous autosomal regions + unmapped, not just
+  chrY + unmapped) still saves enough to be worth building.
 - **Do not confuse** with `navigator-analysis/src/realign.rs`, which is *indel local realignment*
   (plan §4b) and is a different thing entirely.
 
