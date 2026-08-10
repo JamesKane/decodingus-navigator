@@ -368,29 +368,73 @@ identical). The pattern runs both ways, and in each case one implementation is c
 to 60) while the other reports MAPQ 1. For Y variant discovery these are the reads whose assignment
 decides whether a Y variant has support at all.
 
+### Paired-end: the gap widens
+
+The single-end result left open whether pairing would close it — mate rescue and the proper-pair
+bonus both feed MAPQ. It does not. Re-run as `-ax sr` against **upstream minimap2 2.31-r1302**, the
+exact release `minimap2-pure-rs` translates, on the same reverted FASTQ pair:
+
+| | single-end | paired-end |
+|---|---:|---:|
+| Records compared | 168,184 | 336,368 |
+| Identical (locus + MAPQ) | 99.20% | **98.59%** |
+| MAPQ differs at same locus | 0.72% | **1.09%** |
+| Rust higher / lower | 1,157 / 47 | **3,545 / 124** |
+| Median delta | +10 | +7 |
+| Crosses MQ>=20 upward | 111 (0.066%) | 219 (0.065%) |
+| chrY<->chrX swaps | 17 | 53 |
+| Different locus | 143 | 110 |
+
+Pairing made per-record agreement *worse* — 1.09% of records differ in MAPQ against 0.72%
+single-end — while leaving the callable-threshold crossing rate essentially unchanged at ~0.065%.
+The direction is unchanged and remains overwhelming: 96.6% of MAPQ differences are the Rust value
+being higher. Neither implementation produced a primary record the other lacked, and the
+proper-pair flag disagreed on only 12 records, so the pairing logic itself is not the problem —
+the MAPQ arithmetic underneath it is.
+
+This also **does not reproduce the upstream crate's own claim**. Its README reports exact PAF
+parity against C minimap2 for `sr` on "HG002 WGS 1M paired reads". On real chrY reads at the same
+version, with the same invocation, we do not see it. The likeliest explanation is that a
+genome-wide benchmark is dominated by unique sequence, where the two agree, and chrY's ampliconic
+and palindromic structure is where they do not — which is precisely the sequence this module
+exists to map.
+
 ### What this does and does not establish
 
-- It is **single-end**. The shipped path is paired-end, and pairing changes MAPQ materially —
-  mate rescue and the proper-pair bonus both feed it. The PE numbers could be better or worse, and
-  the comparison must be re-run that way before any final verdict.
 - It is **one donor and one 3.2 Mb window**. The direction and concentration are consistent enough
   to act on, but the magnitude is not yet a genome-wide figure.
-- It says nothing about *placement* accuracy: 99.2% identical, no read mapped by one and not the
-  other, and the confident locus disagreements are 0.03%.
+- It says nothing against *placement* accuracy: 98.6% fully identical, no primary record present
+  in one and missing from the other, and confident locus disagreements are 0.03%.
+- The failure is specific and bounded: **MAPQ, on repeat-structured sequence**. That is unlucky,
+  because it is the one number the Y filter stack gates on and the one chromosome it gates.
 
 ### Consequence
 
 Do not run the full WGS realignment as a validation until this is resolved — a private-Y count
 derived from a MAPQ distribution that does not match the reference implementation would not be
-evidence of anything. The open options, in order of preference:
+evidence of anything.
 
-1. **Re-run in paired-end mode** and see whether pairing closes the gap. Cheapest, and the shipped
-   path.
-2. **Find the divergence** in the MAPQ/second-best-score path. `minimap2-pure-rs` ships a
-   `tracehash` feature built for exactly this — stage-by-stage hash comparison against C minimap2 —
-   which is the tool for it, and its existence suggests upstream expects such divergences.
-3. **Fall back to shelling out to a real minimap2**, reopening Decision 1a's PATH and
-   binary-shipping problems, which is the outcome Decision 1 was chosen to avoid.
+**Decision 1 has to be reopened.** It chose the pure-Rust backend on phase 0 evidence of "zero
+MAPQ>0 disagreements", measured on simulated reads over a pseudo-random reference — sequence with
+no repeat structure, and therefore no second-best alignments to disagree about. That evidence does
+not survive contact with chrY. The options:
+
+1. **Find and fix the divergence.** `minimap2-pure-rs` ships a `tracehash` feature built for
+   exactly this: stage-by-stage hash comparison against C minimap2, enabled on both sides. Its
+   existence means upstream anticipated translation divergences and built the tool to localise
+   them. Best outcome if it works — the pure-Rust backend is what makes this module buildable on
+   every platform without a C toolchain — but it is open-ended work on someone else's code.
+2. **Shell out to an installed minimap2** (Decision 1a, previously rejected). Correct by
+   construction, and the reference implementation is already on this machine. Costs a PATH
+   dependency, per-OS binary shipping, and the single-artifact property the project values.
+3. **Link the C library** (Decision 1b, previously rejected). Correct by construction and no PATH
+   dependency, but reintroduces a C toolchain, an `unsafe` surface, the htslib trap, and an
+   unproven Windows build.
+4. **Ship anyway with the divergence documented.** Only defensible if the affected reads turn out
+   not to change private-Y calls in practice — which is measurable, by running the full pipeline
+   both ways on WGS229 and comparing the private-Y sets rather than the MAPQ distributions. That
+   is a real experiment and may well show the difference does not propagate; it should not be
+   assumed either way.
 
 ## Decision 1 — aligner backend integration
 
