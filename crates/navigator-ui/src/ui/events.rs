@@ -988,6 +988,58 @@ impl NavigatorApp {
                     }
                     self.running_denovo = false;
                 }
+                Event::RealignProgress {
+                    alignment_id,
+                    step,
+                    total,
+                    label,
+                    detail,
+                } => {
+                    self.realign = Some(super::RealignState {
+                        alignment_id,
+                        step,
+                        total,
+                        label,
+                        detail,
+                        finished: None,
+                    });
+                }
+                Event::RealignDone {
+                    alignment_id,
+                    new_alignment_id,
+                    cancelled,
+                    summary,
+                } => {
+                    let finished = match (new_alignment_id, cancelled) {
+                        (Some(id), _) => super::RealignFinished::Done {
+                            new_alignment_id: id,
+                            summary: summary.clone(),
+                        },
+                        (None, true) => super::RealignFinished::Cancelled,
+                        (None, false) => super::RealignFinished::Failed(summary.clone()),
+                    };
+                    let prior = self.realign.take();
+                    self.realign = Some(super::RealignState {
+                        alignment_id,
+                        step: prior.as_ref().map(|r| r.step).unwrap_or(0),
+                        total: prior.as_ref().map(|r| r.total).unwrap_or(0),
+                        label: String::new(),
+                        detail: String::new(),
+                        finished: Some(finished),
+                    });
+                    // A new alignment row exists; the run's list has to learn about it or the
+                    // realigned alignment is invisible until the user navigates away and back.
+                    if new_alignment_id.is_some() {
+                        if let Some(run_id) = self
+                            .alignments
+                            .iter()
+                            .find(|a| a.id == alignment_id)
+                            .map(|a| a.sequence_run_id)
+                        {
+                            let _ = self.tx.send(Command::LoadAlignments(run_id));
+                        }
+                    }
+                }
                 Event::AnalysisProgress {
                     step,
                     total,

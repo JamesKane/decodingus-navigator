@@ -258,6 +258,7 @@ detail.sub.imported=Imported SNPs
 hint.noVariantsTrack=No called variants to plot — build the variant profile first.
 hint.autoProfileTable=Open the Profile sub-tab for the full per-site table.
 card.sexMetrics=Sex & read metrics
+card.realign=Reference build
 card.yHaplogroup=Y haplogroup
 card.descentReport=Descent report
 card.branchReport=Branch report

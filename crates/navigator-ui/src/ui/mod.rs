@@ -471,6 +471,36 @@ struct AnalysisModal {
     started: f64,
 }
 
+/// A realignment in flight, or the result of the last one.
+///
+/// Deliberately card state rather than a modal: a realignment runs for hours, and a dialog that
+/// owns the screen for that long stops the user doing anything else with a workspace they are
+/// perfectly able to keep using. The card sits with the alignment it belongs to and updates in
+/// place.
+#[derive(Clone)]
+struct RealignState {
+    /// The source alignment this job belongs to — cards for other alignments ignore it.
+    alignment_id: i64,
+    step: usize,
+    total: usize,
+    label: String,
+    detail: String,
+    /// Set once the job ends; `None` while it runs.
+    finished: Option<RealignFinished>,
+}
+
+/// How a realignment ended, for the card to report.
+#[derive(Clone)]
+enum RealignFinished {
+    /// Registered as `new_alignment_id`, with a one-line summary.
+    Done {
+        new_alignment_id: i64,
+        summary: String,
+    },
+    Cancelled,
+    Failed(String),
+}
+
 /// Editable copy of a project, driving the project Edit modal (Some ⇒ the dialog is shown).
 #[derive(Clone)]
 struct EditProject {
@@ -633,6 +663,8 @@ pub struct NavigatorApp {
     rx: Receiver<Event>,
     /// In-flight full-analysis progress (Some ⇒ the modal dialog is shown).
     analysis: Option<AnalysisModal>,
+    /// The running (or last finished) realignment; see [`RealignState`].
+    realign: Option<RealignState>,
     /// Set the moment Cancel is clicked, cleared when the run actually ends.
     ///
     /// Cancellation is cooperative: the walkers stop at their next check, so there is always a gap
@@ -1258,6 +1290,7 @@ impl NavigatorApp {
             tx,
             rx,
             analysis: None,
+            realign: None,
             cancelling: false,
             edit_subject: None,
             edit_kit: None,

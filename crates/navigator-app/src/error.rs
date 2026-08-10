@@ -113,3 +113,34 @@ impl From<tokio::task::JoinError> for AppError {
         AppError::Join(e.to_string())
     }
 }
+
+impl AppError {
+    /// Whether this is a user-requested stop rather than a failure.
+    ///
+    /// Long jobs have to tell the two apart — reporting someone's own Cancel click as an error is
+    /// both wrong and alarming — and the distinction lives here so callers do not resort to
+    /// matching on message text.
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            self,
+            AppError::Analysis(navigator_analysis::AnalysisError::Cancelled)
+                | AppError::Align(navigator_align::AlignError::Cancelled)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cancel_is_distinguishable_from_a_failure() {
+        assert!(AppError::Analysis(navigator_analysis::AnalysisError::Cancelled).is_cancelled());
+        assert!(AppError::Align(navigator_align::AlignError::Cancelled).is_cancelled());
+        assert!(!AppError::Import("disk full".into()).is_cancelled());
+        assert!(
+            !AppError::Analysis(navigator_analysis::AnalysisError::Message("boom".into())).is_cancelled(),
+            "a message that happens to be an analysis error is still a failure"
+        );
+    }
+}

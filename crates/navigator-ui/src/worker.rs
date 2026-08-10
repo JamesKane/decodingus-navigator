@@ -542,6 +542,15 @@ pub enum Command {
     },
     /// Request cancellation of the in-flight full analysis (checked between steps).
     CancelAnalysis,
+    /// Realign an off-build alignment onto another reference (design/realignment-module.md).
+    /// Hours of work; streams `RealignProgress` per stage, then `RealignDone`.
+    StartRealign {
+        alignment_id: i64,
+        target_build: String,
+    },
+    /// Stop a running realignment. Shares the cancellation registry with the analysis pipeline —
+    /// only one long job runs at a time, by design.
+    CancelRealign,
     /// Update a subject's editable fields. Empty optional values clear the column.
     UpdateBiosample {
         guid: SampleGuid,
@@ -1106,6 +1115,22 @@ pub enum Event {
     /// The full-analysis pipeline finished (or was cancelled).
     AnalysisDone {
         cancelled: bool,
+    },
+    /// A realignment stage began.
+    RealignProgress {
+        alignment_id: i64,
+        step: usize,
+        total: usize,
+        label: String,
+        detail: String,
+    },
+    /// A realignment finished, was cancelled, or failed. `new_alignment_id` is present only on
+    /// success — the row is inserted last, so its absence means nothing was registered.
+    RealignDone {
+        alignment_id: i64,
+        new_alignment_id: Option<i64>,
+        cancelled: bool,
+        summary: String,
     },
     AllAlignments(Vec<Alignment>),
     Ibd(IbdComparison),
@@ -1884,6 +1909,10 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             Event::Error(format!("internal: unrouted AnalyzeSubject {biosample_guid}"))
         }
         Command::CancelAnalysis => Event::Error("internal: unrouted CancelAnalysis".into()),
+        Command::StartRealign { alignment_id, .. } => {
+            Event::Error(format!("internal: unrouted StartRealign {alignment_id}"))
+        }
+        Command::CancelRealign => Event::Error("internal: unrouted CancelRealign".into()),
         Command::FindPrivateY { alignment_id, mask } => {
             let result = match mask {
                 YMask::SelfReferential => app.private_y_variants_self_masked(alignment_id).await,
@@ -2378,6 +2407,80 @@ async fn ensure_indexes_for_subject_streaming(
             ensure_index_streaming(app, id, evt_tx, wake).await;
         }
     }
+}
+
+/// Run a realignment, emitting `RealignProgress` as each stage begins and `RealignDone` at the end.
+///
+/// The reference has to be resolved before the job starts — realigning to a build whose FASTA is
+/// not cached would otherwise stall silently at the index stage while gigabytes download.
+async fn run_realign_streaming(
+    app: &App,
+    alignment_id: i64,
+    target_build: String,
+    cancel: CancelToken,
+    evt_tx: &Sender<Event>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+) {
+    // Resolve (downloading if needed) the reference we are mapping to, streaming its progress the
+    // same way every other reference-dependent command does.
+    ensure_references_streaming(app, std::slice::from_ref(&target_build), evt_tx, &*wake).await;
+
+    let reference = match app.cached_reference_path(&target_build) {
+        Some(path) => path,
+        None => {
+            let _ = evt_tx.send(Event::RealignDone {
+                alignment_id,
+                new_alignment_id: None,
+                cancelled: false,
+                summary: format!("the {target_build} reference is not available"),
+            });
+            wake();
+            return;
+        }
+    };
+
+    let tx = evt_tx.clone();
+    let waker = wake.clone();
+    let progress = move |p: navigator_app::realign_job::RealignProgress| {
+        let _ = tx.send(Event::RealignProgress {
+            alignment_id,
+            step: p.stage.step(),
+            total: p.total_stages,
+            label: p.stage.label().to_string(),
+            detail: p.detail,
+        });
+        waker();
+    };
+
+    let params = navigator_app::realign_job::RealignParams {
+        target_build: target_build.clone(),
+        target_reference: reference,
+        preset: None,
+        scratch_root: None,
+    };
+
+    let event = match app.realign_alignment(alignment_id, params, cancel, progress).await {
+        Ok(outcome) => Event::RealignDone {
+            alignment_id,
+            new_alignment_id: Some(outcome.alignment.id),
+            cancelled: false,
+            summary: format!(
+                "{} reads on {}; {} had been unplaced, {} duplicates marked",
+                outcome.reads_written, target_build, outcome.source_unmapped_reads, outcome.duplicates_marked,
+            ),
+        },
+        Err(e) => {
+            let cancelled = e.is_cancelled();
+            Event::RealignDone {
+                alignment_id,
+                new_alignment_id: None,
+                cancelled,
+                summary: if cancelled { String::new() } else { e.to_string() },
+            }
+        }
+    };
+    let _ = evt_tx.send(event);
+    wake();
 }
 
 /// Run the full per-alignment analysis pipeline, emitting `AnalysisProgress` before each step
@@ -3290,6 +3393,19 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 import_project_dir_streaming(&app, dir, reference, &evt_tx, wake.clone()).await;
                             }
                             // Signals the in-flight full analysis / deep-analyze to stop between steps.
+                            Command::StartRealign {
+                                alignment_id,
+                                target_build,
+                            } => {
+                                let (gen, cancel) = cancels.begin();
+                                run_realign_streaming(&app, alignment_id, target_build, cancel, &evt_tx, wake.clone())
+                                    .await;
+                                cancels.end(gen);
+                            }
+                            Command::CancelRealign => {
+                                cancels.cancel_current();
+                                wake();
+                            }
                             Command::CancelAnalysis => {
                                 cancels.cancel_current();
                             }

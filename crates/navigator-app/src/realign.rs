@@ -118,6 +118,15 @@ impl App {
         }
     }
 
+    /// The cached FASTA for `build`, if it has already been fetched.
+    ///
+    /// Public because the realignment job needs the reference *before* it starts: mapping to a
+    /// build whose FASTA is not cached would otherwise stall at the index stage while gigabytes
+    /// download, with nothing on screen explaining the wait.
+    pub fn cached_reference_path(&self, build: &str) -> Option<PathBuf> {
+        self.gateway.cached_reference(build)
+    }
+
     /// Where stage C should write, for a realignment of `source_id` to `build`.
     ///
     /// Derived files live beside the workspace rather than next to the vendor's original: the

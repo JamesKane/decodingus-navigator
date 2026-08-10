@@ -1085,6 +1085,8 @@ impl NavigatorApp {
             self.start_full_analysis(id);
         }
         ui.add_space(8.0);
+        card(ui, self.tr("card.realign"), |ui| self.realign_section(ui, id));
+        ui.add_space(10.0);
         card(ui, self.tr("card.coverage"), |ui| self.coverage_section(ui, id));
         ui.add_space(10.0);
         card(ui, self.tr("card.sexMetrics"), |ui| self.sex_metrics_section(ui, id));
