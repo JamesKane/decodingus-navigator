@@ -604,33 +604,58 @@ impl PairReader {
 
     /// The next batch of templates, or `None` at end of input.
     ///
-    /// A length mismatch between the two files is an error rather than a truncation: R1/R2 that
-    /// have drifted out of step would pair every subsequent read with the wrong mate, which is
-    /// far worse than refusing to run.
+    /// Reads the two files **one record at a time in step**, accumulating until the base budget is
+    /// reached. The obvious implementation — ask each file for a batch and zip the results — is
+    /// wrong, and wrong in a way that looks right on tidy data: the underlying reader batches by
+    /// *bases*, so two files whose reads differ in length yield different record counts from the
+    /// same budget. Real data has a tail of shorter reads from adapter and quality trimming, so a
+    /// 332,653-against-332,722 mismatch appears on a genuine WGS and never on a fixture where every
+    /// read is the same length.
+    ///
+    /// A file genuinely ending before the other is still an error rather than a truncation: R1/R2
+    /// that have drifted out of step would pair every later read with the wrong mate, which is far
+    /// worse than refusing to run.
     fn next_batch(&mut self, chunk: i64) -> Result<Option<Vec<(BseqRecord, BseqRecord)>>, AlignError> {
-        let left = self
-            .left
-            .read_batch(chunk, true)
-            .map_err(|e| AlignError::io(&self.left_path, e))?;
-        let right = self
-            .right
-            .read_batch(chunk, true)
-            .map_err(|e| AlignError::io(&self.right_path, e))?;
+        let mut batch = Vec::new();
+        let mut bases: i64 = 0;
 
-        if left.is_empty() && right.is_empty() {
-            return Ok(None);
+        loop {
+            let left = self
+                .left
+                .read_record_with_qual(true)
+                .map_err(|e| AlignError::io(&self.left_path, e))?;
+            let right = self
+                .right
+                .read_record_with_qual(true)
+                .map_err(|e| AlignError::io(&self.right_path, e))?;
+
+            match (left, right) {
+                (Some(a), Some(b)) => {
+                    bases += a.l_seq as i64 + b.l_seq as i64;
+                    batch.push((a, b));
+                }
+                (None, None) => break,
+                (a, _) => {
+                    return Err(AlignError::Message(format!(
+                        "{} and {} are not in lockstep — {} ran out first, so the remaining mates \
+                         would be paired wrongly",
+                        self.left_path.display(),
+                        self.right_path.display(),
+                        if a.is_none() {
+                            "the first file"
+                        } else {
+                            "the second file"
+                        },
+                    )));
+                }
+            }
+
+            if bases >= chunk {
+                break;
+            }
         }
-        if left.len() != right.len() {
-            return Err(AlignError::Message(format!(
-                "{} and {} are not in lockstep ({} vs {} reads in a batch) — \
-                 the mates would be paired wrongly",
-                self.left_path.display(),
-                self.right_path.display(),
-                left.len(),
-                right.len(),
-            )));
-        }
-        Ok(Some(left.into_iter().zip(right).collect()))
+
+        Ok((!batch.is_empty()).then_some(batch))
     }
 }
 

@@ -360,10 +360,14 @@ pub struct RealignPlan {
 
 /// Scratch multiple of the source's **uncompressed** volume.
 ///
-/// Sized against measured stage peaks with intermediates deleted as they are consumed (see
-/// [`Stage`]): gzipped FASTQ and the mapped BAM coexist, then the mapped BAM and the sort's runs
-/// and output. Three simultaneous copies of the read data is the realistic peak.
-const SCRATCH_MULTIPLE: u64 = 3;
+/// Calibrated against a measured run, not reasoned from stage sizes — the reasoned figure was 25%
+/// low. Realigning WGS229 (17.3 GB CRAM) peaked at **276 GB of scratch**, i.e. 16x the source
+/// file, which this reproduces as `4` here times the CRAM expansion factor below.
+///
+/// The peak is inside the revert, not where the stage list suggests: its spill runs are the
+/// bespoke uncompressed encoding while its FASTQ output is gzipped, so the two coexist at very
+/// different densities and the sum beats anything later in the pipeline.
+const SCRATCH_MULTIPLE: u64 = 4;
 
 /// How much larger the data is than the file holding it.
 ///

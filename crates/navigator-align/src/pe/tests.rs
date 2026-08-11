@@ -447,3 +447,130 @@ fn cancellation_stops_paired_mapping() {
     .unwrap_err();
     assert!(matches!(err, AlignError::Cancelled));
 }
+
+/// **Regression.** Every fixture above uses fixed-length reads, and that is exactly why they all
+/// passed while a real WGS failed 74 minutes into a run.
+///
+/// The paired reader batches by *bases*. If the two files are read independently with the same
+/// base budget, files whose reads differ in length return different record counts — and real data
+/// always has a tail of shorter reads from adapter and quality trimming. On WGS229 that surfaced
+/// as 332,653 against 332,722 in one batch, tripping the lockstep guard on files that were
+/// perfectly in step.
+///
+/// So this fixture deliberately gives R1 and R2 *different* length distributions, and asserts
+/// every pair still comes back matched.
+#[test]
+fn pairs_stay_in_step_when_reads_have_different_lengths() {
+    let dir = scratch("varlen");
+    let contig_len = 200_000;
+    let reference = write_reference(&dir, 1, contig_len);
+    let bases = reference_bases(0, contig_len);
+
+    let (p1, p2) = (dir.join("r1.fq"), dir.join("r2.fq"));
+    let (mut t1, mut t2) = (Vec::new(), Vec::new());
+    for i in 0..400usize {
+        let start = 1000 + i * 200;
+        // R1 keeps full length; R2 is trimmed by a varying amount, as a trimmer would leave it.
+        let len1 = 150;
+        let len2 = 150 - (i % 37);
+        let r1 = &bases[start..start + len1];
+        let r2 = revcomp(&bases[start + 300 - len2..start + 300]);
+
+        t1.extend_from_slice(format!("@p{i}\n").as_bytes());
+        t1.extend_from_slice(r1);
+        t1.extend_from_slice(b"\n+\n");
+        t1.extend_from_slice(&vec![b'I'; len1]);
+        t1.push(b'\n');
+
+        t2.extend_from_slice(format!("@p{i}\n").as_bytes());
+        t2.extend_from_slice(&r2);
+        t2.extend_from_slice(b"\n+\n");
+        t2.extend_from_slice(&vec![b'I'; len2]);
+        t2.push(b'\n');
+    }
+    std::fs::write(&p1, t1).unwrap();
+    std::fs::write(&p2, t2).unwrap();
+
+    let index = dir.join("ref.mmi");
+    build_index(
+        &reference,
+        &index,
+        Preset::ShortRead,
+        BatchSize::default(),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    let sam = dir.join("out.sam");
+    let stats = run(&index, &p1, &p2, &sam, &dir);
+
+    assert_eq!(stats.queries, 800, "400 templates, both ends, none dropped");
+
+    // Both ends of every template must be present and share a QNAME.
+    let recs = primaries(&sam);
+    assert_eq!(recs.len(), 800);
+    for pair in recs.chunks(2) {
+        assert_eq!(pair[0].qname, pair[1].qname, "a template's ends were separated");
+        assert_ne!(pair[0].flag & 0x40, 0);
+        assert_ne!(pair[1].flag & 0x80, 0);
+    }
+}
+
+/// The guard still has to fire when the files really are mismatched, which is the case it exists
+/// for — one file ending before the other.
+#[test]
+fn a_truncated_mate_file_is_still_refused() {
+    let dir = scratch("truncated");
+    let contig_len = 200_000;
+    let reference = write_reference(&dir, 1, contig_len);
+    let bases = reference_bases(0, contig_len);
+
+    let (p1, p2) = (dir.join("r1.fq"), dir.join("r2.fq"));
+    let mut t1 = Vec::new();
+    for i in 0..5usize {
+        let start = 1000 + i * 400;
+        t1.extend_from_slice(format!("@p{i}\n").as_bytes());
+        t1.extend_from_slice(&bases[start..start + 150]);
+        t1.extend_from_slice(b"\n+\n");
+        t1.extend_from_slice(&[b'I'; 150]);
+        t1.push(b'\n');
+    }
+    std::fs::write(&p1, t1).unwrap();
+    // Only two mates for five R1 reads.
+    let mut t2 = Vec::new();
+    for i in 0..2usize {
+        let start = 1000 + i * 400;
+        t2.extend_from_slice(format!("@p{i}\n").as_bytes());
+        t2.extend_from_slice(&revcomp(&bases[start + 250..start + 400]));
+        t2.extend_from_slice(b"\n+\n");
+        t2.extend_from_slice(&[b'I'; 150]);
+        t2.push(b'\n');
+    }
+    std::fs::write(&p2, t2).unwrap();
+
+    let index = dir.join("ref.mmi");
+    build_index(
+        &reference,
+        &index,
+        Preset::ShortRead,
+        BatchSize::default(),
+        &mut |_, _| {},
+    )
+    .unwrap();
+    let err = map_pairs(
+        &index,
+        &p1,
+        &p2,
+        &dir.join("out.sam"),
+        &dir.join("scratch"),
+        &MapParams {
+            preset: Preset::ShortRead,
+            threads: 1,
+            read_group: None,
+            format: OutputFormat::Sam,
+            reference: None,
+        },
+        &|| false,
+        &mut |_, _, _| {},
+    );
+    assert!(err.is_err(), "a truncated mate file must not be paired silently");
+}
