@@ -35,6 +35,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# `signal`, so the headless realignment harness can cancel through the job's own token on Ctrl-C
+# and let it clean up its scratch. Dev-only: the shipped crate does not need it.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
 # Build a synthetic mtDNA FASTA from the bundled rCRS for the import test.
 navigator-analysis = { workspace = true }
 
