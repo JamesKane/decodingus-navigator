@@ -162,7 +162,7 @@ impl App {
     pub fn realigned_output_path(&self, source_id: i64, build: &str) -> PathBuf {
         navigator_domain::paths::decodingus_dir()
             .join("realigned")
-            .join(format!("alignment-{source_id}.{build}.cram"))
+            .join(format!("alignment-{source_id}.{build}.bam"))
     }
 }
 

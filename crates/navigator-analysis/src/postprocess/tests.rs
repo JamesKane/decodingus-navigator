@@ -820,3 +820,45 @@ fn cram_refuses_a_primary_record_that_carries_no_sequence() {
         "the error should name the cause: {err}"
     );
 }
+
+/// Finalising moves the marked BAM into place and indexes it — across *several* contigs, which is
+/// the shape that cannot be indexed as CRAM: every slice straddling a contig boundary is
+/// multi-reference, and `cram::fs::index` decodes those against an empty reference repository.
+#[test]
+fn finalizing_moves_the_bam_into_place_and_indexes_it() {
+    use super::finalize::{bai_path, finalize_bam};
+
+    let dir = scratch("finalize");
+    let contig_len = 10_000;
+    let bases = reference_bases_at(contig_len);
+    let hdr = header(&[("chr1", contig_len), ("chr2", contig_len), ("chrM", contig_len)]);
+
+    let mut records: Vec<RecordBuf> = Vec::new();
+    for contig in 0..3usize {
+        for i in 0..20usize {
+            let mut record = matching_record(&format!("r{contig}{i:03}"), 1 + i * 50, 50, &bases);
+            *record.reference_sequence_id_mut() = Some(contig);
+            records.push(record);
+        }
+    }
+
+    let marked = dir.join("marked.bam");
+    write_bam_sorted(&marked, &hdr, &records);
+
+    let out = dir.join("alignment-1.chm13v2.0.bam");
+    let finalized = finalize_bam(&marked, &out).expect("finalize");
+
+    assert!(!marked.exists(), "the intermediate is moved, not copied");
+    assert_eq!(finalized.bam, out);
+    assert_eq!(finalized.index, bai_path(&out));
+    assert!(finalized.index.exists(), "a .bai sits beside the alignment");
+
+    let (_, read_back) = {
+        let file = std::fs::File::open(&out).unwrap();
+        let mut reader = bam::io::Reader::new(file);
+        let header = reader.read_header().unwrap();
+        let records: Vec<_> = reader.record_bufs(&header).map(|r| r.unwrap()).collect();
+        (header, records)
+    };
+    assert_eq!(read_back.len(), 60, "every record survives finalising");
+}

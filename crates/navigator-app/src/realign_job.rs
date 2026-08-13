@@ -8,7 +8,7 @@
 //! ## Shape of the job
 //!
 //! ```text
-//! preflight ──► revert ──► index ──► map ──► sort ──► markdup ──► CRAM ──► register
+//! preflight ──► revert ──► index ──► map ──► sort ──► markdup ──► finalize ──► register
 //! ```
 //!
 //! It is hours of work on tens of GB of scratch, so three things matter more than they would in a
@@ -52,7 +52,7 @@ pub enum RealignStage {
     Map,
     Sort,
     MarkDuplicates,
-    Compress,
+    Finalize,
     Register,
 }
 
@@ -64,7 +64,7 @@ impl RealignStage {
         RealignStage::Map,
         RealignStage::Sort,
         RealignStage::MarkDuplicates,
-        RealignStage::Compress,
+        RealignStage::Finalize,
         RealignStage::Register,
     ];
 
@@ -77,7 +77,7 @@ impl RealignStage {
             RealignStage::Map => "Mapping reads to the new reference",
             RealignStage::Sort => "Sorting by position",
             RealignStage::MarkDuplicates => "Marking duplicates",
-            RealignStage::Compress => "Compressing to CRAM",
+            RealignStage::Finalize => "Indexing the new alignment",
             RealignStage::Register => "Adding it to the workspace",
         }
     }
@@ -106,10 +106,6 @@ pub struct RealignOutcome {
     pub source_unmapped_reads: u64,
     pub reads_written: u64,
     pub duplicates_marked: u64,
-    /// Secondary/supplementary records the mapper emitted without `SEQ`, which CRAM cannot encode.
-    /// No read is lost — the bases live on the primary — but the count is reported rather than
-    /// hidden, like every other drop in this pipeline.
-    pub sequenceless_dropped: u64,
 }
 
 /// Tuning a caller may override; the defaults are what the UI uses.
@@ -298,18 +294,17 @@ impl App {
 
         discard(&sorted);
 
-        report(RealignStage::Compress, "");
-        let cram = {
+        report(RealignStage::Finalize, "");
+        let finalized = {
             let (input, out) = (marked.clone(), output.clone());
-            let reference = params.target_reference.clone();
-            let token = cancel.clone();
-            tokio::task::spawn_blocking(move || postprocess::write_cram(&input, &out, &reference, &token, &mut |_| {}))
+            tokio::task::spawn_blocking(move || postprocess::finalize_bam(&input, &out))
                 .await
                 .map_err(|e| AppError::Join(e.to_string()))??
         };
 
-        // The CRAM exists, so the intermediates behind it are disposable even if registration then
-        // fails — re-registering is seconds of work, not hours.
+        // The output exists, so the intermediates behind it are disposable even if registration
+        // then fails — re-registering is seconds of work, not hours. `marked` is not discarded
+        // here because finalising *moved* it into place rather than copying it.
         scratch.completed();
 
         // ---- stage D: register ----
@@ -317,14 +312,12 @@ impl App {
         // Last, deliberately. The row is only inserted once the artifact it points at exists, so a
         // job that fails or is cancelled leaves no alignment referring to a file that was never
         // finished.
-        discard(&marked);
-
         report(RealignStage::Register, "");
         cancel.check()?;
         let alignment = self
             .register_realigned_alignment(
                 source_id,
-                &cram.cram,
+                &finalized.bam,
                 &params.target_reference,
                 &params.target_build,
                 "minimap2",
@@ -335,9 +328,8 @@ impl App {
         Ok(RealignOutcome {
             alignment,
             source_unmapped_reads: reverted.stats.unmapped_reads,
-            reads_written: cram.records,
+            reads_written: markdup.records,
             duplicates_marked: markdup.duplicates,
-            sequenceless_dropped: cram.sequenceless_dropped,
         })
     }
 

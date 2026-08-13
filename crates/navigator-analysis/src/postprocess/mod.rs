@@ -24,10 +24,12 @@
 
 pub mod bamio;
 mod cram;
+mod finalize;
 pub mod markdup;
 pub mod sort;
 
 pub use cram::{write_cram, CramOutput};
+pub use finalize::{bai_path, finalize_bam, index_bam, FinalizedAlignment};
 pub use markdup::{mark_duplicates, MarkDupParams, MarkDupStats};
 pub use sort::{sort_alignment, SortParams, SortStats};
 
