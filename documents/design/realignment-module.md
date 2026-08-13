@@ -1,7 +1,8 @@
 # Realignment module — design & options
 
-Status: **design / specification only** (no code), with a **phase 0 validation spike run
-2026-08-08** whose measurements are folded in below. Branch context: `rust-rewrite`.
+Status: **built, phases 1–4; phase 5 (WGS-scale validation) in progress.** Branch:
+`worktree-realignment`. The measurements from the phase 0 spike (2026-08-08), the backend parity
+work (2026-08-10), and the first whole-genome run (2026-08-12) are folded in below.
 Scope if built: `navigator-analysis` (revert + post-process), a new `navigator-align` crate
 (the mapper — see Decision 1), `navigator-refgenome` (aligner-index cache), `navigator-app`
 (job orchestration + provenance), `navigator-store` (alignment provenance migration),
@@ -150,7 +151,7 @@ source Alignment (GRCh37/38 BAM/CRAM)
         │
    (B) align ───────────►  map FASTQ to CHM13v2 with the build's aligner index
         │
-   (C) post-process ────►  sort by coord → mark duplicates (short read) → CRAM + .crai
+   (C) post-process ────►  sort by coord → mark duplicates (short read) → BAM + .bai
         │
    (D) register ────────►  new Alignment row (reference_build=chm13v2.0, aligner=…,
                             derived_from=<source id>, content_sha256 computed)
@@ -209,10 +210,18 @@ external-tool decision (Decision 1).
   alignment start looks right and silently misses them. Both ends of a template must receive the
   same verdict — one end marked and the other not shows consumers half a pair — which holds
   because the signature is symmetric and the sort is deterministic.
-- **Compress to CRAM** against the CHM13v2 reference (smaller; Navigator already reads CRAM
-  with a reference repository) and index (`.crai`). The reference is part of the file, not a
-  tuning knob: compressing against the wrong one yields a CRAM that decodes to wrong bases rather
-  than failing, which is why the alignment row must record `reference_path` alongside `bam_path`.
+- **Finalise and index.** Duplicate marking has already written exactly the bytes that belong in
+  the output, so this is a rename plus a `.bai` rather than another compression pass.
+
+  This was **CRAM emit** — reference-compressed, ~17 GB against 60–80 GB for a 30x WGS, which is
+  the better container on paper. Two defects in `noodles-cram` 0.94 make it unreachable, and both
+  appear only at real scale: writing panics on a secondary alignment with `SEQ: *` (legal SAM, and
+  what minimap2 emits), and `cram::fs::index` then panics on any *multi-reference* slice because it
+  decodes records against an empty `fasta::Repository` — `// TODO` still in the upstream source.
+  With 25 contigs every slice straddling a contig boundary is multi-reference, so a whole-genome
+  CRAM cannot be indexed at all. A desktop user holds a handful of whole genomes; disk is the
+  cheaper side of that trade. The CRAM path is kept and still tested — the defects are upstream and
+  fixable, and this should be revisitable without rebuilding the stage.
 
 ### Stage D — registration & provenance
 
@@ -520,6 +529,38 @@ coordinate-sorted CRAM with a `.crai` supports it, and collation is a sort, so p
 order does not matter: each worker produces sorted runs the existing k-way merge already consumes.
 Unmapped reads need one extra pass over the `*` bin. That should take stage A from ~65 minutes to
 roughly ten.
+
+### Where the time actually went (2026-08-13)
+
+Three hypotheses were tried against the mapping stage before one was measured, which is the part
+worth recording: the stage alternates read → map → write per batch, the CPU-load graph shows a
+valley between peaks, and *both* plausible readings of that valley were wrong.
+
+Profiling was blocked by the build, not by the code. `[profile.release]` sets `strip = true`, so
+every sample resolves to `???`. A `profiling` profile now inherits release and keeps symbols, and
+`navigator-align/examples/map_profile` runs stage B alone against an already-reverted FASTQ pair so
+the profile attributes the stall to a function rather than to a stage. With that, the main thread:
+
+| | share of the serial phase |
+|---|---:|
+| zlib deflate (`longest_match` alone a third) | **~60%** |
+| malloc | 10.7% |
+| BAM record encoding | ~5.7% |
+| inflate + FASTQ parse | ~3.8% |
+
+**The valley is the output BAM being compressed on one thread.** Not read delivery, which was the
+standing assumption and is under 4%. Giving the mapper's writer the same worker pool stage C got
+took the stage from **21,500 to 26,500 reads/s (+23%)** on identical input, and removed deflate
+from the main-thread profile entirely.
+
+What remains serial there is ~15% BAM record encoding and ~9% inflate, plus malloc churn from the
+SAM-text→`RecordBuf` round trip that [`output`](../../crates/navigator-align/src/output.rs)
+documents as a deliberate trade. Moving encoding into the pool and prefetching the next batch on
+its own thread are the next two steps, in that order.
+
+One reading correction for anyone profiling this again: main-thread samples inside minimap2 are not
+overhead. `rayon::ThreadPool::install` makes the calling thread a pool worker, so the main thread
+does its share of the mapping and shows minimap2 frames while doing it.
 
 ### Resumability is not a nice-to-have
 
@@ -877,9 +918,10 @@ it never mutates or replaces the vendor's original.
    mapping, and SAM/BAM/CRAM output through noodles (BAM by default). Split-vs-whole index
    equivalence is tested for both single and paired reads.
 3. **Stage C + Stage D** ✅ built. Stage C is `navigator-analysis::postprocess`: coordinate sort,
-   short-read-only duplicate marking on unclipped 5' positions, and CRAM emit with a `.crai`.
-   Both the sort and the marking verify they are lossless, and CRAM emission refuses input that
-   does not declare `@HD SO:coordinate`. Stage D is migration `0045_alignment_derivation` plus
+   short-read-only duplicate marking on unclipped 5' positions, and a finalise step that moves the
+   marked BAM into place and indexes it (`.bai`). Both the sort and the marking verify they are
+   lossless. CRAM emit exists and is tested but is not what the job runs — see Stage C above for
+   the two `noodles-cram` defects that rule it out at whole-genome scale. Stage D is migration `0045_alignment_derivation` plus
    `navigator-app::realign`: the realigned row is inserted under the source's `sequence_run_id`
    with `derived_from_alignment_id` and `derivation` set, the source untouched, and realigning to
    a build the sample is already on is refused.
