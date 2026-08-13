@@ -756,3 +756,67 @@ fn cancellation_stops_cram_emission() {
     let err = write_cram(&bam, &dir.join("out.cram"), &reference, &cancel, &mut |_| {}).unwrap_err();
     assert!(matches!(err, AnalysisError::Cancelled));
 }
+
+/// A secondary alignment with `SEQ: *` — legal SAM, and what minimap2 emits, since only the
+/// primary carries the bases. It cannot be encoded as differences from the reference, so it is
+/// dropped and counted rather than panicking the writer from inside noodles.
+#[test]
+fn cram_drops_a_secondary_record_that_carries_no_sequence() {
+    let dir = scratch("cram-secondary");
+    let contig_len = 10_000;
+    let reference = write_reference_fasta(&dir, "chr1", contig_len);
+    let bases = reference_bases_at(contig_len);
+    let hdr = header(&[("chr1", contig_len)]);
+
+    let primary = matching_record("r000", 1, 65, &bases);
+    let secondary = RecordBuf::builder()
+        .set_name("r000")
+        .set_flags(Flags::SECONDARY)
+        .set_reference_sequence_id(0)
+        .set_alignment_start(noodles::core::Position::new(500).unwrap())
+        .set_cigar(parse_cigar("65M"))
+        .build();
+
+    let bam = dir.join("sorted.bam");
+    write_bam_sorted(&bam, &hdr, &[primary, secondary]);
+
+    let out = dir.join("out.cram");
+    let result = write_cram(&bam, &out, &reference, &CancelToken::none(), &mut |_| {}).expect("CRAM emit");
+
+    assert_eq!(result.records, 1, "the primary is written");
+    assert_eq!(result.sequenceless_dropped, 1, "the secondary is dropped, and counted");
+}
+
+/// The same shape on a *primary* is a read going missing, not a redundant record, so it fails
+/// loudly instead of being absorbed into a drop count.
+#[test]
+fn cram_refuses_a_primary_record_that_carries_no_sequence() {
+    let dir = scratch("cram-primary-noseq");
+    let contig_len = 10_000;
+    let reference = write_reference_fasta(&dir, "chr1", contig_len);
+    let hdr = header(&[("chr1", contig_len)]);
+
+    let orphan = RecordBuf::builder()
+        .set_name("r000")
+        .set_flags(Flags::from(0u16))
+        .set_reference_sequence_id(0)
+        .set_alignment_start(noodles::core::Position::new(1).unwrap())
+        .set_cigar(parse_cigar("65M"))
+        .build();
+
+    let bam = dir.join("sorted.bam");
+    write_bam_sorted(&bam, &hdr, &[orphan]);
+
+    let err = write_cram(
+        &bam,
+        &dir.join("out.cram"),
+        &reference,
+        &CancelToken::none(),
+        &mut |_| {},
+    )
+    .expect_err("a primary with no SEQ must not be dropped silently");
+    assert!(
+        format!("{err}").contains("no SEQ"),
+        "the error should name the cause: {err}"
+    );
+}

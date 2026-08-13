@@ -106,6 +106,10 @@ pub struct RealignOutcome {
     pub source_unmapped_reads: u64,
     pub reads_written: u64,
     pub duplicates_marked: u64,
+    /// Secondary/supplementary records the mapper emitted without `SEQ`, which CRAM cannot encode.
+    /// No read is lost — the bases live on the primary — but the count is reported rather than
+    /// hidden, like every other drop in this pipeline.
+    pub sequenceless_dropped: u64,
 }
 
 /// Tuning a caller may override; the defaults are what the UI uses.
@@ -146,8 +150,9 @@ impl App {
             .scratch_root
             .clone()
             .unwrap_or_else(|| output.with_extension("scratch"));
-        // Removes every intermediate on the way out, however the job ends.
-        let scratch = JobScratch::new(scratch)?;
+        // Removes every intermediate on the way out, however the job ends — unless
+        // [`keep_scratch_on_failure`] is set and the job dies.
+        let mut scratch = JobScratch::new(scratch)?;
 
         let report = |stage: RealignStage, detail: &str| {
             progress(RealignProgress {
@@ -303,6 +308,10 @@ impl App {
                 .map_err(|e| AppError::Join(e.to_string()))??
         };
 
+        // The CRAM exists, so the intermediates behind it are disposable even if registration then
+        // fails — re-registering is seconds of work, not hours.
+        scratch.completed();
+
         // ---- stage D: register ----
         //
         // Last, deliberately. The row is only inserted once the artifact it points at exists, so a
@@ -328,6 +337,7 @@ impl App {
             source_unmapped_reads: reverted.stats.unmapped_reads,
             reads_written: cram.records,
             duplicates_marked: markdup.duplicates,
+            sequenceless_dropped: cram.sequenceless_dropped,
         })
     }
 
@@ -476,21 +486,57 @@ fn fs_free_space(_path: &Path) -> u64 {
 /// that is already unwinding.
 struct JobScratch {
     path: PathBuf,
+    /// Set once the job has produced its output, so [`Drop`] can tell "finished" from "died".
+    completed: bool,
+    /// Keep the intermediates behind when the job does *not* complete.
+    keep_on_failure: bool,
+}
+
+/// Opt in to keeping a failed job's intermediates (`NAVIGATOR_REALIGN_KEEP_SCRATCH=1`).
+///
+/// Off by default, and that default is deliberate: at WGS scale this directory is hundreds of GB,
+/// and a desktop application that leaves that behind after a failure has taken the user's disk
+/// hostage over a bug they did not cause.
+///
+/// It exists because the opposite default has a matching failure of its own. A realignment that
+/// dies in stage 7 of 8 discards the seven stages that worked — a measured 10.7 hours on a 30x WGS
+/// — and there is no way to resume, because the input each stage needed has been deleted. For
+/// anyone iterating on the pipeline, that trade is the wrong way round, so they can invert it.
+fn keep_scratch_on_failure() -> bool {
+    std::env::var("NAVIGATOR_REALIGN_KEEP_SCRATCH")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false)
 }
 
 impl JobScratch {
     fn new(path: PathBuf) -> Result<Self, AppError> {
         std::fs::create_dir_all(&path)?;
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            completed: false,
+            keep_on_failure: keep_scratch_on_failure(),
+        })
     }
 
     fn path(&self) -> &Path {
         &self.path
     }
+
+    /// The job got its output. Anything left here is now genuinely disposable.
+    fn completed(&mut self) {
+        self.completed = true;
+    }
 }
 
 impl Drop for JobScratch {
     fn drop(&mut self) {
+        if !self.completed && self.keep_on_failure {
+            eprintln!(
+                "realign: keeping intermediates at {} (NAVIGATOR_REALIGN_KEEP_SCRATCH)",
+                self.path.display()
+            );
+            return;
+        }
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }

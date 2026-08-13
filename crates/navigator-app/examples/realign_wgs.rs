@@ -100,12 +100,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match app.realign_alignment(alignment_id, params, cancel, progress).await {
         Ok(outcome) => {
             println!(
-                "\ndone in {:.1} min\n  alignment #{} at {}\n  reads written: {}\n  duplicates marked: {}\n  source unmapped reads (had a chance to place): {}",
+                "\ndone in {:.1} min\n  alignment #{} at {}\n  reads written: {}\n  duplicates marked: {}\n  sequenceless non-primary records dropped: {}\n  source unmapped reads (had a chance to place): {}",
                 started.elapsed().as_secs_f64() / 60.0,
                 outcome.alignment.id,
                 outcome.alignment.bam_path.as_deref().unwrap_or("?"),
                 outcome.reads_written,
                 outcome.duplicates_marked,
+                outcome.sequenceless_dropped,
                 outcome.source_unmapped_reads,
             );
             Ok(())

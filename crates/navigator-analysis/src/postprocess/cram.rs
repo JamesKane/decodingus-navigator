@@ -41,8 +41,25 @@ const CANCEL_CHECK_INTERVAL: u64 = 4096;
 pub struct CramOutput {
     pub cram: PathBuf,
     pub index: PathBuf,
-    /// Records written — the same count that went in.
+    /// Records written.
     pub records: u64,
+    /// Non-primary records dropped for carrying no `SEQ` — see [`is_unencodable`].
+    pub sequenceless_dropped: u64,
+}
+
+/// Can this record not be written as differences from the reference?
+///
+/// CRAM stores a read as its diff against the reference, so encoding one means walking its CIGAR
+/// and comparing bases. A record with an aligned CIGAR but `SEQ: *` has no bases to compare, and
+/// noodles indexes the empty sequence rather than checking — a panic (`range end index N out of
+/// range for slice of length 0`) from inside the writer, ten hours into a WGS job.
+///
+/// This is not malformed input. SAM permits `SEQ: *` on a secondary alignment, and minimap2 uses
+/// that permission: only the primary carries the bases, and the secondaries point at other loci
+/// the same read could have come from. So the reads are not lost by dropping these — the primary
+/// holds the sequence — but the records cannot be represented and must not reach the writer.
+fn is_unencodable(record: &noodles::sam::alignment::RecordBuf) -> bool {
+    !record.cigar().as_ref().is_empty() && record.sequence().as_ref().is_empty()
 }
 
 /// Compress `input` (a coordinate-sorted BAM) to CRAM against `reference`, then write its `.crai`.
@@ -70,12 +87,35 @@ pub fn write_cram(
     writer.write_header(&header).map_err(|e| AnalysisError::io(output, e))?;
 
     let mut records = 0u64;
+    let mut sequenceless_dropped = 0u64;
     for (i, result) in reader.record_bufs(&header).enumerate() {
         if i as u64 % CANCEL_CHECK_INTERVAL == 0 {
             cancel.check()?;
             progress(records);
         }
         let record = result.map_err(|e| AnalysisError::io(input, e))?;
+
+        if is_unencodable(&record) {
+            let flags = record.flags();
+            // A secondary or supplementary record is a second opinion about where a read could go;
+            // the read itself survives on its primary, so dropping it costs no sequence. A *primary*
+            // with no SEQ would be an actual read going missing, which is not something to absorb
+            // quietly after the hours it took to get here.
+            if !flags.is_secondary() && !flags.is_supplementary() {
+                return Err(AnalysisError::Message(format!(
+                    "{}: primary record {} has an aligned CIGAR but no SEQ, so it cannot be encoded \
+                     as CRAM and dropping it would lose the read",
+                    input.display(),
+                    record
+                        .name()
+                        .map(|n| String::from_utf8_lossy(n.as_ref()))
+                        .unwrap_or_default(),
+                )));
+            }
+            sequenceless_dropped += 1;
+            continue;
+        }
+
         writer
             .write_alignment_record(&header, &record)
             .map_err(|e| AnalysisError::io(output, e))?;
@@ -92,6 +132,7 @@ pub fn write_cram(
         cram: output.to_path_buf(),
         index,
         records,
+        sequenceless_dropped,
     })
 }
 
