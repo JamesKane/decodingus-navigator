@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
 
+use navigator_align::Preset;
 use navigator_app::realign_job::{RealignParams, RealignStage};
 use navigator_app::{App, CancelToken};
 
@@ -30,6 +31,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| home.join(".decodingus/references/chm13v2.0.fa"));
     let scratch_root = std::env::var("SCRATCH").ok().map(PathBuf::from);
+    // `PRESET` overrides the technology inference, which refuses any test type it does not know
+    // rather than guessing — correct for the app, but it puts real vendor products (`Y_ELITE`)
+    // out of reach of a smoke test.
+    let preset = match std::env::var("PRESET") {
+        Ok(p) => Some(Preset::parse(&p).map_err(|e| format!("PRESET={p}: {e}"))?),
+        Err(_) => None,
+    };
 
     if !reference.exists() {
         return Err(format!("reference not found: {}", reference.display()).into());
@@ -93,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let params = RealignParams {
         target_build: build,
         target_reference: reference,
-        preset: None,
+        preset,
         scratch_root,
     };
 

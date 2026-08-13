@@ -136,6 +136,15 @@ Verified 2026-07-26 to have no implementation in the tree.
   the worst-case window, upstream produced 232 calls and the Rust backend 233 — every upstream
   call reproduced, one extra at depth 3 that the `depth >= 4` callable gate removes. Decision 1
   re-settled on the pure-Rust backend with the divergence documented.
+- **First WGS-scale run (2026-08-12): 10 h 41 m, and it did not finish.** WGS229's 17.3 GB CRAM
+  (615.6M reads) died in stage 7 of 8 on a CRAM-encoding panic — a secondary alignment carries
+  `SEQ: *`, which is legal SAM and what minimap2 emits, and CRAM cannot store a read it has no
+  bases for. Fixed: such non-primary records are dropped and counted, a primary of that shape
+  errors. Two other findings: **the sort is the most expensive stage** (4 h 44 m, 44% of wall
+  clock — more than mapping's 3 h 40 m), and **stage A runs on one core** because `open_seq` only
+  threads the BAM path, fixable by reverting per-contig in parallel. The run also proved
+  resumability is not optional — `JobScratch` discarded seven working stages on the way out, so
+  `NAVIGATOR_REALIGN_KEEP_SCRATCH=1` now inverts that for pipeline work.
 - **Purpose:** Y-chromosome variant discovery. A private-Y call set is only usable on CHM13 —
   the callable mask, non-PAR restriction, recurrent blocklist, and de-novo tree are all defined
   there — and liftover cannot help with *discovery*, where the variant is not in any site list

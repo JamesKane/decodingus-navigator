@@ -480,6 +480,61 @@ not survive contact with chrY. The options:
 4. **Ship anyway with the divergence documented.** ✅ **Chosen** — the experiment was run and the
    divergence does not propagate to calls. See "the measurement that decides it" above.
 
+## The first WGS-scale run (2026-08-12)
+
+WGS229's GRCh38 CRAM (17.3 GB, 615.6M reads) through stages A–D on 16 cores. It **did not
+complete** — it died in stage 7 of 8 after 10.7 hours — but it is the first measurement of the
+pipeline at the scale it exists for, and the failure is more informative than the timings.
+
+| stage | wall clock | share |
+|---|---:|---:|
+| Revert | 1 h 05 m | 10% |
+| Index | 0 s (cached) | — |
+| Map | 3 h 40 m | 34% |
+| Sort | **4 h 44 m** | **44%** |
+| Mark duplicates | 1 h 09 m | 11% |
+| CRAM | died | — |
+| **Total** | **10 h 41 m** | |
+
+### What it found
+
+**A secondary alignment has no SEQ, and CRAM cannot encode it.** The panic — `range end index 65
+out of range for slice of length 0`, from inside noodles — is the *read's* sequence being empty,
+not the reference's. CRAM stores a read as its difference from the reference, so encoding walks the
+CIGAR comparing bases; a record with an aligned CIGAR and `SEQ: *` has nothing to compare, and
+noodles indexes the empty slice rather than checking. This is legal SAM — a secondary alignment may
+omit SEQ, and minimap2 uses that permission, since only the primary carries the bases — so the
+pipeline was always going to produce it. Nothing smaller than a real mapping run would have shown
+it: every fixture in the suite built records with sequences. Non-primary records of that shape are
+now dropped and counted; the same shape on a primary is a read going missing and fails loudly.
+
+**The sort is the pipeline's most expensive stage**, at 44% of wall clock — more than mapping,
+which is the stage everyone expects to dominate. Worth profiling before this is exposed to users.
+
+**Stage A is single-threaded, and on a CRAM source that shows.** `reader::open_seq` gives the BAM
+path a multithreaded bgzf reader and the CRAM path a plain one, so the revert decodes 17 GB of
+reference-compressed data on one core while fifteen sit idle. The gzip FASTQ write is serial too
+(already at `Compression::fast()`). The fix is not to thread the decoder but to **revert
+per-contig in parallel** — the codebase already does this elsewhere via `reader::decode_pool`, a
+coordinate-sorted CRAM with a `.crai` supports it, and collation is a sort, so per-worker output
+order does not matter: each worker produces sorted runs the existing k-way merge already consumes.
+Unmapped reads need one extra pass over the `*` bin. That should take stage A from ~65 minutes to
+roughly ten.
+
+### Resumability is not a nice-to-have
+
+[Resource profile & UX](#resource-profile--ux) records "resumable stages are a nice-to-have, not
+v1". This run is the counter-evidence: a bug in stage 7 discarded the seven stages that worked,
+because [`JobScratch`] deletes every intermediate however the job ends. Ten hours of correct
+compute was thrown away to reclaim disk from a job that had already failed.
+
+The scratch guard's default is still right for a shipped desktop application — hundreds of GB must
+not outlive a failure the user did not cause — so the immediate change is narrow:
+`NAVIGATOR_REALIGN_KEEP_SCRATCH=1` inverts it for anyone iterating on the pipeline, and a stage-7
+failure then costs one hour to retry instead of eleven. Real stage-level resume, keyed on the
+source's `source_sig` and the stage inputs already on disk, should be reconsidered before this
+ships: the cost of not having it scales with the length of the job, and this job is eleven hours.
+
 ## Decision 1 — aligner backend integration
 
 The project's defining constraint: **"no external tools."** Today that is *strictly* true — the
