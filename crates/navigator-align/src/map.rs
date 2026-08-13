@@ -518,7 +518,7 @@ fn emit(
         return Ok(());
     }
 
-    for reg in regs {
+    for reg in regs.iter().filter(|reg| crate::pe::emits_record(opt, reg)) {
         let line = minimap2::format::sam::write_sam_record(
             index,
             &record.name,

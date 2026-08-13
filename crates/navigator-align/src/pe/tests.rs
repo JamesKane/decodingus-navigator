@@ -574,3 +574,54 @@ fn a_truncated_mate_file_is_still_refused() {
     );
     assert!(err.is_err(), "a truncated mate file must not be paired silently");
 }
+
+/// Secondary alignments must not reach the output under the `sr` preset.
+///
+/// The preset sets `NO_PRINT_2ND`, and minimap2 honours it in the pipeline Navigator does not go
+/// through — so the rule has to be applied where the records are actually built. It was not, and a
+/// targeted-Y sample came out 86.6% secondary records: 404 million of them against 62 million
+/// primaries, none carrying SEQ.
+#[test]
+fn secondary_regions_are_not_emitted_but_supplementary_ones_are() {
+    use minimap2::types::AlignReg;
+
+    let (_, opt) = minimap2::prelude::preset("sr").expect("sr preset");
+    assert!(
+        opt.flag.contains(MapFlags::NO_PRINT_2ND),
+        "the sr preset is what makes this rule apply"
+    );
+
+    // `parent == id` is a primary chain — the representative, or a supplementary part of a split
+    // read. `parent != id` is another place the read could have gone.
+    let primary = AlignReg {
+        id: 7,
+        parent: 7,
+        sam_pri: true,
+        ..Default::default()
+    };
+    let supplementary = AlignReg {
+        id: 9,
+        parent: 9,
+        sam_pri: false,
+        ..Default::default()
+    };
+    let secondary = AlignReg {
+        id: 11,
+        parent: 7,
+        sam_pri: false,
+        ..Default::default()
+    };
+
+    assert!(super::emits_record(&opt, &primary), "the primary is the record");
+    assert!(
+        super::emits_record(&opt, &supplementary),
+        "a split read's other half carries sequence and must survive"
+    );
+    assert!(!super::emits_record(&opt, &secondary), "a secondary placement must not");
+
+    // Long-read presets leave secondaries on, and the rule must not fire there.
+    let (_, ont) = minimap2::prelude::preset("map-ont").expect("map-ont preset");
+    if !ont.flag.contains(MapFlags::NO_PRINT_2ND) {
+        assert!(super::emits_record(&ont, &secondary));
+    }
+}

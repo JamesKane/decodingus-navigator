@@ -607,7 +607,7 @@ fn build_end_records(
         return Ok(());
     }
 
-    for reg in &own.regs {
+    for reg in own.regs.iter().filter(|reg| emits_record(opt, reg)) {
         let line = minimap2::format::sam::write_sam_record(
             index,
             qname,
@@ -660,7 +660,7 @@ fn emit_end(
         return Ok(());
     }
 
-    for reg in &own.regs {
+    for reg in own.regs.iter().filter(|reg| emits_record(opt, reg)) {
         let line = minimap2::format::sam::write_sam_record(
             index,
             qname,
@@ -678,6 +678,25 @@ fn emit_end(
     }
     stats.mapped += 1;
     Ok(())
+}
+
+/// The mapper's own rule for which regions reach the output.
+///
+/// A region whose `parent` is not itself is a *secondary* alignment — another place the read could
+/// have gone. `NO_PRINT_2ND` says not to emit those, and the `sr` preset sets it, because for short
+/// reads the ambiguity is already carried by MAPQ.
+///
+/// This has to be applied here because Navigator formats records itself: `minimap2-pure-rs` keeps
+/// its PE SAM assembly private, so the pipeline that would have applied this rule
+/// (`minimap2::map`, on the `r.id != r.parent` test) is the one part of the crate we do not go
+/// through. Without it every alternative placement was written out — on a targeted-Y sample,
+/// 404 million secondary records against 62 million primaries, 86.6% of the file, each with no
+/// SEQ, inflating the alignment to 17 GB and dragging every later stage through them.
+///
+/// Supplementary alignments are kept: their `parent` *is* themselves, they carry sequence, and
+/// they are how a split read is represented.
+pub(crate) fn emits_record(opt: &MapOpt, reg: &AlignReg) -> bool {
+    !(opt.flag.contains(MapFlags::NO_PRINT_2ND) && reg.id != reg.parent)
 }
 
 /// The region a mate is "at" for the purposes of `RNEXT`/`PNEXT` — its primary alignment.
