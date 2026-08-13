@@ -31,7 +31,7 @@ use std::path::Path;
 
 use noodles::sam::alignment::io::Write as _;
 use noodles::sam::alignment::RecordBuf;
-use noodles::{bam, cram, fasta, sam};
+use noodles::{bam, bgzf, cram, fasta, sam};
 
 use crate::error::AlignError;
 
@@ -67,7 +67,7 @@ pub struct AlignmentWriter {
 
 enum Inner {
     Sam(sam::io::Writer<BufWriter<std::fs::File>>),
-    Bam(bam::io::Writer<noodles::bgzf::io::Writer<BufWriter<std::fs::File>>>),
+    Bam(bam::io::Writer<bgzf::io::MultithreadedWriter<BufWriter<std::fs::File>>>),
     Cram(Box<cram::io::Writer<std::fs::File>>),
 }
 
@@ -92,7 +92,15 @@ impl AlignmentWriter {
                 Inner::Sam(w)
             }
             OutputFormat::Bam => {
-                let mut w = bam::io::Writer::new(BufWriter::new(create_file(path)?));
+                // Threaded BGZF, because this is where the mapping stage's wall clock went. A
+                // profile of the stage attributes ~60% of the serial phase to zlib deflate —
+                // `longest_match` alone is a third of it — while sixteen cores wait for the next
+                // batch. Block compression parallelizes; the byte stream is unchanged.
+                let inner = bgzf::io::MultithreadedWriter::with_worker_count(
+                    bgzf_worker_count(),
+                    BufWriter::new(create_file(path)?),
+                );
+                let mut w = bam::io::Writer::from(inner);
                 w.write_header(&header).map_err(|e| AlignError::io(path, e))?;
                 Inner::Bam(w)
             }
@@ -148,11 +156,26 @@ impl AlignmentWriter {
         match self.inner {
             Inner::Sam(mut w) => w.get_mut().flush().map_err(|e| AlignError::io(path, e)),
             // BAM is BGZF, which ends with a specific empty block. Flushing alone leaves the file
-            // without it, and readers treat that as truncated.
-            Inner::Bam(mut w) => w.try_finish().map_err(|e| AlignError::io(path, e)),
+            // without it, and readers treat that as truncated. On the threaded writer that means
+            // draining the workers, which is what `finish` does.
+            Inner::Bam(mut w) => w.get_mut().finish().map(|_| ()).map_err(|e| AlignError::io(path, e)),
             Inner::Cram(mut w) => w.try_finish(&self.header).map_err(|e| AlignError::io(path, e)),
         }
     }
+}
+
+/// Worker threads for BGZF block compression.
+///
+/// Compression is the mapping stage's serial bottleneck, so this wants more workers than the
+/// read-side default: the consumer here is the mapper's pool, not a single parsing thread. Shares
+/// `NAVIGATOR_ALIGN_THREADS` with the mapper so one knob still controls the stage.
+fn bgzf_worker_count() -> std::num::NonZeroUsize {
+    let n = std::env::var("NAVIGATOR_ALIGN_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4));
+    std::num::NonZeroUsize::new(n.clamp(1, 8)).expect("clamped above zero")
 }
 
 fn create_file(path: &Path) -> Result<std::fs::File, AlignError> {
