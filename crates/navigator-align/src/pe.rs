@@ -114,42 +114,108 @@ fn map_pairs_single_part(
     let mut opt = map_opt.clone();
     mapopt_update(&mut opt, index);
 
-    let mut writer = open_output(out, index, params)?;
-    let mut pairs = PairReader::open(reads1, reads2)?;
+    let writer = open_output(out, index, params)?;
     let pool = thread_pool(params)?;
     let mut stats = MapStats {
         parts: 1,
         ..Default::default()
     };
-
-    // Cloned once so records can be built in the pool while the writer is borrowed mutably to
-    // write the previous batch's. It is a couple of dozen `@SQ` entries.
     let header = writer.header().clone();
+    let chunk = opt.mini_batch_size;
 
-    while let Some(batch) = pairs.next_batch(opt.mini_batch_size)? {
-        if cancel() {
-            return Err(AlignError::Cancelled);
-        }
-        let mapped = map_frag_batch(&pool, index, &opt, &batch);
-        let built = build_batch_records(&pool, index, &opt, &header, &batch, mapped, out)?;
+    // Read, map and write run as three overlapping stages rather than in strict alternation.
+    //
+    // Alternating meant the pool idled through two phases of every cycle: a profile of the stage
+    // put ~60% of the serial phase in BGZF compression, ~15% in BAM record encoding and ~9% in
+    // gzip inflate, all of it while sixteen cores waited. Threading the compression removed the
+    // largest piece; overlapping the stages is what removes the *waiting*, because the reader can
+    // be inflating batch n+1 and the writer encoding batch n-1 while the pool maps batch n.
+    //
+    // Order is preserved by construction: one reader, one writer, and batches crossing each
+    // channel in sequence. Depth is small on purpose — a batch is tens of MB, and a deep queue
+    // would just let a fast mapper build a backlog in memory ahead of a slow disk.
+    let (read_tx, read_rx) = std::sync::mpsc::sync_channel::<Vec<(BseqRecord, BseqRecord)>>(PIPELINE_DEPTH);
+    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<Vec<RecordBuf>>>(PIPELINE_DEPTH);
 
-        // Writing stays serial and in batch order: SAM order has to match the order the reads came
-        // in, and the pool's job finished when the records were built.
-        for (records, batch_stats) in built {
-            stats.queries += batch_stats.queries;
-            stats.mapped += batch_stats.mapped;
-            stats.unmapped += batch_stats.unmapped;
-            for record in &records {
-                writer.write_record(record, out)?;
+    let outcome = std::thread::scope(|scope| -> Result<MapStats, AlignError> {
+        let reader = scope.spawn(move || -> Result<(), AlignError> {
+            let mut pairs = PairReader::open(reads1, reads2)?;
+            while let Some(batch) = pairs.next_batch(chunk)? {
+                // A closed channel means the mapper stopped — cancelled, or a stage failed. Its
+                // error is the one worth reporting, so this exits quietly.
+                if read_tx.send(batch).is_err() {
+                    break;
+                }
             }
-        }
-        progress(stats.queries, 1, 1);
-    }
+            Ok(())
+        });
 
-    writer.finish(out)?;
-    progress(stats.queries, 1, 1);
-    Ok(stats)
+        let scribe = scope.spawn(move || -> Result<(), AlignError> {
+            let mut writer = writer;
+            for batch in write_rx {
+                for records in batch {
+                    for record in &records {
+                        writer.write_record(record, out)?;
+                    }
+                }
+            }
+            // Finishing here, on the thread that owns the writer, is what writes BGZF's
+            // end-of-file block. A writer dropped mid-stream leaves a file readers call truncated.
+            writer.finish(out)
+        });
+
+        let mapping = || -> Result<(), AlignError> {
+            for batch in read_rx {
+                if cancel() {
+                    return Err(AlignError::Cancelled);
+                }
+                let mapped = map_frag_batch(&pool, index, &opt, &batch);
+                let built = build_batch_records(&pool, index, &opt, &header, &batch, mapped, out)?;
+
+                let mut records = Vec::with_capacity(built.len());
+                for (batch_records, batch_stats) in built {
+                    stats.queries += batch_stats.queries;
+                    stats.mapped += batch_stats.mapped;
+                    stats.unmapped += batch_stats.unmapped;
+                    records.push(batch_records);
+                }
+                if write_tx.send(records).is_err() {
+                    // The writer died; join below surfaces why.
+                    break;
+                }
+                progress(stats.queries, 1, 1);
+            }
+            Ok(())
+        };
+        let mapped_result = mapping();
+
+        // Dropped so the writer's loop can end; it is what triggers `finish`.
+        drop(write_tx);
+
+        let scribe_result = scribe
+            .join()
+            .map_err(|_| AlignError::Message("writer thread panicked".into()))?;
+        let reader_result = reader
+            .join()
+            .map_err(|_| AlignError::Message("reader thread panicked".into()))?;
+
+        // A downstream failure usually shows up first as a send error upstream, so the real cause
+        // is reported ahead of the symptom.
+        scribe_result?;
+        mapped_result?;
+        reader_result?;
+        Ok(stats)
+    })?;
+
+    progress(outcome.queries, 1, 1);
+    Ok(outcome)
 }
+
+/// Batches in flight per pipeline stage.
+///
+/// One in hand and one queued is enough to keep a stage from waiting on its neighbour; more only
+/// buys memory. A batch is `mini_batch_size` bases of reads plus the records built from them.
+const PIPELINE_DEPTH: usize = 2;
 
 // ---- split path -----------------------------------------------------------
 
