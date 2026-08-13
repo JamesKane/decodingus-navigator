@@ -184,7 +184,12 @@ fn parse_header(text: &str) -> Result<sam::Header, AlignError> {
         .map_err(|e| AlignError::Message(format!("could not parse the SAM header: {e}")))
 }
 
-fn parse_record(line: &str, header: &sam::Header, path: &Path) -> Result<RecordBuf, AlignError> {
+/// Parse one of the mapper's SAM lines into a typed record.
+///
+/// Public to the crate so records can be built *off* the writing thread. Formatting an alignment
+/// to SAM text and parsing it back is per-record independent work, and at WGS scale it dominates
+/// the mapping stage — see the pipeline note on `pe::map_pairs_single_part`.
+pub(crate) fn parse_record(line: &str, header: &sam::Header, path: &Path) -> Result<RecordBuf, AlignError> {
     let raw = sam::Record::try_from(line.as_bytes())
         .map_err(|e| AlignError::Message(format!("could not parse a SAM record: {e}")))?;
     RecordBuf::try_from_alignment_record(header, &raw).map_err(|e| AlignError::io(path, e))

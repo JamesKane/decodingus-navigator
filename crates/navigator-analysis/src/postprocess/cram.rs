@@ -29,8 +29,9 @@
 use std::path::{Path, PathBuf};
 
 use noodles::sam::alignment::io::Write as _;
-use noodles::{bam, cram, fasta, sam};
+use noodles::{cram, fasta, sam};
 
+use super::bamio;
 use crate::cancel::CancelToken;
 use crate::error::AnalysisError;
 
@@ -74,8 +75,7 @@ pub fn write_cram(
         std::fs::create_dir_all(parent).map_err(|e| AnalysisError::io(parent, e))?;
     }
 
-    let file = std::fs::File::open(input).map_err(|e| AnalysisError::io(input, e))?;
-    let mut reader = bam::io::Reader::new(file);
+    let mut reader = bamio::open(input)?;
     let header = reader.read_header().map_err(|e| AnalysisError::io(input, e))?;
     require_coordinate_sorted(&header, input)?;
 

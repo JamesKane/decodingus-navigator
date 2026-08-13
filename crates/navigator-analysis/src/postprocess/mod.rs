@@ -22,7 +22,8 @@
 //! marking them would discard real coverage. This matches standard practice and the design's
 //! Stage C note.
 
-pub mod cram;
+pub mod bamio;
+mod cram;
 pub mod markdup;
 pub mod sort;
 

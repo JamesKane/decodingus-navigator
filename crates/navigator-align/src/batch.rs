@@ -244,6 +244,9 @@ mod tests {
     /// CHM13 is 3.1 Gbase; the default must split it (that is the point) into a handful of parts.
     #[test]
     fn the_default_splits_a_human_genome_into_a_few_parts() {
+        // Reads the environment, so it takes ENV_LOCK too — the guard is only worth anything if
+        // the readers hold it as well as the writers.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let chm13 = 3_100_000_000u64;
         let default = BatchSize::default();
         assert!(default.splits(chm13));
@@ -287,6 +290,7 @@ mod tests {
     /// a value the sizing table actually produces rather than something improvised.
     #[test]
     fn sizing_for_this_machine_lands_on_a_table_value() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let chosen = BatchSize::for_this_machine();
         assert!(chosen.bases() >= 1_000_000);
 

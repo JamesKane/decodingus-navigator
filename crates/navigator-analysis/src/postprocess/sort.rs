@@ -24,10 +24,11 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::path::{Path, PathBuf};
 
+use noodles::sam;
 use noodles::sam::alignment::io::Write as _;
 use noodles::sam::alignment::RecordBuf;
-use noodles::{bam, sam};
 
+use super::bamio;
 use crate::cancel::CancelToken;
 use crate::error::AnalysisError;
 
@@ -157,8 +158,7 @@ impl Spiller {
         self.buffered.sort_by_key(sort_key);
 
         let path = self.dir.join(format!("sort-run-{:05}.bam", self.paths.len()));
-        let file = std::fs::File::create(&path).map_err(|e| AnalysisError::io(&path, e))?;
-        let mut writer = bam::io::Writer::new(std::io::BufWriter::with_capacity(1 << 20, file));
+        let mut writer = bamio::create(&path)?;
         writer
             .write_header(&self.header)
             .map_err(|e| AnalysisError::io(&path, e))?;
@@ -167,7 +167,7 @@ impl Spiller {
                 .write_alignment_record(&self.header, record)
                 .map_err(|e| AnalysisError::io(&path, e))?;
         }
-        writer.try_finish().map_err(|e| AnalysisError::io(&path, e))?;
+        bamio::finish(writer, &path)?;
 
         self.buffered.clear();
         self.buffered_bytes = 0;
@@ -231,8 +231,7 @@ fn merge(
     stats: &mut SortStats,
     progress: &mut dyn FnMut(u64),
 ) -> Result<(), AnalysisError> {
-    let file = std::fs::File::create(output).map_err(|e| AnalysisError::io(output, e))?;
-    let mut writer = bam::io::Writer::new(std::io::BufWriter::with_capacity(1 << 20, file));
+    let mut writer = bamio::create(output)?;
     writer.write_header(header).map_err(|e| AnalysisError::io(output, e))?;
 
     // Each run is read through its own reader; only one record per run is resident at a time.
@@ -278,7 +277,7 @@ fn merge(
         }
     }
 
-    writer.try_finish().map_err(|e| AnalysisError::io(output, e))?;
+    bamio::finish(writer, output)?;
 
     // A sort that loses records is the failure this whole stage must not have, and it would be
     // invisible downstream — coverage would simply read low.
@@ -294,7 +293,7 @@ fn merge(
 struct RunReader {
     path: PathBuf,
     header: sam::Header,
-    reader: bam::io::Reader<noodles::bgzf::io::Reader<std::fs::File>>,
+    reader: bamio::BamReader,
 }
 
 impl RunReader {
@@ -332,9 +331,8 @@ fn heap_bytes(record: &RecordBuf) -> usize {
         + 256
 }
 
-fn open_bam(path: &Path) -> Result<bam::io::Reader<noodles::bgzf::io::Reader<std::fs::File>>, AnalysisError> {
-    let file = std::fs::File::open(path).map_err(|e| AnalysisError::io(path, e))?;
-    Ok(bam::io::Reader::new(file))
+fn open_bam(path: &Path) -> Result<bamio::BamReader, AnalysisError> {
+    bamio::open(path)
 }
 
 /// Stamp `@HD SO:coordinate` on the header.

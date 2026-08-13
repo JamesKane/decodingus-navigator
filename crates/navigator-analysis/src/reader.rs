@@ -23,7 +23,7 @@ use noodles::{bam, bgzf, cram, fasta, sam};
 /// parallelism minus one (the record-parsing consumer), capped at 6 — beyond a handful of
 /// inflate workers the single consumer thread is the limit. Override with
 /// `NAVIGATOR_BGZF_THREADS` (clamped to >= 1; set to 1 to disable threading).
-fn bgzf_worker_count() -> NonZeroUsize {
+pub(crate) fn bgzf_worker_count() -> NonZeroUsize {
     if let Some(n) = std::env::var("NAVIGATOR_BGZF_THREADS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())

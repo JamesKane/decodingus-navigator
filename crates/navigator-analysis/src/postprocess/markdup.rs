@@ -35,12 +35,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
+use noodles::sam;
 use noodles::sam::alignment::io::Write as _;
 use noodles::sam::alignment::record::cigar::op::Kind;
 use noodles::sam::alignment::record::Flags;
 use noodles::sam::alignment::RecordBuf;
-use noodles::{bam, sam};
 
+use super::bamio;
 use crate::cancel::CancelToken;
 use crate::error::AnalysisError;
 
@@ -99,12 +100,10 @@ pub fn mark_duplicates(
         std::fs::create_dir_all(parent).map_err(|e| AnalysisError::io(parent, e))?;
     }
 
-    let file = std::fs::File::open(input).map_err(|e| AnalysisError::io(input, e))?;
-    let mut reader = bam::io::Reader::new(file);
+    let mut reader = bamio::open(input)?;
     let header = reader.read_header().map_err(|e| AnalysisError::io(input, e))?;
 
-    let out_file = std::fs::File::create(output).map_err(|e| AnalysisError::io(output, e))?;
-    let mut writer = bam::io::Writer::new(std::io::BufWriter::with_capacity(1 << 20, out_file));
+    let mut writer = bamio::create(output)?;
     writer.write_header(&header).map_err(|e| AnalysisError::io(output, e))?;
 
     let mut stats = MarkDupStats {
@@ -141,7 +140,7 @@ pub fn mark_duplicates(
             .map_err(|e| AnalysisError::io(output, e))?;
     }
 
-    writer.try_finish().map_err(|e| AnalysisError::io(output, e))?;
+    bamio::finish(writer, output)?;
     progress(stats.records);
     Ok(stats)
 }
@@ -299,12 +298,10 @@ impl SeenSignatures {
 /// Copy `header` and every record through unchanged. Used when marking is disabled, so callers get
 /// the same output path either way rather than branching on whether stage C ran.
 pub fn copy_through(input: &Path, output: &Path) -> Result<u64, AnalysisError> {
-    let file = std::fs::File::open(input).map_err(|e| AnalysisError::io(input, e))?;
-    let mut reader = bam::io::Reader::new(file);
+    let mut reader = bamio::open(input)?;
     let header: sam::Header = reader.read_header().map_err(|e| AnalysisError::io(input, e))?;
 
-    let out_file = std::fs::File::create(output).map_err(|e| AnalysisError::io(output, e))?;
-    let mut writer = bam::io::Writer::new(std::io::BufWriter::with_capacity(1 << 20, out_file));
+    let mut writer = bamio::create(output)?;
     writer.write_header(&header).map_err(|e| AnalysisError::io(output, e))?;
 
     let mut n = 0;
@@ -315,6 +312,6 @@ pub fn copy_through(input: &Path, output: &Path) -> Result<u64, AnalysisError> {
             .map_err(|e| AnalysisError::io(output, e))?;
         n += 1;
     }
-    writer.try_finish().map_err(|e| AnalysisError::io(output, e))?;
+    bamio::finish(writer, output)?;
     Ok(n)
 }

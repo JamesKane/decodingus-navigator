@@ -36,6 +36,7 @@ use minimap2::map::MapResult;
 use minimap2::options::{mapopt_update, MapOpt};
 use minimap2::types::AlignReg;
 use noodles::core::Position;
+use noodles::sam;
 use noodles::sam::alignment::record::Flags;
 use noodles::sam::alignment::RecordBuf;
 
@@ -121,28 +122,26 @@ fn map_pairs_single_part(
         ..Default::default()
     };
 
+    // Cloned once so records can be built in the pool while the writer is borrowed mutably to
+    // write the previous batch's. It is a couple of dozen `@SQ` entries.
+    let header = writer.header().clone();
+
     while let Some(batch) = pairs.next_batch(opt.mini_batch_size)? {
         if cancel() {
             return Err(AlignError::Cancelled);
         }
         let mapped = map_frag_batch(&pool, index, &opt, &batch);
-        for ((r1, r2), mut results) in batch.iter().zip(mapped) {
-            // Fragment mapping returns one result per segment, R1 then R2. Popping in reverse
-            // keeps that association; an absent segment (which should not happen) degrades to
-            // "this end mapped nowhere" rather than shifting the pairing.
-            let mut res2 = results.pop().unwrap_or_else(empty_result);
-            let mut res1 = results.pop().unwrap_or_else(empty_result);
-            let (rev1, rev2) = orient_flags(&opt);
-            restore_orientation(&mut res1, r1.l_seq as i32, rev1);
-            restore_orientation(&mut res2, r2.l_seq as i32, rev2);
+        let built = build_batch_records(&pool, index, &opt, &header, &batch, mapped, out)?;
 
-            // No `repair` here, deliberately. `map_frag_queries` already ran `pe::pair` over the
-            // fragment, so the ends arrive paired: `proper_frag`, MAPQ, and `sam_pri` are set.
-            // Pairing them a second time *clears* `proper_frag` — the re-pair is scored against a
-            // fragment gap that only means something in the split path, where merging discarded
-            // the original pairing. Adding a call here is the obvious-looking change that silently
-            // drops 0x2 from every record.
-            emit_pair(&mut writer, index, &opt, r1, r2, &res1, &res2, out, &mut stats)?;
+        // Writing stays serial and in batch order: SAM order has to match the order the reads came
+        // in, and the pool's job finished when the records were built.
+        for (records, batch_stats) in built {
+            stats.queries += batch_stats.queries;
+            stats.mapped += batch_stats.mapped;
+            stats.unmapped += batch_stats.unmapped;
+            for record in &records {
+                writer.write_record(record, out)?;
+            }
         }
         progress(stats.queries, 1, 1);
     }
@@ -334,6 +333,48 @@ fn map_frag_batch(
     })
 }
 
+/// Turn a mapped batch into finished records, in the pool, preserving batch order.
+///
+/// The orientation restore moves in here with the formatting: it is per-template work that was
+/// also running on the writing thread. `collect` into a `Result` keeps the first error and keeps
+/// the output ordered, so a failure reads the same as it did when this was a serial loop.
+#[allow(clippy::too_many_arguments)]
+fn build_batch_records(
+    pool: &rayon::ThreadPool,
+    index: &MmIdx,
+    opt: &MapOpt,
+    header: &sam::Header,
+    batch: &[(BseqRecord, BseqRecord)],
+    mapped: Vec<Vec<MapResult>>,
+    out: &Path,
+) -> Result<Vec<(Vec<RecordBuf>, MapStats)>, AlignError> {
+    use rayon::prelude::*;
+    pool.install(|| {
+        batch
+            .par_iter()
+            .zip(mapped.into_par_iter())
+            .map(|((r1, r2), mut results)| {
+                // Fragment mapping returns one result per segment, R1 then R2. Popping in reverse
+                // keeps that association; an absent segment (which should not happen) degrades to
+                // "this end mapped nowhere" rather than shifting the pairing.
+                let mut res2 = results.pop().unwrap_or_else(empty_result);
+                let mut res1 = results.pop().unwrap_or_else(empty_result);
+                let (rev1, rev2) = orient_flags(opt);
+                restore_orientation(&mut res1, r1.l_seq as i32, rev1);
+                restore_orientation(&mut res2, r2.l_seq as i32, rev2);
+
+                // No `repair` here, deliberately. `map_frag_queries` already ran `pe::pair` over
+                // the fragment, so the ends arrive paired: `proper_frag`, MAPQ, and `sam_pri` are
+                // set. Pairing them a second time *clears* `proper_frag` — the re-pair is scored
+                // against a fragment gap that only means something in the split path, where
+                // merging discarded the original pairing. Adding a call here is the
+                // obvious-looking change that silently drops 0x2 from every record.
+                build_pair_records(index, opt, header, r1, r2, &res1, &res2, out)
+            })
+            .collect()
+    })
+}
+
 /// Whether each end is flipped for mapping, from the preset's library orientation.
 fn orient_flags(opt: &MapOpt) -> (bool, bool) {
     ((opt.pe_ori >> 1) & 1 != 0, opt.pe_ori & 1 != 0)
@@ -434,6 +475,89 @@ fn emit_pair(
 ) -> Result<(), AlignError> {
     emit_end(writer, index, opt, r1, res1, res2, true, out, stats)?;
     emit_end(writer, index, opt, r2, res2, res1, false, out, stats)?;
+    Ok(())
+}
+
+/// Every SAM record for one template, built without touching the writer.
+///
+/// This is the work that used to happen on the writing thread: minimap2 formats each alignment as
+/// a SAM line, the line is parsed back into a typed record, and the paired fields are filled in.
+/// All of it is per-record independent, so it belongs in the mapping pool. Leaving it on the
+/// writing thread made mapping a strictly alternating read → map → write cycle in which the pool
+/// was idle for two of the three phases: a WGS run measured ~26% pool utilisation, with the
+/// mapping itself accounting for only a quarter of a stage that took 3 h 40 m.
+#[allow(clippy::too_many_arguments)]
+fn build_pair_records(
+    index: &MmIdx,
+    opt: &MapOpt,
+    header: &sam::Header,
+    r1: &BseqRecord,
+    r2: &BseqRecord,
+    res1: &MapResult,
+    res2: &MapResult,
+    out: &Path,
+) -> Result<(Vec<RecordBuf>, MapStats), AlignError> {
+    let mut records = Vec::new();
+    let mut stats = MapStats::default();
+    build_end_records(index, opt, header, r1, res1, res2, true, out, &mut records, &mut stats)?;
+    build_end_records(index, opt, header, r2, res2, res1, false, out, &mut records, &mut stats)?;
+    Ok((records, stats))
+}
+
+/// [`build_pair_records`] for one end. Mirrors [`emit_end`], which the split path still uses.
+#[allow(clippy::too_many_arguments)]
+fn build_end_records(
+    index: &MmIdx,
+    opt: &MapOpt,
+    header: &sam::Header,
+    record: &BseqRecord,
+    own: &MapResult,
+    mate: &MapResult,
+    is_first: bool,
+    out: &Path,
+    records: &mut Vec<RecordBuf>,
+    stats: &mut MapStats,
+) -> Result<(), AlignError> {
+    let qname = strip_mate_suffix(&record.name);
+    let mate_primary = primary(mate);
+    stats.queries += 1;
+
+    if own.regs.is_empty() {
+        let line = minimap2::format::sam::write_sam_record(
+            index,
+            qname,
+            &record.seq,
+            &record.qual,
+            None,
+            0,
+            &[],
+            opt.flag,
+            own.rep_len,
+        );
+        let mut rec = crate::output::parse_record(&line, header, out)?;
+        set_pair_fields(&mut rec, None, mate_primary, is_first);
+        records.push(rec);
+        stats.unmapped += 1;
+        return Ok(());
+    }
+
+    for reg in &own.regs {
+        let line = minimap2::format::sam::write_sam_record(
+            index,
+            qname,
+            &record.seq,
+            &record.qual,
+            Some(reg),
+            own.regs.len(),
+            &own.regs,
+            opt.flag,
+            own.rep_len,
+        );
+        let mut rec = crate::output::parse_record(&line, header, out)?;
+        set_pair_fields(&mut rec, Some(reg), mate_primary, is_first);
+        records.push(rec);
+    }
+    stats.mapped += 1;
     Ok(())
 }
 
