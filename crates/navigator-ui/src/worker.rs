@@ -2477,6 +2477,12 @@ async fn run_realign_streaming(
         target_reference: reference,
         preset: None,
         scratch_root: None,
+        // Safe to opt in here because the scratch path is derived from this source alignment and
+        // this target build, so anything found in it belongs to the job about to run. Intermediates
+        // only survive at all when a previous attempt was killed outright — the machine went down,
+        // the session was torn down, the process was force-quit — and in that case a user who
+        // presses Realign again means "carry on", not "spend four hours re-deriving the same file".
+        resume: true,
     };
 
     let event = match app.realign_alignment(alignment_id, params, cancel, progress).await {
@@ -2484,10 +2490,21 @@ async fn run_realign_streaming(
             alignment_id,
             new_alignment_id: Some(outcome.alignment.id),
             cancelled: false,
-            summary: format!(
-                "{} reads on {}; {} had been unplaced, {} duplicates marked",
-                outcome.reads_written, target_build, outcome.source_unmapped_reads, outcome.duplicates_marked,
-            ),
+            // A resumed job skips the stages that count these, so a figure may be genuinely
+            // unknown; saying so beats printing a zero the user would read as a result.
+            summary: {
+                let count = |n: Option<u64>| {
+                    n.map(|n| n.to_string())
+                        .unwrap_or_else(|| "an unrecorded number of".into())
+                };
+                format!(
+                    "{} reads on {}; {} had been unplaced, {} duplicates marked",
+                    count(outcome.reads_written),
+                    target_build,
+                    count(outcome.source_unmapped_reads),
+                    count(outcome.duplicates_marked),
+                )
+            },
         },
         Err(e) => {
             let cancelled = e.is_cancelled();

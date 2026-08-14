@@ -97,15 +97,21 @@ pub struct RealignProgress {
 }
 
 /// What a finished job produced.
+///
+/// The counts are optional because a resumed job did not necessarily run the stage that produces
+/// them. A run that picks up from a previous attempt's sorted BAM never reverted anything, so it
+/// cannot report how many unmapped reads that revert saw; [`ScratchState`] carries the figure
+/// across when the earlier attempt recorded it, and `None` says plainly that nobody measured it
+/// rather than reporting a zero that reads like a finding.
 #[derive(Debug, Clone)]
 pub struct RealignOutcome {
     pub alignment: Alignment,
     /// Reads that were unmapped in the source and therefore had a chance to be placed by the new
     /// reference. This is the number the module exists to move, so it is surfaced rather than
     /// buried in a log.
-    pub source_unmapped_reads: u64,
-    pub reads_written: u64,
-    pub duplicates_marked: u64,
+    pub source_unmapped_reads: Option<u64>,
+    pub reads_written: Option<u64>,
+    pub duplicates_marked: Option<u64>,
 }
 
 /// Tuning a caller may override; the defaults are what the UI uses.
@@ -119,6 +125,99 @@ pub struct RealignParams {
     pub preset: Option<Preset>,
     /// Where intermediates live. `None` puts them beside the output.
     pub scratch_root: Option<PathBuf>,
+    /// Pick up from a previous attempt's intermediates instead of starting over.
+    ///
+    /// Off by default, because reusing files a *different* job left behind would be a correctness
+    /// bug, and the scratch path alone cannot prove they came from this source and this target.
+    /// The caller opting in is what supplies that knowledge. See [`Resumed`].
+    pub resume: bool,
+}
+
+/// How far a previous attempt got, judged from what it left in the scratch directory.
+///
+/// Ordered by how much work it saves, and checked newest-artifact-first: a complete `marked.bam`
+/// makes the sort behind it irrelevant, so there is no reason to ask about `sorted.bam` as well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Resumed {
+    /// Start from the source alignment.
+    Nothing,
+    /// Reads were recovered and mapped; sorting is next.
+    Mapped,
+    /// The mapped BAM was sorted; duplicate marking is next.
+    Sorted,
+    /// Duplicates were marked; only finalising and registration remain.
+    Marked,
+}
+
+impl Resumed {
+    /// What to tell the user about the stages this skips.
+    fn detail(self) -> &'static str {
+        match self {
+            Resumed::Nothing => "",
+            Resumed::Mapped => "reusing the mapped reads from an earlier attempt",
+            Resumed::Sorted => "reusing the sorted alignment from an earlier attempt",
+            Resumed::Marked => "reusing the marked alignment from an earlier attempt",
+        }
+    }
+}
+
+/// Counts a resumed job cannot re-derive, left beside the intermediates they describe.
+///
+/// Each stage's contribution to [`RealignOutcome`] is measured while that stage runs and is gone
+/// once it has. A resumed job skips stages by design, so the numbers are written down as they are
+/// produced. Best-effort throughout: failing to write this file must not fail a job that has
+/// otherwise done hours of correct work, and a missing or unreadable file simply means the counts
+/// come back `None`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct ScratchState {
+    unmapped_reads: Option<u64>,
+    reads_written: Option<u64>,
+    duplicates_marked: Option<u64>,
+}
+
+impl ScratchState {
+    const FILE: &'static str = "state.json";
+
+    fn load(scratch: &Path) -> Self {
+        std::fs::read(scratch.join(Self::FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn store(&self, scratch: &Path) {
+        if let Ok(bytes) = serde_json::to_vec_pretty(self) {
+            let _ = std::fs::write(scratch.join(Self::FILE), bytes);
+        }
+    }
+}
+
+/// How far a previous attempt in `scratch` got, or [`Resumed::Nothing`] if it left nothing usable.
+///
+/// "Usable" means the BGZF end-of-file marker is present, which is the only thing that separates a
+/// finished BAM from one whose writer was killed mid-stream — and being killed mid-stream is
+/// precisely the case this exists for. A truncated file is ignored, not repaired.
+fn resumable(scratch: &Path) -> Resumed {
+    if postprocess::is_complete_bam(&scratch.join("marked.bam")) {
+        Resumed::Marked
+    } else if postprocess::is_complete_bam(&scratch.join("sorted.bam")) {
+        Resumed::Sorted
+    } else if postprocess::is_complete_bam(&scratch.join("mapped.bam")) {
+        Resumed::Mapped
+    } else {
+        Resumed::Nothing
+    }
+}
+
+/// Clear a stage's working directory before that stage runs.
+///
+/// A resumed job re-runs the first stage it cannot skip, and that stage's leftovers from the
+/// killed attempt are pure cost: the sort ignores run files it did not write itself, so stale ones
+/// are not a correctness problem, but at WGS scale they are tens of GB held against a disk that
+/// the same job is about to need. Best-effort — a directory that will not clear is not a reason to
+/// refuse to start.
+fn clear_stage_dir(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 impl App {
@@ -158,49 +257,94 @@ impl App {
             });
         };
 
+        let mapped = scratch.path().join("mapped.bam");
+        let sorted = scratch.path().join("sorted.bam");
+        let marked = scratch.path().join("marked.bam");
+
+        // What a previous attempt left behind, and what it measured while it was running.
+        let resumed = if params.resume {
+            resumable(scratch.path())
+        } else {
+            Resumed::Nothing
+        };
+        let mut state = if resumed == Resumed::Nothing {
+            ScratchState::default()
+        } else {
+            ScratchState::load(scratch.path())
+        };
+
+        // Watch the machine for as long as the job runs. It reports; it never intervenes — see
+        // `navigator_analysis::resource`. Started here so that it covers every stage, including the
+        // ones a resumed job skips over quickly.
+        let _watch = navigator_analysis::resource::ResourceWatch::start(
+            navigator_analysis::resource::DEFAULT_INTERVAL,
+            |sample| {
+                // Anything short of trouble is a log line; the bands exist so that trouble is
+                // greppable afterwards rather than buried in six hours of normal readings.
+                if sample.pressure == navigator_analysis::resource::Pressure::Normal {
+                    eprintln!("realign: {}", sample.summary());
+                } else {
+                    eprintln!("realign: WARNING {}", sample.summary());
+                }
+            },
+        );
+
         // ---- preflight ----
-        report(RealignStage::Preflight, "");
+        report(RealignStage::Preflight, resumed.detail());
         cancel.check()?;
         let source_size = std::fs::metadata(&source_bam).map(|m| m.len()).unwrap_or(0);
-        let plan = preflight(scratch.path(), Path::new(&source_bam), source_size)?;
+        // A resumed job is sized from the intermediate it is resuming from, not from the source.
+        // The source's expansion — CRAM to FASTQ and back to BAM — has already happened and is
+        // sitting on the disk; charging for it a second time would refuse a job that fits.
+        let plan = if resumed == Resumed::Nothing {
+            preflight(scratch.path(), Path::new(&source_bam), source_size)?
+        } else {
+            resume_preflight(scratch.path(), &mapped, &sorted, &marked)?
+        };
 
         // ---- stage A: revert ----
-        report(RealignStage::Revert, "");
-        let reverted = {
+        report(RealignStage::Revert, resumed.detail());
+        let reverted = if resumed > Resumed::Nothing {
+            None
+        } else {
             let bam = PathBuf::from(&source_bam);
             let reference = source_reference.clone();
             let dir = scratch.path().join("revert");
+            clear_stage_dir(&dir);
             let token = cancel.clone();
-            tokio::task::spawn_blocking(move || {
+            let stats = tokio::task::spawn_blocking(move || {
                 revert::revert_alignment(&bam, reference.as_deref(), &dir, &RevertParams::default(), &token)
             })
             .await
-            .map_err(|e| AppError::Join(e.to_string()))??
+            .map_err(|e| AppError::Join(e.to_string()))??;
+
+            state.unmapped_reads = Some(stats.stats.unmapped_reads);
+            state.store(scratch.path());
+            Some(stats)
         };
 
         // ---- stage B: index, then map ----
-        report(RealignStage::Index, "");
-        let index = {
-            let build = params.target_build.clone();
-            let reference = params.target_reference.clone();
-            let batch = plan.batch;
-            tokio::task::spawn_blocking(move || {
-                navigator_align::index::ensure_index(
-                    &navigator_align::index::cache_root(),
-                    &build,
-                    &reference,
-                    preset,
-                    batch,
-                    &mut |_, _| {},
-                )
-            })
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??
-        };
+        report(RealignStage::Index, resumed.detail());
+        if let Some(reverted) = &reverted {
+            let index = {
+                let build = params.target_build.clone();
+                let reference = params.target_reference.clone();
+                let batch = plan.batch;
+                tokio::task::spawn_blocking(move || {
+                    navigator_align::index::ensure_index(
+                        &navigator_align::index::cache_root(),
+                        &build,
+                        &reference,
+                        preset,
+                        batch,
+                        &mut |_, _| {},
+                    )
+                })
+                .await
+                .map_err(|e| AppError::Join(e.to_string()))??
+            };
 
-        report(RealignStage::Map, "");
-        let mapped = scratch.path().join("mapped.bam");
-        {
+            report(RealignStage::Map, "");
             let (r1, r2, singles) = (
                 reverted.read1.clone(),
                 reverted.read2.clone(),
@@ -208,6 +352,7 @@ impl App {
             );
             let out = mapped.clone();
             let dir = scratch.path().join("map");
+            clear_stage_dir(&dir);
             let token = cancel.clone();
             let map_params = navigator_align::MapParams {
                 preset,
@@ -254,29 +399,35 @@ impl App {
         let discard = |path: &Path| {
             let _ = std::fs::remove_file(path);
         };
-        discard(&reverted.read1);
-        discard(&reverted.read2);
-        discard(&reverted.singletons);
+        if let Some(reverted) = &reverted {
+            discard(&reverted.read1);
+            discard(&reverted.read2);
+            discard(&reverted.singletons);
+        }
 
         // ---- stage C: sort, mark duplicates, compress ----
-        report(RealignStage::Sort, "");
-        let sorted = scratch.path().join("sorted.bam");
-        {
+        report(RealignStage::Sort, resumed.detail());
+        if resumed < Resumed::Sorted {
             let (input, out) = (mapped.clone(), sorted.clone());
             let dir = scratch.path().join("sort");
+            // A resumed job re-sorts from the start, so the killed attempt's spilled runs are dead
+            // weight — and at WGS scale they are tens of GB the sort is about to want back.
+            clear_stage_dir(&dir);
             let token = cancel.clone();
             tokio::task::spawn_blocking(move || {
                 postprocess::sort_alignment(&input, &out, &dir, &SortParams::default(), &token, &mut |_| {})
             })
             .await
-            .map_err(|e| AppError::Join(e.to_string()))??
-        };
+            .map_err(|e| AppError::Join(e.to_string()))??;
+
+            // The runs are consumed by the merge; the sorted BAM is what the next stage reads.
+            clear_stage_dir(&scratch.path().join("sort"));
+        }
 
         discard(&mapped);
 
-        report(RealignStage::MarkDuplicates, "");
-        let marked = scratch.path().join("marked.bam");
-        let markdup = {
+        report(RealignStage::MarkDuplicates, resumed.detail());
+        if resumed < Resumed::Marked {
             let (input, out) = (sorted.clone(), marked.clone());
             let token = cancel.clone();
             // Long-read libraries are typically PCR-free and long reads rarely share endpoints, so
@@ -285,16 +436,20 @@ impl App {
                 enabled: preset.is_paired(),
                 ..Default::default()
             };
-            tokio::task::spawn_blocking(move || {
+            let markdup = tokio::task::spawn_blocking(move || {
                 postprocess::mark_duplicates(&input, &out, &md_params, &token, &mut |_| {})
             })
             .await
-            .map_err(|e| AppError::Join(e.to_string()))??
-        };
+            .map_err(|e| AppError::Join(e.to_string()))??;
+
+            state.reads_written = Some(markdup.records);
+            state.duplicates_marked = Some(markdup.duplicates);
+            state.store(scratch.path());
+        }
 
         discard(&sorted);
 
-        report(RealignStage::Finalize, "");
+        report(RealignStage::Finalize, resumed.detail());
         let finalized = {
             let (input, out) = (marked.clone(), output.clone());
             tokio::task::spawn_blocking(move || postprocess::finalize_bam(&input, &out))
@@ -327,9 +482,9 @@ impl App {
 
         Ok(RealignOutcome {
             alignment,
-            source_unmapped_reads: reverted.stats.unmapped_reads,
-            reads_written: markdup.records,
-            duplicates_marked: markdup.duplicates,
+            source_unmapped_reads: state.unmapped_reads,
+            reads_written: state.reads_written,
+            duplicates_marked: state.duplicates_marked,
         })
     }
 
@@ -414,6 +569,42 @@ pub fn preflight(scratch: &Path, source: &Path, source_size: u64) -> Result<Real
     })
 }
 
+/// Preflight for a job resuming from intermediates that already exist.
+///
+/// The full [`preflight`] estimate is anchored to the *source* file, and multiplies it by the
+/// expansion the pipeline is about to perform. For a resumed job that expansion is already on the
+/// disk, so the same sum charges twice for it — enough to refuse a job with room to spare.
+///
+/// The remaining stages are each roughly the size of the intermediate they read, and at most two
+/// coexist: the sort holds its spilled runs while the mapped BAM is still there, and duplicate
+/// marking writes its output while the sorted BAM is still there. Three times the largest
+/// surviving intermediate covers that with a margin, and the intermediate's size is a measurement
+/// rather than a guess.
+fn resume_preflight(scratch: &Path, mapped: &Path, sorted: &Path, marked: &Path) -> Result<RealignPlan, AppError> {
+    let size = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let largest = size(mapped).max(size(sorted)).max(size(marked));
+    let needed = largest.saturating_mul(3);
+    let free = free_space(scratch);
+
+    if !has_room(needed, free) {
+        return Err(AppError::Import(format!(
+            "not enough room to resume the realignment: about {} GB of working space is needed and \
+             {} GB is free on {}",
+            gb(needed),
+            gb(free),
+            scratch.display(),
+        )));
+    }
+
+    Ok(RealignPlan {
+        // Nothing that reads this is going to run — resuming starts at the sort, which is past the
+        // index — but the plan is the shared shape and a caller may still log it.
+        batch: BatchSize::for_this_machine(),
+        scratch_needed: needed,
+        scratch_free: free,
+    })
+}
+
 fn gb(bytes: u64) -> u64 {
     bytes / 1_000_000_000
 }
@@ -491,9 +682,15 @@ struct JobScratch {
 /// hostage over a bug they did not cause.
 ///
 /// It exists because the opposite default has a matching failure of its own. A realignment that
-/// dies in stage 7 of 8 discards the seven stages that worked — a measured 10.7 hours on a 30x WGS
-/// — and there is no way to resume, because the input each stage needed has been deleted. For
-/// anyone iterating on the pipeline, that trade is the wrong way round, so they can invert it.
+/// dies in stage 7 of 8 discards the seven stages that worked — a measured 10.7 hours on a 30x WGS.
+/// For anyone iterating on the pipeline, that trade is the wrong way round, so they can invert it.
+///
+/// This is now also the switch that makes [`RealignParams::resume`] worth anything: resume reads
+/// the intermediates a previous attempt left, and by default a failed attempt does not leave any.
+/// The two are meant to be used together when a run is expected to be interrupted — which, at six
+/// hours a run on a machine someone is still using, is a reasonable thing to expect. A job killed
+/// outright (a session teardown, a power loss) never runs `Drop` at all, so its scratch survives
+/// regardless of this setting; that is the case resume was built for.
 fn keep_scratch_on_failure() -> bool {
     std::env::var("NAVIGATOR_REALIGN_KEEP_SCRATCH")
         .map(|v| v != "0" && !v.is_empty())
@@ -614,5 +811,103 @@ mod tests {
             assert!(dir.exists());
         }
         assert!(!dir.exists(), "scratch outlived the job");
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+
+    /// A scratch directory of this test's own, holding whatever files it names.
+    fn scratch(tag: &str, files: &[(&str, bool)]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("navigator-resume-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for (name, complete) in files {
+            let path = dir.join(name);
+            // A "complete" BAM is one carrying the BGZF end-of-file marker; an incomplete one is
+            // the same bytes with the marker cut short, which is what a killed writer leaves.
+            let mut bytes = vec![0u8; 64];
+            let eof: [u8; 28] = [
+                0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00, 0x1b,
+                0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            ];
+            if *complete {
+                bytes.extend_from_slice(&eof);
+            } else {
+                bytes.extend_from_slice(&eof[..20]);
+            }
+            std::fs::write(&path, &bytes).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn an_empty_scratch_directory_resumes_nothing() {
+        let dir = scratch("empty", &[]);
+        assert_eq!(resumable(&dir), Resumed::Nothing);
+    }
+
+    /// The 2026-08-13 case exactly: mapping finished, the sort was killed partway through writing
+    /// its output. The mapped BAM is worth four hours and must be picked up; the half-written
+    /// sorted BAM must not be.
+    #[test]
+    fn a_complete_map_and_a_truncated_sort_resumes_from_the_map() {
+        let dir = scratch("mid-sort", &[("mapped.bam", true), ("sorted.bam", false)]);
+        assert_eq!(resumable(&dir), Resumed::Mapped);
+    }
+
+    #[test]
+    fn the_furthest_complete_stage_wins() {
+        let dir = scratch(
+            "furthest",
+            &[("mapped.bam", true), ("sorted.bam", true), ("marked.bam", true)],
+        );
+        assert_eq!(resumable(&dir), Resumed::Marked);
+
+        let dir = scratch("furthest-sorted", &[("mapped.bam", true), ("sorted.bam", true)]);
+        assert_eq!(resumable(&dir), Resumed::Sorted);
+    }
+
+    /// The stage guards are written as `resumed < Resumed::Sorted`, so the ordering is load-bearing
+    /// rather than cosmetic: getting it backwards would skip work that has not been done.
+    #[test]
+    fn the_stages_are_ordered_by_how_much_they_skip() {
+        assert!(Resumed::Nothing < Resumed::Mapped);
+        assert!(Resumed::Mapped < Resumed::Sorted);
+        assert!(Resumed::Sorted < Resumed::Marked);
+    }
+
+    /// Resume must not inherit a *different* job's numbers, and it must not invent them either.
+    #[test]
+    fn counts_survive_a_round_trip_and_default_to_unmeasured() {
+        let dir = scratch("state", &[]);
+        assert_eq!(ScratchState::load(&dir).unmapped_reads, None);
+
+        let state = ScratchState {
+            unmapped_reads: Some(301_431),
+            reads_written: Some(62_429_459),
+            duplicates_marked: Some(2_122_650),
+        };
+        state.store(&dir);
+
+        let loaded = ScratchState::load(&dir);
+        assert_eq!(loaded.unmapped_reads, Some(301_431));
+        assert_eq!(loaded.reads_written, Some(62_429_459));
+        assert_eq!(loaded.duplicates_marked, Some(2_122_650));
+    }
+
+    /// A resumed job is sized from what is already on disk. Sizing it from the source again would
+    /// charge twice for an expansion that has already happened and refuse a job that fits.
+    #[test]
+    fn resume_preflight_sizes_from_the_surviving_intermediate() {
+        let dir = scratch("preflight", &[("mapped.bam", true)]);
+        let mapped = dir.join("mapped.bam");
+        let plan = resume_preflight(&dir, &mapped, &dir.join("sorted.bam"), &dir.join("marked.bam"))
+            .expect("a 92-byte intermediate fits anywhere");
+
+        let size = std::fs::metadata(&mapped).unwrap().len();
+        assert_eq!(plan.scratch_needed, size * 3);
     }
 }

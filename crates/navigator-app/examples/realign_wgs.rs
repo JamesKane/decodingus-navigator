@@ -8,6 +8,9 @@
 //! ```bash
 //! cargo run --release -p navigator-app --example realign_wgs -- <alignment_id>
 //! # optional: REF=… BUILD=… SCRATCH=… (defaults: cached chm13v2.0.fa, "chm13v2.0", beside the output)
+//! # RESUME=1 picks up from a previous attempt's intermediates
+//! # NAVIGATOR_REALIGN_KEEP_SCRATCH=1 leaves them behind when a run fails, so RESUME has something
+//! #   to find; a run that is killed outright leaves them regardless
 //! ```
 //!
 //! Ctrl-C cancels through the job's own token rather than killing the process, so the scratch
@@ -103,18 +106,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         target_reference: reference,
         preset,
         scratch_root,
+        resume: std::env::var("RESUME")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(false),
     };
 
     match app.realign_alignment(alignment_id, params, cancel, progress).await {
         Ok(outcome) => {
+            // A resumed run did not necessarily run the stage that counts a given figure, and the
+            // earlier attempt may have been killed before it wrote one down. "not measured" is the
+            // honest rendering; a zero here would read as a result.
+            let count = |n: Option<u64>| n.map(|n| n.to_string()).unwrap_or_else(|| "not measured".into());
             println!(
                 "\ndone in {:.1} min\n  alignment #{} at {}\n  reads written: {}\n  duplicates marked: {}\n  source unmapped reads (had a chance to place): {}",
                 started.elapsed().as_secs_f64() / 60.0,
                 outcome.alignment.id,
                 outcome.alignment.bam_path.as_deref().unwrap_or("?"),
-                outcome.reads_written,
-                outcome.duplicates_marked,
-                outcome.source_unmapped_reads,
+                count(outcome.reads_written),
+                count(outcome.duplicates_marked),
+                count(outcome.source_unmapped_reads),
             );
             Ok(())
         }
