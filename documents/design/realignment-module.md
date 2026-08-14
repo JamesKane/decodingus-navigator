@@ -1,8 +1,10 @@
 # Realignment module — design & options
 
-Status: **built, phases 1–4; phase 5 (WGS-scale validation) in progress.** Branch:
-`worktree-realignment`. The measurements from the phase 0 spike (2026-08-08), the backend parity
-work (2026-08-10), and the first whole-genome run (2026-08-12) are folded in below.
+Status: **built and validated — phases 1–5 complete (2026-08-14).** Branch: `worktree-realignment`,
+not yet merged. The measurements from the phase 0 spike (2026-08-08), the backend parity work
+(2026-08-10), the first whole-genome run (2026-08-12), the second (2026-08-13) and the third — which
+passed every acceptance criterion — are folded in below. See
+[Phase 5 result](#phase-5-result--wgs229-end-to-end-2026-08-14).
 Scope if built: `navigator-analysis` (revert + post-process), a new `navigator-align` crate
 (the mapper — see Decision 1), `navigator-refgenome` (aligner-index cache), `navigator-app`
 (job orchestration + provenance), `navigator-store` (alignment provenance migration),
@@ -621,6 +623,62 @@ The sort buffer is worth revisiting separately: at the default 512 MB it spilled
 the merge then opens at once. That is bounded memory by design and it works, but on a 128 GB machine
 it is a lot of fan-in bought for no reason. `NAVIGATOR_SORT_MB` already exists; sizing its default
 from installed RAM is not yet done.
+
+## Phase 5 result — WGS229 end to end (2026-08-14)
+
+**Phase 5 passes.** The third WGS run completed in **245.6 min** and every acceptance criterion in
+the [Validation plan](#validation-plan) is met. Alignment **#5807**, 43.0 GB,
+`chm13v2.0` / minimap2, registered against the same sequence run as its GRCh38 source (#5), which
+was read and never written.
+
+The donor (`huF98AFD`) already held native CHM13 alignments, so this is measured against the same
+person aligned independently — not against expectation alone.
+
+### Acceptance
+
+| Criterion | Result | |
+|---|---|---|
+| **Private-Y count** | **11** (0 off-path known, 11 novel, 4 above the publish gate) | dozens, not hundreds — the doc expects ~12 against a 3–39 median |
+| Y concordance | R-FGC29071 | ground truth; 1798 markers vs 1811 for native CHM13 (#9) |
+| mtDNA concordance | U5a1b1g | ground truth; score and matched count identical to all three native CHM13 alignments |
+| Coverage parity | 26.67x mean, 96.1% ≥10x | native CHM13 is 26.95x / 27.64x |
+| Ancestry non-regression | European ~100% | matches the validated EUR expectation |
+| Y read recovery | chrY breadth **41.28% → 98.14%** | +96k chrY reads, callable 15.28 M → 15.61 M |
+
+That last row is the module's purpose stated as a measurement. On GRCh38 only 41% of chrY receives
+coverage at all, most of the remainder being reference gap; the same reads on CHM13 cover 98%,
+slightly ahead of both native CHM13 alignments. The gain in *callable* bases is far more modest
+(+2.2%) because much of what CHM13 adds is heterochromatin that maps ambiguously — visible as
+`poor_mapping_quality` rising from 8.3 M to 45.4 M, which the native alignments show too (44.3 M,
+43.9 M) and which is therefore a property of the reference, not of this pipeline.
+
+The de-novo chrY SNP artifact is 655,286 bytes against native CHM13's 655,331 — the two disagree by
+45 bytes on a 640 KB call set.
+
+Two caveats worth keeping with the result. Ancestry non-regression rests on the estimate matching
+the independently validated EUR expectation, not on a strict before/after diff — `ancestry_result`
+was not snapshotted before the run. And the coverage SD is the one place the realignment *beats*
+every alternative (22.2 against GRCh38's 190.5), which is collapsed-repeat pileup on GRCh38 rather
+than anything the realignment does well.
+
+### What the run cost, and why it is now affordable
+
+| Stage | First run (2026-08-12) | This run | |
+|---|---|---|---|
+| Revert | 65 min | 64 min | |
+| Mapping | 3 h 40 m | 2 h 16 m | mapper overlap work |
+| **Sort** | **4 h 44 m** | **29.3 min** | merge readers + `NAVIGATOR_SORT_MB=8192` |
+| Mark duplicates | 68.6 min | 11.3 min | not touched — the machine had stopped thrashing |
+| Index | crashed | 3.1 min | |
+| **Total** | **10 h 41 m** | **4 h 5.6 m** | |
+
+The sort's ten-fold improvement has two causes changed together — the per-run reader fix and a 16x
+larger sort budget — and this run cannot separate them. Duplicate marking got six times faster with
+no change to its code at all, which is the clearest evidence that the earlier runs were being
+starved rather than being slow.
+
+`NAVIGATOR_SORT_MB` was set to 8192 for this run only; the shipped default is still 512 MB, and
+sizing it from installed RAM remains open.
 
 ## Decision 1 — aligner backend integration
 
