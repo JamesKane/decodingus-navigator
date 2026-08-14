@@ -862,3 +862,59 @@ fn finalizing_moves_the_bam_into_place_and_indexes_it() {
     };
     assert_eq!(read_back.len(), 60, "every record survives finalising");
 }
+
+// ---- completeness ---------------------------------------------------------
+//
+// `is_complete_bam` is what `navigator-app`'s realignment resume trusts when it decides whether a
+// killed attempt's 60 GB intermediate can be picked up or has to be re-derived over several hours.
+// Getting it wrong in either direction is expensive, so both directions are pinned here.
+
+#[test]
+fn a_finished_bam_is_complete() {
+    let dir = scratch("complete-finished");
+    let hdr = header(&[("chr1", 1000)]);
+    let path = dir.join("finished.bam");
+    write_bam(&path, &hdr, &[record("a", Some(0), 10)]);
+
+    assert!(crate::postprocess::is_complete_bam(&path));
+}
+
+/// The case this exists for: a writer that was killed mid-stream. The file is large, plausible,
+/// and readable up to the cut — only the end-of-file marker distinguishes it from a good one.
+#[test]
+fn a_truncated_bam_is_not_complete() {
+    let dir = scratch("complete-truncated");
+    let hdr = header(&[("chr1", 1000)]);
+    let path = dir.join("whole.bam");
+    write_bam(&path, &hdr, &[record("a", Some(0), 10), record("b", Some(0), 20)]);
+
+    let cut = dir.join("cut.bam");
+    let bytes = std::fs::read(&path).unwrap();
+    std::fs::write(&cut, &bytes[..bytes.len() - 8]).unwrap();
+
+    assert!(!crate::postprocess::is_complete_bam(&cut));
+}
+
+#[test]
+fn a_missing_or_empty_file_is_not_complete() {
+    let dir = scratch("complete-missing");
+    assert!(!crate::postprocess::is_complete_bam(&dir.join("nothing.bam")));
+
+    let empty = dir.join("empty.bam");
+    std::fs::write(&empty, b"").unwrap();
+    assert!(!crate::postprocess::is_complete_bam(&empty));
+}
+
+/// The writers the pipeline actually uses go through `bamio`, which now paces its flushes and
+/// syncs on the way out. Whatever that path does, what it leaves behind has to read as complete.
+#[test]
+fn what_the_pipeline_writes_reads_as_complete() {
+    let dir = scratch("complete-pipeline");
+    let (input, _, _) = unsorted_fixture(&dir);
+    let (sorted, _) = run(&input, &dir.join("runs"), SortParams { buffer_bytes: 1 });
+
+    assert!(
+        crate::postprocess::is_complete_bam(&sorted),
+        "the sort's own output must satisfy the predicate resume checks"
+    );
+}

@@ -28,6 +28,7 @@ mod finalize;
 pub mod markdup;
 pub mod sort;
 
+pub use bamio::is_complete_bam;
 pub use cram::{write_cram, CramOutput};
 pub use finalize::{bai_path, finalize_bam, index_bam, FinalizedAlignment};
 pub use markdup::{mark_duplicates, MarkDupParams, MarkDupStats};
