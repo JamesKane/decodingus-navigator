@@ -137,7 +137,7 @@ pub struct RealignParams {
 ///
 /// Ordered by how much work it saves, and checked newest-artifact-first: a complete `marked.bam`
 /// makes the sort behind it irrelevant, so there is no reason to ask about `sorted.bam` as well.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 enum Resumed {
     /// Start from the source alignment.
     Nothing,
@@ -173,6 +173,12 @@ struct ScratchState {
     unmapped_reads: Option<u64>,
     reads_written: Option<u64>,
     duplicates_marked: Option<u64>,
+    /// The furthest stage that *returned successfully*, as opposed to merely leaving a file behind.
+    ///
+    /// Written after the stage returns, never before, so it says something the file itself cannot:
+    /// see [`discard_partial`] for why a finished-looking BAM is not proof on its own. A scratch
+    /// directory predating this field has `None`, and then the marker is all there is to go on.
+    completed_through: Option<Resumed>,
 }
 
 impl ScratchState {
@@ -192,12 +198,52 @@ impl ScratchState {
     }
 }
 
+/// Remove a stage's output when the stage did not finish.
+///
+/// The BGZF end-of-file marker cannot carry the whole weight of "this file is complete", and
+/// finding that out the hard way is what this function exists to prevent. noodles' multithreaded
+/// writer finishes its stream from `Drop`, so a stage that *unwinds* — cancelled, failed, panicked
+/// — leaves a partial file wearing a finished file's marker. Measured: a merge cancelled at 13.2 GB
+/// of an expected ~30 GB, whose output `is_complete_bam` then accepted. Resuming from it would have
+/// marked duplicates on a truncated alignment and registered the result, with nothing anywhere
+/// saying the reads were missing.
+///
+/// A hard kill is the opposite case, and the one resume was built for: no `Drop` runs, no marker is
+/// written, and the file is correctly refused. So the rule that makes the marker trustworthy again
+/// is this one — whenever the job is still alive to notice a stage did not finish, its output does
+/// not survive to be mistaken for one that did.
+fn discard_partial(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+/// Run a stage, and make sure a failure leaves nothing that looks like a success.
+async fn stage<T>(output: &Path, work: impl std::future::Future<Output = Result<T, AppError>>) -> Result<T, AppError> {
+    match work.await {
+        Ok(value) => Ok(value),
+        Err(e) => {
+            discard_partial(output);
+            Err(e)
+        }
+    }
+}
+
 /// How far a previous attempt in `scratch` got, or [`Resumed::Nothing`] if it left nothing usable.
 ///
-/// "Usable" means the BGZF end-of-file marker is present, which is the only thing that separates a
-/// finished BAM from one whose writer was killed mid-stream — and being killed mid-stream is
-/// precisely the case this exists for. A truncated file is ignored, not repaired.
-fn resumable(scratch: &Path) -> Resumed {
+/// Two things have to agree. The file must carry the BGZF end-of-file marker, and — when the
+/// previous attempt was new enough to have recorded one — its own account of the last stage it
+/// completed must reach at least as far. The lower of the two wins, because each catches a case the
+/// other cannot: the marker catches a scratch directory written by an older build, and the record
+/// catches a file whose marker was written by an unwinding `Drop`. See [`discard_partial`].
+fn resumable(scratch: &Path, state: &ScratchState) -> Resumed {
+    let by_marker = resumable_by_marker(scratch);
+    match state.completed_through {
+        Some(claimed) => by_marker.min(claimed),
+        None => by_marker,
+    }
+}
+
+/// The marker-only half of [`resumable`], kept separate so the two rules can be tested apart.
+fn resumable_by_marker(scratch: &Path) -> Resumed {
     if postprocess::is_complete_bam(&scratch.join("marked.bam")) {
         Resumed::Marked
     } else if postprocess::is_complete_bam(&scratch.join("sorted.bam")) {
@@ -262,15 +308,16 @@ impl App {
         let marked = scratch.path().join("marked.bam");
 
         // What a previous attempt left behind, and what it measured while it was running.
+        let previous = ScratchState::load(scratch.path());
         let resumed = if params.resume {
-            resumable(scratch.path())
+            resumable(scratch.path(), &previous)
         } else {
             Resumed::Nothing
         };
         let mut state = if resumed == Resumed::Nothing {
             ScratchState::default()
         } else {
-            ScratchState::load(scratch.path())
+            previous
         };
 
         // Watch the machine for as long as the job runs. It reports; it never intervenes — see
@@ -361,36 +408,42 @@ impl App {
                 format: navigator_align::OutputFormat::Bam,
                 reference: None,
             };
-            tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-                let cancelled = move || token.is_cancelled();
-                if preset.is_paired() {
-                    navigator_align::map_pairs(
-                        &index,
-                        &r1,
-                        &r2,
-                        &out,
-                        &dir,
-                        &map_params,
-                        &cancelled,
-                        &mut |_, _, _| {},
-                    )?;
-                } else {
-                    // Long-read presets are single-ended; the revert stage puts everything that
-                    // did not pair into the singletons file, which is the whole read set here.
-                    navigator_align::map_reads(
-                        &index,
-                        &singles,
-                        &out,
-                        &dir,
-                        &map_params,
-                        &cancelled,
-                        &mut |_, _, _| {},
-                    )?;
-                }
-                Ok(())
+            stage(&mapped, async {
+                tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+                    let cancelled = move || token.is_cancelled();
+                    if preset.is_paired() {
+                        navigator_align::map_pairs(
+                            &index,
+                            &r1,
+                            &r2,
+                            &out,
+                            &dir,
+                            &map_params,
+                            &cancelled,
+                            &mut |_, _, _| {},
+                        )?;
+                    } else {
+                        // Long-read presets are single-ended; the revert stage puts everything that
+                        // did not pair into the singletons file, which is the whole read set here.
+                        navigator_align::map_reads(
+                            &index,
+                            &singles,
+                            &out,
+                            &dir,
+                            &map_params,
+                            &cancelled,
+                            &mut |_, _, _| {},
+                        )?;
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(|e| AppError::Join(e.to_string()))?
             })
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await?;
+
+            state.completed_through = Some(Resumed::Mapped);
+            state.store(scratch.path());
         } else {
             // Still reported, even though there is nothing to do: a progress display that skips
             // from stage 3 to stage 5 reads as a missing step rather than a saved one.
@@ -418,17 +471,30 @@ impl App {
             // weight — and at WGS scale they are tens of GB the sort is about to want back.
             clear_stage_dir(&dir);
             let token = cancel.clone();
-            tokio::task::spawn_blocking(move || {
-                postprocess::sort_alignment(&input, &out, &dir, &SortParams::default(), &token, &mut |_| {})
+            stage(&sorted, async {
+                tokio::task::spawn_blocking(move || {
+                    postprocess::sort_alignment(&input, &out, &dir, &SortParams::default(), &token, &mut |_| {})
+                })
+                .await
+                .map_err(|e| AppError::Join(e.to_string()))?
+                .map_err(AppError::from)
             })
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await?;
 
             // The runs are consumed by the merge; the sorted BAM is what the next stage reads.
             clear_stage_dir(&scratch.path().join("sort"));
+            state.completed_through = Some(Resumed::Sorted);
+            state.store(scratch.path());
         }
 
-        discard(&mapped);
+        // Only what *this* run produced is disposable. A resumed run that skipped the sort has
+        // re-derived nothing, and deleting the mapped BAM it resumed past would throw away the most
+        // expensive artifact in the pipeline on the strength of a belief about a file it did not
+        // write. That is not hypothetical: combined with the marker bug in `discard_partial`, it is
+        // exactly how a 59 GB `mapped.bam` — 3 h 58 m of revert and mapping — was destroyed.
+        if resumed < Resumed::Sorted {
+            discard(&mapped);
+        }
 
         report(RealignStage::MarkDuplicates, resumed.detail());
         if resumed < Resumed::Marked {
@@ -440,18 +506,25 @@ impl App {
                 enabled: preset.is_paired(),
                 ..Default::default()
             };
-            let markdup = tokio::task::spawn_blocking(move || {
-                postprocess::mark_duplicates(&input, &out, &md_params, &token, &mut |_| {})
+            let markdup = stage(&marked, async {
+                tokio::task::spawn_blocking(move || {
+                    postprocess::mark_duplicates(&input, &out, &md_params, &token, &mut |_| {})
+                })
+                .await
+                .map_err(|e| AppError::Join(e.to_string()))?
+                .map_err(AppError::from)
             })
-            .await
-            .map_err(|e| AppError::Join(e.to_string()))??;
+            .await?;
 
             state.reads_written = Some(markdup.records);
             state.duplicates_marked = Some(markdup.duplicates);
+            state.completed_through = Some(Resumed::Marked);
             state.store(scratch.path());
         }
 
-        discard(&sorted);
+        if resumed < Resumed::Marked {
+            discard(&sorted);
+        }
 
         report(RealignStage::Finalize, resumed.detail());
         let finalized = {
@@ -850,7 +923,57 @@ mod resume_tests {
     #[test]
     fn an_empty_scratch_directory_resumes_nothing() {
         let dir = scratch("empty", &[]);
-        assert_eq!(resumable(&dir), Resumed::Nothing);
+        assert_eq!(resumable(&dir, &ScratchState::default()), Resumed::Nothing);
+    }
+
+    /// The bug this pair of rules exists for, reproduced.
+    ///
+    /// A cancelled merge left 13.2 GB of an expected ~30 GB `sorted.bam` carrying a valid BGZF
+    /// end-of-file marker, because noodles' multithreaded writer finishes its stream from `Drop`
+    /// while the job unwinds. The marker check alone accepted it and the next run went straight to
+    /// marking duplicates on a truncated alignment. The stage record is what refuses it: the sort
+    /// never returned, so nothing ever claimed it completed.
+    #[test]
+    fn a_marker_written_by_an_unwinding_drop_is_not_enough() {
+        let dir = scratch("unwound", &[("mapped.bam", true), ("sorted.bam", true)]);
+
+        assert_eq!(
+            resumable_by_marker(&dir),
+            Resumed::Sorted,
+            "the marker alone is fooled — that is the premise"
+        );
+
+        let state = ScratchState {
+            completed_through: Some(Resumed::Mapped),
+            ..Default::default()
+        };
+        assert_eq!(
+            resumable(&dir, &state),
+            Resumed::Mapped,
+            "the stage record caps it at what actually finished"
+        );
+    }
+
+    /// The record cannot promise more than the files deliver either — a scratch directory whose
+    /// `marked.bam` was removed must not be resumed from just because a stale record mentions it.
+    #[test]
+    fn the_record_cannot_outrun_the_files() {
+        let dir = scratch("stale-record", &[("mapped.bam", true)]);
+        let state = ScratchState {
+            completed_through: Some(Resumed::Marked),
+            ..Default::default()
+        };
+
+        assert_eq!(resumable(&dir, &state), Resumed::Mapped);
+    }
+
+    /// A scratch directory written before the stage record existed still has to work: the Aug-13
+    /// `mapped.bam` was left by a process killed outright, so no `Drop` ran and the marker means
+    /// exactly what it says.
+    #[test]
+    fn a_scratch_without_a_record_falls_back_to_the_marker() {
+        let dir = scratch("legacy", &[("mapped.bam", true)]);
+        assert_eq!(resumable(&dir, &ScratchState::default()), Resumed::Mapped);
     }
 
     /// The 2026-08-13 case exactly: mapping finished, the sort was killed partway through writing
@@ -859,7 +982,7 @@ mod resume_tests {
     #[test]
     fn a_complete_map_and_a_truncated_sort_resumes_from_the_map() {
         let dir = scratch("mid-sort", &[("mapped.bam", true), ("sorted.bam", false)]);
-        assert_eq!(resumable(&dir), Resumed::Mapped);
+        assert_eq!(resumable(&dir, &ScratchState::default()), Resumed::Mapped);
     }
 
     #[test]
@@ -868,10 +991,10 @@ mod resume_tests {
             "furthest",
             &[("mapped.bam", true), ("sorted.bam", true), ("marked.bam", true)],
         );
-        assert_eq!(resumable(&dir), Resumed::Marked);
+        assert_eq!(resumable(&dir, &ScratchState::default()), Resumed::Marked);
 
         let dir = scratch("furthest-sorted", &[("mapped.bam", true), ("sorted.bam", true)]);
-        assert_eq!(resumable(&dir), Resumed::Sorted);
+        assert_eq!(resumable(&dir, &ScratchState::default()), Resumed::Sorted);
     }
 
     /// The stage guards are written as `resumed < Resumed::Sorted`, so the ordering is load-bearing
@@ -893,6 +1016,7 @@ mod resume_tests {
             unmapped_reads: Some(301_431),
             reads_written: Some(62_429_459),
             duplicates_marked: Some(2_122_650),
+            completed_through: Some(Resumed::Marked),
         };
         state.store(&dir);
 
@@ -900,6 +1024,7 @@ mod resume_tests {
         assert_eq!(loaded.unmapped_reads, Some(301_431));
         assert_eq!(loaded.reads_written, Some(62_429_459));
         assert_eq!(loaded.duplicates_marked, Some(2_122_650));
+        assert_eq!(loaded.completed_through, Some(Resumed::Marked));
     }
 
     /// A resumed job is sized from what is already on disk. Sizing it from the source again would
