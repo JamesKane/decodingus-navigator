@@ -18,7 +18,7 @@
 //! recalibration attached.
 
 use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::Path;
 
 use noodles::{bam, bgzf};
@@ -27,6 +27,12 @@ use crate::error::AnalysisError;
 
 /// A BAM reader whose block decompression runs on a worker pool.
 pub(crate) type BamReader = bam::io::Reader<bgzf::io::MultithreadedReader<File>>;
+
+/// A BAM reader that inflates on the calling thread.
+pub(crate) type PlainBamReader = bam::io::Reader<bgzf::io::Reader<BufReader<File>>>;
+
+/// Read buffer for a stream that is one of many open at once.
+const READ_BUFFER: usize = 1 << 18;
 
 /// A BAM writer whose block compression runs on a worker pool.
 pub(crate) type BamWriter = bam::io::Writer<bgzf::io::MultithreadedWriter<BufWriter<PacedFile>>>;
@@ -146,6 +152,25 @@ pub fn is_complete_bam(path: &Path) -> bool {
 pub(crate) fn open(path: &Path) -> Result<BamReader, AnalysisError> {
     let file = File::open(path).map_err(|e| AnalysisError::io(path, e))?;
     let inner = bgzf::io::MultithreadedReader::with_worker_count(crate::reader::bgzf_worker_count(), file);
+    Ok(bam::io::Reader::from(inner))
+}
+
+/// Open `path` as one of many streams that will be read concurrently.
+///
+/// [`open`] is right for a stream that is alone: threading its inflation is the difference between
+/// one core and six on a file the stage reads end to end. It is badly wrong for a stream that is
+/// one of hundreds. The sort's merge opens every spilled run at once — 688 of them on a 30x WGS at
+/// the default budget — and giving each its own worker pool spawned **4,843 threads** in a measured
+/// run, each independently reading ahead. The machine did 15,000 IOPS and 6.6 GB/s of disk reads to
+/// produce 5 MB/s of merged output, WindowServer could not get scheduled, and the run was killed by
+/// the watchdog that noticed.
+///
+/// There is nothing for a worker pool to do here anyway: the merge is already parallel across runs,
+/// and it consumes one record at a time from each. So this inflates on the calling thread, behind a
+/// modest buffer — 688 of these cost 688 buffers and no threads at all.
+pub(crate) fn open_many(path: &Path) -> Result<PlainBamReader, AnalysisError> {
+    let file = File::open(path).map_err(|e| AnalysisError::io(path, e))?;
+    let inner = bgzf::io::Reader::new(BufReader::with_capacity(READ_BUFFER, file));
     Ok(bam::io::Reader::from(inner))
 }
 

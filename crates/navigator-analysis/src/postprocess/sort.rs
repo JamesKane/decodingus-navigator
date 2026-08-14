@@ -237,7 +237,7 @@ fn merge(
     // Each run is read through its own reader; only one record per run is resident at a time.
     let mut readers = Vec::with_capacity(runs.paths.len());
     for path in &runs.paths {
-        let mut reader = open_bam(path)?;
+        let mut reader = bamio::open_many(path)?;
         let run_header = reader.read_header().map_err(|e| AnalysisError::io(path, e))?;
         readers.push(RunReader {
             path: path.clone(),
@@ -293,7 +293,9 @@ fn merge(
 struct RunReader {
     path: PathBuf,
     header: sam::Header,
-    reader: bamio::BamReader,
+    /// Single-threaded by design — see [`bamio::open_many`]. Every run in the merge is open at
+    /// once, so a worker pool per run is thousands of threads for work that is already parallel.
+    reader: bamio::PlainBamReader,
 }
 
 impl RunReader {
