@@ -391,6 +391,10 @@ impl App {
             })
             .await
             .map_err(|e| AppError::Join(e.to_string()))??;
+        } else {
+            // Still reported, even though there is nothing to do: a progress display that skips
+            // from stage 3 to stage 5 reads as a missing step rather than a saved one.
+            report(RealignStage::Map, resumed.detail());
         }
 
         // Every stage's input is dead once the next stage has read it, and at WGS scale each is
