@@ -576,6 +576,52 @@ failure then costs one hour to retry instead of eleven. Real stage-level resume,
 source's `source_sig` and the stage inputs already on disk, should be reconsidered before this
 ships: the cost of not having it scales with the length of the job, and this job is eleven hours.
 
+> **Built, 2026-08-14** — the second WGS run made the case unarguable; see
+> [The second WGS-scale run](#the-second-wgs-scale-run-2026-08-13). `RealignParams::resume` keys on
+> the scratch path, which is already derived from the source alignment and the target build, rather
+> than on `source_sig`: anything in that directory belongs to the job about to run. The UI opts in.
+
+## The second WGS-scale run (2026-08-13)
+
+The run that followed the BAM switch and the mapper's overlap work was killed at 20:24, five hours
+and forty-four minutes in, part-way through the sort's merge. Its cause of death is worth recording
+carefully, because the obvious reading of it was wrong in a way that would have sent the next
+change to the wrong place.
+
+**It was not a reboot.** `kern.boottime` was unbroken across the whole run — the machine's last
+boot predated the run's start by a day. **It was not an out-of-memory kill either**, which was the
+working hypothesis: at the moment of death the compressor held 105 pages, no jetsam report was
+filed against the process, and anonymous memory sat at 32 GB of 128, most of the rest being
+reclaimable file cache. The run log ends after "stage 5/8: Sorting by position" with no panic
+appended, which by itself rules out the failure mode of the first run.
+
+What happened is in `WindowServer-2026-08-13-202436.ips`: a `WATCHDOG` termination, "40 seconds
+since last successful checkin", against WindowServer's main thread. Killing WindowServer tears down
+the graphical login session and every process in it, this job included. To anyone watching the
+screen it is indistinguishable from a reboot.
+
+**The pressure that starved it was I/O, not memory.** macOS filed a disk-writes resource notice
+against the run for dirtying **549.76 GB of file-backed memory** at 8758 KB/s sustained, against a
+limit of 6362 KB/s — the sort writing as fast as it could into the page cache and leaving write-back
+to the operating system. That is the right division of labour until the volume gets this far out of
+scale, at which point the machine has a debt it cannot settle inside a 40-second watchdog window.
+
+Three things came out of it:
+
+- **`bamio::PacedFile`** flushes on a byte cadence (`NAVIGATOR_IO_SYNC_MB`, 256 MB by default), so
+  the write path pays for its own I/O in instalments. It sits under `bamio::create`, the one choke
+  point every stage-C write already goes through.
+- **`navigator_analysis::resource::ResourceWatch`** samples memory *and* the write rate every 30
+  seconds — deliberately inside the 40-second watchdog window it is trying to catch the shadow of.
+  It reports and never intervenes. Nothing was recording the number that turned out to matter.
+- **Resume**, above. The killed run left 59 GB of complete `mapped.bam` on disk: the revert and the
+  mapping, 3 h 58 m, intact and unusable. Resuming from it started the next attempt at the sort.
+
+The sort buffer is worth revisiting separately: at the default 512 MB it spilled **688 runs**, which
+the merge then opens at once. That is bounded memory by design and it works, but on a 128 GB machine
+it is a lot of fan-in bought for no reason. `NAVIGATOR_SORT_MB` already exists; sizing its default
+from installed RAM is not yet done.
+
 ## Decision 1 — aligner backend integration
 
 The project's defining constraint: **"no external tools."** Today that is *strictly* true — the
