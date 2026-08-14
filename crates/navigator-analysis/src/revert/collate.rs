@@ -67,7 +67,10 @@ impl Collator {
 
         let path = self.dir.join(format!("revert-run-{:05}.bin", self.runs.len()));
         let file = File::create(&path).map_err(|e| AnalysisError::io(&path, e))?;
-        let mut w = BufWriter::with_capacity(RUN_IO_BUFFER, file);
+        // Paced: the spill runs are the biggest thing this pipeline writes — the scratch peak is
+        // here, not in the post-processing stages — so they are exactly what must not be allowed to
+        // pile up dirty in the page cache. See `crate::resource::PacedFile`.
+        let mut w = BufWriter::with_capacity(RUN_IO_BUFFER, crate::resource::PacedFile::new(file));
         for read in &self.buffer {
             write_read(&mut w, read).map_err(|e| AnalysisError::io(&path, e))?;
         }

@@ -37,7 +37,7 @@ const FASTQ_BUFFER: usize = 1024 * 1024;
 const FASTQ_COMPRESSION: Compression = Compression::fast();
 
 /// A gzip-compressing FASTQ sink.
-type FastqWriter = GzEncoder<BufWriter<File>>;
+type FastqWriter = GzEncoder<BufWriter<crate::resource::PacedFile>>;
 
 /// Phred offset for FASTQ's ASCII quality encoding (Sanger / Illumina 1.8+).
 const PHRED_OFFSET: u8 = 33;
@@ -123,7 +123,7 @@ fn pair_of(group: &[RevertedRead]) -> Option<(usize, usize)> {
 fn open(path: &Path) -> Result<FastqWriter, AnalysisError> {
     let file = File::create(path).map_err(|e| AnalysisError::io(path, e))?;
     Ok(GzEncoder::new(
-        BufWriter::with_capacity(FASTQ_BUFFER, file),
+        BufWriter::with_capacity(FASTQ_BUFFER, crate::resource::PacedFile::new(file)),
         FASTQ_COMPRESSION,
     ))
 }

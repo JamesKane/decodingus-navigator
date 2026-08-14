@@ -29,6 +29,8 @@
 //! deliberately no `fcntl`/`ioctl`/`/proc` in this module: the guard has to hold on Windows, and a
 //! guard that only arms itself on macOS would have been no guard at all for most users.
 
+use std::fs::File;
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -49,6 +51,88 @@ pub fn record_bytes_written(n: u64) {
 /// Total bytes the post-processing writers have written this process.
 pub fn bytes_written() -> u64 {
     BYTES_WRITTEN.load(Ordering::Relaxed)
+}
+
+/// Bytes written between forced flushes to disk. See [`PacedFile`].
+const DEFAULT_SYNC_MB: u64 = 256;
+
+/// How much may be left dirty before a paced stream pushes it to disk.
+///
+/// `NAVIGATOR_IO_SYNC_MB=0` turns the pacing off and restores the unbounded behaviour.
+fn sync_interval() -> u64 {
+    std::env::var("NAVIGATOR_IO_SYNC_MB")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SYNC_MB)
+        * 1024
+        * 1024
+}
+
+/// A file that will not let an unbounded amount of its output sit dirty in the page cache.
+///
+/// Without this, a stage writes as fast as it can into the page cache and leaves write-back to the
+/// operating system, which sounds like the right division of labour and is, until the volume gets
+/// far enough out of scale. One WGS realignment dirtied 549 GB of file-backed memory — enough that
+/// macOS filed a disk-writes resource notice against the process for exceeding its sustained
+/// write-back limit by 1.4x, and enough that WindowServer's main thread missed a 40-second watchdog
+/// check-in and was killed, taking the login session and a six-hour job with it.
+///
+/// Flushing on a byte cadence caps how much can be outstanding at once. The write path pays for its
+/// own I/O as it goes instead of handing the machine a debt to settle later, which is also why this
+/// is not obviously a slowdown: the same bytes reach the same disk, in steadier instalments rather
+/// than in storms.
+///
+/// It lives here rather than beside any one stage because every stage that writes tens of GB wants
+/// it — the post-processing BAMs *and* the revert's spill runs and FASTQ, which is where the scratch
+/// peak actually is. The byte accounting that [`ResourceWatch`] reports comes from the same place,
+/// so a stream that is paced is also a stream that is counted.
+///
+/// `sync_data` rather than `sync_all` — the contents must be durable, the metadata need not be, and
+/// on a stream this size that is many thousands of inode updates. It is std's portable spelling:
+/// `fdatasync` where there is one, `FlushFileBuffers` on Windows.
+pub struct PacedFile {
+    file: File,
+    since_sync: u64,
+    interval: u64,
+}
+
+impl PacedFile {
+    pub fn new(file: File) -> Self {
+        Self {
+            file,
+            since_sync: 0,
+            interval: sync_interval(),
+        }
+    }
+
+    /// Push everything still outstanding to disk.
+    ///
+    /// Called at the end of a stream whose end-of-file marker a later run may trust: a marker
+    /// sitting in the page cache is a promise the disk has not made.
+    pub fn sync(&self) -> io::Result<()> {
+        self.file.sync_data()
+    }
+}
+
+impl Write for PacedFile {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.file.write(buf)?;
+        record_bytes_written(written as u64);
+
+        if self.interval > 0 {
+            self.since_sync += written as u64;
+            if self.since_sync >= self.interval {
+                self.file.sync_data()?;
+                self.since_sync = 0;
+            }
+        }
+
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
 }
 
 /// How hard the machine is being leaned on.

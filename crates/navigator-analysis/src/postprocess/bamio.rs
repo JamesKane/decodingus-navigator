@@ -18,12 +18,13 @@
 //! recalibration attached.
 
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
 use noodles::{bam, bgzf};
 
 use crate::error::AnalysisError;
+use crate::resource::PacedFile;
 
 /// A BAM reader whose block decompression runs on a worker pool.
 pub(crate) type BamReader = bam::io::Reader<bgzf::io::MultithreadedReader<File>>;
@@ -38,76 +39,6 @@ const READ_BUFFER: usize = 1 << 18;
 pub(crate) type BamWriter = bam::io::Writer<bgzf::io::MultithreadedWriter<BufWriter<PacedFile>>>;
 
 const WRITE_BUFFER: usize = 1 << 20;
-
-/// Bytes written between forced flushes to disk. See [`PacedFile`].
-const DEFAULT_SYNC_MB: u64 = 256;
-
-/// How much may be left dirty before this stream pushes it to disk.
-///
-/// `NAVIGATOR_IO_SYNC_MB=0` turns the pacing off and restores the old behaviour.
-fn sync_interval() -> u64 {
-    std::env::var("NAVIGATOR_IO_SYNC_MB")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_SYNC_MB)
-        * 1024
-        * 1024
-}
-
-/// A file that will not let an unbounded amount of its output sit dirty in the page cache.
-///
-/// Without this, a stage writes as fast as it can into the page cache and leaves write-back to the
-/// operating system, which sounds like the right division of labour and is, until the volume gets
-/// far enough out of scale. The 2026-08-13 WGS sort dirtied 549 GB of file-backed memory over one
-/// run — enough that macOS filed a disk-writes resource notice against the process for exceeding
-/// its sustained write-back limit by 1.4x, and enough that WindowServer's main thread missed a
-/// 40-second watchdog check-in and was killed, taking the login session and this six-hour job with
-/// it.
-///
-/// Flushing on a byte cadence caps how much can be outstanding at once. The write path pays for
-/// its own I/O as it goes instead of handing the machine a debt to settle later, which is also why
-/// this is not obviously a slowdown: the same bytes reach the same disk, in steadier instalments
-/// rather than in storms.
-///
-/// `sync_data` rather than `sync_all` — the file's contents must be durable, its metadata need not
-/// be, and on a stream this size the difference is many thousands of inode updates. It is
-/// std's portable spelling: `fdatasync` where there is one, `FlushFileBuffers` on Windows.
-pub(crate) struct PacedFile {
-    file: File,
-    since_sync: u64,
-    interval: u64,
-}
-
-impl PacedFile {
-    fn new(file: File) -> Self {
-        Self {
-            file,
-            since_sync: 0,
-            interval: sync_interval(),
-        }
-    }
-}
-
-impl Write for PacedFile {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let written = self.file.write(buf)?;
-        crate::resource::record_bytes_written(written as u64);
-
-        if self.interval > 0 {
-            self.since_sync += written as u64;
-            if self.since_sync >= self.interval {
-                self.file.sync_data()?;
-                self.since_sync = 0;
-            }
-        }
-
-        Ok(written)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
-    }
-}
 
 /// The BGZF end-of-file marker: an empty deflate block, written last by every conforming writer.
 ///
@@ -196,9 +127,5 @@ pub(crate) fn create(path: &Path) -> Result<BamWriter, AnalysisError> {
 pub(crate) fn finish(mut writer: BamWriter, path: &Path) -> Result<(), AnalysisError> {
     let mut buffered = writer.get_mut().finish().map_err(|e| AnalysisError::io(path, e))?;
     buffered.flush().map_err(|e| AnalysisError::io(path, e))?;
-    buffered
-        .get_ref()
-        .file
-        .sync_data()
-        .map_err(|e| AnalysisError::io(path, e))
+    buffered.get_ref().sync().map_err(|e| AnalysisError::io(path, e))
 }
