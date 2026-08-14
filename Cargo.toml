@@ -26,10 +26,19 @@ navigator-store    = { path = "crates/navigator-store" }
 navigator-analysis = { path = "crates/navigator-analysis" }
 navigator-sync     = { path = "crates/navigator-sync" }
 navigator-refgenome = { path = "crates/navigator-refgenome" }
+navigator-align    = { path = "crates/navigator-align" }
 navigator-app      = { path = "crates/navigator-app" }
 
 # Common
 thiserror = "2"
+
+# Profiling: release code, but with the symbols `strip = true` removes. Used with samply
+# (`samply record target/profiling/examples/map_profile`) — a stripped binary profiles as a wall of
+# `???`, which is how an afternoon gets spent guessing at a bottleneck instead of reading it.
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false
 
 [profile.release]
 lto = "thin"

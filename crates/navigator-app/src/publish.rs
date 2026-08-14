@@ -507,6 +507,8 @@ mod tests {
             bam_path: Some("/nonexistent.cram".into()),
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         })
         .await
         .unwrap()

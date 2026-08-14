@@ -250,6 +250,14 @@ impl App {
 
     /// Fetch an alignment by id, mapping a missing row to a `NotFound` error. The standard way
     /// the analysis/query methods resolve an `alignment_id` before touching its BAM/CRAM.
+    /// An alignment by id, or `None` if there is no such row.
+    ///
+    /// Public because provenance made alignments something callers ask about directly — the UI
+    /// needs the row to say "realigned to hs1 from alignment #N" rather than just listing files.
+    pub async fn alignment(&self, id: i64) -> Result<Option<Alignment>, AppError> {
+        Ok(alignment::get(self.store.pool(), id).await?)
+    }
+
     pub(crate) async fn alignment_or_err(&self, id: i64) -> Result<Alignment, AppError> {
         alignment::get(self.store.pool(), id)
             .await?
@@ -599,6 +607,8 @@ mod alignment_file_tests {
             bam_path,
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         }
     }
 

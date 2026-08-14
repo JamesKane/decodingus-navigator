@@ -1,0 +1,38 @@
+[package]
+name = "navigator-align"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Read mapping for the realignment module (design/realignment-module.md, Decision 1). Its own crate
+# rather than a module in navigator-analysis because it is a distinct concern with its own
+# dependency set — a mapper and an index cache, not a walker over an existing alignment. A leaf
+# crate with no internal dependencies, so the layering rule (`ui -> app -> {analysis, ...}`) is
+# unaffected by where callers wire it in.
+[dependencies]
+thiserror = { workspace = true }
+# `paths::decodingus_dir` — the one definition of the cache root, so the aligner-index cache lands
+# beside the reference cache instead of inventing a second answer. Same reason navigator-refgenome
+# depends on it.
+navigator-domain = { workspace = true }
+# Alignment output. The mapper hands us SAM text; noodles turns that into typed records and writes
+# BAM/CRAM, which is what every downstream stage actually consumes.
+noodles = { version = "0.111.0", features = ["sam", "bam", "cram", "bgzf", "fasta", "core"] }
+# Physical-RAM detection, so the index batch size sizes itself instead of asking the user for a
+# number they have no way to choose (see src/batch.rs). `default-features = false` + `system` takes
+# only the memory/CPU probe, leaving out the disk, network, component, and user modules.
+#
+# Windows-clean, which is the bar the rest of the workspace holds to: sysinfo binds the platform
+# APIs through the pure-Rust `windows` crate on Windows, `objc2-*` on macOS, and `libc` on Linux —
+# no C toolchain, no build script compiling C. Add the `disk` feature when the realignment
+# preflight needs free-space checks; it is the same dependency.
+sysinfo = { version = "0.36", default-features = false, features = ["system"] }
+# Batch-parallel mapping. Mapping is the pipeline's dominant cost and is embarrassingly parallel
+# per read; rayon is already the workspace's data-parallelism crate (navigator-analysis uses it
+# per contig), and minimap2-pure-rs depends on it too, so this adds no new tree.
+rayon = "1"
+# Default backend: a pure-Rust translation of minimap2 v2.31. Chosen over the C FFI because it
+# needs no C toolchain (so Windows and every other Rust target build unchanged) and measured
+# 99.74% byte-identical to the C implementation with zero MAPQ>0 disagreements. See Decision 1.
+minimap2-pure-rs = "0.5.3"

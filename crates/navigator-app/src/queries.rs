@@ -256,6 +256,9 @@ impl App {
     /// highest mean-coverage alignment with a cached coverage result, else the first with a BAM,
     /// else the first. Returns `(sequence_run_id, alignment_id)` so the UI can select the run then
     /// the alignment without the user navigating Data Sources.
+    ///
+    /// Where a realignment exists, its output is preferred over the source it was derived from —
+    /// as a tie-break only, after breadth and depth. See the ranking comment below.
     pub async fn default_alignment_for_subject(
         &self,
         biosample_guid: SampleGuid,
@@ -270,7 +273,7 @@ impl App {
         // target contigs), so ranking on depth alone lets a deep Y Elite outscore a genome-wide
         // WGS — and surfacing it as "your test" contradicts the autosomal ancestry the brief shows
         // beside it. Depth and file presence only break ties within a breadth class.
-        let mut best: Option<(u8, f64, bool, &Alignment)> = None;
+        let mut best: Option<(u8, f64, bool, bool, &Alignment)> = None;
         for a in &alignments {
             let target = match navigator_store::sequence_run::get(self.store.pool(), a.sequence_run_id).await? {
                 Some(run) => navigator_domain::testtype::target_of(&run.test_type),
@@ -278,12 +281,19 @@ impl App {
             };
             let breadth = test_breadth_rank(target);
             let depth = self.cached_coverage(a.id).await?.map_or(0.0, |c| c.mean_coverage);
-            let key = (breadth, depth, a.bam_path.is_some());
-            if best.as_ref().map_or(true, |(b, d, f, _)| key > (*b, *d, *f)) {
-                best = Some((breadth, depth, a.bam_path.is_some(), a));
+            // Last, and only as a tie-break: a realigned alignment beats the source it was made
+            // from. Both describe the same library at the same breadth and near-identical depth,
+            // so without this the winner is whichever the list happened to yield first — and a
+            // default that changes between runs is worse than either choice. The realigned one is
+            // preferred because the user asked for it and it is on the newer reference; this is a
+            // *default*, not a restriction, and the source stays selectable.
+            let derived = a.is_derived();
+            let key = (breadth, depth, a.bam_path.is_some(), derived);
+            if best.as_ref().map_or(true, |(b, d, f, r, _)| key > (*b, *d, *f, *r)) {
+                best = Some((breadth, depth, a.bam_path.is_some(), derived, a));
             }
         }
-        Ok(best.map(|(_, _, _, a)| (a.sequence_run_id, a.id)))
+        Ok(best.map(|(_, _, _, _, a)| (a.sequence_run_id, a.id)))
     }
 
     /// Donor-level ancestry: the modern super-population **`ADMIXTURE`** estimate — the consensus one

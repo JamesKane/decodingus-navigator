@@ -107,10 +107,52 @@ Code exists or the design is settled; these are the near-term threads.
 
 Verified 2026-07-26 to have no implementation in the tree.
 
-### 2.1 Realignment module
-- **Design:** [`design/realignment-module.md`](design/realignment-module.md)
+### 2.1 Realignment module — **in progress** (phase 1 landed 2026-08-08)
+- **Design:** [`design/realignment-module.md`](design/realignment-module.md) — revised 2026-08-08
+  after a phase 0 spike that **retracted the module's motivating premise** (ancestry is *not*
+  build-locked; off-build samples already estimate ancestry through the multi-build IBD panel) and
+  reversed the backend decision to pure-Rust `minimap2-pure-rs`. Read the correction blocks before
+  planning further work — whether the remaining payoff justifies the module is an open product
+  question.
 - **Scope:** revert + realign GRCh37/38 vendor WGS to CHM13v2 / hs1; aligner-index cache in
   `navigator-refgenome`, job orchestration + provenance, opt-in background job with warnings.
+- **Done:** phase 0 spikes; **phase 1** (stage A, `navigator-analysis/src/revert/`) — primaries-only
+  revert with orientation restore and `OQ` preference, a disk-backed external merge sort that
+  collates by read name, synchronized paired-FASTQ output; **phase 2** (stage B,
+  `navigator-align`) — pure-Rust minimap2 backend, preset selection, RAM-sized part-by-part index
+  build and map with cross-part merge, single- and paired-end, BAM/CRAM output via noodles;
+  **phase 3** (stages C and D) — coordinate sort, short-read duplicate marking, CRAM + `.crai`,
+  and the provenance migration with registration in `navigator-app::realign`.
+  **Phase 4** — the cancellable job with preflight, the per-alignment and per-project cards, the
+  realigned badge, and selector preference — is built too.
+- **Phase 5 in progress, and it found something.** Backend parity on 168k real WGS229 chrY reads:
+  99.2% identical placements, but `minimap2-pure-rs` reports **systematically higher MAPQ** than C
+  minimap2 (1,157 up vs 47 down, median +10), concentrated on chrY at 15x the off-chrY rate, and
+  111 reads per 168k cross the MQ>=20 callable threshold upward. That is the input to the
+  private-Y filter stack, so it is material. **Paired-end re-run against upstream 2.31 widened the
+  gap** (1.09% of records differ in MAPQ vs 0.72% single-end; 96.6% of differences are Rust
+  higher), and does not reproduce the upstream crate's own claim of exact `sr` PAF parity.
+  **But it does not reach the output**: run through the shipped stage C and de-novo caller over
+  the worst-case window, upstream produced 232 calls and the Rust backend 233 — every upstream
+  call reproduced, one extra at depth 3 that the `depth >= 4` callable gate removes. Decision 1
+  re-settled on the pure-Rust backend with the divergence documented.
+- **First WGS-scale run (2026-08-12): 10 h 41 m, and it did not finish.** WGS229's 17.3 GB CRAM
+  (615.6M reads) died in stage 7 of 8 on a CRAM-encoding panic — a secondary alignment carries
+  `SEQ: *`, which is legal SAM and what minimap2 emits, and CRAM cannot store a read it has no
+  bases for. Fixed: such non-primary records are dropped and counted, a primary of that shape
+  errors. Two other findings: **the sort is the most expensive stage** (4 h 44 m, 44% of wall
+  clock — more than mapping's 3 h 40 m), and **stage A runs on one core** because `open_seq` only
+  threads the BAM path, fixable by reverting per-contig in parallel. The run also proved
+  resumability is not optional — `JobScratch` discarded seven working stages on the way out, so
+  `NAVIGATOR_REALIGN_KEEP_SCRATCH=1` now inverts that for pipeline work.
+- **Purpose:** Y-chromosome variant discovery. A private-Y call set is only usable on CHM13 —
+  the callable mask, non-PAR restriction, recurrent blocklist, and de-novo tree are all defined
+  there — and liftover cannot help with *discovery*, where the variant is not in any site list
+  yet. Autosomal fixed-site matching was never the motivation; two earlier revisions of the
+  design said otherwise and have been corrected.
+- **Settled:** whole-genome is the only correct scope. A Y-only mode was proposed and withdrawn —
+  the reads that need realigning are the ones GRCh38 placed wrongly, so selecting them by source
+  coordinate requires the answer being computed. Revert reads the whole file anyway.
 - **Do not confuse** with `navigator-analysis/src/realign.rs`, which is *indel local realignment*
   (plan §4b) and is a different thing entirely.
 

@@ -177,6 +177,140 @@ impl NavigatorApp {
         }
     }
 
+    /// The realignment card for one alignment: offer, progress, or result.
+    ///
+    /// One card that changes state rather than a modal. A realignment runs for hours; a dialog
+    /// owning the screen for that long would stop the user working with a workspace they can
+    /// perfectly well keep using, and would have nowhere to live once the job finished. This sits
+    /// with the alignment it belongs to and rewrites itself in place.
+    pub(crate) fn realign_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
+        let Some(alignment) = self.alignments.iter().find(|a| a.id == alignment_id).cloned() else {
+            return;
+        };
+
+        // A derived alignment reports where it came from; it is not itself realignable.
+        if let Some(source_id) = alignment.derived_from_alignment_id {
+            ui.label(format!(
+                "Realigned to {} from alignment #{source_id}.",
+                alignment.reference_build
+            ));
+            if let Some(how) = &alignment.derivation {
+                ui.label(egui::RichText::new(how).weak().size(12.0));
+            }
+            return;
+        }
+
+        // The state of *this* alignment's job, if the running one belongs to it.
+        let state = self
+            .realign
+            .as_ref()
+            .filter(|r| r.alignment_id == alignment_id)
+            .cloned();
+
+        match state.as_ref().and_then(|s| s.finished.clone()) {
+            // ---- finished ----
+            Some(RealignFinished::Done {
+                new_alignment_id,
+                summary,
+            }) => {
+                ui.label(format!("Done — added as alignment #{new_alignment_id}."));
+                if !summary.is_empty() {
+                    ui.label(egui::RichText::new(summary).weak().size(12.0));
+                }
+                if ui.button("Dismiss").clicked() {
+                    self.realign = None;
+                }
+            }
+            Some(RealignFinished::Cancelled) => {
+                ui.label("Stopped. Nothing was changed — the original alignment is untouched.");
+                if ui.button("Dismiss").clicked() {
+                    self.realign = None;
+                }
+            }
+            Some(RealignFinished::Failed(message)) => {
+                ui.colored_label(ui.visuals().error_fg_color, "Realignment failed.");
+                ui.label(egui::RichText::new(message).weak().size(12.0));
+                if ui.button("Dismiss").clicked() {
+                    self.realign = None;
+                }
+            }
+            // ---- running ----
+            None if state.is_some() => {
+                let state = state.expect("checked");
+                let fraction = if state.total > 0 {
+                    state.step as f32 / state.total as f32
+                } else {
+                    0.0
+                };
+                ui.label(format!("{} — step {} of {}", state.label, state.step, state.total));
+                ui.add(egui::ProgressBar::new(fraction).desired_width(ui.available_width()));
+                if !state.detail.is_empty() {
+                    ui.label(egui::RichText::new(&state.detail).weak().size(12.0));
+                }
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(
+                        "This takes hours. You can keep using the rest of the app, and stopping \
+                         leaves the original untouched.",
+                    )
+                    .weak()
+                    .size(12.0),
+                );
+                if ui.button("Stop").clicked() {
+                    let _ = self.tx.send(Command::CancelRealign);
+                    self.status = "Stopping the realignment…".into();
+                }
+            }
+            // ---- idle: offer it ----
+            None => {
+                let target = "chm13v2.0";
+                let already = self
+                    .alignments
+                    .iter()
+                    .any(|a| a.derived_from_alignment_id == Some(alignment_id));
+
+                if already {
+                    ui.label("This alignment has already been realigned.");
+                    return;
+                }
+                if alignment.reference_build.eq_ignore_ascii_case(target) {
+                    ui.label(format!("Already on {target} — there is nothing to realign."));
+                    return;
+                }
+
+                ui.label(format!(
+                    "Re-map this {} alignment's reads to {target}, so analyses run against the \
+                     newer reference instead of being translated onto it.",
+                    alignment.reference_build
+                ));
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Takes hours and tens of GB of working space. The original alignment is \
+                         kept — this adds a second one alongside it.",
+                    )
+                    .weak()
+                    .size(12.0),
+                );
+                ui.add_space(8.0);
+                let busy = self.realign.is_some();
+                if ui
+                    .add_enabled(!busy, egui::Button::new(format!("Realign to {target}")))
+                    .clicked()
+                {
+                    let _ = self.tx.send(Command::StartRealign {
+                        alignment_id,
+                        target_build: target.to_string(),
+                    });
+                    self.status = format!("Realigning alignment #{alignment_id} to {target}…");
+                }
+                if busy {
+                    ui.label(egui::RichText::new("Another realignment is running.").weak().size(12.0));
+                }
+            }
+        }
+    }
+
     /// Inferred sex + read-level QC metrics for a single alignment.
     pub(crate) fn sex_metrics_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
         let has_bam = self

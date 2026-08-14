@@ -176,6 +176,8 @@ async fn run_alignment_chain_persists() {
             bam_path: None,
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         },
     )
     .await
@@ -267,6 +269,8 @@ async fn clear_data_resets_subject_but_keeps_the_biosample() {
             bam_path: None,
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         },
     )
     .await
@@ -359,6 +363,8 @@ async fn artifact_upsert_replaces_same_version_and_keeps_distinct_versions() {
             bam_path: None,
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         },
     )
     .await
@@ -446,6 +452,8 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
             bam_path: None,
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         },
     )
     .await
@@ -475,6 +483,8 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
             bam_path: None,
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         },
     )
     .await
@@ -576,6 +586,8 @@ async fn set_sequence_run_reparents_an_alignment() {
             bam_path: None,
             reference_path: None,
             content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
         },
     )
     .await
@@ -855,6 +867,8 @@ async fn bulk_loaders_match_the_per_item_queries() {
                     bam_path: None,
                     reference_path: None,
                     content_sha256: None,
+                    derived_from_alignment_id: None,
+                    derivation: None,
                 },
             )
             .await
