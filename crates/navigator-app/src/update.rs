@@ -2,7 +2,7 @@
 //!
 //! Installers are published to the GitHub Releases of `JamesKane/decodingus-navigator` (`v*` tags;
 //! Alpha/Beta/RC builds are marked *prerelease*). This module fetches that list, finds the highest
-//! version, compares it against the running build ([`env!("CARGO_PKG_VERSION")`]), and — if it's
+//! version, compares it against the running build ([`BUILD_VERSION`]), and — if it's
 //! newer and the user hasn't chosen to skip it — returns an [`UpdateInfo`] pointing at the release
 //! page and the platform-appropriate installer asset. The UI turns that into a dismissible prompt;
 //! downloading/installing is entirely the user's choice.
@@ -16,10 +16,32 @@ use crate::settings::AppSettings;
 /// excludes prereleases) so Alpha/Beta builds are considered too.
 const RELEASES_URL: &str = "https://api.github.com/repos/JamesKane/decodingus-navigator/releases";
 
+/// The version this build calls itself when comparing against published releases.
+///
+/// `CARGO_PKG_VERSION` alone is not usable for that comparison, and the reason is easy to miss:
+/// the workspace version is a bare `0.1.0` while every shipped tag is `v0.1.0-alpha.N`. Under
+/// SemVer a release outranks its own prereleases, so the running build always looked *newer* than
+/// every alpha on offer and the check returned "up to date" every single time. Sixteen alphas were
+/// published without one user ever being notified.
+///
+/// The workspace version deliberately stays numeric — the Windows installer formats want
+/// `x.y.z` — so the full version is injected at package time instead, from the tag being built.
+/// A developer build has no such tag and falls back, which is correct: it should not claim to be
+/// any particular release.
+///
+/// Note for anyone testing this locally: `option_env!` is read at compile time and Cargo does not
+/// treat the variable as an input, so changing it does not by itself trigger a rebuild — touch this
+/// file, or build clean, or you will keep measuring the previous value. CI builds from a fresh
+/// checkout, so the packaged artifact is never affected.
+pub(crate) const BUILD_VERSION: &str = match option_env!("NAVIGATOR_RELEASE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// A newer installer is available. Serialized so it can cross the worker `Command`/`Event` channel.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UpdateInfo {
-    /// The running build's version (`CARGO_PKG_VERSION`).
+    /// The running build's version ([`BUILD_VERSION`]).
     pub current_version: String,
     /// The newest published version (tag, without a leading `v`).
     pub latest_version: String,
@@ -67,7 +89,7 @@ impl crate::App {
     /// a newer version is available. Network/parse failures are surfaced as [`AppError::Update`] —
     /// callers treat a failed check as non-fatal.
     pub async fn check_for_update(&self) -> Result<Option<UpdateInfo>, AppError> {
-        let current_str = env!("CARGO_PKG_VERSION");
+        let current_str = BUILD_VERSION;
         let current = Version::parse(current_str)
             .ok_or_else(|| AppError::Update(format!("unparseable build version {current_str}")))?;
 
@@ -95,7 +117,9 @@ impl crate::App {
         }
 
         Ok(Some(UpdateInfo {
-            current_version: current_str.to_string(),
+            // Trimmed the same way `latest_version` is, so the UI's "current › latest" reads
+            // consistently — the injected value is a tag and carries a leading `v`.
+            current_version: current_str.trim_start_matches(['v', 'V']).to_string(),
             latest_version,
             name: rel.name.clone().unwrap_or_else(|| rel.tag_name.clone()),
             release_url: rel.html_url,
@@ -194,9 +218,42 @@ impl Ord for Version {
                 (None, None) => Ordering::Equal,
                 (None, Some(_)) => Ordering::Greater,
                 (Some(_), None) => Ordering::Less,
-                (Some(a), Some(b)) => a.cmp(b),
+                (Some(a), Some(b)) => compare_prerelease(a, b),
             },
             ord => ord,
+        }
+    }
+}
+
+/// Compare two prerelease strings dot-part by dot-part, numerically where both parts are numbers.
+///
+/// A plain string compare is wrong the moment a counter reaches two digits: `"alpha.9"` sorts
+/// *above* `"alpha.16"`, because `'9' > '1'`. That is not hypothetical here — the project reached
+/// `alpha.16` with this comparator in place, and picking the highest of the published tags returned
+/// `alpha.9`. SemVer's own rule is the fix: numeric identifiers compare numerically, and a numeric
+/// identifier ranks below an alphanumeric one.
+fn compare_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let mut left = a.split('.');
+    let mut right = b.split('.');
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return Ordering::Equal,
+            // A prerelease with more parts outranks its own prefix: alpha.1 > alpha.
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(xn), Ok(yn)) => xn.cmp(&yn),
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                };
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
         }
     }
 }
@@ -225,7 +282,39 @@ mod tests {
         assert!(v("0.2.0") > v("0.2.0-alpha"));
         assert!(v("0.2.0-beta") > v("0.2.0-alpha"));
         assert!(v("0.2.0-alpha.2") > v("0.2.0-alpha.1"));
+        // Two digits: the case that was wrong for sixteen releases. A string compare puts
+        // "alpha.9" above "alpha.16" because '9' > '1'.
+        assert!(v("0.1.0-alpha.16") > v("0.1.0-alpha.9"));
+        assert!(v("0.1.0-alpha.17") > v("0.1.0-alpha.16"));
+        assert!(v("0.1.0-alpha.100") > v("0.1.0-alpha.99"));
+        // A longer prerelease outranks its own prefix, and numeric parts rank below alphanumeric.
+        assert!(v("0.1.0-alpha.1") > v("0.1.0-alpha"));
+        assert!(v("0.1.0-alpha.beta") > v("0.1.0-alpha.1"));
         assert_eq!(v("0.1.0"), v("v0.1.0"));
+    }
+
+    /// The bug that made the whole feature inert: a build calling itself `0.1.0` outranks every
+    /// `0.1.0-alpha.N` tag, so the newest alpha never looked newer and no user was ever notified.
+    /// A released build has to identify itself with its own prerelease to be comparable.
+    #[test]
+    fn a_release_build_compares_against_the_alphas_it_shipped_beside() {
+        // What the bare workspace version did.
+        assert!(
+            v("v0.1.0-alpha.17") < v("0.1.0"),
+            "a bare release version outranks its prereleases — this is why the check went silent"
+        );
+        // What an injected release version does instead.
+        assert!(v("v0.1.0-alpha.17") > v("0.1.0-alpha.16"));
+    }
+
+    /// Whatever this build calls itself, it must at least be parseable — otherwise the check fails
+    /// with "unparseable build version" rather than doing anything useful.
+    #[test]
+    fn the_build_version_is_a_version() {
+        assert!(
+            Version::parse(BUILD_VERSION).is_some(),
+            "unparseable BUILD_VERSION: {BUILD_VERSION}"
+        );
     }
 
     #[test]

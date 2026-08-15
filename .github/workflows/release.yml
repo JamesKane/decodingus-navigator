@@ -23,6 +23,13 @@ permissions:
 # regenerated. Override per-run with the same env var if needed.
 env:
   NAVIGATOR_ASSET_RELEASE: assets-chm13v2.0
+  # The version the packaged app calls itself when checking for updates. It has to be the *tag*,
+  # not the workspace version: the workspace stays at a bare `0.1.0` because the Windows installer
+  # formats want `x.y.z`, and a bare `0.1.0` outranks every `0.1.0-alpha.N` under SemVer — which is
+  # why the update check silently reported "up to date" for sixteen releases. Read by
+  # `navigator_app::update::BUILD_VERSION`; a developer build without it falls back to
+  # CARGO_PKG_VERSION. Workflow-level, so all three package jobs compile with it.
+  NAVIGATOR_RELEASE_VERSION: ${{ github.ref_name }}
 
 jobs:
   package-windows:
