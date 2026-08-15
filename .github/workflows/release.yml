@@ -7,8 +7,9 @@
 #
 # Each platform's build+package was validated locally (macOS universal2 via cargo-packager, Windows
 # NSIS via cargo-xwin, Linux AppImage/.deb in the manylinux_2_28 container via Apple `container`).
-# Still needs a real tagged run for: macOS notarization (APPLE_* secrets) and Windows code signing
-# (unsigned for Alpha; documented SmartScreen work-around).
+# macOS signing + notarization are configured and run here from the APPLE_* secrets (see the macos
+# job). Windows NSIS is still unsigned for Alpha; Authenticode / Azure Trusted Signing comes before
+# beta, with a documented SmartScreen work-around until then.
 name: Release
 
 on:

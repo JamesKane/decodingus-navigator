@@ -5,11 +5,17 @@
 over a CDN as this doc originally sketched: they are published to the GitHub release
 `assets-chm13v2.0` by `packaging/publish-assets.sh`, and the app resolves them via
 `asset_release_base_url` (`navigator-app/src/lib.rs:1375`), downloading on demand.
-**Still open:** code signing + notarization (Apple Developer ID $99/yr; Windows cert) — deferred for
-alpha with a documented Gatekeeper work-around; the Linux glibc-2.28 container CI is authored but
-has never been run; and `default_reference_sha` is still `None` for all four builds
+**macOS signing and notarization are done** (2026-08-15 correction — this section said "still open"
+long after it stopped being true). The Developer ID identity is committed in
+`[package.metadata.packager.macos]`, the cert and notary credentials come from repository secrets,
+and the release workflow signs, notarizes and staples the `.app` *and* submits the outer `.dmg`
+separately — cargo-packager only signs the dmg, so a download-and-open of the disk image would
+otherwise still be checked online. No Gatekeeper work-around is needed.
+**Still open:** Windows code signing (Authenticode / Azure Trusted Signing), deliberately deferred
+past alpha; and `default_reference_sha` is still `None` for all four builds
 (`navigator-refgenome/src/registry.rs:172`), awaiting confirmed publisher checksums.
 **Date:** 2026-06-16 (design) · 2026-06-18 (implementation) · 2026-07-26 (status re-check)
+· 2026-08-15 (signing status corrected)
 **Scope:** How to ship the Rust `navigator` binary as installable images for macOS
 (Apple Silicon + Intel), Linux (x86-64 + ARM), and Windows (x86-64 + ARM), and how to
 handle the bundled ancestry assets.
@@ -94,8 +100,9 @@ corruption guard; else an empty bundle (non-fatal). The workflow sets `NAVIGATOR
 via `gh`. **One manual step remains: run `publish-assets.sh` once to populate the release** (the
 download path is validated end-to-end except the success leg, which 404s until the release exists).
 
-**Still CI-time / unverified here (need a tagged run + secrets):** macOS notarization (`APPLE_*`)
-and Windows signing (unsigned for Alpha). All three platforms' build+package are locally validated.
+**macOS notarization runs on every tagged build** — cert import, sign, notarize, staple, and a
+separate submit+staple of the `.dmg` — from the `APPLE_*` repository secrets. Windows remains
+unsigned for Alpha. All three platforms' build+package are locally validated.
 
 ---
 
