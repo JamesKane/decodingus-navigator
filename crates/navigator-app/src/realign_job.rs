@@ -822,6 +822,14 @@ mod tests {
 
     /// Preflight must refuse a job that cannot finish, and say how much is needed rather than
     /// leaving the user to guess.
+    ///
+    /// Unix-only, because it depends on the platform *knowing* the free space. [`fs_free_space`]
+    /// has no Windows implementation yet, so there it reports "unknown" and preflight declines to
+    /// block — the documented behaviour, pinned separately by
+    /// `preflight_cannot_refuse_where_free_space_is_unknown`. That is a real gap rather than a
+    /// testing detail: a realignment needs hundreds of GB, and on Windows nothing checks for it
+    /// before the job starts.
+    #[cfg(unix)]
     #[test]
     fn preflight_refuses_when_the_disk_is_too_small() {
         let dir = std::env::temp_dir();
@@ -868,6 +876,10 @@ mod tests {
     /// The scratch directory does not exist when preflight runs — it is created by the job — so the
     /// probe has to answer for the filesystem that will hold it, which means walking up to the
     /// nearest existing ancestor rather than giving up.
+    ///
+    /// Unix-only for the same reason as above: the ancestor walk is platform-independent, but the
+    /// syscall it ends at only exists on Unix today.
+    #[cfg(unix)]
     #[test]
     fn free_space_resolves_through_a_directory_that_does_not_exist_yet() {
         let unborn = std::env::temp_dir().join("dun-not-created-yet").join("nor-this");
@@ -876,6 +888,24 @@ mod tests {
             free_space(&unborn) > 0,
             "must report the filesystem that will hold the scratch"
         );
+    }
+
+    /// What the platforms without a free-space probe actually do, stated as a test rather than left
+    /// as the absence of one.
+    ///
+    /// `preflight` cannot refuse a job it has no measurement for, and refusing on an unknown would
+    /// block every realignment on that platform. So a job that would obviously not fit is allowed
+    /// to start and fail honestly on a real write. Wiring `GetDiskFreeSpaceExW` is what removes
+    /// this, and would delete this test with it.
+    #[cfg(not(unix))]
+    #[test]
+    fn preflight_cannot_refuse_where_free_space_is_unknown() {
+        let dir = std::env::temp_dir();
+        assert_eq!(free_space(&dir), 0, "no probe on this platform yet");
+
+        let plan = preflight(&dir, Path::new("x.bam"), u64::MAX / 8).expect("unknown must not block");
+        assert_eq!(plan.scratch_free, 0);
+        assert!(plan.scratch_needed > 0, "the estimate is still made and reported");
     }
 
     /// Scratch is several times the size of the input; a cancelled job must not leave it behind.
