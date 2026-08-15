@@ -805,6 +805,8 @@ impl NavigatorApp {
             });
         }
 
+        self.simple_realign_card(ui);
+
         ui.add_space(10.0);
         self.export_row(ui, &[navigator_app::ExportRequest::SubjectBriefHtml(guid)]);
 
@@ -824,6 +826,92 @@ impl NavigatorApp {
             footer = format!("{footer} · {}", self.tr("brief.enriched"));
         }
         ui.label(egui::RichText::new(footer).weak().small());
+    }
+
+    /// The offer to rebuild this person's genome against the complete reference, and the progress of
+    /// that job once it is running.
+    ///
+    /// Lives under "Your test" because that is where this belongs honestly: it is a statement about
+    /// the limits of the data, alongside the depth and quality phrases. A reader here should never
+    /// need to know what a reference build is — only that the reference itself was unfinished, which
+    /// is a fact about the reference and not about their test.
+    ///
+    /// The copy is careful on two points that are easy to get wrong. The completed assembly is
+    /// **genome-wide** — a full autosomal sequence as well as the first complete Y — and Y discovery
+    /// is merely what Navigator puts it to work on today; writing it as a paternal-line feature
+    /// would misdescribe what T2T actually delivered. And the finished genome is one donor's: of
+    /// European ancestry, carrying a J1a Y. Whose DNA a reference represents is exactly the sort of
+    /// thing that goes unsaid and should not.
+    ///
+    /// Whether to offer it at all was decided in the app layer, on the brief; see
+    /// `navigator_domain::brief::RealignOffer`.
+    fn simple_realign_card(&mut self, ui: &mut egui::Ui) {
+        let offer = self.subject_brief.as_ref().and_then(|(_, b)| b.realign_offer.clone());
+
+        // A run in progress wins over the offer, so the card a user just started reports itself
+        // rather than continuing to invite the thing it is already doing.
+        let running = self
+            .realign
+            .clone()
+            .filter(|state| offer.as_ref().map_or(true, |o| o.alignment_id == state.alignment_id));
+
+        if let Some(state) = running {
+            ui.add_space(10.0);
+            card(ui, self.tr("simple.realign.title"), |ui| match &state.finished {
+                None => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!(
+                            "{} — {} {} / {}",
+                            state.label,
+                            self.tr("simple.realign.step"),
+                            state.step,
+                            state.total
+                        ));
+                    });
+                    if !state.detail.is_empty() {
+                        ui.label(egui::RichText::new(&state.detail).weak().small());
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(self.tr("simple.realign.runningHint"))
+                            .weak()
+                            .small(),
+                    );
+                }
+                Some(RealignFinished::Done { .. }) => {
+                    ui.label(self.tr("simple.realign.done"));
+                }
+                Some(RealignFinished::Cancelled) => {
+                    ui.label(egui::RichText::new(self.tr("simple.realign.cancelled")).weak());
+                }
+                Some(RealignFinished::Failed(message)) => {
+                    ui.colored_label(ui.visuals().error_fg_color, self.tr("simple.realign.failed"));
+                    ui.label(egui::RichText::new(message).weak().small());
+                }
+            });
+            return;
+        }
+
+        let Some(offer) = offer else { return };
+
+        ui.add_space(10.0);
+        card(ui, self.tr("simple.realign.title"), |ui| {
+            ui.label(self.tr("simple.realign.body"));
+            ui.add_space(6.0);
+            ui.label(self.tr("simple.realign.use"));
+            ui.add_space(6.0);
+            // Whose genome the finished reference actually is, and whose Y — stated rather than
+            // left for a reader to assume it represents everyone equally.
+            ui.label(egui::RichText::new(self.tr("simple.realign.note")).weak().small());
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(self.tr("simple.realign.cost")).weak().small());
+            ui.add_space(8.0);
+            // Opens the confirmation rather than starting: see `simple_realign_confirm_modal`.
+            if ui.button(self.tr("simple.realign.action")).clicked() {
+                self.simple_realign_confirm = Some((offer.alignment_id, offer.current_build.clone()));
+            }
+        });
     }
 
     // ---------------------------------------------------------------------------------------------

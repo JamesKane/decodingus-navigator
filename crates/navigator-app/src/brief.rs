@@ -11,7 +11,8 @@
 use crate::{decodingus_appview_url, App, AppError};
 use navigator_domain::ancestry::AncestryResult;
 use navigator_domain::brief::{
-    self, AncestryBrief, BriefPack, Headline, LineageBrief, LineageKind, PackStatus, SubjectBrief, TestBrief,
+    self, AncestryBrief, BriefPack, Headline, LineageBrief, LineageKind, PackStatus, RealignOffer, SubjectBrief,
+    TestBrief,
 };
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::i18n::{self, tr, tr_fmt, Lang};
@@ -216,6 +217,11 @@ impl App {
             summary: headline_summary(lang, &bio.donor_identifier, paternal.as_ref(), maternal.as_ref()),
         };
 
+        // Computed before the brief is assembled, because `paternal` is moved into it.
+        let realign_offer = self
+            .realign_offer(biosample_guid, paternal.is_some(), default_aln.map(|(_, aln)| aln))
+            .await?;
+
         Ok(SubjectBrief {
             headline,
             paternal,
@@ -226,11 +232,72 @@ impl App {
             test,
             // Has a sequencing alignment but no coverage computed → offer the one-click Analyze.
             needs_analysis: default_aln.is_some() && coverage.is_none(),
+            realign_offer,
             caveats,
             pack_version: (!pack.version.trim().is_empty()).then(|| pack.version.clone()),
             pack_status,
             enriched,
         })
+    }
+
+    /// Whether to offer this subject a realignment, and which alignment to offer.
+    ///
+    /// Every condition here exists to avoid proposing hours of work that would change nothing:
+    ///
+    /// - **A paternal line to improve.** Realignment buys Y-chromosome discovery and essentially
+    ///   nothing else — ancestry, IBD and the autosomes already handle GRCh37/38 and give the same
+    ///   answer either way. With no Y placed there is no payoff, so no offer.
+    /// - **Reads to re-map.** A chip or VCF-only subject has no alignment; an alignment row without
+    ///   a file cannot be read.
+    /// - **No CHM13 alignment already.** The offer claims part of their paternal line cannot
+    ///   currently be read; for someone who already has data on the complete assembly, by any route,
+    ///   that claim is simply false — even if some older file of theirs has never been realigned.
+    /// - **Reads the job would actually act on** — not already on CHM13, not itself a realignment,
+    ///   and not already realigned once. Those three are not re-implemented here: they are
+    ///   [`crate::realign::realignable_for_subject`], the same rule the batch count and the job
+    ///   itself use. Offering work the job would then refuse is worse than not offering it.
+    ///
+    /// Among qualifying alignments it prefers the subject's default — the widest, then deepest test,
+    /// per [`Self::default_alignment_for_subject`] — and otherwise takes the first. That matters for
+    /// someone holding both a whole genome and a Y-only test: the whole genome is the one whose
+    /// realignment answers more.
+    async fn realign_offer(
+        &self,
+        biosample_guid: SampleGuid,
+        has_paternal: bool,
+        preferred: Option<i64>,
+    ) -> Result<Option<RealignOffer>, AppError> {
+        if !has_paternal {
+            return Ok(None);
+        }
+
+        let alignments = navigator_store::alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
+
+        // Already reading this person's Y against the complete assembly — however they got there.
+        // The per-alignment rule below would still find, say, an old GRCh37 file nobody has
+        // realigned, and the *job* would indeed act on it; but the offer's promise is about the
+        // subject's paternal line rather than about one file, and for this reader that promise is
+        // already kept. Observed on a donor holding four CHM13 alignments and being told their
+        // father's line had nowhere to be read from.
+        if alignments
+            .iter()
+            .any(|a| crate::realign::is_target_build(&a.reference_build))
+        {
+            return Ok(None);
+        }
+
+        let eligible = crate::realign::realignable_for_subject(&alignments, crate::realign::DEFAULT_TARGET_BUILD);
+
+        let chosen = preferred
+            .filter(|id| eligible.contains(id))
+            .or_else(|| eligible.first().copied());
+
+        Ok(chosen.and_then(|id| {
+            alignments.iter().find(|a| a.id == id).map(|a| RealignOffer {
+                alignment_id: a.id,
+                current_build: a.reference_build.clone(),
+            })
+        }))
     }
 
     /// Load the reference pack with graceful fallback: bundled seed (floor) → cached file (if fresh)

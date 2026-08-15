@@ -665,6 +665,14 @@ pub struct NavigatorApp {
     analysis: Option<AnalysisModal>,
     /// The running (or last finished) realignment; see [`RealignState`].
     realign: Option<RealignState>,
+    /// Simple mode's pending realignment confirmation, `(alignment id, its current build)`.
+    ///
+    /// Simple mode gets a confirmation step where Advanced does not, and the asymmetry is
+    /// deliberate: the Advanced card sits among alignment internals and states its cost in a
+    /// paragraph its reader is equipped to weigh. Simple mode's reader has been shown a story about
+    /// their ancestors, and should not be able to commit the machine to four hours and 276 GB by
+    /// misjudging one button.
+    simple_realign_confirm: Option<(i64, String)>,
     /// Set the moment Cancel is clicked, cleared when the run actually ends.
     ///
     /// Cancellation is cooperative: the walkers stop at their next check, so there is always a gap
@@ -1291,6 +1299,7 @@ impl NavigatorApp {
             rx,
             analysis: None,
             realign: None,
+            simple_realign_confirm: None,
             cancelling: false,
             edit_subject: None,
             edit_kit: None,
@@ -1743,6 +1752,7 @@ impl eframe::App for NavigatorApp {
         self.edit_mdka_modal(ctx);
         self.delete_subject_modal(ctx);
         self.clear_subject_modal(ctx);
+        self.simple_realign_confirm_modal(ctx);
         self.consent_modal(ctx);
         self.reset_haplo_modal(ctx);
         self.data_delete_modal(ctx);
