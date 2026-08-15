@@ -64,6 +64,7 @@ Imports automatically compute a checksum and detect platform (Illumina, PacBio, 
 - **IBD Detection** — pairwise shared-segment detection with a per-chromosome segment browser and relationship estimates, using a real recombination map. A top-level **Matching** area carries federated match suggestions, a durable request ledger, and results; an encrypted, consent-gated channel exchanges IBD segments and signed attestations between edges, validated end-to-end against a live AppView broker
 - **Structural Variants** — deletions, duplications, inversions, breakends (output unvalidated; needs ≥10× coverage)
 - **Liftover** — automatic coordinate conversion between GRCh38, GRCh37, and CHM13v2
+- **Realignment** — rebuild a GRCh38 or GRCh37 whole genome against CHM13v2 (hs1), so Y-chromosome discovery runs on a reference that actually has a Y. GRCh38's chrY is gap-ridden and partly collapsed; on a validated 30× sample, realigning took the share of chrY receiving any coverage from 41% to 98%, and its Y and mtDNA haplogroups matched the same donor's independently produced CHM13 alignments. It is opt-in and never automatic — hours of work and hundreds of GB of scratch, checked for up front — and it never modifies the source file. An interrupted run resumes from where it stopped rather than starting over
 
 ### Reference Genome Management
 - Automatic reference download and caching (GRCh38, GRCh37, CHM13v2)

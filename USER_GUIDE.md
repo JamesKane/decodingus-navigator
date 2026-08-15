@@ -33,6 +33,7 @@ That's the single-sample path, and for most people it's the entire app. Everythi
    - [Batch import strategies for existing data collections](#batch-import-strategies-for-existing-data-collections)
    - [Importing an FTDNA group project](#importing-an-ftdna-group-project)
    - [Running Analyses](#running-analyses)
+   - [Realigning a genome to CHM13](#realigning-a-genome-to-chm13)
    - [The Branch Report tool](#the-branch-report-tool)
    - [The project Block tree](#the-project-block-tree)
    - [Finding relatives: the Matching tab](#finding-relatives-the-matching-tab)
@@ -386,6 +387,22 @@ Available analyses:
 | **Structural Variants (SV)** | Built, output unvalidated | Deletions, duplications, inversions, and breakends. Reliable output needs ≥10× coverage. |
 
 Navigator also reconciles Y/mtDNA haplogroups across multiple runs and alignments per subject into a single genome-level **consensus** assignment, rather than voting on per-run labels.
+
+### Realigning a genome to CHM13
+
+Most whole genomes arrive aligned to **GRCh38** or **GRCh37**. For nearly everything Navigator does, that is fine. For **discovering new Y-chromosome variants**, it is not: GRCh38's chrY is gap-ridden and partly collapsed, so a large share of the chromosome has nowhere for reads to land. **CHM13v2 (hs1)** is the first complete human assembly, and its Y is whole.
+
+Realignment rebuilds a whole genome against CHM13 from the reads in your existing file. On the validated 30× sample used to test it, the share of chrY receiving any coverage went from **41% to 98%**, and the resulting Y and mtDNA haplogroups matched the same donor's independently produced CHM13 alignments.
+
+**Find it** on the subject's **Sources** tab, in the **Reference build** card: pick a GRCh38 or GRCh37 alignment and press **Realign to chm13v2.0**. The card then becomes an eight-stage progress display, and a **Stop** button cancels it at any point.
+
+**What it costs.** Hours, and a lot of disk. The reference test — a 30× genome from a 17.3 GB CRAM — took about four hours on a sixteen-core machine and peaked at **276 GB** of working space. Navigator checks free space before starting and refuses with a figure rather than filling your disk in hour three. The working files are deleted when the job finishes.
+
+**What it does not do.** It never modifies or replaces your original file. The realigned genome is added as an *additional* alignment for the same subject, recorded as derived from the original, so both remain available and you can compare them.
+
+**If it is interrupted** — you cancel it, the machine restarts, the app is force-quit — the next run picks up from the last stage that finished rather than starting over. In practice that means an interruption during the final stages costs minutes, not the whole job.
+
+**When to bother.** Realign if you are hunting private or novel Y-SNPs, or preparing evidence for a haplotree submission. There is no need to realign for ancestry, IBD matching, or autosomal work: those already handle GRCh37 and GRCh38 directly and produce the same answer either way.
 
 ### The Branch Report tool
 The **Branch Report** answers a narrow, practical question: *for an arbitrary branch of the tree, how does this sample genotype at every marker that defines it and its descendants?* You give it any Y or mtDNA node — not just the one the sample was placed on — and it genotypes that node's whole **descendant subtree** fresh, marker by marker, showing the observed base, the derived/ancestral call, and the supporting read evidence for each.
