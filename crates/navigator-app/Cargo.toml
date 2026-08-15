@@ -45,3 +45,10 @@ navigator-analysis = { workspace = true }
 # same reason the rest of the workspace is comfortable with `windows`/`objc2` crates elsewhere.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# `GetDiskFreeSpaceExW`, the Windows half of the same check — and the half that matters most, since
+# Windows is the bulk of the user base and a realignment reserves hundreds of GB. Pure-Rust bindings
+# for the same reason as `libc` above, and 0.60 is already in the tree via other dependencies, so
+# this pulls in no new crates.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem"] }

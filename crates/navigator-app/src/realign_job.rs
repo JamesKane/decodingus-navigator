@@ -732,10 +732,46 @@ fn fs_free_space(path: &Path) -> u64 {
     }
 }
 
-#[cfg(not(unix))]
+/// Free bytes on the volume holding `path`.
+///
+/// `lpFreeBytesAvailableToCaller` rather than the volume's total free space, which is the subtle
+/// half of this call: on a volume with disk quotas the two differ, and the number preflight needs is
+/// what *this user* may actually write. It is the same choice the Unix arm makes in taking
+/// `f_bavail` (blocks available to an unprivileged process) over `f_bfree`.
+#[cfg(windows)]
+fn fs_free_space(path: &Path) -> u64 {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    // `encode_wide` does not NUL-terminate, and the API requires it.
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+
+    let mut available: u64 = 0;
+    // SAFETY: `wide` is a valid NUL-terminated UTF-16 buffer owned here and outliving the call, and
+    // `available` is a `u64` we own. The two totals this does not need are passed as null, which the
+    // API documents as permitted.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+
+    // A failure is reported as "unknown" rather than as zero free space, so that a probe that could
+    // not answer does not masquerade as a full disk and refuse the job. See `has_room`.
+    if ok == 0 {
+        return 0;
+    }
+    available
+}
+
+#[cfg(not(any(unix, windows)))]
 fn fs_free_space(_path: &Path) -> u64 {
-    // Windows free-space needs `GetDiskFreeSpaceExW`. Until that is wired, preflight reports
-    // "unknown" and declines to block — see `free_space`.
+    // No probe for this platform. Preflight reports "unknown" and declines to block — see
+    // `free_space`.
     0
 }
 
@@ -823,13 +859,10 @@ mod tests {
     /// Preflight must refuse a job that cannot finish, and say how much is needed rather than
     /// leaving the user to guess.
     ///
-    /// Unix-only, because it depends on the platform *knowing* the free space. [`fs_free_space`]
-    /// has no Windows implementation yet, so there it reports "unknown" and preflight declines to
-    /// block — the documented behaviour, pinned separately by
-    /// `preflight_cannot_refuse_where_free_space_is_unknown`. That is a real gap rather than a
-    /// testing detail: a realignment needs hundreds of GB, and on Windows nothing checks for it
-    /// before the job starts.
-    #[cfg(unix)]
+    /// Runs wherever [`fs_free_space`] has a real implementation, which is now both desktop
+    /// families. Platforms without one report "unknown" and cannot refuse anything — pinned
+    /// separately by `preflight_cannot_refuse_where_free_space_is_unknown`.
+    #[cfg(any(unix, windows))]
     #[test]
     fn preflight_refuses_when_the_disk_is_too_small() {
         let dir = std::env::temp_dir();
@@ -877,9 +910,9 @@ mod tests {
     /// probe has to answer for the filesystem that will hold it, which means walking up to the
     /// nearest existing ancestor rather than giving up.
     ///
-    /// Unix-only for the same reason as above: the ancestor walk is platform-independent, but the
-    /// syscall it ends at only exists on Unix today.
-    #[cfg(unix)]
+    /// Both desktop families, for the same reason as above: the ancestor walk is platform-
+    /// independent, but it is only meaningful where the call it ends at can answer.
+    #[cfg(any(unix, windows))]
     #[test]
     fn free_space_resolves_through_a_directory_that_does_not_exist_yet() {
         let unborn = std::env::temp_dir().join("dun-not-created-yet").join("nor-this");
@@ -895,9 +928,9 @@ mod tests {
     ///
     /// `preflight` cannot refuse a job it has no measurement for, and refusing on an unknown would
     /// block every realignment on that platform. So a job that would obviously not fit is allowed
-    /// to start and fail honestly on a real write. Wiring `GetDiskFreeSpaceExW` is what removes
-    /// this, and would delete this test with it.
-    #[cfg(not(unix))]
+    /// to start and fail honestly on a real write. Windows used to be in this bucket; it now has
+    /// `GetDiskFreeSpaceExW` and is tested by the two above.
+    #[cfg(not(any(unix, windows)))]
     #[test]
     fn preflight_cannot_refuse_where_free_space_is_unknown() {
         let dir = std::env::temp_dir();
