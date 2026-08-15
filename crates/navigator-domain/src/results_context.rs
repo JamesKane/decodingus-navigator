@@ -379,6 +379,7 @@ mod tests {
                 quality_ok: true,
             },
             needs_analysis: false,
+            realign_offer: None,
             caveats: vec![],
             pack_version: None,
             pack_status: PackStatus::Bundled,

@@ -128,19 +128,7 @@ impl App {
         let mut out = Vec::new();
         for subject in self.list_biosamples(project_id).await? {
             let alignments = navigator_store::alignment::list_for_biosample(self.store.pool(), subject.guid).await?;
-            for a in &alignments {
-                if a.bam_path.is_none() || a.is_derived() {
-                    continue;
-                }
-                if builds_match(&a.reference_build, target_build) {
-                    continue;
-                }
-                // Already realigned by an earlier run: its output is sitting in this same list.
-                if alignments.iter().any(|d| d.derived_from_alignment_id == Some(a.id)) {
-                    continue;
-                }
-                out.push(a.id);
-            }
+            out.extend(realignable_for_subject(&alignments, target_build));
         }
         Ok(out)
     }
@@ -169,6 +157,35 @@ impl App {
 /// Whether two build names refer to the same reference for this purpose.
 ///
 /// Compared case-insensitively on the recorded strings. Deliberately *not* normalised through
+/// The build realignment targets when nothing says otherwise — the complete assembly, which is the
+/// only reason the module exists.
+pub const DEFAULT_TARGET_BUILD: &str = "chm13v2.0";
+
+/// Whether `build` is the realignment target — the complete assembly.
+pub(crate) fn is_target_build(build: &str) -> bool {
+    builds_match(build, DEFAULT_TARGET_BUILD)
+}
+
+/// Which of one subject's `alignments` a realignment to `target_build` would actually act on.
+///
+/// Takes the whole list rather than one alignment because two of the four conditions are about the
+/// *set*: an alignment is skipped if something in the list was already derived from it. Ordered as
+/// the input is.
+///
+/// Shared by the project-wide count and the Simple-mode single-subject offer, so that the two
+/// cannot drift apart. If they disagreed, a user would be told a batch covers a sample it then
+/// silently skips — or be offered four hours of work that the job itself would refuse.
+pub(crate) fn realignable_for_subject(alignments: &[Alignment], target_build: &str) -> Vec<i64> {
+    alignments
+        .iter()
+        .filter(|a| a.bam_path.is_some() && !a.is_derived())
+        .filter(|a| !builds_match(&a.reference_build, target_build))
+        // Already realigned by an earlier run: its output is sitting in this same list.
+        .filter(|a| !alignments.iter().any(|d| d.derived_from_alignment_id == Some(a.id)))
+        .map(|a| a.id)
+        .collect()
+}
+
 /// `canonical_build`: `chm13v2.0` and `chm13v2.0_maskedY_rCRS` share coordinates but differ in
 /// chrM and in PAR masking, so realigning between them is a real operation rather than a no-op.
 fn builds_match(a: &str, b: &str) -> bool {
@@ -197,5 +214,72 @@ mod tests {
     #[test]
     fn the_masked_chm13_variant_is_a_different_build() {
         assert!(!builds_match("chm13v2.0", "chm13v2.0_maskedY_rCRS"));
+    }
+
+    /// Build one alignment row. Only the five fields the rule looks at are meaningful.
+    fn aln(id: i64, build: &str, has_file: bool, derived_from: Option<i64>) -> Alignment {
+        Alignment {
+            id,
+            sequence_run_id: 1,
+            reference_build: build.to_string(),
+            aligner: "bwa-mem2".into(),
+            variant_caller: None,
+            bam_path: has_file.then(|| format!("/data/{id}.cram")),
+            reference_path: None,
+            content_sha256: None,
+            derived_from_alignment_id: derived_from,
+            derivation: derived_from.map(|_| "realign:minimap2-sr".to_string()),
+        }
+    }
+
+    #[test]
+    fn an_original_on_an_older_build_is_realignable() {
+        let list = [aln(1, "GRCh38", true, None)];
+        assert_eq!(realignable_for_subject(&list, "chm13v2.0"), vec![1]);
+    }
+
+    /// The three ways an alignment disqualifies itself, each on its own.
+    #[test]
+    fn already_on_target_without_a_file_or_itself_derived_are_all_skipped() {
+        assert!(realignable_for_subject(&[aln(1, "chm13v2.0", true, None)], "chm13v2.0").is_empty());
+        assert!(realignable_for_subject(&[aln(1, "GRCh38", false, None)], "chm13v2.0").is_empty());
+        assert!(realignable_for_subject(&[aln(1, "GRCh38", true, Some(9))], "chm13v2.0").is_empty());
+    }
+
+    /// The set-level condition: once its realigned output sits beside it, the source is done. Without
+    /// this the offer would reappear after a four-hour job and invite an identical second one.
+    #[test]
+    fn a_source_that_has_already_been_realigned_is_not_offered_again() {
+        let list = [aln(1, "GRCh38", true, None), aln(2, "chm13v2.0", true, Some(1))];
+        assert!(realignable_for_subject(&list, "chm13v2.0").is_empty());
+    }
+
+    /// A subject holding several originals gets each of them, in input order — the caller picks.
+    #[test]
+    fn every_qualifying_original_is_returned_in_order() {
+        let list = [
+            aln(5, "GRCh37", true, None),
+            aln(3, "chm13v2.0", true, None),
+            aln(8, "GRCh38", true, None),
+        ];
+        assert_eq!(realignable_for_subject(&list, "chm13v2.0"), vec![5, 8]);
+    }
+
+    /// The masked CHM13 variant is a different build, so it is still worth realigning to plain
+    /// CHM13 — the same distinction `builds_match` draws above, reaching the rule that uses it.
+    #[test]
+    fn the_masked_variant_is_still_realignable_to_plain_chm13() {
+        let list = [aln(1, "chm13v2.0_maskedY_rCRS", true, None)];
+        assert_eq!(realignable_for_subject(&list, "chm13v2.0"), vec![1]);
+    }
+
+    #[test]
+    fn the_target_build_is_recognised_however_it_is_spelled() {
+        assert!(is_target_build("chm13v2.0"));
+        assert!(is_target_build(" CHM13v2.0 "));
+        assert!(!is_target_build("GRCh38"));
+        // The masked variant is a different reference, so a subject holding only that one has not
+        // yet had their Y read against plain CHM13.
+        assert!(!is_target_build("chm13v2.0_maskedY_rCRS"));
     }
 }

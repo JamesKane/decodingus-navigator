@@ -255,6 +255,22 @@ pub struct TestBrief {
     pub quality_ok: bool,
 }
 
+/// An offer to rebuild one alignment against CHM13, for a reader who should not have to know what
+/// a reference build is.
+///
+/// It is deliberately narrow. Realignment costs hours and hundreds of GB, and it buys exactly one
+/// thing: Y-chromosome discovery on a reference whose Y is complete. So the offer is only made when
+/// there is a paternal line to improve *and* an alignment on an older reference that has not already
+/// been realigned. Everyone else — a subject with no Y, a chip-only subject, one already on CHM13 —
+/// is never shown it, because for them the answer would not change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RealignOffer {
+    /// The alignment that would be rebuilt.
+    pub alignment_id: i64,
+    /// The reference it is on today, named for the prompt ("GRCh38").
+    pub current_build: String,
+}
+
 /// A casual-reader brief for one subject. Sections are `Option` — each degrades to absent when its
 /// data is missing (Y-only test → no maternal line; no haplogroup placed yet → no lineage section).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -275,6 +291,10 @@ pub struct SubjectBrief {
     /// an already-analyzed subject or one with no alignment (chip/VCF-only, nothing to analyze).
     #[serde(default)]
     pub needs_analysis: bool,
+    /// An alignment worth realigning to CHM13, when doing so would actually tell the reader
+    /// something new. Absent whenever it would not — see [`RealignOffer`].
+    #[serde(default)]
+    pub realign_offer: Option<RealignOffer>,
     /// Global uncertainty notes.
     pub caveats: Vec<String>,
     /// Loaded pack version (for display), if any.

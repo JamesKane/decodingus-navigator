@@ -211,6 +211,71 @@ impl NavigatorApp {
 
     /// Edit (or add) the open subject's MDKA for one lineage. Years/coords are free-text and parsed
     /// on save — a blank or unparseable field clears that column. Deferred dispatch.
+    /// Simple mode's confirmation before a realignment starts.
+    ///
+    /// The Advanced card starts the same job from one button, and that is right for the reader who
+    /// went looking for it among alignment internals. This reader arrived from a page about their
+    /// ancestors, so the cost is restated as its own decision: how long, how much disk, that the
+    /// original survives untouched, and that it can be stopped. Everything here is a fact the job
+    /// will otherwise deliver as a surprise four hours from now.
+    pub(crate) fn simple_realign_confirm_modal(&mut self, ctx: &egui::Context) {
+        let Some((alignment_id, build)) = self.simple_realign_confirm.clone() else {
+            return;
+        };
+
+        let mut close = false;
+        let mut start = false;
+        modal_frame(ctx, "simple_realign_confirm", 460.0, |ui| {
+            ui.label(
+                egui::RichText::new(self.tr("simple.realign.confirmTitle"))
+                    .strong()
+                    .size(16.0),
+            );
+            ui.separator();
+            ui.add_space(6.0);
+            ui.label(self.tr("simple.realign.confirmBody").replace("{build}", &build));
+            ui.add_space(8.0);
+            for key in [
+                "simple.realign.costTime",
+                "simple.realign.costDisk",
+                "simple.realign.costSafe",
+                "simple.realign.costStop",
+            ] {
+                ui.label(egui::RichText::new(format!("•  {}", self.tr(key))).small());
+                ui.add_space(2.0);
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(self.tr("simple.realign.confirmAction")).color(egui::Color32::WHITE),
+                        )
+                        .fill(ACCENT),
+                    )
+                    .clicked()
+                {
+                    start = true;
+                }
+                if ui.button(self.tr("common.cancel")).clicked() {
+                    close = true;
+                }
+            });
+        });
+
+        // Deferred dispatch: the closure borrows `self`, so the command goes out after it returns.
+        if start {
+            let _ = self.tx.send(Command::StartRealign {
+                alignment_id,
+                target_build: navigator_app::DEFAULT_TARGET_BUILD.to_string(),
+            });
+            self.status = self.tr("simple.realign.started").to_string();
+        }
+        if start || close {
+            self.simple_realign_confirm = None;
+        }
+    }
+
     pub(crate) fn edit_mdka_modal(&mut self, ctx: &egui::Context) {
         let Some(mut edit) = self.edit_mdka.clone() else { return };
 

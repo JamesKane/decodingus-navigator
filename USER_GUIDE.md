@@ -390,11 +390,17 @@ Navigator also reconciles Y/mtDNA haplogroups across multiple runs and alignment
 
 ### Realigning a genome to CHM13
 
-Most whole genomes arrive aligned to **GRCh38** or **GRCh37**. For nearly everything Navigator does, that is fine. For **discovering new Y-chromosome variants**, it is not: GRCh38's chrY is gap-ridden and partly collapsed, so a large share of the chromosome has nowhere for reads to land. **CHM13v2 (hs1)** is the first complete human assembly, and its Y is whole.
+Most whole genomes arrive aligned to **GRCh38** or **GRCh37**. Neither of those references was ever finished: both left whole stretches of the genome blank, as every human reference did before the **Telomere-to-Telomere (T2T)** project. That is a property of the reference, not a defect in anyone's sequencing.
 
-Realignment rebuilds a whole genome against CHM13 from the reads in your existing file. On the validated 30× sample used to test it, the share of chrY receiving any coverage went from **41% to 98%**, and the resulting Y and mtDNA haplogroups matched the same donor's independently produced CHM13 alignments.
+T2T closed those gaps. **CHM13v2 (hs1)** is the first complete human genome — a full autosomal sequence end to end, and, added in 2023, the first complete Y chromosome. Two things about its provenance are worth knowing, because a "complete" genome is still somebody's genome: the assembly comes from a donor of European ancestry, so it currently represents Western European DNA most fully, and the complete Y in it belongs to the **J1a** paternal lineage.
 
-**Find it** on the subject's **Sources** tab, in the **Reference build** card: pick a GRCh38 or GRCh37 alignment and press **Realign to chm13v2.0**. The card then becomes an eight-stage progress display, and a **Stop** button cancels it at any point.
+Realigning moves your reads onto that finished reference. The gain is genome-wide in principle; **Navigator's use for it today is Y-chromosome discovery**, where the old gaps were worst and where the difference is largest.
+
+On the validated 30× sample used to test it, the share of chrY receiving any coverage went from **41% to 98%**, and the resulting Y and mtDNA haplogroups matched the same donor's independently produced CHM13 alignments.
+
+**Find it** in either mode. In **Advanced**, it is on the subject's **Sources** tab in the **Reference build** card: pick a GRCh38 or GRCh37 alignment and press **Realign to chm13v2.0**. In **Simple**, it appears under **Your test** as *Compare against the complete genome*, with a confirmation step before anything starts. Either way the card becomes an eight-stage progress display, and a **Stop** button cancels it at any point.
+
+Simple mode only raises it when it would change something: the subject needs a paternal line to improve and no CHM13 alignment already. If they have one — by any route, including an earlier realignment — the offer is not shown, because the thing it promises has already been done.
 
 **What it costs.** Hours, and a lot of disk. The reference test — a 30× genome from a 17.3 GB CRAM — took about four hours on a sixteen-core machine and peaked at **276 GB** of working space. Navigator checks free space before starting and refuses with a figure rather than filling your disk in hour three. The working files are deleted when the job finishes.
 
