@@ -805,7 +805,7 @@ impl NavigatorApp {
             });
         }
 
-        self.simple_realign_card(ui);
+        self.simple_realign_card(ui, guid);
 
         ui.add_space(10.0);
         self.export_row(ui, &[navigator_app::ExportRequest::SubjectBriefHtml(guid)]);
@@ -845,15 +845,16 @@ impl NavigatorApp {
     ///
     /// Whether to offer it at all was decided in the app layer, on the brief; see
     /// `navigator_domain::brief::RealignOffer`.
-    fn simple_realign_card(&mut self, ui: &mut egui::Ui) {
+    fn simple_realign_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         let offer = self.subject_brief.as_ref().and_then(|(_, b)| b.realign_offer.clone());
 
         // A run in progress wins over the offer, so the card a user just started reports itself
         // rather than continuing to invite the thing it is already doing.
-        let running = self
-            .realign
-            .clone()
-            .filter(|state| offer.as_ref().map_or(true, |o| o.alignment_id == state.alignment_id));
+        //
+        // Matched on the *subject*, not the alignment. Comparing alignment ids meant this card had
+        // nothing to compare against once the offer was gone — and it went on to claim any running
+        // job, so a page open on one person announced another person's realignment as their own.
+        let running = self.realign.clone().filter(|state| state.biosample_guid == Some(guid));
 
         if let Some(state) = running {
             ui.add_space(10.0);
@@ -909,7 +910,7 @@ impl NavigatorApp {
             ui.add_space(8.0);
             // Opens the confirmation rather than starting: see `simple_realign_confirm_modal`.
             if ui.button(self.tr("simple.realign.action")).clicked() {
-                self.simple_realign_confirm = Some((offer.alignment_id, offer.current_build.clone()));
+                self.simple_realign_confirm = Some(offer.clone());
             }
         });
     }

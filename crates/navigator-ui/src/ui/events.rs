@@ -1003,6 +1003,7 @@ impl NavigatorApp {
                 }
                 Event::RealignProgress {
                     alignment_id,
+                    biosample_guid,
                     step,
                     total,
                     label,
@@ -1010,6 +1011,7 @@ impl NavigatorApp {
                 } => {
                     self.realign = Some(super::RealignState {
                         alignment_id,
+                        biosample_guid,
                         step,
                         total,
                         label,
@@ -1019,6 +1021,7 @@ impl NavigatorApp {
                 }
                 Event::RealignDone {
                     alignment_id,
+                    biosample_guid,
                     new_alignment_id,
                     cancelled,
                     summary,
@@ -1031,11 +1034,13 @@ impl NavigatorApp {
                         (None, true) => super::RealignFinished::Cancelled,
                         (None, false) => super::RealignFinished::Failed(summary.clone()),
                     };
-                    let prior = self.realign.take();
+                    // step/total are zero rather than carried over: every consumer matches on
+                    // `finished` first and none of them reads progress from a finished card.
                     self.realign = Some(super::RealignState {
                         alignment_id,
-                        step: prior.as_ref().map(|r| r.step).unwrap_or(0),
-                        total: prior.as_ref().map(|r| r.total).unwrap_or(0),
+                        biosample_guid,
+                        step: 0,
+                        total: 0,
                         label: String::new(),
                         detail: String::new(),
                         finished: Some(finished),

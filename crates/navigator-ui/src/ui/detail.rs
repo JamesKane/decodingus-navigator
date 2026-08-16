@@ -1656,8 +1656,6 @@ impl NavigatorApp {
         });
     }
 
-    /// A per-sample coverage/haplogroup table for the open project, with per-row coverage
-    /// recompute and a CSV export. Coverage/haplogroup cells show "—" until computed.
     /// Realign a whole project, as a card rather than a dialog for the same reason the per-alignment
     /// one is: this runs for *days*, and nothing that long should own the screen.
     ///
@@ -1668,7 +1666,7 @@ impl NavigatorApp {
         let Some(project_id) = self.selected_project else {
             return;
         };
-        let target = "chm13v2.0";
+        let target = navigator_app::DEFAULT_TARGET_BUILD;
 
         // Asked of the app, once per project, rather than filtered here. This used to count
         // `all_alignments` — the whole workspace — and label the result "in this project": a
@@ -1691,9 +1689,10 @@ impl NavigatorApp {
             });
             return;
         };
-        let eligible = eligible.clone();
+        // Only the count is read below, so take that rather than cloning the Vec every frame.
+        let eligible_count = eligible.len();
 
-        if eligible.is_empty() {
+        if eligible_count == 0 {
             ui.label(format!(
                 "Every alignment in this project is already on {target}, or has been realigned."
             ));
@@ -1702,12 +1701,12 @@ impl NavigatorApp {
 
         ui.label(format!(
             "{} alignment(s) in this project could be re-mapped to {target}.",
-            eligible.len()
+            eligible_count
         ));
         ui.add_space(4.0);
         ui.label(
             egui::RichText::new(
-                "They run one after another, each taking hours. Stopping ends the whole batch;                  everything already finished is kept, and no original is changed.",
+                "They run one after another, each taking hours. Stopping ends the whole batch; everything already finished is kept, and no original is changed.",
             )
             .weak()
             .size(12.0),
@@ -1719,7 +1718,7 @@ impl NavigatorApp {
             if ui
                 .add_enabled(
                     !busy,
-                    egui::Button::new(format!("Realign {} to {target}", eligible.len())),
+                    egui::Button::new(format!("Realign {eligible_count} to {target}")),
                 )
                 .clicked()
             {
@@ -1727,7 +1726,7 @@ impl NavigatorApp {
                     project_id,
                     target_build: target.to_string(),
                 });
-                self.status = format!("Realigning {} alignment(s) to {target}…", eligible.len());
+                self.status = format!("Realigning {eligible_count} alignment(s) to {target}…");
             }
             if busy && ui.button("Stop").clicked() {
                 let _ = self.tx.send(Command::CancelRealign);

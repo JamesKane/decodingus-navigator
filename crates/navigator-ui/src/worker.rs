@@ -1139,6 +1139,9 @@ pub enum Event {
     /// A realignment stage began.
     RealignProgress {
         alignment_id: i64,
+        /// The subject this job belongs to, so a card can tell whether the run is *theirs*.
+        /// `None` only if the lookup failed, in which case no card claims it.
+        biosample_guid: Option<SampleGuid>,
         step: usize,
         total: usize,
         label: String,
@@ -1156,6 +1159,7 @@ pub enum Event {
     /// success — the row is inserted last, so its absence means nothing was registered.
     RealignDone {
         alignment_id: i64,
+        biosample_guid: Option<SampleGuid>,
         new_alignment_id: Option<i64>,
         cancelled: bool,
         summary: String,
@@ -2466,6 +2470,9 @@ async fn run_realign_streaming(
     evt_tx: &Sender<Event>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) {
+    // Whose job this is, resolved once up front rather than per event.
+    let biosample_guid = app.subject_of_alignment(alignment_id).await.ok().flatten();
+
     // Resolve (downloading if needed) the reference we are mapping to, streaming its progress the
     // same way every other reference-dependent command does.
     ensure_references_streaming(app, std::slice::from_ref(&target_build), evt_tx, &*wake).await;
@@ -2475,6 +2482,7 @@ async fn run_realign_streaming(
         None => {
             let _ = evt_tx.send(Event::RealignDone {
                 alignment_id,
+                biosample_guid,
                 new_alignment_id: None,
                 cancelled: false,
                 summary: format!("the {target_build} reference is not available"),
@@ -2489,6 +2497,7 @@ async fn run_realign_streaming(
     let progress = move |p: navigator_app::realign_job::RealignProgress| {
         let _ = tx.send(Event::RealignProgress {
             alignment_id,
+            biosample_guid,
             step: p.stage.step(),
             total: p.total_stages,
             label: p.stage.label().to_string(),
@@ -2513,6 +2522,7 @@ async fn run_realign_streaming(
     let event = match app.realign_alignment(alignment_id, params, cancel, progress).await {
         Ok(outcome) => Event::RealignDone {
             alignment_id,
+            biosample_guid,
             new_alignment_id: Some(outcome.alignment.id),
             cancelled: false,
             // A resumed job skips the stages that count these, so a figure may be genuinely
@@ -2535,6 +2545,7 @@ async fn run_realign_streaming(
             let cancelled = e.is_cancelled();
             Event::RealignDone {
                 alignment_id,
+                biosample_guid,
                 new_alignment_id: None,
                 cancelled,
                 summary: if cancelled { String::new() } else { e.to_string() },

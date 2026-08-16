@@ -2910,7 +2910,7 @@ mod queries;
 mod realign;
 /// Re-exported alone rather than opening the module: the UI needs to name the build it is offering
 /// to realign to, and nothing else in there is its business.
-pub use realign::DEFAULT_TARGET_BUILD;
+pub use realign::{is_target_build, DEFAULT_TARGET_BUILD};
 pub mod realign_job;
 mod recruitment;
 mod social;
