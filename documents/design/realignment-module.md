@@ -640,10 +640,27 @@ as a page-cache promise — which matters most for `mapped.bam`, since its BGZF 
 precisely what a resumed run reads to decide whether it can trust the file, and the .mmi index,
 whose atomic rename otherwise publishes contents the disk has not acknowledged.
 
-The sort buffer is worth revisiting separately: at the default 512 MB it spilled **688 runs**, which
-the merge then opens at once. That is bounded memory by design and it works, but on a 128 GB machine
-it is a lot of fan-in bought for no reason. `NAVIGATOR_SORT_MB` already exists; sizing its default
-from installed RAM is not yet done.
+**The spill budgets now come from the machine.** At the fixed 512 MB the sort spilled **688 runs**,
+which the merge opens at once — bounded memory by design, and a lot of fan-in to buy on a 128 GB
+machine that was otherwise idle. The revert's collator had the same shape at 256 MB. Both now call
+`navigator_resource::spill_budget`: a quarter of installed RAM, never below the old 512 MB default,
+never above 8 GB, and never more than half of what is free at the moment the stage starts.
+`NAVIGATOR_SORT_MB` and `NAVIGATOR_REVERT_SORT_MB` still override it, and the job logs the figure it
+chose so a run's spill count stays explicable afterwards.
+
+Total RAM rather than free RAM for the stable part of the rule, deliberately: a stage whose run
+count depends on how many browser tabs were open is a stage whose behaviour cannot be reproduced
+from a bug report. The ceiling is there because the returns stop — 88 runs against 44 is nothing
+next to 688 against 88 — while the costs do not: the stable sort allocates half the buffer again as
+scratch, and growing the record vector holds two allocations at once.
+
+Sizing from the machine also required the tally to be honest, which it was not. The sort charged a
+record for its name, sequence, qualities and CIGAR and **not for its tag dictionary** — a dozen tags
+on every minimap2 record, at 40 bytes an entry — so a "512 MB" buffer held closer to a gigabyte. An
+unwritten margin inside a hand-picked constant is harmless; the same margin inside a fraction of
+installed RAM is how a machine ends up swapping. Both estimators now count the record's own size,
+its tag dictionary, and per-allocation overhead, and a test pins the tag-entry figure so a noodles
+upgrade that grows `Value` fails there rather than silently.
 
 ## Phase 5 result — WGS229 end to end (2026-08-14)
 

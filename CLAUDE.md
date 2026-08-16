@@ -100,4 +100,4 @@ Shared crates (`du-domain`, `du-atproto`, `du-bio`) live in the sibling repo `..
 
 ### Useful Environment Variables
 
-`NAVIGATOR_ANALYSIS_THREADS`, `NAVIGATOR_BGZF_THREADS`, `NAVIGATOR_IO_SYNC_MB` (how much a multi-GB writer may leave dirty in the page cache; `0` disables the pacing), `NAVIGATOR_Y_TREE_PROVIDER` (`decodingus`/`ftdna`), `NAVIGATOR_TREE_TTL_DAYS`, `NAVIGATOR_REFGENOME_DIR`, `NAVIGATOR_TREE_DIR`, `NAVIGATOR_ANCESTRY_PANEL` / `NAVIGATOR_ANCESTRY_PCA`, `DECODINGUS_APPVIEW_URL`.
+`NAVIGATOR_ANALYSIS_THREADS`, `NAVIGATOR_BGZF_THREADS`, `NAVIGATOR_IO_SYNC_MB` (how much a multi-GB writer may leave dirty in the page cache; `0` disables the pacing), `NAVIGATOR_SORT_MB` / `NAVIGATOR_REVERT_SORT_MB` (spill-buffer size in MB; both are sized from installed RAM when unset), `NAVIGATOR_Y_TREE_PROVIDER` (`decodingus`/`ftdna`), `NAVIGATOR_TREE_TTL_DAYS`, `NAVIGATOR_REFGENOME_DIR`, `NAVIGATOR_TREE_DIR`, `NAVIGATOR_ANCESTRY_PANEL` / `NAVIGATOR_ANCESTRY_PCA`, `DECODINGUS_APPVIEW_URL`.

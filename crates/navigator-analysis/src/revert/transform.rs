@@ -64,7 +64,15 @@ impl RevertedRead {
     /// Rough heap footprint, for the sort's memory budget. The two `Vec`s dominate; the constant
     /// covers the struct itself and allocator overhead closely enough to size a buffer by.
     pub fn heap_bytes(&self) -> usize {
-        self.name.len() + self.sequence.len() + self.qualities.len() + 64
+        // The read sits inline in the collator's `Vec`, so its own size counts; the three vectors
+        // each cost an allocation on top of their contents. The flat 64 this replaced was smaller
+        // than the struct alone, which was harmless against a fixed 256 MB budget and is not
+        // against a budget sized from the machine (see `navigator_resource::spill_budget`).
+        std::mem::size_of::<Self>()
+            + self.name.len()
+            + self.sequence.len()
+            + self.qualities.len()
+            + 3 * navigator_resource::ALLOCATION_OVERHEAD
     }
 }
 

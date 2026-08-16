@@ -116,6 +116,51 @@ fn unsorted_fixture(dir: &Path) -> (PathBuf, sam::Header, usize) {
     (input, hdr, total)
 }
 
+// ---- the buffer estimate ---------------------------------------------------
+
+/// The buffer is now sized as a fraction of the machine rather than a hand-picked constant, so what
+/// a record is charged against it has to be roughly true. It was not: the tag dictionary was free,
+/// and a mapped record carries a dozen tags.
+#[test]
+fn the_buffer_estimate_counts_the_tag_dictionary() {
+    use noodles::sam::alignment::record::data::field::Tag;
+    use noodles::sam::alignment::record_buf::data::field::Value;
+
+    let bare = record("r0", Some(0), 1);
+    let mut tagged = bare.clone();
+    for (tag, value) in [
+        (Tag::ALIGNMENT_HIT_COUNT, Value::from(1i32)),
+        (Tag::MISMATCHED_POSITIONS, Value::from("10")),
+        (Tag::ALIGNMENT_SCORE, Value::from(60i32)),
+    ] {
+        tagged.data_mut().insert(tag, value);
+    }
+
+    let charged = heap_bytes(&tagged) - heap_bytes(&bare);
+    assert_eq!(charged, 3 * TAG_ENTRY_BYTES, "three tags should cost three entries");
+}
+
+/// A noodles upgrade that grows `Value` should fail here, rather than quietly making every buffer
+/// hold more than its budget says.
+#[test]
+fn a_tag_entry_is_not_larger_than_the_estimate_assumes() {
+    use noodles::sam::alignment::record::data::field::Tag;
+    use noodles::sam::alignment::record_buf::data::field::Value;
+
+    assert!(
+        std::mem::size_of::<(Tag, Value)>() <= TAG_ENTRY_BYTES,
+        "a tag entry is {} bytes, which the estimate does not cover",
+        std::mem::size_of::<(Tag, Value)>()
+    );
+}
+
+/// The record's own size is part of what it costs — it lives inline in the buffer's `Vec`.
+#[test]
+fn the_buffer_estimate_covers_the_record_itself() {
+    let empty = RecordBuf::default();
+    assert!(heap_bytes(&empty) >= std::mem::size_of::<RecordBuf>());
+}
+
 // ---- the properties that matter -------------------------------------------
 
 /// Coordinate order, with unplaced reads at the end where SAM puts them.
