@@ -1,8 +1,13 @@
 //! Coordinate-sort a BAM, on disk.
 //!
 //! Same shape as [`crate::revert::collate`] and for the same reason: a WGS alignment does not fit
-//! in memory, so this fills a fixed budget, sorts it, spills a run, and k-way merges the runs at
-//! the end. Peak memory is the budget plus one buffered block per run, independent of input size.
+//! in memory, so this fills a budget, sorts it, spills a run, and k-way merges the runs at the end.
+//! Peak memory is the budget plus one buffered block per run, independent of input size.
+//!
+//! The budget comes from the machine ([`navigator_resource::spill_budget`]), not from a constant.
+//! It was 512 MB for everyone, which on a 30x WGS spilled **688 runs** that the merge then opened
+//! at once — bounded memory by design, and a great deal of fan-in to buy on a machine with 128 GB
+//! sitting idle.
 //!
 //! ## Runs are ordinary BAM files
 //!
@@ -35,9 +40,6 @@ use crate::error::AnalysisError;
 /// How often the record loop asks whether it has been cancelled — same cadence as the walkers.
 const CANCEL_CHECK_INTERVAL: u64 = 4096;
 
-/// Default in-memory budget before a run is spilled.
-const DEFAULT_SORT_BUFFER_MB: usize = 512;
-
 /// Tuning for [`sort_alignment`].
 #[derive(Debug, Clone)]
 pub struct SortParams {
@@ -46,14 +48,12 @@ pub struct SortParams {
 }
 
 impl Default for SortParams {
+    /// Sized from the machine, not from a constant — see [`navigator_resource::spill_budget`], which
+    /// also documents `NAVIGATOR_SORT_MB`. The constant this replaced was 512 MB, which spilled 688
+    /// runs on a 30x WGS regardless of whether the machine had 8 GB or 128 GB to work with.
     fn default() -> Self {
-        let mb = std::env::var("NAVIGATOR_SORT_MB")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_SORT_BUFFER_MB)
-            .max(1);
         Self {
-            buffer_bytes: mb * 1024 * 1024,
+            buffer_bytes: navigator_resource::spill_budget("NAVIGATOR_SORT_MB") as usize,
         }
     }
 }
@@ -322,16 +322,37 @@ fn sort_key(record: &RecordBuf) -> (u32, u64) {
     }
 }
 
-/// Rough heap footprint, for the memory budget. The variable-length parts dominate; the constant
-/// covers the record's fixed fields and allocator overhead closely enough to size a buffer by.
-fn heap_bytes(record: &RecordBuf) -> usize {
+/// What one record costs the buffer.
+///
+/// This used to be the variable-length parts plus a flat 256, which read as a reasonable stand-in
+/// for "fixed fields and allocator overhead" and was not one. It left out the tag dictionary
+/// entirely, and a mapped record carries a dozen tags — `NM`, `MD`, `AS`, `ms`, `nn`, `tp`, `cm`,
+/// `s1`, `s2`, `de`, `rl` from minimap2 alone — each an entry in a `Vec<(Tag, Value)>`. The buffer
+/// therefore held well over its stated budget, which mattered little against a constant picked with
+/// an unwritten margin and matters a great deal now that the budget is a fraction of the machine
+/// (see [`navigator_resource::spill_budget`]).
+///
+/// Still an estimate: it does not chase a `Value`'s own heap (a string tag's bytes) or a `Vec`'s
+/// spare capacity. It is close enough to size a buffer by, and it no longer omits a whole field.
+pub(super) fn heap_bytes(record: &RecordBuf) -> usize {
     use noodles::sam::alignment::record::Cigar as _;
-    record.name().map(|n| n.len()).unwrap_or(0)
+    // The record itself sits inline in the buffer's `Vec`, so its size is part of what a record
+    // costs — not something to approximate around.
+    std::mem::size_of::<RecordBuf>()
+        + record.name().map(|n| n.len()).unwrap_or(0)
         + record.sequence().len()
         + record.quality_scores().len()
         + record.cigar().len() * 4
-        + 256
+        + record.data().len() * TAG_ENTRY_BYTES
+        // Name, sequence, qualities, CIGAR, tags: five vectors, five allocations.
+        + 5 * navigator_resource::ALLOCATION_OVERHEAD
 }
+
+/// Bytes one tag occupies in a record's `Vec<(Tag, Value)>`.
+///
+/// Pinned by `a_tag_entry_is_not_larger_than_the_estimate_assumes`, so a noodles upgrade that grows
+/// `Value` fails a test here rather than quietly halving the buffer's honesty.
+pub(super) const TAG_ENTRY_BYTES: usize = 48;
 
 /// Stamp `@HD SO:coordinate` on the header.
 ///

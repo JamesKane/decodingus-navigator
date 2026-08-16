@@ -56,11 +56,6 @@ pub use transform::{Mate, RevertedRead};
 /// reasoning as the other walkers (see [`crate::cancel`]).
 const CANCEL_CHECK_INTERVAL: u64 = 4096;
 
-/// Default memory budget for the sort buffer before a run is spilled to scratch. 256 MiB holds
-/// roughly a million 150 bp reads with names, which keeps the run count (and so the merge's open
-/// file handles) low for a WGS input without being greedy on an 8 GB machine.
-const DEFAULT_SORT_BUFFER_MB: usize = 256;
-
 /// What to do with a **primary** record whose CIGAR contains a hard clip.
 ///
 /// Hard clipping means the aligner discarded sequence from the record, so the read cannot be fully
@@ -90,14 +85,14 @@ pub struct RevertParams {
 }
 
 impl Default for RevertParams {
+    /// The collator is sized from the machine by the same rule as the coordinate sort — see
+    /// [`navigator_resource::spill_budget`], which also documents `NAVIGATOR_REVERT_SORT_MB`. The
+    /// constant this replaced was 256 MB, described as keeping the run count low for a WGS; at
+    /// ~340 bytes a reverted read that is a run every million reads, so a 30x WGS spilled several
+    /// hundred of them and the merge opened every one.
     fn default() -> Self {
-        let mb = std::env::var("NAVIGATOR_REVERT_SORT_MB")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(DEFAULT_SORT_BUFFER_MB)
-            .max(1);
         Self {
-            sort_buffer_bytes: mb * 1024 * 1024,
+            sort_buffer_bytes: navigator_resource::spill_budget("NAVIGATOR_REVERT_SORT_MB") as usize,
             hard_clipped: HardClipPolicy::default(),
             prefer_original_qualities: true,
         }

@@ -8,7 +8,8 @@
 //!
 //! The property that matters is that peak memory is the budget plus one buffered block per run,
 //! *independent of input size*. That is what lets the same code path revert a 5 GB exome and a
-//! 200 GB WGS on the same laptop, and it is why this is disk-backed rather than clever.
+//! 200 GB WGS on the same laptop, and it is why this is disk-backed rather than clever. The budget
+//! itself is sized from the machine — see [`navigator_resource::spill_budget`].
 //!
 //! Runs use a plain length-prefixed binary encoding rather than a serialization framework: the
 //! format is written and read in this one file, it is a hot path measured in billions of records,
@@ -25,7 +26,8 @@ use super::transform::{Mate, RevertedRead};
 use crate::error::AnalysisError;
 
 /// Buffer size for run spill/read-back. Large enough that the merge's per-run reads stay
-/// sequential, small enough that a few dozen concurrent runs don't add up to real memory.
+/// sequential, small enough that the runs a WGS produces don't add up to real memory when the merge
+/// holds all of them open at once.
 const RUN_IO_BUFFER: usize = 256 * 1024;
 
 /// Accumulates reverted reads, spilling sorted runs to scratch when the budget is reached.
