@@ -1670,23 +1670,28 @@ impl NavigatorApp {
         };
         let target = "chm13v2.0";
 
-        // Counted from what is already loaded rather than by asking the worker: this card redraws
-        // every frame, and a query per frame for a number that changes only when alignments do
-        // would be wasteful.
-        let eligible: Vec<i64> = self
-            .all_alignments
-            .iter()
-            .filter(|a| {
-                a.bam_path.is_some()
-                    && !a.is_derived()
-                    && !a.reference_build.eq_ignore_ascii_case(target)
-                    && !self
-                        .all_alignments
-                        .iter()
-                        .any(|d| d.derived_from_alignment_id == Some(a.id))
-            })
-            .map(|a| a.id)
-            .collect();
+        // Asked of the app, once per project, rather than filtered here. This used to count
+        // `all_alignments` — the whole workspace — and label the result "in this project": a
+        // project whose alignments were every one already on the target build was still offered 35
+        // of them. The rule also lives in exactly one place now (`realignable_in_project`), so the
+        // number shown and the batch the button starts cannot disagree.
+        if self.project_realignable_asked != Some(project_id) {
+            self.project_realignable_asked = Some(project_id);
+            self.project_realignable = None;
+            let _ = self.tx.send(Command::LoadRealignableInProject {
+                project_id,
+                target_build: target.to_string(),
+            });
+        }
+
+        let Some((_, eligible)) = self.project_realignable.as_ref().filter(|(id, _)| *id == project_id) else {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(egui::RichText::new(self.tr("common.loading")).weak());
+            });
+            return;
+        };
+        let eligible = eligible.clone();
 
         if eligible.is_empty() {
             ui.label(format!(

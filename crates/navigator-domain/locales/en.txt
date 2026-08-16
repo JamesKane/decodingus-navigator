@@ -378,6 +378,7 @@ projects.exportCsv=Export CSV…
 projects.addSubjectsHint=Add subjects from the sidebar (they tag to this open project).
 projects.noSamples=No samples yet.
 common.cancel=Cancel
+common.loading=Loading…
 common.close=Close
 common.start=Start
 common.change=Change

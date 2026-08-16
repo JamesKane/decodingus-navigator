@@ -365,6 +365,17 @@ pub enum Command {
         contig: String,
     },
     LoadAllAlignments,
+    /// How many of one project's alignments a realignment would actually act on.
+    ///
+    /// Asked of the app rather than counted in the UI. The card that shows this number used to
+    /// filter `all_alignments`, which is the whole workspace — so a project whose alignments were
+    /// every one already on the target build was still told 35 of them "in this project" could be
+    /// re-mapped. The batch it would have started was project-scoped and correct; only the number
+    /// was wrong, which is the more misleading way round.
+    LoadRealignableInProject {
+        project_id: i64,
+        target_build: String,
+    },
     /// Compare two samples (each a WGS alignment or an imported chip) over the chip-compatible IBD
     /// panel — the volume-case path (chip↔chip / chip↔WGS).
     CompareIbdSources {
@@ -1150,6 +1161,13 @@ pub enum Event {
         summary: String,
     },
     AllAlignments(Vec<Alignment>),
+    /// The alignments in `project_id` a realignment to the target build would act on. Carries the
+    /// project id so a reply arriving after the user has moved on is discarded rather than shown
+    /// against the wrong project.
+    RealignableInProject {
+        project_id: i64,
+        ids: Vec<i64>,
+    },
     Ibd(IbdComparison),
     /// Federated IBD match suggestions from the AppView (may be empty in a single-user dev AppView).
     IbdSuggestions(Vec<IbdSuggestion>),
@@ -2096,6 +2114,13 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             },
         ),
         Command::LoadAllAlignments => ev(app.list_all_alignments().await, Event::AllAlignments),
+        Command::LoadRealignableInProject {
+            project_id,
+            target_build,
+        } => match app.realignable_in_project(project_id, &target_build).await {
+            Ok(ids) => Event::RealignableInProject { project_id, ids },
+            Err(e) => Event::Error(e.to_string()),
+        },
         Command::CompareIbdConsensus { a, b } => ev(
             app.compare_ibd_consensus(a, b, IbdDetectorConfig::default()).await,
             Event::Ibd,

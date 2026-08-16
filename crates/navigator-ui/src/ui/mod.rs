@@ -999,6 +999,13 @@ pub struct NavigatorApp {
     denovo: std::collections::HashMap<String, Vec<DenovoCall>>,
     running_denovo: bool,
     all_alignments: Vec<Alignment>,
+    /// `(project_id, eligible alignment ids)` for the project realignment card — answered by the
+    /// app, because the rule is the app's and the number has to be scoped to the project rather
+    /// than to the workspace.
+    project_realignable: Option<(i64, Vec<i64>)>,
+    /// The project a count has already been requested for, so the card does not re-ask every frame
+    /// (including after a failure). Same shape as `regions_attempted`.
+    project_realignable_asked: Option<i64>,
     /// Chip-compatible IBD compare: the two picked sources (each a WGS alignment or an imported chip).
     ibd_src_a: Option<navigator_app::IbdSource>,
     ibd_src_b: Option<navigator_app::IbdSource>,
@@ -1479,6 +1486,8 @@ impl NavigatorApp {
             denovo: std::collections::HashMap::new(),
             running_denovo: false,
             all_alignments: Vec::new(),
+            project_realignable: None,
+            project_realignable_asked: None,
             ibd_src_a: None,
             ibd_src_b: None,
             ibd_other_subject: None,

@@ -365,6 +365,7 @@ projects.exportCsv=Exportar CSV…
 projects.addSubjectsHint=Añada sujetos desde la barra lateral (se asignan a este proyecto abierto).
 projects.noSamples=Aún no hay muestras.
 common.cancel=Cancelar
+common.loading=Cargando…
 common.close=Cerrar
 common.start=Iniciar
 common.change=Cambiar

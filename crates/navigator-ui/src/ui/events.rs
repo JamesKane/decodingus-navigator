@@ -1089,7 +1089,20 @@ impl NavigatorApp {
                     // the "not analyzed yet" prompt (no-op in Advanced / when nothing is selected).
                     self.reload_subject_brief();
                 }
-                Event::AllAlignments(a) => self.all_alignments = a,
+                Event::AllAlignments(a) => {
+                    self.all_alignments = a;
+                    // The workspace's alignments just changed — an import finished, a realignment
+                    // registered its output — so any project count is stale. Clearing the "already
+                    // asked" marker makes the card re-ask on its next frame.
+                    self.project_realignable_asked = None;
+                }
+                // Discarded unless it is still the project on screen: the query is async and the
+                // user may have moved on while it ran.
+                Event::RealignableInProject { project_id, ids } => {
+                    if self.selected_project == Some(project_id) {
+                        self.project_realignable = Some((project_id, ids));
+                    }
+                }
                 Event::Ibd(cmp) => {
                     self.ibd_result = Some(cmp);
                     self.running_ibd = false;
