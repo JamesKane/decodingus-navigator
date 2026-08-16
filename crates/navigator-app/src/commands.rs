@@ -248,8 +248,6 @@ impl App {
         self.alignment_or_err(id).await
     }
 
-    /// Fetch an alignment by id, mapping a missing row to a `NotFound` error. The standard way
-    /// the analysis/query methods resolve an `alignment_id` before touching its BAM/CRAM.
     /// An alignment by id, or `None` if there is no such row.
     ///
     /// Public because provenance made alignments something callers ask about directly — the UI
@@ -258,6 +256,8 @@ impl App {
         Ok(alignment::get(self.store.pool(), id).await?)
     }
 
+    /// Fetch an alignment by id, mapping a missing row to a `NotFound` error. The standard way
+    /// the analysis/query methods resolve an `alignment_id` before touching its BAM/CRAM.
     pub(crate) async fn alignment_or_err(&self, id: i64) -> Result<Alignment, AppError> {
         alignment::get(self.store.pool(), id)
             .await?

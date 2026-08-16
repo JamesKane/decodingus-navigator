@@ -453,9 +453,7 @@ impl App {
         // Every stage's input is dead once the next stage has read it, and at WGS scale each is
         // tens of GB. Holding them all until the job ends — which is what this did first — roughly
         // doubles the peak and is the difference between fitting on a normal disk and not.
-        let discard = |path: &Path| {
-            let _ = std::fs::remove_file(path);
-        };
+        let discard = discard_partial;
         if let Some(reverted) = &reverted {
             discard(&reverted.read1);
             discard(&reverted.read2);
@@ -627,23 +625,7 @@ pub fn preflight(scratch: &Path, source: &Path, source_size: u64) -> Result<Real
     let needed = source_size
         .saturating_mul(expansion_factor(source))
         .saturating_mul(SCRATCH_MULTIPLE);
-    let free = free_space(scratch);
-
-    if !has_room(needed, free) {
-        return Err(AppError::Import(format!(
-            "not enough room to realign: about {} GB of working space is needed and {} GB is free \
-             on {}",
-            gb(needed),
-            gb(free),
-            scratch.display(),
-        )));
-    }
-
-    Ok(RealignPlan {
-        batch: BatchSize::for_this_machine(),
-        scratch_needed: needed,
-        scratch_free: free,
-    })
+    plan_for(scratch, needed, "realign")
 }
 
 /// Preflight for a job resuming from intermediates that already exist.
@@ -660,13 +642,21 @@ pub fn preflight(scratch: &Path, source: &Path, source_size: u64) -> Result<Real
 fn resume_preflight(scratch: &Path, mapped: &Path, sorted: &Path, marked: &Path) -> Result<RealignPlan, AppError> {
     let size = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let largest = size(mapped).max(size(sorted)).max(size(marked));
-    let needed = largest.saturating_mul(3);
+    plan_for(scratch, largest.saturating_mul(3), "resume the realignment")
+}
+
+/// Measure the disk, refuse a job that cannot finish on it, and describe what was decided.
+///
+/// The two preflights differ only in how they size `needed`; everything after that — probing free
+/// space, the refusal, the wording, the plan — was written out twice and had to be kept in step by
+/// hand. `what` is the verb in the refusal, so the two messages stay exactly as they were.
+fn plan_for(scratch: &Path, needed: u64, what: &str) -> Result<RealignPlan, AppError> {
     let free = free_space(scratch);
 
     if !has_room(needed, free) {
         return Err(AppError::Import(format!(
-            "not enough room to resume the realignment: about {} GB of working space is needed and \
-             {} GB is free on {}",
+            "not enough room to {what}: about {} GB of working space is needed and {} GB is free \
+             on {}",
             gb(needed),
             gb(free),
             scratch.display(),
@@ -674,8 +664,8 @@ fn resume_preflight(scratch: &Path, mapped: &Path, sorted: &Path, marked: &Path)
     }
 
     Ok(RealignPlan {
-        // Nothing that reads this is going to run — resuming starts at the sort, which is past the
-        // index — but the plan is the shared shape and a caller may still log it.
+        // A resumed job never reaches the index stage, but the plan is one shape and a caller may
+        // still log the figure.
         batch: BatchSize::for_this_machine(),
         scratch_needed: needed,
         scratch_free: free,

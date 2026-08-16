@@ -209,8 +209,6 @@ impl NavigatorApp {
         }
     }
 
-    /// Edit (or add) the open subject's MDKA for one lineage. Years/coords are free-text and parsed
-    /// on save — a blank or unparseable field clears that column. Deferred dispatch.
     /// Simple mode's confirmation before a realignment starts.
     ///
     /// The Advanced card starts the same job from one button, and that is right for the reader who
@@ -219,7 +217,7 @@ impl NavigatorApp {
     /// original survives untouched, and that it can be stopped. Everything here is a fact the job
     /// will otherwise deliver as a surprise four hours from now.
     pub(crate) fn simple_realign_confirm_modal(&mut self, ctx: &egui::Context) {
-        let Some((alignment_id, build)) = self.simple_realign_confirm.clone() else {
+        let Some(offer) = self.simple_realign_confirm.clone() else {
             return;
         };
 
@@ -233,7 +231,10 @@ impl NavigatorApp {
             );
             ui.separator();
             ui.add_space(6.0);
-            ui.label(self.tr("simple.realign.confirmBody").replace("{build}", &build));
+            ui.label(
+                self.tr("simple.realign.confirmBody")
+                    .replace("{build}", &offer.current_build),
+            );
             ui.add_space(8.0);
             for key in [
                 "simple.realign.costTime",
@@ -266,7 +267,7 @@ impl NavigatorApp {
         // Deferred dispatch: the closure borrows `self`, so the command goes out after it returns.
         if start {
             let _ = self.tx.send(Command::StartRealign {
-                alignment_id,
+                alignment_id: offer.alignment_id,
                 target_build: navigator_app::DEFAULT_TARGET_BUILD.to_string(),
             });
             self.status = self.tr("simple.realign.started").to_string();
@@ -276,6 +277,8 @@ impl NavigatorApp {
         }
     }
 
+    /// Edit (or add) the open subject's MDKA for one lineage. Years/coords are free-text and parsed
+    /// on save — a blank or unparseable field clears that column. Deferred dispatch.
     pub(crate) fn edit_mdka_modal(&mut self, ctx: &egui::Context) {
         let Some(mut edit) = self.edit_mdka.clone() else { return };
 

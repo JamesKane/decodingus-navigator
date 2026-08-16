@@ -86,7 +86,7 @@ pub fn sort_alignment(
         std::fs::create_dir_all(parent).map_err(|e| AnalysisError::io(parent, e))?;
     }
 
-    let mut reader = open_bam(input)?;
+    let mut reader = bamio::open(input)?;
     let header = reader.read_header().map_err(|e| AnalysisError::io(input, e))?;
 
     let mut stats = SortStats::default();
@@ -331,10 +331,6 @@ fn heap_bytes(record: &RecordBuf) -> usize {
         + record.quality_scores().len()
         + record.cigar().len() * 4
         + 256
-}
-
-fn open_bam(path: &Path) -> Result<bamio::BamReader, AnalysisError> {
-    bamio::open(path)
 }
 
 /// Stamp `@HD SO:coordinate` on the header.

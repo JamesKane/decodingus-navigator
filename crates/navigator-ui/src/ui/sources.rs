@@ -263,7 +263,7 @@ impl NavigatorApp {
             }
             // ---- idle: offer it ----
             None => {
-                let target = "chm13v2.0";
+                let target = navigator_app::DEFAULT_TARGET_BUILD;
                 let already = self
                     .alignments
                     .iter()
@@ -273,8 +273,17 @@ impl NavigatorApp {
                     ui.label("This alignment has already been realigned.");
                     return;
                 }
-                if alignment.reference_build.eq_ignore_ascii_case(target) {
+                // `is_target_build` rather than a comparison spelled here: it trims where
+                // `eq_ignore_ascii_case` alone does not, so a stored " chm13v2.0" was offered by
+                // this card and then refused by the job. The rule belongs to the app.
+                if navigator_app::is_target_build(&alignment.reference_build) {
                     ui.label(format!("Already on {target} — there is nothing to realign."));
+                    return;
+                }
+                // A row with no file cannot be re-mapped; the job fails at `MissingPaths`. The app's
+                // `realignable_for_subject` has always excluded these — this card did not.
+                if alignment.bam_path.is_none() {
+                    ui.label("This alignment has no file to re-map.");
                     return;
                 }
 

@@ -481,6 +481,10 @@ struct AnalysisModal {
 struct RealignState {
     /// The source alignment this job belongs to — cards for other alignments ignore it.
     alignment_id: i64,
+    /// The subject it belongs to. Simple mode's card is about a *person*, not an alignment, so it
+    /// has to match on this: with only the alignment id to go on, a page open on subject A during a
+    /// job on subject B told A their genome was being rebuilt.
+    biosample_guid: Option<SampleGuid>,
     step: usize,
     total: usize,
     label: String,
@@ -665,14 +669,15 @@ pub struct NavigatorApp {
     analysis: Option<AnalysisModal>,
     /// The running (or last finished) realignment; see [`RealignState`].
     realign: Option<RealignState>,
-    /// Simple mode's pending realignment confirmation, `(alignment id, its current build)`.
+    /// Simple mode's pending realignment confirmation — the same [`RealignOffer`] the brief
+    /// supplied, rather than a tuple re-spelling its two fields.
     ///
     /// Simple mode gets a confirmation step where Advanced does not, and the asymmetry is
     /// deliberate: the Advanced card sits among alignment internals and states its cost in a
     /// paragraph its reader is equipped to weigh. Simple mode's reader has been shown a story about
     /// their ancestors, and should not be able to commit the machine to four hours and 276 GB by
     /// misjudging one button.
-    simple_realign_confirm: Option<(i64, String)>,
+    simple_realign_confirm: Option<navigator_domain::brief::RealignOffer>,
     /// Set the moment Cancel is clicked, cleared when the run actually ends.
     ///
     /// Cancellation is cooperative: the walkers stop at their next check, so there is always a gap
