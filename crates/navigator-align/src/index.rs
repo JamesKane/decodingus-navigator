@@ -135,7 +135,11 @@ pub fn build_index(
     // is a far worse outcome than a build that has to be repeated.
     let tmp = out.with_extension("mmi.partial");
     let file = std::fs::File::create(&tmp).map_err(|e| AlignError::io(&tmp, e))?;
-    let mut writer = std::io::BufWriter::with_capacity(1 << 20, file);
+    // Paced, like every other multi-GB write in the pipeline: an index build is a one-off, but it
+    // is nine gigabytes in one uninterrupted push, and it happens on the machine of a user who is
+    // still using it. It also puts those bytes in the counter the resource watch reports, so the
+    // stage stops looking idle in the log.
+    let mut writer = std::io::BufWriter::with_capacity(1 << 20, navigator_resource::PacedFile::new(file));
 
     let mut parts = 0usize;
     let mut bases = 0u64;
@@ -152,6 +156,10 @@ pub fn build_index(
 
     use std::io::Write as _;
     writer.flush().map_err(|e| AlignError::io(&tmp, e))?;
+    // Sync before the rename. The rename is what publishes this as a complete index, and a cache
+    // entry whose contents are still only a page-cache promise is the torn-index case the temp path
+    // exists to prevent.
+    writer.get_ref().sync().map_err(|e| AlignError::io(&tmp, e))?;
     drop(writer);
 
     if parts == 0 {

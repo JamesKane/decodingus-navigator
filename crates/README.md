@@ -20,6 +20,8 @@ Dependency rule: `ui → app → {analysis, store, sync, refgenome} → {domain,
 | `navigator-store` | SQLite (`sqlx`) persistence, versioned migrations. |
 | `navigator-refgenome` | Reference/chain retrieval + on-disk cache + liftover gateway. |
 | `navigator-sync` | AT-Proto OAuth (PKCE/DPoP) + PDS record publishing. |
+| `navigator-align` | Read mapping for the realignment module (pure-Rust minimap2) + the aligner-index cache. |
+| `navigator-resource` | Leaf: `PacedFile` (bounded dirty pages), one process-wide write counter, and the memory/swap watch a multi-hour stage runs under. Shared by `navigator-align` and `navigator-analysis`, which is the whole reason it is a crate. |
 | `navigator-app` | The single command/query API the UI dispatches to. |
 | `navigator-ui` | egui desktop shell (thin: view-state + dispatch only). |
 | `navigator-panelbuild` | **Offline tool** (not shipped): builds the ancestry panels/PCA/fine assets from 1000G+SGDP genotype data. |

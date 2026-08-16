@@ -321,20 +321,17 @@ impl App {
         };
 
         // Watch the machine for as long as the job runs. It reports; it never intervenes — see
-        // `navigator_analysis::resource`. Started here so that it covers every stage, including the
-        // ones a resumed job skips over quickly.
-        let _watch = navigator_analysis::resource::ResourceWatch::start(
-            navigator_analysis::resource::DEFAULT_INTERVAL,
-            |sample| {
-                // Anything short of trouble is a log line; the bands exist so that trouble is
-                // greppable afterwards rather than buried in six hours of normal readings.
-                if sample.pressure == navigator_analysis::resource::Pressure::Normal {
-                    eprintln!("realign: {}", sample.summary());
-                } else {
-                    eprintln!("realign: WARNING {}", sample.summary());
-                }
-            },
-        );
+        // `navigator_resource`. Started here so that it covers every stage, including the ones a
+        // resumed job skips over quickly.
+        let _watch = navigator_resource::ResourceWatch::start(navigator_resource::DEFAULT_INTERVAL, |sample| {
+            // Anything short of trouble is a log line; the bands exist so that trouble is
+            // greppable afterwards rather than buried in six hours of normal readings.
+            if sample.pressure == navigator_resource::Pressure::Normal {
+                eprintln!("realign: {}", sample.summary());
+            } else {
+                eprintln!("realign: WARNING {}", sample.summary());
+            }
+        });
 
         // ---- preflight ----
         report(RealignStage::Preflight, resumed.detail());

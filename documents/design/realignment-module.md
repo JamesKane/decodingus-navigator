@@ -610,14 +610,35 @@ scale, at which point the machine has a debt it cannot settle inside a 40-second
 
 Three things came out of it:
 
-- **`bamio::PacedFile`** flushes on a byte cadence (`NAVIGATOR_IO_SYNC_MB`, 256 MB by default), so
-  the write path pays for its own I/O in instalments. It sits under `bamio::create`, the one choke
-  point every stage-C write already goes through.
-- **`navigator_analysis::resource::ResourceWatch`** samples memory *and* the write rate every 30
-  seconds — deliberately inside the 40-second watchdog window it is trying to catch the shadow of.
-  It reports and never intervenes. Nothing was recording the number that turned out to matter.
+- **`navigator_resource::PacedFile`** flushes on a byte cadence (`NAVIGATOR_IO_SYNC_MB`, 256 MB by
+  default), so the write path pays for its own I/O in instalments.
+- **`navigator_resource::ResourceWatch`** samples memory *and* the write rate every 30 seconds —
+  deliberately inside the 40-second watchdog window it is trying to catch the shadow of. It reports
+  and never intervenes. Nothing was recording the number that turned out to matter.
 - **Resume**, above. The killed run left 59 GB of complete `mapped.bam` on disk: the revert and the
   mapping, 3 h 58 m, intact and unusable. Resuming from it started the next attempt at the sort.
+
+**Both of those shipped in a module inside `navigator-analysis`, which covered half the pipeline.**
+Stage B is in `navigator-align`, a leaf crate that cannot depend on `navigator-analysis` and should
+not — so the mapper's ~60 GB `mapped.bam` was neither paced nor counted, and neither was the 8.93 GB
+minimizer index or the final CRAM (whose encoder opened its own `File` through `build_from_path`).
+The phase-5 run log reads `0 MB/s` straight through the longest stage in the job for exactly that
+reason: not a quiet stage, an unmeasured one. Pacing the sort while the mapper wrote unpaced also
+left the original failure mode reachable, since the notice macOS filed was against the process, not
+against a stage.
+
+The fix is `navigator-resource`, a leaf crate holding `PacedFile`, the byte counter, and the watch,
+which both halves of the pipeline depend on. A counter only means something if there is exactly one
+of it. Every multi-GB writer now goes through it, and `navigator-align`'s own test asserts that the
+mapper's output lands in the shared total — the property that was silently false before.
+
+Two smaller things came with it, from the same reading of the write path. Every one of those
+writers sat behind `BufWriter`'s 8 KB default while the encoders above them hand down 64 KB BGZF
+blocks and multi-MB CRAM containers, so the buffer was coalescing nothing; they now match the
+post-processing writers at 1 MB. And each stage output is `sync`ed once at the end rather than left
+as a page-cache promise — which matters most for `mapped.bam`, since its BGZF end-of-file block is
+precisely what a resumed run reads to decide whether it can trust the file, and the .mmi index,
+whose atomic rename otherwise publishes contents the disk has not acknowledged.
 
 The sort buffer is worth revisiting separately: at the default 512 MB it spilled **688 runs**, which
 the merge then opens at once. That is bounded memory by design and it works, but on a 128 GB machine

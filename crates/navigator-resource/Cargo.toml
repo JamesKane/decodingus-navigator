@@ -1,0 +1,24 @@
+[package]
+name = "navigator-resource"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# What a long stage is doing to the machine: write pacing, byte accounting, and memory/swap
+# sampling. Its own crate because the pipeline's two halves live in crates that do not (and should
+# not) depend on each other — `navigator-align` maps, `navigator-analysis` sorts and marks — and the
+# byte counter only means anything if there is exactly one of it. A module in either crate would
+# have counted half the pipeline and paced half the writes, which is what it did before this crate
+# existed: the mapping stage's ~60 GB `mapped.bam` was unpaced and invisible, so the run log read
+# `0 MB/s` through the single longest stage in the job.
+#
+# A leaf crate with no internal dependencies, so the layering rule (`ui -> app -> {analysis, ...}`)
+# is unaffected by which crates wire it in.
+[dependencies]
+# Memory and swap probes. `default-features = false` + `system` takes only the memory/CPU probe,
+# leaving out the disk, network, component, and user modules. Windows-clean, which is the bar the
+# rest of the workspace holds to: sysinfo binds the platform APIs through the pure-Rust `windows`
+# crate on Windows, `objc2-*` on macOS, and `libc` on Linux — no C toolchain, no build script
+# compiling C. Same pin the crates that used to own this module carried.
+sysinfo = { version = "0.36", default-features = false, features = ["system"] }

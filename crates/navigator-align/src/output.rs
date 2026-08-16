@@ -29,11 +29,19 @@
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+use navigator_resource::PacedFile;
 use noodles::sam::alignment::io::Write as _;
 use noodles::sam::alignment::RecordBuf;
 use noodles::{bam, bgzf, cram, fasta, sam};
 
 use crate::error::AlignError;
+
+/// Write buffer under the container encoders.
+///
+/// BGZF hands down ~64 KB blocks, so `BufWriter`'s 8 KB default coalesced nothing at all: this
+/// stage's output is the largest file the pipeline produces and it was reaching the disk in
+/// block-sized dribs. Matches the post-processing writers.
+const WRITE_BUFFER: usize = 1 << 20;
 
 /// On-disk container for the mapper's output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -65,10 +73,20 @@ pub struct AlignmentWriter {
     inner: Inner,
 }
 
+/// Every arm writes through a [`PacedFile`], and that is not incidental.
+///
+/// This stage produces the pipeline's largest file — ~60 GB of `mapped.bam` for a 30x WGS — as fast
+/// as sixteen cores can compress it, and left to itself that goes into the page cache and becomes
+/// the operating system's problem to write back. On macOS it became everyone's problem: a
+/// realignment dirtied 549 GB of file-backed memory, exceeded the sustained write-back limit by
+/// 1.4x, and WindowServer's watchdog took the login session down with the job. Pacing caps what can
+/// be outstanding; the accounting is what makes the stage visible to
+/// [`navigator_resource::ResourceWatch`] at all, which until now reported `0 MB/s` through the
+/// longest stage in the job because the only writer it has was unwrapped.
 enum Inner {
-    Sam(sam::io::Writer<BufWriter<std::fs::File>>),
-    Bam(bam::io::Writer<bgzf::io::MultithreadedWriter<BufWriter<std::fs::File>>>),
-    Cram(Box<cram::io::Writer<std::fs::File>>),
+    Sam(sam::io::Writer<BufWriter<PacedFile>>),
+    Bam(bam::io::Writer<bgzf::io::MultithreadedWriter<BufWriter<PacedFile>>>),
+    Cram(Box<cram::io::Writer<BufWriter<PacedFile>>>),
 }
 
 impl AlignmentWriter {
@@ -87,7 +105,7 @@ impl AlignmentWriter {
 
         let inner = match format {
             OutputFormat::Sam => {
-                let mut w = sam::io::Writer::new(BufWriter::new(create_file(path)?));
+                let mut w = sam::io::Writer::new(paced(path)?);
                 w.write_header(&header).map_err(|e| AlignError::io(path, e))?;
                 Inner::Sam(w)
             }
@@ -96,10 +114,7 @@ impl AlignmentWriter {
                 // profile of the stage attributes ~60% of the serial phase to zlib deflate —
                 // `longest_match` alone is a third of it — while sixteen cores wait for the next
                 // batch. Block compression parallelizes; the byte stream is unchanged.
-                let inner = bgzf::io::MultithreadedWriter::with_worker_count(
-                    bgzf_worker_count(),
-                    BufWriter::new(create_file(path)?),
-                );
+                let inner = bgzf::io::MultithreadedWriter::with_worker_count(bgzf_worker_count(), paced(path)?);
                 let mut w = bam::io::Writer::from(inner);
                 w.write_header(&header).map_err(|e| AlignError::io(path, e))?;
                 Inner::Bam(w)
@@ -109,10 +124,11 @@ impl AlignmentWriter {
                     AlignError::Message("CRAM output needs the reference FASTA it will be compressed against".into())
                 })?;
                 let repository = fasta_repository(reference)?;
+                // `build_from_writer`, not `build_from_path`: the latter opens the file itself, and
+                // an encoder holding its own raw `File` is exactly the writer that goes uncounted.
                 let mut w = cram::io::writer::Builder::default()
                     .set_reference_sequence_repository(repository)
-                    .build_from_path(path)
-                    .map_err(|e| AlignError::io(path, e))?;
+                    .build_from_writer(paced(path)?);
                 w.write_header(&header).map_err(|e| AlignError::io(path, e))?;
                 Inner::Cram(Box::new(w))
             }
@@ -152,16 +168,35 @@ impl AlignmentWriter {
 
     /// Flush and close. CRAM in particular must be finished explicitly — its final container is
     /// only written on shutdown, so a dropped writer yields a truncated file.
+    ///
+    /// Each arm then syncs, which matters more here than it looks. A resumed realignment decides
+    /// whether it can pick this file up by checking for the BGZF end-of-file block on the end of it
+    /// (`navigator_analysis::postprocess::bamio::is_complete_bam`), and a marker still sitting in
+    /// the page cache is a promise the disk has not made. Getting that wrong once already cost a
+    /// 59 GB intermediate: a truncated file that looked complete was resumed past and the real one
+    /// deleted.
     pub fn finish(self, path: &Path) -> Result<(), AlignError> {
         match self.inner {
-            Inner::Sam(mut w) => w.get_mut().flush().map_err(|e| AlignError::io(path, e)),
+            Inner::Sam(mut w) => sync(w.get_mut(), path),
             // BAM is BGZF, which ends with a specific empty block. Flushing alone leaves the file
             // without it, and readers treat that as truncated. On the threaded writer that means
             // draining the workers, which is what `finish` does.
-            Inner::Bam(mut w) => w.get_mut().finish().map(|_| ()).map_err(|e| AlignError::io(path, e)),
-            Inner::Cram(mut w) => w.try_finish(&self.header).map_err(|e| AlignError::io(path, e)),
+            Inner::Bam(mut w) => {
+                let mut buffered = w.get_mut().finish().map_err(|e| AlignError::io(path, e))?;
+                sync(&mut buffered, path)
+            }
+            Inner::Cram(mut w) => {
+                w.try_finish(&self.header).map_err(|e| AlignError::io(path, e))?;
+                sync(w.get_mut(), path)
+            }
         }
     }
+}
+
+/// Flush the buffer and push the file itself to disk.
+fn sync(buffered: &mut BufWriter<PacedFile>, path: &Path) -> Result<(), AlignError> {
+    buffered.flush().map_err(|e| AlignError::io(path, e))?;
+    buffered.get_ref().sync().map_err(|e| AlignError::io(path, e))
 }
 
 /// Worker threads for BGZF block compression.
@@ -178,11 +213,13 @@ fn bgzf_worker_count() -> std::num::NonZeroUsize {
     std::num::NonZeroUsize::new(n.clamp(1, 8)).expect("clamped above zero")
 }
 
-fn create_file(path: &Path) -> Result<std::fs::File, AlignError> {
+/// Create `path` — parents included — behind a buffer and the write pacer.
+fn paced(path: &Path) -> Result<BufWriter<PacedFile>, AlignError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| AlignError::io(parent, e))?;
     }
-    std::fs::File::create(path).map_err(|e| AlignError::io(path, e))
+    let file = std::fs::File::create(path).map_err(|e| AlignError::io(path, e))?;
+    Ok(BufWriter::with_capacity(WRITE_BUFFER, PacedFile::new(file)))
 }
 
 fn fasta_repository(reference: &Path) -> Result<fasta::Repository, AlignError> {
@@ -242,4 +279,48 @@ pub fn read_all_bam(path: &Path) -> Result<(sam::Header, Vec<RecordBuf>), AlignE
         records.push(result.map_err(|e| AlignError::io(path, e))?);
     }
     Ok((header, records))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dun-output-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const HEADER: &str = "@HD\tVN:1.6\tSO:unsorted\n@SQ\tSN:chr1\tLN:1000\n";
+    const RECORD: &str = "read1\t0\tchr1\t1\t60\t4M\t*\t0\t0\tACGT\tIIII";
+
+    /// The regression this crate's dependency on `navigator-resource` exists for.
+    ///
+    /// The mapping stage writes the largest file in the pipeline, and for the whole of its first
+    /// WGS run it wrote that file through a bare `File` — so the resource watch, which reports what
+    /// the pipeline is doing to the machine, logged `0 MB/s` for hours while ~60 GB went to disk.
+    /// The counter is process-global precisely so that a writer in *this* crate lands in the same
+    /// total as the sort's, and the only way to keep that true is to assert it from here.
+    #[test]
+    fn the_mappers_output_reaches_the_shared_byte_counter() {
+        let dir = scratch("counted");
+        let path = dir.join("out.bam");
+
+        let before = navigator_resource::bytes_written();
+        let mut writer = AlignmentWriter::create(&path, OutputFormat::Bam, HEADER, None).unwrap();
+        writer.write_line_with(RECORD, &path, |_, _| {}).unwrap();
+        writer.finish(&path).unwrap();
+
+        // Strictly greater, not an exact figure: the counter is shared with anything else running
+        // in this binary, so the claim under test is that these bytes were counted at all.
+        assert!(
+            navigator_resource::bytes_written() > before,
+            "the mapper's BAM output was not accounted for"
+        );
+
+        let (_, records) = read_all_bam(&path).unwrap();
+        assert_eq!(records.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

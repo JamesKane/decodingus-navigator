@@ -26,9 +26,8 @@ bzip2 = "0.6"
 # (Option B). Chosen over C-binding POA/WFA crates and htslib-based lorikeet because those lean on
 # autotools/Make/POSIX and don't build under MSVC — bio and its deps are pure Rust, Windows-clean.
 bio = "4"
-# Memory and swap sampling for `resource::ResourceWatch`, which watches what the multi-hour
-# post-processing stages are doing to the machine. Same pin and same `default-features = false` +
-# `system` as `navigator-align` uses for RAM detection, and for the same reason: it binds the
-# platform APIs through pure-Rust crates on all three desktop targets, so the guard arms on
-# Windows too rather than only where the failure happened to be diagnosed.
-sysinfo = { version = "0.36", default-features = false, features = ["system"] }
+# `PacedFile`, so the revert's spill runs and FASTQ and the post-processing BAMs and CRAM cap how
+# much of themselves can sit dirty in the page cache, and so their bytes land in the one counter the
+# resource watch reports. Shared with `navigator-align` rather than owned here — see that crate's
+# manifest for why the counter cannot live in either half of the pipeline.
+navigator-resource = { workspace = true }
