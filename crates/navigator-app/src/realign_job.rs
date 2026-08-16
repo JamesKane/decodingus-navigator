@@ -356,8 +356,10 @@ impl App {
             let dir = scratch.path().join("revert");
             clear_stage_dir(&dir);
             let token = cancel.clone();
+            let params = RevertParams::default();
+            log_buffer("collating", params.sort_buffer_bytes);
             let stats = tokio::task::spawn_blocking(move || {
-                revert::revert_alignment(&bam, reference.as_deref(), &dir, &RevertParams::default(), &token)
+                revert::revert_alignment(&bam, reference.as_deref(), &dir, &params, &token)
             })
             .await
             .map_err(|e| AppError::Join(e.to_string()))??;
@@ -466,9 +468,11 @@ impl App {
             // weight — and at WGS scale they are tens of GB the sort is about to want back.
             clear_stage_dir(&dir);
             let token = cancel.clone();
+            let params = SortParams::default();
+            log_buffer("sorting", params.buffer_bytes);
             stage(&sorted, async {
                 tokio::task::spawn_blocking(move || {
-                    postprocess::sort_alignment(&input, &out, &dir, &SortParams::default(), &token, &mut |_| {})
+                    postprocess::sort_alignment(&input, &out, &dir, &params, &token, &mut |_| {})
                 })
                 .await
                 .map_err(|e| AppError::Join(e.to_string()))?
@@ -671,6 +675,15 @@ fn plan_for(scratch: &Path, needed: u64, what: &str) -> Result<RealignPlan, AppE
 
 fn gb(bytes: u64) -> u64 {
     bytes / 1_000_000_000
+}
+
+/// Record the spill budget a stage is about to run with.
+///
+/// Both budgets now come from the machine rather than a constant, so the run count they produce is
+/// no longer inferable from the version number. Without this line, "it spilled 400 runs" in a bug
+/// report is a fact with nothing to attach it to.
+fn log_buffer(stage: &str, bytes: usize) {
+    eprintln!("realign: {stage} with a {} MB buffer", bytes / (1024 * 1024));
 }
 
 /// Whether a job needing `needed` bytes may start given `free` bytes available.

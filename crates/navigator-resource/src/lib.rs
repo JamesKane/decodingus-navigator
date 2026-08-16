@@ -150,6 +150,75 @@ impl Write for PacedFile {
     }
 }
 
+/// The budget an external-sort stage holds in memory before spilling a run to disk.
+///
+/// Both of the pipeline's spill-to-disk stages — the revert's collator and the coordinate sort —
+/// were sized by a constant, 256 MB and 512 MB, chosen when nobody had run a WGS through them.
+/// The measured cost of that: a 30x WGS coordinate sort spilled **688 runs**, all of which the
+/// merge then opens at once. It is bounded memory by design and it does work, but on a machine with
+/// 128 GB of RAM it is a lot of fan-in bought for no reason, and the constant that produced it was
+/// the same on a laptop that genuinely needed it.
+///
+/// So the number comes from the machine. `var` still wins when it is set — an explicit MB count is
+/// the escape hatch for a run that has to be reproduced or squeezed — and the sizing is otherwise:
+///
+/// - **A quarter of installed RAM.** Total rather than free, because free fluctuates with whatever
+///   the user happens to have open, and a stage whose run count depends on the browser is a stage
+///   whose behaviour cannot be reproduced from a bug report.
+/// - **Never below 512 MB.** That is the sort's existing default, so no machine sorts with less
+///   than it does today.
+/// - **Never above 8 GB.** Past that the returns are gone — 88 runs against 44 is nothing next to
+///   688 against 88 — while the costs are not: the stable sort allocates half the buffer again as
+///   scratch, and growing the record vector doubles its allocation while still holding the old one.
+/// - **Never more than half of what is free right now.** The stable part of the rule assumes a
+///   machine that is otherwise idle. When it is not, spilling an extra run is cheap and swapping
+///   the buffer is not.
+///
+/// Memory the platform will not report reads as zero, and zero means *unknown*, which must not be
+/// read as "no memory" — the same rule [`classify`] follows. An unknown machine gets the floor.
+pub fn spill_budget(var: &str) -> u64 {
+    if let Some(mb) = std::env::var(var).ok().and_then(|s| s.parse::<u64>().ok()) {
+        return mb.max(1) * 1024 * 1024;
+    }
+    let mut system = sysinfo::System::new();
+    system.refresh_memory();
+    budget(system.total_memory(), system.available_memory())
+}
+
+/// What one heap allocation costs beyond the bytes asked for: the allocator's own bookkeeping plus
+/// rounding up to a size class.
+///
+/// It lives beside [`spill_budget`] because the two are one contract. A budget is only as honest as
+/// the tally that fills it, and a stage that counts only payload bytes will hold well over its
+/// budget in real memory — which is fine against a hand-picked 512 MB constant chosen with a margin
+/// nobody wrote down, and not fine against a fraction of the machine.
+///
+/// Sixteen bytes is the conventional figure for the allocators on the three desktop targets. This
+/// is a budget estimate rather than an audit; the point is that a record with four small vectors
+/// costs meaningfully more than the sum of their lengths.
+pub const ALLOCATION_OVERHEAD: usize = 16;
+
+/// The floor, and the answer for a machine that will not say how much memory it has.
+const MIN_SPILL_BUDGET: u64 = 512 << 20;
+/// The ceiling. See [`spill_budget`] for why bigger stops paying.
+const MAX_SPILL_BUDGET: u64 = 8 << 30;
+
+/// The sizing decision, split from the probe so it is testable on any machine — the same split
+/// [`classify`] makes, and for the same reason.
+fn budget(total_memory: u64, available_memory: u64) -> u64 {
+    if total_memory == 0 {
+        return MIN_SPILL_BUDGET;
+    }
+    let budget = (total_memory / 4).clamp(MIN_SPILL_BUDGET, MAX_SPILL_BUDGET);
+    if available_memory == 0 {
+        return budget;
+    }
+    // The floor holds even here: a machine this short of memory would have taken 512 MB under the
+    // old constant anyway, so honouring the busy-machine guard past that point would be a
+    // regression dressed as caution.
+    budget.min((available_memory / 2).max(MIN_SPILL_BUDGET))
+}
+
 /// How hard the machine is being leaned on.
 ///
 /// Bands, not a single threshold, because the interesting reading is the trend: a stage that
@@ -359,6 +428,58 @@ mod tests {
     #[test]
     fn unknown_memory_is_not_pressure() {
         assert_eq!(classify(0, 0, 0), Pressure::Normal);
+    }
+
+    /// The case the autosizing exists for: a big machine should stop spilling hundreds of runs.
+    #[test]
+    fn a_large_machine_gets_the_ceiling() {
+        assert_eq!(budget(128 << 30, 100 << 30), MAX_SPILL_BUDGET);
+    }
+
+    #[test]
+    fn an_ordinary_machine_gets_a_quarter_of_it() {
+        assert_eq!(budget(16 << 30, 12 << 30), 4 << 30);
+    }
+
+    /// A machine whose memory is already spoken for gets a smaller buffer, because an extra spilled
+    /// run costs a file and swapping the buffer costs the run.
+    #[test]
+    fn a_busy_machine_is_held_to_half_of_what_is_free() {
+        assert_eq!(budget(64 << 30, 6 << 30), 3 << 30);
+    }
+
+    /// Never below what the sort used before any of this existed.
+    #[test]
+    fn a_small_or_busy_machine_never_goes_under_the_old_default() {
+        assert_eq!(budget(2 << 30, 2 << 30), MIN_SPILL_BUDGET);
+        assert_eq!(budget(64 << 30, 100 << 20), MIN_SPILL_BUDGET);
+    }
+
+    /// Unknown is not zero. A platform that will not report memory must not be sized as if it had
+    /// none — and must not be sized as if it had plenty either.
+    #[test]
+    fn unknown_memory_gets_the_floor() {
+        assert_eq!(budget(0, 0), MIN_SPILL_BUDGET);
+        assert_eq!(budget(64 << 30, 0), MAX_SPILL_BUDGET.min(16 << 30));
+    }
+
+    /// The escape hatch has to win, or a run cannot be reproduced on a different machine.
+    #[test]
+    fn an_explicit_override_beats_the_machine() {
+        let var = "NAVIGATOR_TEST_SPILL_MB_OVERRIDE";
+        std::env::set_var(var, "7");
+        assert_eq!(spill_budget(var), 7 * 1024 * 1024);
+        std::env::remove_var(var);
+    }
+
+    /// A nonsense override must not produce a zero-byte budget, which would spill one run per
+    /// record.
+    #[test]
+    fn a_zero_override_is_floored_at_one_megabyte() {
+        let var = "NAVIGATOR_TEST_SPILL_MB_ZERO";
+        std::env::set_var(var, "0");
+        assert_eq!(spill_budget(var), 1024 * 1024);
+        std::env::remove_var(var);
     }
 
     #[test]
