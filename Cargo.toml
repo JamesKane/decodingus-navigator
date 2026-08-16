@@ -27,6 +27,7 @@ navigator-analysis = { path = "crates/navigator-analysis" }
 navigator-sync     = { path = "crates/navigator-sync" }
 navigator-refgenome = { path = "crates/navigator-refgenome" }
 navigator-align    = { path = "crates/navigator-align" }
+navigator-resource = { path = "crates/navigator-resource" }
 navigator-app      = { path = "crates/navigator-app" }
 
 # Common

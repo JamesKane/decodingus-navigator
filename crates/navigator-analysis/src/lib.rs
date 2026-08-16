@@ -47,7 +47,6 @@ pub mod reader;
 pub mod readview;
 pub mod realign;
 pub mod reassembly;
-pub mod resource;
 pub mod revert;
 pub mod roh;
 pub mod scan;

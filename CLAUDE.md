@@ -66,6 +66,8 @@ Decoding-Us Navigator is a Rust desktop application for local bioinformatics ana
 - `navigator-store` — SQLite (sqlx) persistence + versioned migrations.
 - `navigator-refgenome` — Reference/chain retrieval, on-disk cache, and liftover gateway.
 - `navigator-sync` — AT-Proto OAuth (PKCE/DPoP) + PDS record publishing.
+- `navigator-align` — Read mapping (pure-Rust minimap2) + the aligner-index cache, for realignment.
+- `navigator-resource` — Leaf: write pacing, one process-wide byte counter, machine-pressure sampling. Every multi-GB writer in the pipeline goes through its `PacedFile`.
 - `navigator-app` — The single command/query API the UI dispatches to.
 - `navigator-ui` — egui desktop shell + the `navigator` binary (GUI + clap CLI).
 - `navigator-panelbuild` — Offline tool (not shipped): builds ancestry panels/PCA assets.
@@ -98,4 +100,4 @@ Shared crates (`du-domain`, `du-atproto`, `du-bio`) live in the sibling repo `..
 
 ### Useful Environment Variables
 
-`NAVIGATOR_ANALYSIS_THREADS`, `NAVIGATOR_BGZF_THREADS`, `NAVIGATOR_Y_TREE_PROVIDER` (`decodingus`/`ftdna`), `NAVIGATOR_TREE_TTL_DAYS`, `NAVIGATOR_REFGENOME_DIR`, `NAVIGATOR_TREE_DIR`, `NAVIGATOR_ANCESTRY_PANEL` / `NAVIGATOR_ANCESTRY_PCA`, `DECODINGUS_APPVIEW_URL`.
+`NAVIGATOR_ANALYSIS_THREADS`, `NAVIGATOR_BGZF_THREADS`, `NAVIGATOR_IO_SYNC_MB` (how much a multi-GB writer may leave dirty in the page cache; `0` disables the pacing), `NAVIGATOR_Y_TREE_PROVIDER` (`decodingus`/`ftdna`), `NAVIGATOR_TREE_TTL_DAYS`, `NAVIGATOR_REFGENOME_DIR`, `NAVIGATOR_TREE_DIR`, `NAVIGATOR_ANCESTRY_PANEL` / `NAVIGATOR_ANCESTRY_PCA`, `DECODINGUS_APPVIEW_URL`.

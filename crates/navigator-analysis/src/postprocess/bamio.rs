@@ -24,7 +24,7 @@ use std::path::Path;
 use noodles::{bam, bgzf};
 
 use crate::error::AnalysisError;
-use crate::resource::PacedFile;
+use navigator_resource::PacedFile;
 
 /// A BAM reader whose block decompression runs on a worker pool.
 pub(crate) type BamReader = bam::io::Reader<bgzf::io::MultithreadedReader<File>>;

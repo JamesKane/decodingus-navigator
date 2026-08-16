@@ -19,14 +19,23 @@
 //! Nothing here aborts a job. A stage that is writing hard is doing its job — the sort *is* a
 //! hundreds-of-GB write — and a watchdog that killed a six-hour run for going fast would be worse
 //! than the problem. Bounding the damage belongs where the writes happen, on a byte cadence
-//! ([`crate::postprocess::bamio`]); this exists so that the next time something goes wrong there is
-//! a record of what the machine looked like, instead of an inference from a crash report.
+//! ([`PacedFile`]); this exists so that the next time something goes wrong there is a record of
+//! what the machine looked like, instead of an inference from a crash report.
+//!
+//! ## Why a crate of its own
+//!
+//! Because a byte counter only means anything if there is exactly one of it, and the pipeline's
+//! writers are split across crates that do not depend on each other: `navigator-align` maps,
+//! `navigator-analysis` reverts, sorts, marks, and compresses. This first shipped as a module in
+//! the latter, which meant the mapping stage — the single longest in the job, and the one that
+//! writes the ~60 GB `mapped.bam` — was neither paced nor counted. The run log read `0 MB/s`
+//! straight through it, which is not a quiet stage but an unmeasured one.
 //!
 //! ## Portability
 //!
 //! Every probe here is `sysinfo`, which binds the platform APIs through pure-Rust crates on all
 //! three desktop targets — the same reason `navigator-align` picked it for RAM detection. There is
-//! deliberately no `fcntl`/`ioctl`/`/proc` in this module: the guard has to hold on Windows, and a
+//! deliberately no `fcntl`/`ioctl`/`/proc` in this crate: the guard has to hold on Windows, and a
 //! guard that only arms itself on macOS would have been no guard at all for most users.
 
 use std::fs::File;
@@ -36,11 +45,15 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-/// Bytes handed to disk by the post-processing writers since the process started.
+/// Bytes handed to disk by the pipeline's paced writers since the process started.
 ///
 /// Self-accounted rather than read back from the OS: every platform exposes per-process I/O
 /// counters differently (and Windows' are not in `sysinfo`'s default surface), whereas the writers
 /// already know exactly how much they wrote. It costs one relaxed add per buffer.
+///
+/// One counter for the whole process, which is the reason this lives in a crate of its own: a
+/// realignment's writes come from two crates that cannot see each other, and two counters would
+/// have been two half-answers.
 static BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 
 /// Account `n` bytes written. Called from the write path; must stay this cheap.
@@ -83,9 +96,11 @@ fn sync_interval() -> u64 {
 /// than in storms.
 ///
 /// It lives here rather than beside any one stage because every stage that writes tens of GB wants
-/// it — the post-processing BAMs *and* the revert's spill runs and FASTQ, which is where the scratch
-/// peak actually is. The byte accounting that [`ResourceWatch`] reports comes from the same place,
-/// so a stream that is paced is also a stream that is counted.
+/// it: the mapper's output and its 8.93 GB minimizer index, the revert's spill runs and FASTQ
+/// (where the scratch peak actually is), the sort's runs and merged output, and the final CRAM. The
+/// byte accounting that [`ResourceWatch`] reports comes from the same place, so a stream that is
+/// paced is also a stream that is counted — and a writer nobody wrapped is a writer that shows up
+/// in neither.
 ///
 /// `sync_data` rather than `sync_all` — the contents must be durable, the metadata need not be, and
 /// on a stream this size that is many thousands of inode updates. It is std's portable spelling:
@@ -180,7 +195,7 @@ pub struct ResourceSample {
     /// Swap in use, and how much of it appeared since the watch started.
     pub used_swap: u64,
     pub swap_growth: u64,
-    /// Bytes written by the post-processing writers, in total and since the previous sample.
+    /// Bytes written by the pipeline's paced writers, in total and since the previous sample.
     pub bytes_written: u64,
     pub write_rate: f64,
     pub pressure: Pressure,

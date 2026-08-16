@@ -37,6 +37,10 @@ use crate::error::AnalysisError;
 
 const CANCEL_CHECK_INTERVAL: u64 = 4096;
 
+/// Write buffer under the CRAM encoder. Matches [`bamio`]'s, for the same reason: containers arrive
+/// far larger than `BufWriter`'s 8 KB default, which coalesces nothing.
+const CRAM_WRITE_BUFFER: usize = 1 << 20;
+
 /// What the CRAM step produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CramOutput {
@@ -80,10 +84,16 @@ pub fn write_cram(
     require_coordinate_sorted(&header, input)?;
 
     let repository = fasta_repository(reference)?;
+    // The final CRAM is tens of GB and was the last writer in the pipeline still handing its output
+    // straight to the page cache: `build_from_path` opens the file itself, which is how an encoder
+    // ends up holding a raw `File` that nothing paces and nothing counts.
+    let file = std::fs::File::create(output).map_err(|e| AnalysisError::io(output, e))?;
     let mut writer = cram::io::writer::Builder::default()
         .set_reference_sequence_repository(repository)
-        .build_from_path(output)
-        .map_err(|e| AnalysisError::io(output, e))?;
+        .build_from_writer(std::io::BufWriter::with_capacity(
+            CRAM_WRITE_BUFFER,
+            navigator_resource::PacedFile::new(file),
+        ));
     writer.write_header(&header).map_err(|e| AnalysisError::io(output, e))?;
 
     let mut records = 0u64;
@@ -125,6 +135,14 @@ pub fn write_cram(
     // CRAM buffers records into containers and only writes the last one — and the end-of-file
     // marker — on shutdown. A dropped writer leaves a file that looks complete and is not.
     writer.try_finish(&header).map_err(|e| AnalysisError::io(output, e))?;
+    {
+        use std::io::Write as _;
+        let buffered = writer.get_mut();
+        buffered.flush().map_err(|e| AnalysisError::io(output, e))?;
+        // Synced before it is indexed and handed to the workspace: `index_cram` reads the file back
+        // immediately, and everything downstream treats this path as the finished alignment.
+        buffered.get_ref().sync().map_err(|e| AnalysisError::io(output, e))?;
+    }
     progress(records);
 
     let index = index_cram(output)?;

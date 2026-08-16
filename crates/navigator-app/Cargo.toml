@@ -14,6 +14,10 @@ navigator-analysis = { workspace = true }
 # Stage B of the realignment module (design/realignment-module.md). Its own crate so the optional
 # C FFI backend cannot affect this one's build.
 navigator-align = { workspace = true }
+# The realignment job's resource watch. Depended on directly rather than reached through
+# `navigator-analysis`, because the writers it accounts for live in both that crate and
+# `navigator-align`, and neither is the owner.
+navigator-resource = { workspace = true }
 navigator-sync = { workspace = true }
 navigator-refgenome = { workspace = true }
 du-domain = { workspace = true }

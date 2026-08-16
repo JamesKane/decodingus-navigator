@@ -3390,6 +3390,7 @@ version = "0.1.0"
 dependencies = [
  "minimap2-pure-rs",
  "navigator-domain",
+ "navigator-resource",
  "noodles",
  "rayon",
  "sysinfo",
@@ -3407,12 +3408,12 @@ dependencies = [
  "flate2",
  "nalgebra",
  "navigator-domain",
+ "navigator-resource",
  "noodles",
  "rayon",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "sysinfo",
  "thiserror 2.0.18",
 ]
 
@@ -3430,6 +3431,7 @@ dependencies = [
  "navigator-analysis",
  "navigator-domain",
  "navigator-refgenome",
+ "navigator-resource",
  "navigator-store",
  "navigator-sync",
  "reqwest",
@@ -3481,6 +3483,13 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "navigator-resource"
+version = "0.1.0"
+dependencies = [
+ "sysinfo",
 ]
 
 [[package]]

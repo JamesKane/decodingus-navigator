@@ -28,6 +28,11 @@ noodles = { version = "0.111.0", features = ["sam", "bam", "cram", "bgzf", "fast
 # no C toolchain, no build script compiling C. Add the `disk` feature when the realignment
 # preflight needs free-space checks; it is the same dependency.
 sysinfo = { version = "0.36", default-features = false, features = ["system"] }
+# `PacedFile`, so this stage's two very large writes — the mapped BAM and the minimizer index — are
+# flushed on a byte cadence and counted in the same place as the post-processing stages'. Without
+# it the longest stage in a realignment reported no I/O at all, because nothing was watching the
+# only writer it has.
+navigator-resource = { workspace = true }
 # Batch-parallel mapping. Mapping is the pipeline's dominant cost and is embarrassingly parallel
 # per read; rayon is already the workspace's data-parallelism crate (navigator-analysis uses it
 # per contig), and minimap2-pure-rs depends on it too, so this adds no new tree.
