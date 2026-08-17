@@ -388,17 +388,7 @@ async fn validate_hg002_haplogroups() {
         .await
         .unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let aln = app
@@ -525,17 +515,7 @@ async fn validate_gfx_chm13_haplogroups() {
         .await
         .unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "PACBIO".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "PACBIO", "WGS"))
         .await
         .unwrap();
     // mt now needs the CHM13 reference (to self-generate the rCRS↔chrM map): resolve it
@@ -649,17 +629,7 @@ async fn validate_gfx_decodingus_y() {
         .await
         .unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "PACBIO".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "PACBIO", "WGS"))
         .await
         .unwrap();
     let aln = app
@@ -720,17 +690,7 @@ async fn gvcf_y_placement_smoke() {
         .await
         .unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let aln = app
@@ -796,30 +756,14 @@ async fn gvcf_fast_path_matches_cram_walk() {
         .await
         .unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let aln = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "bwa-mem".into(),
-            variant_caller: None,
             bam_path: Some(cram),
             reference_path: Some(reference),
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "chm13v2.0", "bwa-mem")
         })
         .await
         .unwrap()
@@ -872,30 +816,13 @@ async fn analysis_provenance_roundtrips_and_defaults_full_walk() {
     let app = app().await;
     let b = app.add_biosample(None, "PROV", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let aln = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "x".into(),
-            variant_caller: None,
             bam_path: Some("/x.cram".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "chm13v2.0", "x")
         })
         .await
         .unwrap()
@@ -935,30 +862,13 @@ async fn save_analysis_no_downgrade_keeps_the_fuller_result() {
     let app = app().await;
     let b = app.add_biosample(None, "NODG", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let aln = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "x".into(),
-            variant_caller: None,
             bam_path: Some("/x.cram".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "chm13v2.0", "x")
         })
         .await
         .unwrap()
@@ -1093,30 +1003,14 @@ async fn assign_haplogroup_from_alignment_calls_and_ranks() {
     let dir = fixtures();
     let b = app.add_biosample(None, "HG002", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let aln = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chrM".into(),
-            aligner: "synthetic".into(),
-            variant_caller: None,
             bam_path: Some(dir.join("coverage.bam").to_string_lossy().into_owned()),
             reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "chrM", "synthetic")
         })
         .await
         .unwrap()
@@ -1248,33 +1142,13 @@ async fn add_data_imports_completegenomics_master_var() {
 async fn alignment_id(app: &App) -> i64 {
     let b = app.add_biosample(None, "HG002", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
-    app.record_alignment(NewAlignment {
-        sequence_run_id: run.id,
-        reference_build: "chrM-fixture".into(),
-        aligner: "synthetic".into(),
-        variant_caller: None,
-        bam_path: None,
-        reference_path: None,
-        content_sha256: None,
-        derived_from_alignment_id: None,
-        derivation: None,
-    })
-    .await
-    .unwrap()
-    .id
+    app.record_alignment(NewAlignment::new(run.id, "chrM-fixture", "synthetic"))
+        .await
+        .unwrap()
+        .id
 }
 
 #[tokio::test]
@@ -1305,30 +1179,17 @@ async fn command_flow_and_overview() {
     // chain a run + alignment off the first sample
     let run = app
         .record_sequence_run(NewSequenceRun {
-            biosample_guid: b1.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
             library_layout: Some("PAIRED".into()),
             total_reads: Some(8_000_000),
             pf_reads_aligned: Some(7_956_881),
             mean_read_length: Some(148.0),
             mean_insert_size: Some(580.7),
+            ..NewSequenceRun::new(b1.guid, "ILLUMINA", "WGS")
         })
         .await
         .unwrap();
     let aln = app
-        .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "bwa".into(),
-            variant_caller: None,
-            bam_path: None,
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
-        })
+        .record_alignment(NewAlignment::new(run.id, "chm13v2.0", "bwa"))
         .await
         .unwrap();
     assert_eq!(aln.sequence_run_id, run.id);
@@ -1355,31 +1216,11 @@ async fn typed_analysis_artifact_round_trips_and_versions() {
     let app = app().await;
     let b = app.add_biosample(None, "HG002", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let aln = app
-        .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "bwa".into(),
-            variant_caller: None,
-            bam_path: None,
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
-        })
+        .record_alignment(NewAlignment::new(run.id, "chm13v2.0", "bwa"))
         .await
         .unwrap();
 
@@ -1480,30 +1321,13 @@ async fn run_denovo_caller_persists_snp_calls() {
 async fn diploid_alignment(app: &App) -> i64 {
     let b = app.add_biosample(None, "diploid", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let bam = fixtures().join("diploid.bam").to_string_lossy().into_owned();
     app.record_alignment(NewAlignment {
-        sequence_run_id: run.id,
-        reference_build: "chr1".into(),
-        aligner: "synthetic".into(),
-        variant_caller: None,
         bam_path: Some(bam),
-        reference_path: None,
-        content_sha256: None,
-        derived_from_alignment_id: None,
-        derivation: None,
+        ..NewAlignment::new(run.id, "chr1", "synthetic")
     })
     .await
     .unwrap()
@@ -1920,17 +1744,7 @@ async fn assign_y_haplogroup_lifts_grch38_tree_onto_chm13_alignment() {
     let dir = fixtures();
     let b = app.add_biosample(None, "HG002", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let aln = app
@@ -2003,29 +1817,13 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
         .unwrap();
     let b = app.add_biosample(Some(p.id), "S1", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "X".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "X", "WGS"))
         .await
         .unwrap();
     app.record_alignment(NewAlignment {
-        sequence_run_id: run.id,
-        reference_build: "chm13v2.0".into(),
-        aligner: "x".into(),
-        variant_caller: None,
         bam_path: Some(dir.join("coverage.cram").to_string_lossy().into_owned()),
         reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
-        content_sha256: None,
-        derived_from_alignment_id: None,
-        derivation: None,
+        ..NewAlignment::new(run.id, "chm13v2.0", "x")
     })
     .await
     .unwrap();
@@ -2204,29 +2002,13 @@ async fn compare_mt_grch38_vs_chm13() {
             .await
             .unwrap();
         let run = app
-            .record_sequence_run(NewSequenceRun {
-                biosample_guid: b.guid,
-                platform_name: "X".into(),
-                instrument_model: None,
-                test_type: "WGS".into(),
-                library_layout: None,
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
-            })
+            .record_sequence_run(NewSequenceRun::new(b.guid, "X", "WGS"))
             .await
             .unwrap();
         app.record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: build.into(),
-            aligner: "x".into(),
-            variant_caller: None,
             bam_path: Some(bam),
             reference_path: reference,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, build, "x")
         })
         .await
         .unwrap()
@@ -2304,30 +2086,13 @@ async fn sex_and_read_metrics_persist_and_reload() {
     let app = app().await;
     let b = app.add_biosample(None, "sx", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let aln = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "synthetic".into(),
-            variant_caller: None,
             bam_path: Some(fixtures().join("sex.bam").to_string_lossy().into_owned()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "chm13v2.0", "synthetic")
         })
         .await
         .unwrap()
@@ -2353,30 +2118,14 @@ async fn gfx_sex_is_male() {
     let app = app().await;
     let b = app.add_biosample(None, "GFX0457637", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "PACBIO_SMRT".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "PACBIO_SMRT", "WGS"))
         .await
         .unwrap();
     let aln = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "pbmm2".into(),
-            variant_caller: None,
             bam_path: Some(bam),
             reference_path: std::env::var("GFX_CHM13_REF").ok(),
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "chm13v2.0", "pbmm2")
         })
         .await
         .unwrap()
@@ -2399,17 +2148,7 @@ async fn cached_artifact_invalidated_when_source_file_changes() {
         .await
         .unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
 
@@ -2418,15 +2157,8 @@ async fn cached_artifact_invalidated_when_source_file_changes() {
     std::fs::write(&bam, b"original").unwrap();
     let aln = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "GRCh38".into(),
-            aligner: "bwa-mem2".into(),
-            variant_caller: None,
             bam_path: Some(bam.to_string_lossy().into_owned()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "GRCh38", "bwa-mem2")
         })
         .await
         .unwrap()
@@ -2758,31 +2490,11 @@ async fn deleting_run_purges_derived_haplogroup_and_consensus() {
     let app = app().await;
     let b = app.add_biosample(None, "103589", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "Targeted Y".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "Targeted Y"))
         .await
         .unwrap();
     let aln = app
-        .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "GRCh38".into(),
-            aligner: "unknown".into(),
-            variant_caller: None,
-            bam_path: None,
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
-        })
+        .record_alignment(NewAlignment::new(run.id, "GRCh38", "unknown"))
         .await
         .unwrap();
 
@@ -2847,31 +2559,15 @@ async fn branch_report_genotypes_the_mt_subtree_end_to_end() {
     let dir = fixtures();
     let b = app.add_biosample(None, "S-mt", None, None).await.unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     // GRCh38 build → chrM is rCRS-direct (no liftover), so tree positions query chrM as-is.
     let aln = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "GRCh38".into(),
-            aligner: "bwa-mem".into(),
-            variant_caller: None,
             bam_path: Some(dir.join("coverage.bam").to_string_lossy().into_owned()),
             reference_path: Some(dir.join("ref.fa").to_string_lossy().into_owned()),
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "GRCh38", "bwa-mem")
         })
         .await
         .unwrap()
@@ -2945,17 +2641,7 @@ async fn mt_alignment_pick_skips_a_y_only_run() {
 
     // A Big-Y (Y-only) run, recorded first so it's a candidate for both pickers.
     let y_run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "BIG_Y_700".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "BIG_Y_700"))
         .await
         .unwrap();
     let y_aln = app
@@ -2976,30 +2662,13 @@ async fn mt_alignment_pick_skips_a_y_only_run() {
 
     // A whole-genome run that does carry chrM.
     let wgs_run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     let wgs_aln = app
         .record_alignment(NewAlignment {
-            sequence_run_id: wgs_run.id,
-            reference_build: "GRCh38".into(),
-            aligner: "bwa-mem".into(),
-            variant_caller: None,
             bam_path: Some("/nonexistent.bam".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(wgs_run.id, "GRCh38", "bwa-mem")
         })
         .await
         .unwrap()
@@ -3138,29 +2807,12 @@ mod full_analysis_plan {
             .await
             .unwrap();
         let run = app
-            .record_sequence_run(NewSequenceRun {
-                biosample_guid: b.guid,
-                platform_name: "ILLUMINA".into(),
-                instrument_model: None,
-                test_type: "WGS".into(),
-                library_layout: None,
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
-            })
+            .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
             .await
             .unwrap();
         app.record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "GRCh38".into(),
-            aligner: "bwa-mem2".into(),
-            variant_caller: None,
             bam_path: Some("/nonexistent/plan.bam".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "GRCh38", "bwa-mem2")
         })
         .await
         .unwrap()
@@ -3346,17 +2998,7 @@ async fn subject_with_run(
         .await
         .unwrap();
     let run = app
-        .record_sequence_run(NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        })
+        .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
         .await
         .unwrap();
     (b, run)
@@ -3371,15 +3013,8 @@ async fn registering_a_realignment_is_additive_and_records_its_source() {
 
     let source = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "GRCh38".into(),
-            aligner: "bwa-mem2".into(),
-            variant_caller: None,
             bam_path: Some("/tmp/vendor.bam".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "GRCh38", "bwa-mem2")
         })
         .await
         .unwrap();
@@ -3431,15 +3066,8 @@ async fn realigning_to_the_same_build_is_refused() {
 
     let source = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "minimap2".into(),
-            variant_caller: None,
             bam_path: Some("/tmp/already.cram".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "chm13v2.0", "minimap2")
         })
         .await
         .unwrap();
@@ -3466,15 +3094,8 @@ async fn derived_alignments_are_discoverable_from_their_source() {
 
     let source = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "GRCh38".into(),
-            aligner: "bwa-mem2".into(),
-            variant_caller: None,
             bam_path: Some("/tmp/vendor.bam".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "GRCh38", "bwa-mem2")
         })
         .await
         .unwrap();
@@ -3486,15 +3107,11 @@ async fn derived_alignments_are_discoverable_from_their_source() {
 
     let derived = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "minimap2".into(),
-            variant_caller: None,
             bam_path: Some("/tmp/realigned.cram".into()),
             reference_path: Some("/tmp/chm13.fa".into()),
-            content_sha256: None,
             derived_from_alignment_id: Some(source.id),
             derivation: Some("realign:minimap2-sr".into()),
+            ..NewAlignment::new(run.id, "chm13v2.0", "minimap2")
         })
         .await
         .unwrap();
@@ -3521,15 +3138,8 @@ async fn existing_alignments_read_back_as_originals() {
 
     let aln = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "GRCh38".into(),
-            aligner: "bwa-mem2".into(),
-            variant_caller: None,
             bam_path: Some("/tmp/x.bam".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "GRCh38", "bwa-mem2")
         })
         .await
         .unwrap();
@@ -3551,15 +3161,8 @@ async fn a_realigned_alignment_becomes_the_subjects_default() {
 
     let source = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "GRCh38".into(),
-            aligner: "bwa-mem2".into(),
-            variant_caller: None,
             bam_path: Some("/tmp/vendor.bam".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "GRCh38", "bwa-mem2")
         })
         .await
         .unwrap();
@@ -3572,15 +3175,11 @@ async fn a_realigned_alignment_becomes_the_subjects_default() {
 
     let realigned = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "minimap2".into(),
-            variant_caller: None,
             bam_path: Some("/tmp/realigned.cram".into()),
             reference_path: Some("/tmp/chm13.fa".into()),
-            content_sha256: None,
             derived_from_alignment_id: Some(source.id),
             derivation: Some("realign:minimap2-sr".into()),
+            ..NewAlignment::new(run.id, "chm13v2.0", "minimap2")
         })
         .await
         .unwrap();
@@ -3618,63 +3217,34 @@ async fn a_project_batch_skips_what_it_would_refuse() {
     // Eligible: an off-build alignment with a file.
     let eligible = app
         .record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "GRCh38".into(),
-            aligner: "bwa-mem2".into(),
-            variant_caller: None,
             bam_path: Some("/tmp/a.bam".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "GRCh38", "bwa-mem2")
         })
         .await
         .unwrap();
 
     // Skipped: already on the target build.
     app.record_alignment(NewAlignment {
-        sequence_run_id: run.id,
-        reference_build: "chm13v2.0".into(),
-        aligner: "minimap2".into(),
-        variant_caller: None,
         bam_path: Some("/tmp/b.cram".into()),
-        reference_path: None,
-        content_sha256: None,
-        derived_from_alignment_id: None,
-        derivation: None,
+        ..NewAlignment::new(run.id, "chm13v2.0", "minimap2")
     })
     .await
     .unwrap();
 
     // Skipped: no file to read.
-    app.record_alignment(NewAlignment {
-        sequence_run_id: run.id,
-        reference_build: "GRCh37".into(),
-        aligner: "bwa".into(),
-        variant_caller: None,
-        bam_path: None,
-        reference_path: None,
-        content_sha256: None,
-        derived_from_alignment_id: None,
-        derivation: None,
-    })
-    .await
-    .unwrap();
+    app.record_alignment(NewAlignment::new(run.id, "GRCh37", "bwa"))
+        .await
+        .unwrap();
 
     let queue = app.realignable_in_project(project.id, "chm13v2.0").await.unwrap();
     assert_eq!(queue, vec![eligible.id]);
 
     // Once it has been realigned, a second batch has nothing left to do.
     app.record_alignment(NewAlignment {
-        sequence_run_id: run.id,
-        reference_build: "chm13v2.0".into(),
-        aligner: "minimap2".into(),
-        variant_caller: None,
         bam_path: Some("/tmp/c.cram".into()),
-        reference_path: None,
-        content_sha256: None,
         derived_from_alignment_id: Some(eligible.id),
         derivation: Some("realign:minimap2-sr".into()),
+        ..NewAlignment::new(run.id, "chm13v2.0", "minimap2")
     })
     .await
     .unwrap();

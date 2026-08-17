@@ -4092,15 +4092,8 @@ mod publish_tests {
         let b = app.add_biosample(None, "S1", None, None).await.unwrap();
         let run = app
             .record_sequence_run(NewSequenceRun {
-                biosample_guid: b.guid,
-                platform_name: "ILLUMINA".into(),
                 instrument_model: Some("NovaSeq".into()),
-                test_type: "WGS".into(),
-                library_layout: None,
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
+                ..NewSequenceRun::new(b.guid, "ILLUMINA", "WGS")
             })
             .await
             .unwrap();

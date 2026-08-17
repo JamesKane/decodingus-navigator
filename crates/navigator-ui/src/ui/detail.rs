@@ -2639,17 +2639,10 @@ impl NavigatorApp {
                 .clicked()
             {
                 let platform = opt(&self.forms.run_platform).unwrap_or_else(|| "UNKNOWN".into());
-                let _ = self.tx.send(Command::AddRun(NewSequenceRun {
-                    biosample_guid: guid,
-                    platform_name: platform,
-                    instrument_model: None,
-                    test_type: self.forms.run_test_type.clone(),
-                    library_layout: None,
-                    total_reads: None,
-                    pf_reads_aligned: None,
-                    mean_read_length: None,
-                    mean_insert_size: None,
-                }));
+                let test_type = self.forms.run_test_type.clone();
+                let _ = self
+                    .tx
+                    .send(Command::AddRun(NewSequenceRun::new(guid, platform, test_type)));
                 self.forms.run_platform.clear();
             }
         });

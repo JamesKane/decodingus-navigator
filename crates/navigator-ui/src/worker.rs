@@ -3739,31 +3739,15 @@ mod tests {
         let app = app().await;
         let b = app.add_biosample(None, "HG002", None, None).await.unwrap();
         let run = app
-            .record_sequence_run(NewSequenceRun {
-                biosample_guid: b.guid,
-                platform_name: "ILLUMINA".into(),
-                instrument_model: None,
-                test_type: "WGS".into(),
-                library_layout: None,
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
-            })
+            .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
             .await
             .unwrap();
         let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../navigator-analysis/tests/fixtures");
         let aln = app
             .record_alignment(NewAlignment {
-                sequence_run_id: run.id,
-                reference_build: "chrM".into(),
-                aligner: "synthetic".into(),
-                variant_caller: None,
                 bam_path: Some(fixtures.join("coverage.bam").to_string_lossy().into_owned()),
                 reference_path: Some(fixtures.join("ref.fa").to_string_lossy().into_owned()),
-                content_sha256: None,
-                derived_from_alignment_id: None,
-                derivation: None,
+                ..NewAlignment::new(run.id, "chrM", "synthetic")
             })
             .await
             .unwrap();
@@ -3914,17 +3898,7 @@ mod tests {
         // add a run -> RunsChanged(sample)
         match handle(
             &app,
-            Command::AddRun(NewSequenceRun {
-                biosample_guid: guid,
-                platform_name: "ILLUMINA".into(),
-                instrument_model: None,
-                test_type: "WGS".into(),
-                library_layout: None,
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
-            }),
+            Command::AddRun(NewSequenceRun::new(guid, "ILLUMINA", "WGS")),
             &CancelToken::none(),
         )
         .await
@@ -3940,17 +3914,7 @@ mod tests {
         // add an alignment -> AlignmentsChanged(run)
         match handle(
             &app,
-            Command::AddAlignment(NewAlignment {
-                sequence_run_id: run_id,
-                reference_build: "chm13v2.0".into(),
-                aligner: "bwa".into(),
-                variant_caller: None,
-                bam_path: None,
-                reference_path: None,
-                content_sha256: None,
-                derived_from_alignment_id: None,
-                derivation: None,
-            }),
+            Command::AddAlignment(NewAlignment::new(run_id, "chm13v2.0", "bwa")),
             &CancelToken::none(),
         )
         .await
@@ -4020,17 +3984,7 @@ mod tests {
         // adding dependent data makes delete refuse with a conflict
         match handle(
             &app,
-            Command::AddRun(NewSequenceRun {
-                biosample_guid: guid,
-                platform_name: "ILLUMINA".into(),
-                instrument_model: None,
-                test_type: "WGS".into(),
-                library_layout: None,
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
-            }),
+            Command::AddRun(NewSequenceRun::new(guid, "ILLUMINA", "WGS")),
             &CancelToken::none(),
         )
         .await
@@ -4302,15 +4256,8 @@ mod tests {
         match handle(
             &app,
             Command::AddRun(NewSequenceRun {
-                biosample_guid: guid,
-                platform_name: "ILLUMINA".into(),
-                instrument_model: None,
-                test_type: "WGS".into(),
-                library_layout: None,
                 total_reads: Some(1_000),
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
+                ..NewSequenceRun::new(guid, "ILLUMINA", "WGS")
             }),
             &CancelToken::none(),
         )
@@ -4357,17 +4304,7 @@ mod tests {
 
         match handle(
             &app,
-            Command::AddAlignment(NewAlignment {
-                sequence_run_id: run.id,
-                reference_build: "grch38".into(),
-                aligner: "bwa".into(),
-                variant_caller: None,
-                bam_path: None,
-                reference_path: None,
-                content_sha256: None,
-                derived_from_alignment_id: None,
-                derivation: None,
-            }),
+            Command::AddAlignment(NewAlignment::new(run.id, "grch38", "bwa")),
             &CancelToken::none(),
         )
         .await

@@ -74,15 +74,12 @@ async fn foreign_keys_are_enforced() {
 
     // sequence_run referencing a non-existent biosample must fail.
     let run = NewSequenceRun {
-        biosample_guid: SampleGuid(Uuid::new_v4()),
-        platform_name: "ILLUMINA".into(),
-        instrument_model: None,
-        test_type: "WGS".into(),
         library_layout: Some("PAIRED".into()),
         total_reads: Some(8_000_000),
         pf_reads_aligned: Some(7_956_881),
         mean_read_length: Some(148.0),
         mean_insert_size: Some(580.7),
+        ..NewSequenceRun::new(SampleGuid(Uuid::new_v4()), "ILLUMINA", "WGS")
     };
     assert!(sequence_run::create(s.pool(), &run).await.is_err());
 }
@@ -96,15 +93,13 @@ async fn run_alignment_chain_persists() {
     let run = sequence_run::create(
         s.pool(),
         &NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
             instrument_model: Some("HiSeq 2500".into()),
-            test_type: "WGS".into(),
             library_layout: Some("PAIRED".into()),
             total_reads: Some(8_000_000),
             pf_reads_aligned: Some(7_956_881),
             mean_read_length: Some(148.0),
             mean_insert_size: Some(580.7),
+            ..NewSequenceRun::new(b.guid, "ILLUMINA", "WGS")
         },
     )
     .await
@@ -169,15 +164,8 @@ async fn run_alignment_chain_persists() {
     let aln = alignment::create(
         s.pool(),
         &NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "bwa-mem 0.7.19".into(),
             variant_caller: Some("navigator-haploid".into()),
-            bam_path: None,
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "chm13v2.0", "bwa-mem 0.7.19")
         },
     )
     .await
@@ -243,38 +231,12 @@ async fn clear_data_resets_subject_but_keeps_the_biosample() {
     let s = store().await;
     let b = sample(None);
     biosample::create(s.pool(), &b).await.unwrap();
-    let run = sequence_run::create(
-        s.pool(),
-        &NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        },
-    )
-    .await
-    .unwrap();
-    let aln = alignment::create(
-        s.pool(),
-        &NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "bwa".into(),
-            variant_caller: None,
-            bam_path: None,
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
-        },
-    )
-    .await
-    .unwrap();
+    let run = sequence_run::create(s.pool(), &NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
+        .await
+        .unwrap();
+    let aln = alignment::create(s.pool(), &NewAlignment::new(run.id, "chm13v2.0", "bwa"))
+        .await
+        .unwrap();
     artifact::upsert(
         s.pool(),
         aln.id,
@@ -337,38 +299,12 @@ async fn artifact_upsert_replaces_same_version_and_keeps_distinct_versions() {
     let s = store().await;
     let b = sample(None);
     biosample::create(s.pool(), &b).await.unwrap();
-    let run = sequence_run::create(
-        s.pool(),
-        &NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        },
-    )
-    .await
-    .unwrap();
-    let aln = alignment::create(
-        s.pool(),
-        &NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "bwa".into(),
-            variant_caller: None,
-            bam_path: None,
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
-        },
-    )
-    .await
-    .unwrap();
+    let run = sequence_run::create(s.pool(), &NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
+        .await
+        .unwrap();
+    let aln = alignment::create(s.pool(), &NewAlignment::new(run.id, "chm13v2.0", "bwa"))
+        .await
+        .unwrap();
 
     // Same (kind, version) upserts in place.
     artifact::upsert(
@@ -426,38 +362,12 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     let s = store().await;
     let b = sample(None);
     biosample::create(s.pool(), &b).await.unwrap();
-    let run = sequence_run::create(
-        s.pool(),
-        &NewSequenceRun {
-            biosample_guid: b.guid,
-            platform_name: "ILLUMINA".into(),
-            instrument_model: None,
-            test_type: "WGS".into(),
-            library_layout: None,
-            total_reads: None,
-            pf_reads_aligned: None,
-            mean_read_length: None,
-            mean_insert_size: None,
-        },
-    )
-    .await
-    .unwrap();
-    let aln = alignment::create(
-        s.pool(),
-        &NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "bwa".into(),
-            variant_caller: None,
-            bam_path: None,
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
-        },
-    )
-    .await
-    .unwrap();
+    let run = sequence_run::create(s.pool(), &NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
+        .await
+        .unwrap();
+    let aln = alignment::create(s.pool(), &NewAlignment::new(run.id, "chm13v2.0", "bwa"))
+        .await
+        .unwrap();
     artifact::upsert(
         s.pool(),
         aln.id,
@@ -473,22 +383,9 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     .unwrap();
 
     // Deleting a single alignment removes its artifacts but leaves the run.
-    let aln2 = alignment::create(
-        s.pool(),
-        &NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "grch38".into(),
-            aligner: "bwa".into(),
-            variant_caller: None,
-            bam_path: None,
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
-        },
-    )
-    .await
-    .unwrap();
+    let aln2 = alignment::create(s.pool(), &NewAlignment::new(run.id, "grch38", "bwa"))
+        .await
+        .unwrap();
     artifact::upsert(
         s.pool(),
         aln2.id,
@@ -564,34 +461,14 @@ async fn set_sequence_run_reparents_an_alignment() {
     let b = sample(None);
     biosample::create(s.pool(), &b).await.unwrap();
     let mk_run = |layout: &str| NewSequenceRun {
-        biosample_guid: b.guid,
-        platform_name: "ILLUMINA".into(),
-        instrument_model: None,
-        test_type: "WGS".into(),
         library_layout: Some(layout.to_string()),
-        total_reads: None,
-        pf_reads_aligned: None,
-        mean_read_length: None,
-        mean_insert_size: None,
+        ..NewSequenceRun::new(b.guid, "ILLUMINA", "WGS")
     };
     let primary = sequence_run::create(s.pool(), &mk_run("A")).await.unwrap();
     let secondary = sequence_run::create(s.pool(), &mk_run("B")).await.unwrap();
-    let aln = alignment::create(
-        s.pool(),
-        &NewAlignment {
-            sequence_run_id: secondary.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "bwa".into(),
-            variant_caller: None,
-            bam_path: None,
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
-        },
-    )
-    .await
-    .unwrap();
+    let aln = alignment::create(s.pool(), &NewAlignment::new(secondary.id, "chm13v2.0", "bwa"))
+        .await
+        .unwrap();
     artifact::upsert(
         s.pool(),
         aln.id,
@@ -839,40 +716,14 @@ async fn bulk_loaders_match_the_per_item_queries() {
         let b = sample(None);
         biosample::create(s.pool(), &b).await.unwrap();
         guids.push(b.guid);
-        let run = sequence_run::create(
-            s.pool(),
-            &NewSequenceRun {
-                biosample_guid: b.guid,
-                platform_name: "ILLUMINA".into(),
-                instrument_model: None,
-                test_type: "WGS".into(),
-                library_layout: None,
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
-            },
-        )
-        .await
-        .unwrap();
-        // Two alignments on the middle subject, so grouping by subject is actually exercised.
-        for _ in 0..if i == 1 { 2 } else { 1 } {
-            let aln = alignment::create(
-                s.pool(),
-                &NewAlignment {
-                    sequence_run_id: run.id,
-                    reference_build: "chm13v2.0".into(),
-                    aligner: "bwa".into(),
-                    variant_caller: None,
-                    bam_path: None,
-                    reference_path: None,
-                    content_sha256: None,
-                    derived_from_alignment_id: None,
-                    derivation: None,
-                },
-            )
+        let run = sequence_run::create(s.pool(), &NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
             .await
             .unwrap();
+        // Two alignments on the middle subject, so grouping by subject is actually exercised.
+        for _ in 0..if i == 1 { 2 } else { 1 } {
+            let aln = alignment::create(s.pool(), &NewAlignment::new(run.id, "chm13v2.0", "bwa"))
+                .await
+                .unwrap();
             for kind in ["coverage", "sex"] {
                 artifact::upsert(
                     s.pool(),

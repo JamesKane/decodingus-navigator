@@ -67,13 +67,10 @@ impl App {
             }
         }
         let b = Biosample {
-            guid: SampleGuid(Uuid::new_v4()),
             sample_accession,
-            donor_identifier: donor_identifier.into(),
-            description: None,
-            center_name: None,
             sex,
             project_id,
+            ..Biosample::new(SampleGuid(Uuid::new_v4()), donor_identifier)
         };
         biosample::create(self.store.pool(), &b).await?;
         Ok(b)

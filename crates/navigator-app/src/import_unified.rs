@@ -128,15 +128,9 @@ impl App {
 
         let run = self
             .record_sequence_run(NewSequenceRun {
-                biosample_guid,
-                platform_name,
                 instrument_model,
-                test_type,
                 library_layout: stats.as_ref().and_then(|s| s.library_layout.clone()),
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
+                ..NewSequenceRun::new(biosample_guid, platform_name, test_type)
             })
             .await?;
 
@@ -368,18 +362,8 @@ impl App {
         {
             Some(r) => r,
             None => {
-                self.record_sequence_run(NewSequenceRun {
-                    biosample_guid,
-                    platform_name: "UNKNOWN".into(),
-                    instrument_model: None,
-                    test_type: "WGS".into(),
-                    library_layout: None,
-                    total_reads: None,
-                    pf_reads_aligned: None,
-                    mean_read_length: None,
-                    mean_insert_size: None,
-                })
-                .await?
+                self.record_sequence_run(NewSequenceRun::new(biosample_guid, "UNKNOWN", "WGS"))
+                    .await?
             }
         };
 
@@ -775,18 +759,8 @@ impl App {
         {
             Some(r) => r,
             None => {
-                self.record_sequence_run(NewSequenceRun {
-                    biosample_guid: biosample.guid,
-                    platform_name: "UNKNOWN".into(),
-                    instrument_model: None,
-                    test_type: "WGS".into(),
-                    library_layout: None,
-                    total_reads: None,
-                    pf_reads_aligned: None,
-                    mean_read_length: None,
-                    mean_insert_size: None,
-                })
-                .await?
+                self.record_sequence_run(NewSequenceRun::new(biosample.guid, "UNKNOWN", "WGS"))
+                    .await?
             }
         };
 
