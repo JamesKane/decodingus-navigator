@@ -151,9 +151,10 @@ pub async fn clear_home_project(pool: &SqlitePool, project_id: i64) -> Result<u6
 /// project memberships, and MDKA genealogy) intact. The "reset this subject" maintenance op —
 /// used both by the explicit *Clear data* action and as the pre-step of [`delete`] (so a delete
 /// can never orphan rows). Removes: sequencing runs → alignments → cached analysis artifacts
-/// (and unlinks source files); Y/mt haplogroup calls + genome consensus + chromosome painting;
-/// reconciliation overrides + audit log; ancestry results; IBD exchange results; mtDNA sequences;
-/// and chip / STR / variant profiles (with their child rows). Idempotent.
+/// (and unlinks source files); Y/mt haplogroup calls + genome consensus; every signature-keyed
+/// cache ([`crate::sig_cache::ALL`] — painting, ROH, both archaic tiers); reconciliation
+/// overrides + audit log; ancestry results; IBD exchange results; mtDNA sequences; and chip /
+/// STR / variant profiles (with their child rows). Idempotent.
 pub async fn clear_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), StoreError> {
     let g = guid.0.to_string();
     let mut tx = pool.begin().await?;
@@ -194,11 +195,14 @@ pub async fn clear_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), Store
     .bind(&g)
     .execute(&mut *tx)
     .await?;
-    // Biosample-keyed derived + imported tables (the biosample row itself is kept).
+    // Biosample-keyed derived + imported tables (the biosample row itself is kept). The
+    // signature-keyed caches come from `sig_cache::ALL` rather than being listed here, because when
+    // they were listed by hand this loop only ever named `consensus_painting` — ROH and both
+    // archaic caches survived a "clear this subject's data", still keyed to a consensus signature
+    // that no longer existed.
     for table in [
         "haplogroup_call",
         "consensus_profile",
-        "consensus_painting",
         "reconciliation_override",
         "reconciliation_audit",
         "ancestry_result",
@@ -207,7 +211,10 @@ pub async fn clear_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), Store
         "str_profile",
         "variant_set",
         "chip_profile",
-    ] {
+    ]
+    .into_iter()
+    .chain(crate::sig_cache::ALL.iter().map(|c| c.table()))
+    {
         sqlx::query(&format!("DELETE FROM {table} WHERE biosample_guid = ?"))
             .bind(&g)
             .execute(&mut *tx)

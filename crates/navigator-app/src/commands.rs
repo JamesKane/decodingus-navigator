@@ -375,9 +375,11 @@ impl App {
         for dna in ["Y", "Mt", "Auto"] {
             consensus_profile::delete(pool, biosample, dna).await?;
         }
-        consensus_painting::delete(pool, biosample).await?;
-        consensus_roh::delete(pool, biosample).await?;
-        consensus_archaic::delete(pool, biosample).await?;
+        // Every signature-keyed cache, from the one list — this used to name three of the four by
+        // hand and leave the Tier-B archaic segments behind, still keyed to a deleted alignment.
+        for cache in sig_cache::ALL {
+            cache.delete(pool, biosample).await?;
+        }
         // The audit log describes the consensus we just wiped; clear it so deleting the last run
         // can't leave a stale RUN_RECORDED history pointing at gone alignments. It is re-appended
         // when the consensus is next rebuilt from any remaining calls.

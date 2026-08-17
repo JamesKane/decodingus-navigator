@@ -2473,7 +2473,7 @@ impl App {
     /// DecodingUs Y-DNA tree-with-variants JSON from our AppView (`/api/v1/y-tree/full`),
     /// host from [`decodingus_appview_url`]. On-disk cached like the FTDNA tree.
     pub(crate) async fn fetch_decodingus_y_tree(&self) -> Result<String, AppError> {
-        let url = format!("{}/api/v1/y-tree/full", decodingus_appview_url());
+        let url = self.appview_url("y-tree/full");
         self.fetch_tree(&url, "decodingus-ytree.json").await
     }
 
@@ -2483,7 +2483,7 @@ impl App {
     /// (~577, plus local indels), so callers must remap onto rCRS via [`mt_tree_rcrs`]. On-disk
     /// cached like the other trees.
     pub(crate) async fn fetch_decodingus_mt_tree(&self) -> Result<String, AppError> {
-        let url = format!("{}/api/v1/mt-tree/full", decodingus_appview_url());
+        let url = self.appview_url("mt-tree/full");
         self.fetch_tree(&url, "decodingus-mttree.json").await
     }
 
@@ -2564,7 +2564,7 @@ impl App {
     /// cached like the trees (7-day TTL + offline fallback). Looked up locally so a batch import
     /// makes one network call, not one per sample.
     async fn fetch_lab_instruments(&self) -> Result<Vec<SequencerLabInfo>, AppError> {
-        let url = format!("{}/api/v1/sequencer/lab-instruments", decodingus_appview_url());
+        let url = self.appview_url("sequencer/lab-instruments");
         let json = self.fetch_tree(&url, "sequencer-lab-instruments.json").await?;
         serde_json::from_str(&json).map_err(|e| AppError::Import(format!("parsing lab-instruments: {e}")))
     }
@@ -3324,13 +3324,13 @@ impl App {
         let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
             return Ok(None);
         };
-        let Some(p) = consensus_painting::get(self.store.pool(), biosample_guid).await? else {
+        let Some(p) = sig_cache::PAINTING.get(self.store.pool(), biosample_guid).await? else {
             return Ok(None);
         };
-        if p.consensus_sig != row.last_reconciled_at {
+        if p.sig != row.last_reconciled_at {
             return Ok(None); // painted from an older consensus — stale
         }
-        Ok(Some(parse_painting_json(&p.segments)?))
+        Ok(Some(parse_painting_json(&p.payload)?))
     }
 
     /// Paint each chromosome with local ancestry from the subject's **consensus** — no BAM walk. The
@@ -3448,14 +3448,15 @@ impl App {
         };
 
         // Cache keyed to the consensus signature so it's reused until the consensus is rebuilt.
-        consensus_painting::upsert(
-            self.store.pool(),
-            biosample_guid,
-            &sig,
-            &serde_json::to_string(&result)?,
-            &Utc::now().to_rfc3339(),
-        )
-        .await?;
+        sig_cache::PAINTING
+            .upsert(
+                self.store.pool(),
+                biosample_guid,
+                &sig,
+                &serde_json::to_string(&result)?,
+                &Utc::now().to_rfc3339(),
+            )
+            .await?;
         Ok(result)
     }
 
@@ -3538,11 +3539,11 @@ impl App {
         let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
             return Ok(None);
         };
-        let Some(r) = consensus_roh::get(self.store.pool(), biosample_guid).await? else {
+        let Some(r) = sig_cache::ROH.get(self.store.pool(), biosample_guid).await? else {
             return Ok(None);
         };
-        if r.consensus_sig == row.last_reconciled_at {
-            Ok(Some(serde_json::from_str(&r.roh)?))
+        if r.sig == row.last_reconciled_at {
+            Ok(Some(serde_json::from_str(&r.payload)?))
         } else {
             Ok(None) // computed from an older consensus — stale
         }
@@ -3561,9 +3562,9 @@ impl App {
         let sig = row.last_reconciled_at.clone();
 
         // Cache hit (same consensus signature) → return without recomputing.
-        if let Some(r) = consensus_roh::get(self.store.pool(), biosample_guid).await? {
-            if r.consensus_sig == sig {
-                return Ok(serde_json::from_str(&r.roh)?);
+        if let Some(r) = sig_cache::ROH.get(self.store.pool(), biosample_guid).await? {
+            if r.sig == sig {
+                return Ok(serde_json::from_str(&r.payload)?);
             }
         }
 
@@ -3583,14 +3584,15 @@ impl App {
         .await?;
 
         // Cache keyed to the consensus signature so it's reused until the consensus is rebuilt.
-        consensus_roh::upsert(
-            self.store.pool(),
-            biosample_guid,
-            &sig,
-            &serde_json::to_string(&result)?,
-            &Utc::now().to_rfc3339(),
-        )
-        .await?;
+        sig_cache::ROH
+            .upsert(
+                self.store.pool(),
+                biosample_guid,
+                &sig,
+                &serde_json::to_string(&result)?,
+                &Utc::now().to_rfc3339(),
+            )
+            .await?;
         Ok(result)
     }
 
@@ -3674,15 +3676,18 @@ impl App {
         if !crate::ARCHAIC_SEGMENTS_ENABLED {
             return Ok(None);
         }
-        let Some(row) = consensus_archaic_segments::get(self.store.pool(), biosample_guid).await? else {
+        let Some(row) = sig_cache::ARCHAIC_SEGMENTS
+            .get(self.store.pool(), biosample_guid)
+            .await?
+        else {
             return Ok(None);
         };
         let Some(aln) = self.alignment_with_diploid_calls(biosample_guid).await? else {
             return Ok(None);
         };
         let contigs = crate::called_diploid_contigs(&self.store, aln).await?;
-        if row.source_sig == archaic_segment_sig(aln, &contigs) {
-            Ok(Some(serde_json::from_str(&row.segments)?))
+        if row.sig == archaic_segment_sig(aln, &contigs) {
+            Ok(Some(serde_json::from_str(&row.payload)?))
         } else {
             Ok(None)
         }
@@ -3735,9 +3740,12 @@ impl App {
         // Computed from the contigs actually cached, so a later genome-wide pass invalidates a
         // partial result instead of inheriting it.
         let sig = archaic_segment_sig(aln, &crate::called_diploid_contigs(&self.store, aln).await?);
-        if let Some(row) = consensus_archaic_segments::get(self.store.pool(), biosample_guid).await? {
-            if row.source_sig == sig {
-                return Ok(serde_json::from_str(&row.segments)?);
+        if let Some(row) = sig_cache::ARCHAIC_SEGMENTS
+            .get(self.store.pool(), biosample_guid)
+            .await?
+        {
+            if row.sig == sig {
+                return Ok(serde_json::from_str(&row.payload)?);
             }
         }
 
@@ -3833,14 +3841,15 @@ impl App {
         })
         .await??;
 
-        consensus_archaic_segments::upsert(
-            self.store.pool(),
-            biosample_guid,
-            &sig,
-            &serde_json::to_string(&result)?,
-            &Utc::now().to_rfc3339(),
-        )
-        .await?;
+        sig_cache::ARCHAIC_SEGMENTS
+            .upsert(
+                self.store.pool(),
+                biosample_guid,
+                &sig,
+                &serde_json::to_string(&result)?,
+                &Utc::now().to_rfc3339(),
+            )
+            .await?;
         Ok(result)
     }
 
@@ -4013,13 +4022,13 @@ impl App {
         let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
             return Ok(None);
         };
-        let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? else {
+        let Some(r) = sig_cache::ARCHAIC.get(self.store.pool(), biosample_guid).await? else {
             return Ok(None);
         };
         // Prefix match: the stored sig is "<consensus>:<panel16>", so a consensus change or a panel
         // rebuild both read as stale.
-        if r.consensus_sig.starts_with(&row.last_reconciled_at) {
-            Ok(Some(serde_json::from_str(&r.archaic)?))
+        if r.sig.starts_with(&row.last_reconciled_at) {
+            Ok(Some(serde_json::from_str(&r.payload)?))
         } else {
             Ok(None) // computed from an older consensus — stale
         }
@@ -4058,9 +4067,9 @@ impl App {
         let panel_fingerprint = navigator_analysis::manifest::sha256_hex(&bytes);
         let sig = format!("{}:{}", row.last_reconciled_at, &panel_fingerprint[..16]);
 
-        if let Some(r) = consensus_archaic::get(self.store.pool(), biosample_guid).await? {
-            if r.consensus_sig == sig {
-                return Ok(serde_json::from_str(&r.archaic)?);
+        if let Some(r) = sig_cache::ARCHAIC.get(self.store.pool(), biosample_guid).await? {
+            if r.sig == sig {
+                return Ok(serde_json::from_str(&r.payload)?);
             }
         }
         let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
@@ -4106,14 +4115,15 @@ impl App {
             result.cohort = Some(cohort);
         }
 
-        consensus_archaic::upsert(
-            self.store.pool(),
-            biosample_guid,
-            &sig,
-            &serde_json::to_string(&result)?,
-            &Utc::now().to_rfc3339(),
-        )
-        .await?;
+        sig_cache::ARCHAIC
+            .upsert(
+                self.store.pool(),
+                biosample_guid,
+                &sig,
+                &serde_json::to_string(&result)?,
+                &Utc::now().to_rfc3339(),
+            )
+            .await?;
         Ok(result)
     }
 
