@@ -131,7 +131,7 @@ impl App {
             #[serde(default)]
             items: Vec<SocialThreadSummary>,
         }
-        let r: Resp = self.social_get("social/threads", messages::poll, &[]).await?;
+        let r: Resp = self.appview_get_signed("social/threads", messages::poll, &[]).await?;
         Ok(r.items)
     }
 
@@ -144,7 +144,7 @@ impl App {
         }
         let path = format!("social/thread/{conversation_id}");
         let r: Resp = self
-            .social_get(&path, |d, ts| messages::thread_read(d, conversation_id, ts), &[])
+            .appview_get_signed(&path, |d, ts| messages::thread_read(d, conversation_id, ts), &[])
             .await?;
         Ok(r.items)
     }
@@ -176,7 +176,7 @@ impl App {
         if let Some(s) = subject {
             b["subject"] = serde_json::json!(s);
         }
-        let v = self.social_post("social/thread", b).await?;
+        let v = self.appview_post("social/thread", b).await?;
         Ok(v.get("conversation_id")
             .and_then(|x| x.as_str())
             .unwrap_or_default()
@@ -187,7 +187,7 @@ impl App {
 
     /// Read the community feed: announcements + community posts + federated mirror.
     pub async fn community_feed(&self) -> Result<FeedView, AppError> {
-        self.social_get("social/feed", messages::poll, &[]).await
+        self.appview_get_signed("social/feed", messages::poll, &[]).await
     }
 
     /// Post to the community feed (optionally tagged with a `topic`, or as a reply to `parent`);
@@ -210,7 +210,7 @@ impl App {
         if let Some(p) = parent {
             b["parent_post_id"] = serde_json::json!(p);
         }
-        let v = self.social_post("social/post", b).await?;
+        let v = self.appview_post("social/post", b).await?;
         Ok(v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string())
     }
 
@@ -247,7 +247,8 @@ impl App {
 
     /// The signed-in account's notifications + unread count.
     pub async fn notifications(&self) -> Result<NotificationList, AppError> {
-        self.social_get("social/notifications", messages::poll, &[]).await
+        self.appview_get_signed("social/notifications", messages::poll, &[])
+            .await
     }
 
     /// Mark one notification read (`id = Some`) or all (`id = None`); returns how many were marked.
@@ -260,62 +261,8 @@ impl App {
         if let Some(i) = id {
             b["id"] = serde_json::json!(i);
         }
-        let v = self.social_post("social/notifications/read", b).await?;
+        let v = self.appview_post("social/notifications/read", b).await?;
         Ok(v.get("marked").and_then(|x| x.as_i64()).unwrap_or(0))
-    }
-
-    // ---- transport helpers (mirror the IBD exchange client) ----------------
-
-    /// POST a JSON body to a `/api/v1/<…>` endpoint, mapping non-2xx to an AppView error. Shared by
-    /// the social client and the recruitment Edge client (`recruitment.rs`).
-    pub(crate) async fn social_post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, AppError> {
-        let url = format!("{}/api/v1/{path}", decodingus_appview_url());
-        let resp = self
-            .auth
-            .http
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
-        if !resp.status().is_success() {
-            return Err(appview_status_error(path, resp).await);
-        }
-        resp.json()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
-    }
-
-    /// Device-key-signed GET to a `/api/v1/<…>` endpoint. `build_msg(did, ts)` produces the
-    /// canonical string to sign (poll or thread-read); `did`/`ts`/`sig` + `extra` go on the query.
-    /// Shared by the social client and the recruitment Edge client (`recruitment.rs`).
-    pub(crate) async fn social_get<T, F>(&self, path: &str, build_msg: F, extra: &[(&str, &str)]) -> Result<T, AppError>
-    where
-        T: serde::de::DeserializeOwned,
-        F: Fn(&str, i64) -> String,
-    {
-        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
-        let dev = self.ensure_device_key().await?;
-        let url = format!("{}/api/v1/{path}", decodingus_appview_url());
-        let ts = Utc::now().timestamp();
-        let sig = dev.sign(&build_msg(&did, ts));
-        let ts_s = ts.to_string();
-        let mut query: Vec<(&str, &str)> = vec![("did", did.as_str()), ("ts", ts_s.as_str()), ("sig", sig.as_str())];
-        query.extend_from_slice(extra);
-        let resp = self
-            .auth
-            .http
-            .get(&url)
-            .query(&query)
-            .send()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
-        if !resp.status().is_success() {
-            return Err(appview_status_error(path, resp).await);
-        }
-        resp.json()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
     }
 }
 

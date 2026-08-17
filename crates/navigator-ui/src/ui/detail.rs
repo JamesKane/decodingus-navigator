@@ -1771,17 +1771,7 @@ impl NavigatorApp {
                 }
             }
             if self.analyzing {
-                let requested = self.cancelling;
-                let label = if requested {
-                    self.tr("analysis.cancelling")
-                } else {
-                    self.tr("common.cancel")
-                };
-                if ui.add_enabled(!requested, egui::Button::new(label)).clicked() {
-                    self.cancelling = true;
-                    let _ = self.tx.send(Command::CancelAnalysis);
-                    self.status = self.tr("analysis.cancelling").to_string();
-                }
+                self.cancel_button(ui);
             }
             if ui.button(self.tr("projects.exportCsv")).clicked() {
                 let csv = navigator_app::report_csv(&self.project_report);
@@ -2649,17 +2639,10 @@ impl NavigatorApp {
                 .clicked()
             {
                 let platform = opt(&self.forms.run_platform).unwrap_or_else(|| "UNKNOWN".into());
-                let _ = self.tx.send(Command::AddRun(NewSequenceRun {
-                    biosample_guid: guid,
-                    platform_name: platform,
-                    instrument_model: None,
-                    test_type: self.forms.run_test_type.clone(),
-                    library_layout: None,
-                    total_reads: None,
-                    pf_reads_aligned: None,
-                    mean_read_length: None,
-                    mean_insert_size: None,
-                }));
+                let test_type = self.forms.run_test_type.clone();
+                let _ = self
+                    .tx
+                    .send(Command::AddRun(NewSequenceRun::new(guid, platform, test_type)));
                 self.forms.run_platform.clear();
             }
         });

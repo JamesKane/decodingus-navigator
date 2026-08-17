@@ -16,6 +16,44 @@ use navigator_app::{AnalysisStep, App, DnaType};
 use navigator_domain::du_domain::ids::SampleGuid;
 use navigator_domain::workspace::NewProject;
 
+/// The exit status a failed CLI step ends its command with.
+///
+/// Each `navigator <subcommand>` runs as a function returning the process exit code, so `?` is not
+/// available and every fallible step needs its error turned into a code. Two kinds of error reach
+/// that point and they differ only in whether the message has been printed yet: the helpers in this
+/// module print their own and hand back the code, while [`App`] returns an `AppError` nobody has
+/// shown the user. This is the seam between them, so [`cli_try!`] needs only one arm.
+trait ExitCode {
+    fn exit_code(self) -> i32;
+}
+
+impl ExitCode for i32 {
+    fn exit_code(self) -> i32 {
+        self
+    }
+}
+
+impl ExitCode for navigator_app::AppError {
+    fn exit_code(self) -> i32 {
+        eprintln!("error: {self}");
+        1
+    }
+}
+
+/// Unwrap a CLI step, or end the command with the exit status its failure implies.
+///
+/// This is `?` for a function returning `i32` instead of `Result`. It replaced ~50 hand-written
+/// four-line `match` blocks, which between them were most of what stood in the way of reading a
+/// command as the short sequence of steps it actually is.
+macro_rules! cli_try {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(e) => return ExitCode::exit_code(e),
+        }
+    };
+}
+
 #[derive(Parser)]
 #[command(
     name = "navigator",
@@ -527,21 +565,12 @@ pub fn run(command: Command) -> i32 {
 
 /// Resolve subjects against the AppView samples API and attach the authoritative INSDC accessions.
 async fn backfill_accessions(args: AccessionArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
-    let r = match app
-        .backfill_accessions(project_id, args.apply, args.all, args.limit)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => return report(e),
-    };
+    let app = cli_try!(open(args.db).await);
+    let project_id = cli_try!(resolve_project_filter(&app, args.project.as_ref()).await);
+    let r = cli_try!(
+        app.backfill_accessions(project_id, args.apply, args.all, args.limit)
+            .await
+    );
     if args.json {
         println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
     } else {
@@ -573,18 +602,9 @@ async fn backfill_accessions(args: AccessionArgs) -> i32 {
 
 /// Attach public-catalog external ids derivable from provenance across the workspace (or a project).
 async fn backfill_catalog_ids(args: CatalogArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
-    let r = match app.backfill_catalog_ids(project_id, args.apply).await {
-        Ok(r) => r,
-        Err(e) => return report(e),
-    };
+    let app = cli_try!(open(args.db).await);
+    let project_id = cli_try!(resolve_project_filter(&app, args.project.as_ref()).await);
+    let r = cli_try!(app.backfill_catalog_ids(project_id, args.apply).await);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
     } else {
@@ -609,10 +629,7 @@ async fn backfill_catalog_ids(args: CatalogArgs) -> i32 {
 
 /// Sign in via OAuth (browser + loopback callback) and persist the session for later subcommands.
 async fn login(args: LoginArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
     eprintln!("Opening browser to sign in as {}…", args.handle);
     match app.login(&args.handle).await {
         Ok(did) => {
@@ -625,10 +642,7 @@ async fn login(args: LoginArgs) -> i32 {
 
 /// Delete orphaned alignment records from the signed-in account's PDS (dry-run unless `--apply`).
 async fn prune_orphans(args: PruneArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
     let report = match app.prune_orphan_alignments(args.apply).await {
         Ok(r) => r,
         Err(navigator_app::AppError::NotAuthenticated) => {
@@ -663,19 +677,10 @@ async fn prune_orphans(args: PruneArgs) -> i32 {
 
 /// Backfill the standardized-test-label read-profile fields across the workspace (or one project).
 async fn backfill_profiles(args: BackfillArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
+    let project_id = cli_try!(resolve_project_filter(&app, args.project.as_ref()).await);
 
-    let r = match app.backfill_read_profiles(project_id, args.rescan).await {
-        Ok(r) => r,
-        Err(e) => return report(e),
-    };
+    let r = cli_try!(app.backfill_read_profiles(project_id, args.rescan).await);
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
@@ -710,20 +715,11 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
         eprintln!("error: --dry-run and --include-unknown only apply with --stale-tree");
         return 2;
     }
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
 
-    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
+    let project_id = cli_try!(resolve_project_filter(&app, args.project.as_ref()).await);
 
-    let bios = match app.list_all_biosamples().await {
-        Ok(v) => v,
-        Err(e) => return report(e),
-    };
+    let bios = cli_try!(app.list_all_biosamples().await);
 
     // The staleness selector: which subjects were placed against a tree other than today's. Held as
     // guids rather than folded into `wanted` because that set is matched against donor identifiers
@@ -732,14 +728,8 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
         // Two independent symptoms of the same thing, unioned: a *source call* stamped with another
         // tree, and a *derived consensus* naming a branch this tree does not carry. The second can
         // be true while every call beneath it is current, so neither selector subsumes the other.
-        let by_fingerprint = match app.subjects_placed_against_another_tree(args.include_unknown).await {
-            Ok(v) => v,
-            Err(e) => return report(e),
-        };
-        let off_tree = match app.subjects_labelled_off_tree().await {
-            Ok(v) => v,
-            Err(e) => return report(e),
-        };
+        let by_fingerprint = cli_try!(app.subjects_placed_against_another_tree(args.include_unknown).await);
+        let off_tree = cli_try!(app.subjects_labelled_off_tree().await);
         let mut set: std::collections::HashSet<SampleGuid> = by_fingerprint.iter().copied().collect();
         let also = off_tree.iter().filter(|g| !set.contains(g)).count();
         set.extend(off_tree);
@@ -863,20 +853,11 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
 }
 
 async fn reingest_external(args: ReingestArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
 
-    let project_id = match resolve_project_filter(&app, args.project.as_ref()).await {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
+    let project_id = cli_try!(resolve_project_filter(&app, args.project.as_ref()).await);
 
-    let bios = match app.list_all_biosamples().await {
-        Ok(v) => v,
-        Err(e) => return report(e),
-    };
+    let bios = cli_try!(app.list_all_biosamples().await);
 
     let (mut subjects, mut y_total, mut mt_total, mut failed) = (0usize, 0usize, 0usize, 0usize);
     for b in &bios {
@@ -909,22 +890,9 @@ async fn reingest_external(args: ReingestArgs) -> i32 {
 }
 
 async fn compare_callers(args: ShowArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let guid = match find_subject(&app, &args.subject).await {
-        Ok(Some(g)) => g,
-        Ok(None) => {
-            eprintln!("error: no subject with identifier \"{}\"", args.subject);
-            return 1;
-        }
-        Err(c) => return c,
-    };
-    let runs = match app.list_sequence_runs(guid).await {
-        Ok(v) => v,
-        Err(e) => return report(e),
-    };
+    let app = cli_try!(open(args.db).await);
+    let guid = cli_try!(require_subject(&app, &args.subject).await);
+    let runs = cli_try!(app.list_sequence_runs(guid).await);
     let mut alns = Vec::new();
     for r in &runs {
         match app.list_alignments(r.id).await {
@@ -970,10 +938,7 @@ async fn compare_callers(args: ShowArgs) -> i32 {
 /// Time the per-alignment analysis steps (the GUI Full Analysis path) to profile where time goes.
 async fn analyze(args: AnalyzeArgs) -> i32 {
     use std::time::Instant;
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
     let id = args.alignment;
 
     // The step list comes from `App::plan_full_analysis` — the same one the GUI's Full Analysis
@@ -1108,10 +1073,24 @@ async fn resolve_project_filter(app: &App, name: Option<&String>) -> Result<Opti
     }
 }
 
-/// Find a subject by exact donor identifier, returning its guid if present.
+/// Find a subject by exact donor identifier, returning its guid if present. Callers that treat a
+/// missing subject as an error want [`require_subject`].
 async fn find_subject(app: &App, donor: &str) -> Result<Option<SampleGuid>, i32> {
     let all = app.list_all_biosamples().await.map_err(report)?;
     Ok(all.into_iter().find(|b| b.donor_identifier == donor).map(|b| b.guid))
+}
+
+/// The subject with this exact donor identifier — the opening move of every `--subject` command.
+/// A missing subject is a plain user error, so the message is printed here and the caller just
+/// propagates the code.
+async fn require_subject(app: &App, donor: &str) -> Result<SampleGuid, i32> {
+    match find_subject(app, donor).await? {
+        Some(g) => Ok(g),
+        None => {
+            eprintln!("error: no subject with identifier \"{donor}\"");
+            Err(1)
+        }
+    }
 }
 
 /// Find a project id by exact name, or create it.
@@ -1131,16 +1110,15 @@ async fn find_or_create_project(app: &App, name: &str) -> Result<i64, i32> {
     Ok(p.id)
 }
 
+/// Print an [`App`] error and yield the failure exit code. Kept as a free function for the
+/// `.map_err(report)?` sites inside the `Result`-returning helpers; steps in a command body use
+/// [`cli_try!`] instead.
 fn report(e: navigator_app::AppError) -> i32 {
-    eprintln!("error: {e}");
-    1
+    e.exit_code()
 }
 
 async fn ingest(args: IngestArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
 
     // Resolve the project first so subject creation can attach to it.
     let project_id = match &args.project {
@@ -1318,14 +1296,8 @@ async fn ingest(args: IngestArgs) -> i32 {
 }
 
 async fn subjects(args: ProbeArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let bios = match app.list_all_biosamples().await {
-        Ok(v) => v,
-        Err(e) => return report(e),
-    };
+    let app = cli_try!(open(args.db).await);
+    let bios = cli_try!(app.list_all_biosamples().await);
     let overview = app.project_overview().await.unwrap_or_default();
     let project_name = |id: Option<i64>| -> Option<String> {
         id.and_then(|pid| {
@@ -1391,18 +1363,8 @@ async fn subjects(args: ProbeArgs) -> i32 {
 }
 
 async fn debug_place(args: ShowArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let guid = match find_subject(&app, &args.subject).await {
-        Ok(Some(g)) => g,
-        Ok(None) => {
-            eprintln!("error: no subject with identifier \"{}\"", args.subject);
-            return 1;
-        }
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
+    let guid = cli_try!(require_subject(&app, &args.subject).await);
     match app.debug_y_placement(guid).await {
         Ok(trace) => {
             println!("{trace}");
@@ -1416,18 +1378,8 @@ async fn debug_place(args: ShowArgs) -> i32 {
 }
 
 async fn debug_descent(args: ShowArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let guid = match find_subject(&app, &args.subject).await {
-        Ok(Some(g)) => g,
-        Ok(None) => {
-            eprintln!("error: no subject with identifier \"{}\"", args.subject);
-            return 1;
-        }
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
+    let guid = cli_try!(require_subject(&app, &args.subject).await);
     match app.debug_y_descent(guid).await {
         Ok(trace) => {
             println!("{trace}");
@@ -1441,10 +1393,7 @@ async fn debug_descent(args: ShowArgs) -> i32 {
 }
 
 async fn debug_calls(args: DebugCallsArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
     // Resolve the target alignment: explicit --alignment wins; otherwise pick from the subject
     // (prefer a CHM13/HiFi alignment, else the first).
     let alignment_id = match args.alignment {
@@ -1454,14 +1403,7 @@ async fn debug_calls(args: DebugCallsArgs) -> i32 {
                 eprintln!("error: provide --alignment <id> or --subject <id>");
                 return 2;
             };
-            let guid = match find_subject(&app, subject).await {
-                Ok(Some(g)) => g,
-                Ok(None) => {
-                    eprintln!("error: no subject with identifier \"{subject}\"");
-                    return 1;
-                }
-                Err(c) => return c,
-            };
+            let guid = cli_try!(require_subject(&app, subject).await);
             match app.pick_y_debug_alignment(guid).await {
                 Ok(Some(id)) => id,
                 Ok(None) => {
@@ -1493,10 +1435,7 @@ async fn private_y_batch(app: &App, project: &str, force: bool) -> i32 {
     let Ok(Some(pid)) = resolve_project_filter(app, Some(&project.to_string())).await else {
         return 1;
     };
-    let members = match app.list_biosamples(pid).await {
-        Ok(v) => v,
-        Err(e) => return report(e),
-    };
+    let members = cli_try!(app.list_biosamples(pid).await);
     let (mut done, mut skipped, mut failed, mut no_aln) = (0usize, 0usize, 0usize, 0usize);
     let mut missing = 0usize;
     let (mut novel, mut publishable) = (0usize, 0usize);
@@ -1596,10 +1535,7 @@ async fn publish_origins(args: PublishOriginsArgs) -> i32 {
             return 2;
         }
     };
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
     let report = match app.publish_ancestral_origins(lineage, !args.apply).await {
         Ok(r) => r,
         Err(e) => {
@@ -1624,10 +1560,7 @@ async fn publish_origins(args: PublishOriginsArgs) -> i32 {
 }
 
 async fn private_y(args: PrivateYArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
     if let Some(project) = args.project.as_deref() {
         return private_y_batch(&app, project, args.force).await;
     }
@@ -1638,14 +1571,7 @@ async fn private_y(args: PrivateYArgs) -> i32 {
                 eprintln!("error: provide --alignment <id> or --subject <id>");
                 return 2;
             };
-            let guid = match find_subject(&app, subject).await {
-                Ok(Some(g)) => g,
-                Ok(None) => {
-                    eprintln!("error: no subject with identifier \"{subject}\"");
-                    return 1;
-                }
-                Err(c) => return c,
-            };
+            let guid = cli_try!(require_subject(&app, subject).await);
             match app.pick_y_debug_alignment(guid).await {
                 Ok(Some(id)) => id,
                 Ok(None) => {
@@ -1724,10 +1650,7 @@ async fn private_y(args: PrivateYArgs) -> i32 {
 
 /// Per-marker branch report over a Y/mtDNA node's descendant subtree — table / `--tsv` / `--json`.
 async fn branch_report(args: BranchReportArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
     let dna = match args.tree.to_ascii_lowercase().as_str() {
         "y" | "ydna" | "y-dna" => DnaType::Y,
         "mt" | "mtdna" | "mt-dna" => DnaType::Mt,
@@ -1743,14 +1666,7 @@ async fn branch_report(args: BranchReportArgs) -> i32 {
                 eprintln!("error: provide --alignment <id> or --subject <id>");
                 return 2;
             };
-            let guid = match find_subject(&app, subject).await {
-                Ok(Some(g)) => g,
-                Ok(None) => {
-                    eprintln!("error: no subject with identifier \"{subject}\"");
-                    return 1;
-                }
-                Err(c) => return c,
-            };
+            let guid = cli_try!(require_subject(&app, subject).await);
             // Y and mt want different alignments — a Big-Y run carries no chrM reads.
             match app.pick_alignment_for(guid, dna).await {
                 Ok(Some(id)) => id,
@@ -1859,22 +1775,9 @@ async fn branch_report(args: BranchReportArgs) -> i32 {
 
 /// Deep-ancestry stability report — see [`navigator_app::App::ancient_ancestry_stability`].
 async fn debug_ancient(args: ShowArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let guid = match find_subject(&app, &args.subject).await {
-        Ok(Some(g)) => g,
-        Ok(None) => {
-            eprintln!("error: no subject with identifier \"{}\"", args.subject);
-            return 1;
-        }
-        Err(c) => return c,
-    };
-    let rows = match app.ancient_ancestry_stability(guid).await {
-        Ok(r) => r,
-        Err(e) => return report(e),
-    };
+    let app = cli_try!(open(args.db).await);
+    let guid = cli_try!(require_subject(&app, &args.subject).await);
+    let rows = cli_try!(app.ancient_ancestry_stability(guid).await);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&rows).unwrap_or_default());
         return 0;
@@ -1909,22 +1812,9 @@ async fn debug_ancient(args: ShowArgs) -> i32 {
 
 /// Tier B archaic segments — see [`navigator_app::App::call_archaic_segments_for_subject`].
 async fn archaic_segments(args: ShowArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let guid = match find_subject(&app, &args.subject).await {
-        Ok(Some(g)) => g,
-        Ok(None) => {
-            eprintln!("error: no subject with identifier \"{}\"", args.subject);
-            return 1;
-        }
-        Err(c) => return c,
-    };
-    let r = match app.call_archaic_segments_for_subject(guid).await {
-        Ok(r) => r,
-        Err(e) => return report(e),
-    };
+    let app = cli_try!(open(args.db).await);
+    let guid = cli_try!(require_subject(&app, &args.subject).await);
+    let r = cli_try!(app.call_archaic_segments_for_subject(guid).await);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
         return 0;
@@ -1942,27 +1832,11 @@ async fn archaic_segments(args: ShowArgs) -> i32 {
 /// Archaic (Neanderthal / Denisovan) Tier-A marker count — see
 /// [`navigator_app::App::estimate_archaic_from_consensus`].
 async fn archaic(args: ArchaicArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let guid = match find_subject(&app, &args.subject).await {
-        Ok(Some(g)) => g,
-        Ok(None) => {
-            eprintln!("error: no subject with identifier \"{}\"", args.subject);
-            return 1;
-        }
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
+    let guid = cli_try!(require_subject(&app, &args.subject).await);
     let r = match args.alignment {
-        Some(aln) => match app.archaic_for_alignment(guid, aln).await {
-            Ok(r) => r,
-            Err(e) => return report(e),
-        },
-        None => match app.estimate_archaic_from_consensus(guid).await {
-            Ok(r) => r,
-            Err(e) => return report(e),
-        },
+        Some(aln) => cli_try!(app.archaic_for_alignment(guid, aln).await),
+        None => cli_try!(app.estimate_archaic_from_consensus(guid).await),
     };
     if args.json {
         println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
@@ -1995,22 +1869,9 @@ async fn archaic(args: ArchaicArgs) -> i32 {
 
 /// Deep (ancient) ancestry via qpAdm — see [`navigator_app::App::estimate_deep_ancestry`].
 async fn deep_ancestry(args: ShowArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let guid = match find_subject(&app, &args.subject).await {
-        Ok(Some(g)) => g,
-        Ok(None) => {
-            eprintln!("error: no subject with identifier \"{}\"", args.subject);
-            return 1;
-        }
-        Err(c) => return c,
-    };
-    let result = match app.estimate_deep_ancestry(guid).await {
-        Ok(r) => r,
-        Err(e) => return report(e),
-    };
+    let app = cli_try!(open(args.db).await);
+    let guid = cli_try!(require_subject(&app, &args.subject).await);
+    let result = cli_try!(app.estimate_deep_ancestry(guid).await);
     match result {
         None => {
             println!(
@@ -2039,18 +1900,8 @@ async fn deep_ancestry(args: ShowArgs) -> i32 {
 
 /// Panel batch-process mode — see [`navigator_app::App::genotype_panel_for_alignment`].
 async fn genotype_panel(args: ShowArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let guid = match find_subject(&app, &args.subject).await {
-        Ok(Some(g)) => g,
-        Ok(None) => {
-            eprintln!("error: no subject with identifier \"{}\"", args.subject);
-            return 1;
-        }
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
+    let guid = cli_try!(require_subject(&app, &args.subject).await);
     // Best-callable alignment + chips/VCFs (which fold in during the refresh) — one decode per subject.
     match app.genotype_panel_for_subject(guid).await {
         Ok(Some((aln, sites))) => {
@@ -2066,18 +1917,8 @@ async fn genotype_panel(args: ShowArgs) -> i32 {
 }
 
 async fn show(args: ShowArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let guid = match find_subject(&app, &args.subject).await {
-        Ok(Some(g)) => g,
-        Ok(None) => {
-            eprintln!("error: no subject with identifier \"{}\"", args.subject);
-            return 1;
-        }
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
+    let guid = cli_try!(require_subject(&app, &args.subject).await);
 
     let runs = app.list_sequence_runs(guid).await.unwrap_or_default();
     let strs = app.list_str_profiles(guid).await.unwrap_or_default();
@@ -2206,18 +2047,9 @@ async fn doctor(args: DoctorArgs) -> i32 {
             }
         }
     } else {
-        let app = match open(args.db).await {
-            Ok(a) => a,
-            Err(c) => return c,
-        };
-        let id = match resolve_alignment(&app, args.subject.as_deref(), args.alignment).await {
-            Ok(id) => id,
-            Err(c) => return c,
-        };
-        match app.diagnose_alignment(id).await {
-            Ok(r) => r,
-            Err(e) => return report(e),
-        }
+        let app = cli_try!(open(args.db).await);
+        let id = cli_try!(resolve_alignment(&app, args.subject.as_deref(), args.alignment).await);
+        cli_try!(app.diagnose_alignment(id).await)
     };
 
     if args.json {
@@ -2266,18 +2098,12 @@ async fn resolve_alignment(app: &App, subject: Option<&str>, explicit: Option<i6
 }
 
 async fn call(args: CallArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let alignment_id = match resolve_alignment(&app, args.subject.as_deref(), args.alignment).await {
-        Ok(id) => id,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
+    let alignment_id = cli_try!(resolve_alignment(&app, args.subject.as_deref(), args.alignment).await);
 
     let scope = args.contig.clone().unwrap_or_else(|| "whole genome".into());
     eprintln!("calling de-novo diploid variants on alignment #{alignment_id} ({scope})…");
-    let vcf = match args.contig {
+    let vcf = cli_try!(match args.contig {
         Some(contig) => {
             app.diploid_vcf(alignment_id, contig, navigator_app::CancelToken::none())
                 .await
@@ -2286,11 +2112,7 @@ async fn call(args: CallArgs) -> i32 {
             app.diploid_vcf_genome(alignment_id, navigator_app::CancelToken::none())
                 .await
         }
-    };
-    let vcf = match vcf {
-        Ok(v) => v,
-        Err(e) => return report(e),
-    };
+    });
 
     // Summary to stderr (records, of which multiallelic) so a redirected stdout stays pure VCF.
     let records: Vec<&str> = vcf.lines().filter(|l| !l.starts_with('#')).collect();
@@ -2314,10 +2136,7 @@ async fn call(args: CallArgs) -> i32 {
 }
 
 async fn lift_vcf(args: LiftVcfArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
+    let app = cli_try!(open(args.db).await);
     let source = match args
         .from
         .clone()
@@ -2368,14 +2187,8 @@ async fn lift_vcf(args: LiftVcfArgs) -> i32 {
 }
 
 async fn projects(args: ProbeArgs) -> i32 {
-    let app = match open(args.db).await {
-        Ok(a) => a,
-        Err(c) => return c,
-    };
-    let overview = match app.project_overview().await {
-        Ok(v) => v,
-        Err(e) => return report(e),
-    };
+    let app = cli_try!(open(args.db).await);
+    let overview = cli_try!(app.project_overview().await);
     if args.json {
         let arr: Vec<_> = overview
             .iter()

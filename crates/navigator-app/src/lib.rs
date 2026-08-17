@@ -876,21 +876,6 @@ fn parse_ibd_signals(v: &serde_json::Value) -> Vec<String> {
     }
 }
 
-/// Classify a non-2xx AppView response into a user-facing [`AppError::AppView`]. Consumes
-/// `resp` to read the body (so capture the status first at the call site if also needed).
-async fn appview_status_error(api: &str, resp: reqwest::Response) -> AppError {
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    match status.as_u16() {
-        403 => AppError::AppView(format!(
-            "{api}: device key not yet registered or verified by the AppView (403)"
-        )),
-        422 => AppError::AppView(format!(
-            "{api}: request rejected, likely clock skew (422) — check the system clock"
-        )),
-        _ => AppError::AppView(format!("{api}: {status}: {body}")),
-    }
-}
 pub use navigator_analysis::ibd_attest::{IbdAttestation, IbdExchangeMsg, IbdSite};
 use navigator_domain::bisdna;
 pub use navigator_domain::brief::{
@@ -920,10 +905,10 @@ pub use navigator_store::ibd_exchange::StoredIbdExchange;
 pub use navigator_store::ibd_request::StoredIbdRequest;
 pub use navigator_store::source_file::SourceFile;
 use navigator_store::{
-    alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_archaic,
-    consensus_archaic_segments, consensus_painting, consensus_profile, consensus_roh, haplogroup_call, mdka,
-    mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, source_file, str_profile, sync_history,
-    sync_outbox, sync_state, variant_set, variant_set_genotype, variant_set_private_y, Store, StoreError,
+    alignment, ancestry_result, artifact, biosample, biosample_project, chip_profile, consensus_profile,
+    haplogroup_call, mdka, mtdna as mtdna_store, project, reconciliation as recon_store, sequence_run, sig_cache,
+    source_file, str_profile, sync_history, sync_outbox, sync_state, variant_set, variant_set_genotype,
+    variant_set_private_y, Store, StoreError,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -2887,6 +2872,7 @@ pub struct RefBuildStatus {
 }
 
 mod analysis;
+mod appview;
 pub use analysis::AnalysisStep;
 mod auth;
 mod blocktree;
@@ -4092,15 +4078,8 @@ mod publish_tests {
         let b = app.add_biosample(None, "S1", None, None).await.unwrap();
         let run = app
             .record_sequence_run(NewSequenceRun {
-                biosample_guid: b.guid,
-                platform_name: "ILLUMINA".into(),
                 instrument_model: Some("NovaSeq".into()),
-                test_type: "WGS".into(),
-                library_layout: None,
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
+                ..NewSequenceRun::new(b.guid, "ILLUMINA", "WGS")
             })
             .await
             .unwrap();

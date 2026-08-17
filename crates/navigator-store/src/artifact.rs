@@ -243,57 +243,20 @@ mod tests {
 
     async fn subject(pool: &SqlitePool, donor: &str) -> SampleGuid {
         let guid = SampleGuid(uuid::Uuid::new_v4());
-        crate::biosample::create(
-            pool,
-            &Biosample {
-                guid,
-                sample_accession: None,
-                donor_identifier: donor.into(),
-                description: None,
-                center_name: None,
-                sex: None,
-                project_id: None,
-            },
-        )
-        .await
-        .unwrap();
+        crate::biosample::create(pool, &Biosample::new(guid, donor))
+            .await
+            .unwrap();
         guid
     }
 
     async fn alignment(pool: &SqlitePool, guid: SampleGuid) -> i64 {
-        let run = crate::sequence_run::create(
-            pool,
-            &NewSequenceRun {
-                biosample_guid: guid,
-                platform_name: "ILLUMINA".into(),
-                instrument_model: None,
-                test_type: "WGS".into(),
-                library_layout: None,
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
-            },
-        )
-        .await
-        .unwrap();
-        crate::alignment::create(
-            pool,
-            &NewAlignment {
-                sequence_run_id: run.id,
-                reference_build: "chm13v2.0".into(),
-                aligner: "bwa".into(),
-                variant_caller: None,
-                bam_path: None,
-                reference_path: None,
-                content_sha256: None,
-                derived_from_alignment_id: None,
-                derivation: None,
-            },
-        )
-        .await
-        .unwrap()
-        .id
+        let run = crate::sequence_run::create(pool, &NewSequenceRun::new(guid, "ILLUMINA", "WGS"))
+            .await
+            .unwrap();
+        crate::alignment::create(pool, &NewAlignment::new(run.id, "chm13v2.0", "bwa"))
+            .await
+            .unwrap()
+            .id
     }
 
     async fn full_coverage(pool: &SqlitePool, aln: i64) {

@@ -19,7 +19,7 @@ impl App {
         let ts = Utc::now().timestamp();
         let sig = dev.sign_fresh(ts, &exchange::messages::publickey(&did, &pub_b64, None));
         let body = serde_json::json!({ "did": did, "x25519_pub": pub_b64, "ts": ts, "signature": sig });
-        let v = self.exchange_post("exchange/key", body).await?;
+        let v = self.appview_post("exchange/key", body).await?;
         let _ = v; // { did, status: "published" }
         Ok(ik)
     }
@@ -27,7 +27,7 @@ impl App {
     /// Fetch a peer's published X25519 public key (STANDARD base64), or `None` if they haven't
     /// published one. Public read — no signature.
     pub async fn fetch_exchange_key(&self, did: &str) -> Result<Option<String>, AppError> {
-        let url = format!("{}/api/v1/exchange/key", decodingus_appview_url());
+        let url = self.appview_url("exchange/key");
         let resp = self
             .auth
             .http
@@ -35,17 +35,14 @@ impl App {
             .query(&[("did", did)])
             .send()
             .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+            .map_err(appview::transport)?;
         if resp.status().as_u16() == 404 {
             return Ok(None);
         }
         if !resp.status().is_success() {
-            return Err(appview_status_error("exchange/key", resp).await);
+            return Err(appview::status_error("exchange/key", resp).await);
         }
-        let v: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+        let v: serde_json::Value = resp.json().await.map_err(appview::transport)?;
         Ok(v.get("x25519_pub").and_then(|x| x.as_str()).map(str::to_string))
     }
 
@@ -77,7 +74,7 @@ impl App {
             "ts": ts,
             "signature": sig,
         });
-        self.exchange_post("exchange/request", body).await?;
+        self.appview_post("exchange/request", body).await?;
         Ok(request_uri)
     }
 
@@ -95,7 +92,7 @@ impl App {
             "ts": ts,
             "signature": sig,
         });
-        let v = self.exchange_post("exchange/consent", body).await?;
+        let v = self.appview_post("exchange/consent", body).await?;
         Ok(ConsentOutcome {
             status: v
                 .get("status")
@@ -189,7 +186,7 @@ impl App {
             "ts": ts,
             "signature": sig,
         });
-        let v = self.exchange_post("exchange/relay", body).await?;
+        let v = self.appview_post("exchange/relay", body).await?;
         Ok(v.get("id").and_then(|x| x.as_i64()).unwrap_or_default())
     }
 
@@ -225,7 +222,7 @@ impl App {
         let ts = Utc::now().timestamp();
         let sig = dev.sign_fresh(ts, &exchange::messages::ack(&did, envelope_id));
         let body = serde_json::json!({ "envelope_id": envelope_id, "did": did, "ts": ts, "signature": sig });
-        self.exchange_post("exchange/ack", body).await.map(|_| ())
+        self.appview_post("exchange/ack", body).await.map(|_| ())
     }
 
     /// Establish a shared session key for a consent-ready session: publish/load our identity key,
@@ -581,50 +578,12 @@ impl App {
         Ok(())
     }
 
-    /// POST a JSON body to an `/api/v1/<path>` exchange endpoint, mapping non-2xx to an AppView error.
-    async fn exchange_post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value, AppError> {
-        let url = format!("{}/api/v1/{path}", decodingus_appview_url());
-        let resp = self
-            .auth
-            .http
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
-        if !resp.status().is_success() {
-            return Err(appview_status_error(path, resp).await);
-        }
-        resp.json()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
-    }
-
     /// Issue a device-key-signed `exchange-poll` GET to an `/api/v1/<path>` endpoint, with `extra`
-    /// query params appended. Shared by incoming / pending / relay-pull.
+    /// query params appended. Shared by incoming / pending / relay-pull — the exchange endpoints
+    /// all sign the same canonical poll string, so this is the only thing they add over
+    /// [`App::appview_get_signed`].
     async fn exchange_get_poll(&self, path: &str, extra: &[(&str, &str)]) -> Result<serde_json::Value, AppError> {
-        let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
-        let dev = self.ensure_device_key().await?;
-        let url = format!("{}/api/v1/{path}", decodingus_appview_url());
-        let ts = Utc::now().timestamp();
-        let sig = dev.sign(&exchange::messages::poll(&did, ts));
-        let ts_s = ts.to_string();
-        let mut query: Vec<(&str, &str)> = vec![("did", did.as_str()), ("ts", ts_s.as_str()), ("sig", sig.as_str())];
-        query.extend_from_slice(extra);
-        let resp = self
-            .auth
-            .http
-            .get(&url)
-            .query(&query)
-            .send()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
-        if !resp.status().is_success() {
-            return Err(appview_status_error(path, resp).await);
-        }
-        resp.json()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))
+        self.appview_get_signed(path, exchange::messages::poll, extra).await
     }
 
     /// Enqueue the anchor records every child record references: the subject's biosample summary

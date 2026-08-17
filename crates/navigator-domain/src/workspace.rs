@@ -37,6 +37,27 @@ pub struct Biosample {
     pub project_id: Option<i64>,
 }
 
+impl Biosample {
+    /// A biosample with only its identity set — everything descriptive left unpopulated.
+    ///
+    /// This and its siblings ([`SequenceRun::new`], [`NewSequenceRun::new`], [`Alignment::new`],
+    /// [`NewAlignment::new`]) take exactly the fields that have no sensible empty value. They exist
+    /// so the callers that genuinely only know the identity — fixtures, and imports that fill the
+    /// rest in later — stop restating a column of `None`s. Callers that do know more should say so
+    /// with functional-update syntax: `Biosample { sex: Some("M".into()), ..Biosample::new(g, id) }`.
+    pub fn new(guid: SampleGuid, donor_identifier: impl Into<String>) -> Self {
+        Biosample {
+            guid,
+            sample_accession: None,
+            donor_identifier: donor_identifier.into(),
+            description: None,
+            center_name: None,
+            sex: None,
+            project_id: None,
+        }
+    }
+}
+
 /// A sequencing run for a biosample, with summary read metrics as flat fields.
 ///
 /// The lab/instrument identity block (`instrument_id`/`sample_name`/`library_id`/`platform_unit`/
@@ -77,6 +98,37 @@ pub struct SequenceRun {
 }
 
 impl SequenceRun {
+    /// A run with only the fields the database requires — the whole metrics and lab-identity block
+    /// left `None`, which is exactly its state until an analysis pass fills it in. See
+    /// [`Biosample::new`] for why these constructors exist.
+    pub fn new(
+        id: i64,
+        biosample_guid: SampleGuid,
+        platform_name: impl Into<String>,
+        test_type: impl Into<String>,
+    ) -> Self {
+        SequenceRun {
+            id,
+            biosample_guid,
+            platform_name: platform_name.into(),
+            instrument_model: None,
+            test_type: test_type.into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+            total_bases: None,
+            read_type: None,
+            sequencing_facility: None,
+            instrument_id: None,
+            sample_name: None,
+            library_id: None,
+            platform_unit: None,
+            flowcell_id: None,
+        }
+    }
+
     /// The standardized, vendor-neutral test label (`WGS150 45Gbases`, `HiFi 90Gbases`, `BigY-700`),
     /// or `None` when this isn't a yield/product test we standardize (chips, panels) — the caller
     /// falls back to the raw `test_type`. See [`du_domain::testprofile`].
@@ -102,6 +154,23 @@ pub struct NewSequenceRun {
     pub pf_reads_aligned: Option<i64>,
     pub mean_read_length: Option<f64>,
     pub mean_insert_size: Option<f64>,
+}
+
+impl NewSequenceRun {
+    /// A run to insert, with only the required fields set. See [`Biosample::new`].
+    pub fn new(biosample_guid: SampleGuid, platform_name: impl Into<String>, test_type: impl Into<String>) -> Self {
+        NewSequenceRun {
+            biosample_guid,
+            platform_name: platform_name.into(),
+            instrument_model: None,
+            test_type: test_type.into(),
+            library_layout: None,
+            total_reads: None,
+            pf_reads_aligned: None,
+            mean_read_length: None,
+            mean_insert_size: None,
+        }
+    }
 }
 
 /// An alignment of a sequence run to a reference build. `bam_path`/`reference_path`
@@ -133,6 +202,24 @@ pub struct Alignment {
 }
 
 impl Alignment {
+    /// An alignment with only the fields the database requires — no file paths, no caller, and no
+    /// derivation, i.e. an original rather than something Navigator produced. See
+    /// [`Biosample::new`].
+    pub fn new(id: i64, sequence_run_id: i64, reference_build: impl Into<String>, aligner: impl Into<String>) -> Self {
+        Alignment {
+            id,
+            sequence_run_id,
+            reference_build: reference_build.into(),
+            aligner: aligner.into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
+        }
+    }
+
     /// Whether Navigator produced this alignment from another one, rather than importing it.
     ///
     /// The distinction is user-facing: a derived alignment can be deleted and rebuilt from its
@@ -157,6 +244,23 @@ pub struct NewAlignment {
     pub derived_from_alignment_id: Option<i64>,
     /// How it was derived; see [`Alignment::derivation`].
     pub derivation: Option<String>,
+}
+
+impl NewAlignment {
+    /// An alignment to insert, with only the required fields set. See [`Biosample::new`].
+    pub fn new(sequence_run_id: i64, reference_build: impl Into<String>, aligner: impl Into<String>) -> Self {
+        NewAlignment {
+            sequence_run_id,
+            reference_build: reference_build.into(),
+            aligner: aligner.into(),
+            variant_caller: None,
+            bam_path: None,
+            reference_path: None,
+            content_sha256: None,
+            derived_from_alignment_id: None,
+            derivation: None,
+        }
+    }
 }
 
 /// A persisted analysis result, keyed by `(alignment, kind, algorithm_version)`. The

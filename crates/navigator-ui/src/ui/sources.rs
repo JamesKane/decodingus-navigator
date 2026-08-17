@@ -322,12 +322,7 @@ impl NavigatorApp {
 
     /// Inferred sex + read-level QC metrics for a single alignment.
     pub(crate) fn sex_metrics_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        let has_bam = self
-            .alignments
-            .iter()
-            .find(|a| a.id == alignment_id)
-            .map(|a| a.bam_path.is_some())
-            .unwrap_or(false);
+        let has_bam = self.alignment_has_bam(alignment_id);
 
         ui.horizontal(|ui| {
             if ui
@@ -363,17 +358,7 @@ impl NavigatorApp {
             // SV walks every read in the file, so it is one of the runs a user most wants to stop.
             // It had no cancel control at all until the walkers became cancellable.
             if self.running_sv {
-                let requested = self.cancelling;
-                let label = if requested {
-                    self.tr("analysis.cancelling")
-                } else {
-                    self.tr("common.cancel")
-                };
-                if ui.add_enabled(!requested, egui::Button::new(label)).clicked() {
-                    self.cancelling = true;
-                    let _ = self.tx.send(Command::CancelAnalysis);
-                    self.status = self.tr("analysis.cancelling").to_string();
-                }
+                self.cancel_button(ui);
             }
             if !has_bam {
                 ui.label(self.tr("hint.noBamPath"));
@@ -620,12 +605,7 @@ impl NavigatorApp {
     /// mtDNA heteroplasmy scan for an alignment (chrM pileup → mixed positions). Results
     /// feed the mtDNA reconciliation record's heteroplasmy observations.
     pub(crate) fn heteroplasmy_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        let has_bam = self
-            .alignments
-            .iter()
-            .find(|a| a.id == alignment_id)
-            .map(|a| a.bam_path.is_some())
-            .unwrap_or(false);
+        let has_bam = self.alignment_has_bam(alignment_id);
 
         ui.horizontal(|ui| {
             if ui
@@ -663,12 +643,7 @@ impl NavigatorApp {
 
     /// Y-haplogroup assignment for an alignment (calls chrY tree positions; FTDNA tree).
     pub(crate) fn y_haplogroup_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        let has_bam = self
-            .alignments
-            .iter()
-            .find(|a| a.id == alignment_id)
-            .map(|a| a.bam_path.is_some())
-            .unwrap_or(false);
+        let has_bam = self.alignment_has_bam(alignment_id);
 
         ui.horizontal(|ui| {
             if ui

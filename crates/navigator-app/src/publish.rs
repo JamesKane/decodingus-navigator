@@ -486,29 +486,12 @@ mod tests {
     async fn alignment_with_test_type(app: &App, test_type: &str) -> i64 {
         let b = app.add_biosample(None, "yscoped", None, None).await.unwrap();
         let run = app
-            .record_sequence_run(NewSequenceRun {
-                biosample_guid: b.guid,
-                platform_name: "ILLUMINA".into(),
-                instrument_model: None,
-                test_type: test_type.into(),
-                library_layout: None,
-                total_reads: None,
-                pf_reads_aligned: None,
-                mean_read_length: None,
-                mean_insert_size: None,
-            })
+            .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", test_type))
             .await
             .unwrap();
         app.record_alignment(NewAlignment {
-            sequence_run_id: run.id,
-            reference_build: "chm13v2.0".into(),
-            aligner: "synthetic".into(),
-            variant_caller: None,
             bam_path: Some("/nonexistent.cram".into()),
-            reference_path: None,
-            content_sha256: None,
-            derived_from_alignment_id: None,
-            derivation: None,
+            ..NewAlignment::new(run.id, "chm13v2.0", "synthetic")
         })
         .await
         .unwrap()

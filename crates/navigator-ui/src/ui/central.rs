@@ -733,13 +733,7 @@ impl NavigatorApp {
                 ui.label(egui::RichText::new(bio.sex.as_deref().unwrap_or("Unknown")).weak());
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE))
-                            .fill(DANGER),
-                    )
-                    .clicked()
-                {
+                if self.danger_button(ui, "common.delete") {
                     self.confirm_delete = Some(guid);
                 }
                 ui.menu_button(self.tr("common.clearData"), |ui| {

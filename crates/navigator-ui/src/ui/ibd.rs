@@ -337,12 +337,7 @@ impl NavigatorApp {
     /// mtDNA haplogroup assigned directly from the alignment's chrM — the standalone counterpart
     /// to the Y-DNA section's "Assign Y haplogroup".
     pub(crate) fn mt_haplogroup_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
-        let has_bam = self
-            .alignments
-            .iter()
-            .find(|a| a.id == alignment_id)
-            .map(|a| a.bam_path.is_some())
-            .unwrap_or(false);
+        let has_bam = self.alignment_has_bam(alignment_id);
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(has_bam, egui::Button::new(self.tr("btn.assignMt")))
@@ -367,12 +362,7 @@ impl NavigatorApp {
     /// De-novo haploid SNP calls for a specific `contig` (chrY on the Y-DNA tab, chrM on mtDNA).
     pub(crate) fn denovo_section(&mut self, ui: &mut egui::Ui, alignment_id: i64, contig: &str) {
         // Reference is resolved from the build on demand, so only the BAM is required.
-        let has_bam = self
-            .alignments
-            .iter()
-            .find(|a| a.id == alignment_id)
-            .map(|a| a.bam_path.is_some())
-            .unwrap_or(false);
+        let has_bam = self.alignment_has_bam(alignment_id);
 
         ui.horizontal(|ui| {
             let ready = has_bam && !self.running_denovo;
@@ -388,17 +378,7 @@ impl NavigatorApp {
             }
             if self.running_denovo {
                 ui.spinner();
-                let requested = self.cancelling;
-                let label = if requested {
-                    self.tr("analysis.cancelling")
-                } else {
-                    self.tr("common.cancel")
-                };
-                if ui.add_enabled(!requested, egui::Button::new(label)).clicked() {
-                    self.cancelling = true;
-                    let _ = self.tx.send(Command::CancelAnalysis);
-                    self.status = self.tr("analysis.cancelling").to_string();
-                }
+                self.cancel_button(ui);
             }
             if !has_bam {
                 ui.label(egui::RichText::new("(no BAM/CRAM recorded)").weak());

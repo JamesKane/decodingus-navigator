@@ -156,20 +156,9 @@ mod tests {
 
     async fn seed(pool: &SqlitePool) -> SampleGuid {
         let guid = SampleGuid(uuid::Uuid::new_v4());
-        crate::biosample::create(
-            pool,
-            &Biosample {
-                guid,
-                sample_accession: None,
-                donor_identifier: "GFX".into(),
-                description: None,
-                center_name: None,
-                sex: None,
-                project_id: None,
-            },
-        )
-        .await
-        .unwrap();
+        crate::biosample::create(pool, &Biosample::new(guid, "GFX"))
+            .await
+            .unwrap();
         guid
     }
 
