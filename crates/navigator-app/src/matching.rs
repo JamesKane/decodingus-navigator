@@ -322,18 +322,7 @@ impl App {
             "ts": ts,
             "signature": sig,
         });
-        let url = format!("{}/api/v1/ibd/dismiss", decodingus_appview_url());
-        let resp = self
-            .auth
-            .http
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
-        if !resp.status().is_success() {
-            return Err(appview_status_error("ibd/dismiss", resp).await);
-        }
+        self.appview_post("ibd/dismiss", body).await?;
         Ok(())
     }
 
@@ -372,18 +361,7 @@ impl App {
             "ts": ts,
             "signature": sig,
         });
-        let url = format!("{}/api/v1/ibd/attest", decodingus_appview_url());
-        let resp = self
-            .auth
-            .http
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
-        if !resp.status().is_success() {
-            return Err(appview_status_error("ibd/attest", resp).await);
-        }
+        self.appview_post("ibd/attest", body).await?;
         Ok(())
     }
 

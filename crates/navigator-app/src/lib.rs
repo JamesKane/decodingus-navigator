@@ -876,21 +876,6 @@ fn parse_ibd_signals(v: &serde_json::Value) -> Vec<String> {
     }
 }
 
-/// Classify a non-2xx AppView response into a user-facing [`AppError::AppView`]. Consumes
-/// `resp` to read the body (so capture the status first at the call site if also needed).
-async fn appview_status_error(api: &str, resp: reqwest::Response) -> AppError {
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    match status.as_u16() {
-        403 => AppError::AppView(format!(
-            "{api}: device key not yet registered or verified by the AppView (403)"
-        )),
-        422 => AppError::AppView(format!(
-            "{api}: request rejected, likely clock skew (422) — check the system clock"
-        )),
-        _ => AppError::AppView(format!("{api}: {status}: {body}")),
-    }
-}
 pub use navigator_analysis::ibd_attest::{IbdAttestation, IbdExchangeMsg, IbdSite};
 use navigator_domain::bisdna;
 pub use navigator_domain::brief::{
@@ -2887,6 +2872,7 @@ pub struct RefBuildStatus {
 }
 
 mod analysis;
+mod appview;
 pub use analysis::AnalysisStep;
 mod auth;
 mod blocktree;

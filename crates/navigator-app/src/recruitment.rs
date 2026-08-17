@@ -2,7 +2,7 @@
 //! social roadmap 3c) — the **response** side: list the caller's open invitations and accept/decline
 //! them. Campaign creation stays on the AppView web flow (it's gated to a group-project admin, which
 //! the Navigator can't yet act as). Device-key-signed like the social/exchange clients; reuses the
-//! shared [`social_post`](App::social_post) / [`social_get`](App::social_get) transport. Invitations
+//! shared [`appview_post`](App::appview_post) / [`appview_get_signed`](App::appview_get_signed) transport. Invitations
 //! also arrive as SYSTEM notifications, so this pairs with the Community → Notifications surface.
 use super::*;
 
@@ -25,7 +25,9 @@ impl App {
             #[serde(default)]
             items: Vec<RecruitmentInvitation>,
         }
-        let r: Resp = self.social_get("recruitment/invitations", messages::poll, &[]).await?;
+        let r: Resp = self
+            .appview_get_signed("recruitment/invitations", messages::poll, &[])
+            .await?;
         Ok(r.items)
     }
 
@@ -43,7 +45,7 @@ impl App {
             "ts": ts,
             "signature": sig,
         });
-        let v = self.social_post("recruitment/respond", body).await?;
+        let v = self.appview_post("recruitment/respond", body).await?;
         Ok(v.get("changed").and_then(|x| x.as_bool()).unwrap_or(false))
     }
 }

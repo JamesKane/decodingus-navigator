@@ -387,7 +387,7 @@ impl App {
     pub async fn ibd_suggestions(&self) -> Result<Vec<IbdSuggestion>, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let key = self.ensure_device_key().await?;
-        let url = format!("{}/api/v1/ibd/suggestions", decodingus_appview_url());
+        let url = self.appview_url("ibd/suggestions");
 
         let mut attempt = 0u32;
         loop {
@@ -402,13 +402,10 @@ impl App {
                 .query(&[("did", did.as_str()), ("ts", ts.as_str()), ("sig", sig.as_str())])
                 .send()
                 .await
-                .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+                .map_err(appview::transport)?;
             let status = resp.status();
             if status.is_success() {
-                let body: serde_json::Value = resp
-                    .json()
-                    .await
-                    .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+                let body: serde_json::Value = resp.json().await.map_err(appview::transport)?;
                 return Ok(parse_ibd_suggestions(&body));
             }
             if status.as_u16() == 403 && attempt < DEVICE_KEY_INGEST_RETRIES {
@@ -416,7 +413,7 @@ impl App {
                 attempt += 1;
                 continue;
             }
-            return Err(appview_status_error("ibd/suggestions", resp).await);
+            return Err(appview::status_error("ibd/suggestions", resp).await);
         }
     }
 
@@ -431,7 +428,6 @@ impl App {
     pub async fn ibd_introduce(&self, suggested_sample_guid: &str) -> Result<IbdIntroResult, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let key = self.ensure_device_key().await?;
-        let url = format!("{}/api/v1/ibd/introduce", decodingus_appview_url());
         let ts = Utc::now().timestamp();
         let sig = key.sign_fresh(ts, &format!("ibd-introduce\n{did}\n{suggested_sample_guid}"));
         // The AppView's IntroduceBody deserializes plain snake_case (no serde rename), and
@@ -442,21 +438,7 @@ impl App {
             "ts": ts,
             "signature": sig,
         });
-        let resp = self
-            .auth
-            .http
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
-        if !resp.status().is_success() {
-            return Err(appview_status_error("ibd/introduce", resp).await);
-        }
-        let v: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| AppError::Sync(navigator_sync::SyncError::from(e)))?;
+        let v = self.appview_post("ibd/introduce", body).await?;
         let request_uri = v
             .get("requestUri")
             .or_else(|| v.get("request_uri"))
