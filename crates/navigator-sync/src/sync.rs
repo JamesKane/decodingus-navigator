@@ -111,65 +111,16 @@ impl AsyncSync {
         rkey: &str,
         record: serde_json::Value,
     ) -> Result<RecordRef, SyncError> {
-        let mut refreshed = false;
-        let mut attempt = 0u32;
-        loop {
-            let client = PdsClient::from_session(self.http.clone(), &self.session)?;
-            match client.put_record(collection, rkey, record.clone()).await {
-                Ok(r) => {
-                    self.online.store(true, Ordering::Relaxed);
-                    return Ok(r);
-                }
-                Err(SyncError::Unauthorized) if !refreshed => {
-                    self.session = refresh(&self.http, &self.session).await?;
-                    self.tokens.save(&self.did, &self.session)?;
-                    refreshed = true;
-                }
-                Err(e) if e.is_transient() && attempt < self.policy.max_retries => {
-                    self.online.store(false, Ordering::Relaxed);
-                    tokio::time::sleep(self.policy.backoff(attempt)).await;
-                    attempt += 1;
-                }
-                Err(e) => {
-                    if e.is_transient() {
-                        self.online.store(false, Ordering::Relaxed);
-                    }
-                    return Err(e);
-                }
-            }
-        }
+        let record = &record;
+        self.with_resilience(|c| async move { c.put_record(collection, rkey, record.clone()).await })
+            .await
     }
 
     /// Delete a record at `rkey` (`deleteRecord`) — the orphan-prune path. Same refresh-on-401 +
     /// transient backoff discipline as [`push_put`](Self::push_put).
     pub async fn push_delete(&mut self, collection: &str, rkey: &str) -> Result<(), SyncError> {
-        let mut refreshed = false;
-        let mut attempt = 0u32;
-        loop {
-            let client = PdsClient::from_session(self.http.clone(), &self.session)?;
-            match client.delete_record(collection, rkey).await {
-                Ok(()) => {
-                    self.online.store(true, Ordering::Relaxed);
-                    return Ok(());
-                }
-                Err(SyncError::Unauthorized) if !refreshed => {
-                    self.session = refresh(&self.http, &self.session).await?;
-                    self.tokens.save(&self.did, &self.session)?;
-                    refreshed = true;
-                }
-                Err(e) if e.is_transient() && attempt < self.policy.max_retries => {
-                    self.online.store(false, Ordering::Relaxed);
-                    tokio::time::sleep(self.policy.backoff(attempt)).await;
-                    attempt += 1;
-                }
-                Err(e) => {
-                    if e.is_transient() {
-                        self.online.store(false, Ordering::Relaxed);
-                    }
-                    return Err(e);
-                }
-            }
-        }
+        self.with_resilience(|c| async move { c.delete_record(collection, rkey).await })
+            .await
     }
 
     /// Fetch one page of the account's own records in `collection` (`listRecords`, for a PULL). Same
@@ -179,33 +130,8 @@ impl AsyncSync {
         collection: &str,
         cursor: Option<&str>,
     ) -> Result<(Vec<RemoteRecord>, Option<String>), SyncError> {
-        let mut refreshed = false;
-        let mut attempt = 0u32;
-        loop {
-            let client = PdsClient::from_session(self.http.clone(), &self.session)?;
-            match client.list_records(collection, cursor).await {
-                Ok(r) => {
-                    self.online.store(true, Ordering::Relaxed);
-                    return Ok(r);
-                }
-                Err(SyncError::Unauthorized) if !refreshed => {
-                    self.session = refresh(&self.http, &self.session).await?;
-                    self.tokens.save(&self.did, &self.session)?;
-                    refreshed = true;
-                }
-                Err(e) if e.is_transient() && attempt < self.policy.max_retries => {
-                    self.online.store(false, Ordering::Relaxed);
-                    tokio::time::sleep(self.policy.backoff(attempt)).await;
-                    attempt += 1;
-                }
-                Err(e) => {
-                    if e.is_transient() {
-                        self.online.store(false, Ordering::Relaxed);
-                    }
-                    return Err(e);
-                }
-            }
-        }
+        self.with_resilience(|c| async move { c.list_records(collection, cursor).await })
+            .await
     }
 
     async fn push_create_inner(
@@ -214,14 +140,31 @@ impl AsyncSync {
         record: serde_json::Value,
         rkey: Option<&str>,
     ) -> Result<RecordRef, SyncError> {
+        let record = &record;
+        self.with_resilience(|c| async move { c.create_record(collection, record.clone(), rkey).await })
+            .await
+    }
+
+    /// Run one PDS call under the engine's whole resilience discipline, retrying `op` against a
+    /// freshly built client until it succeeds or gives up. This is the *only* place the policy
+    /// lives — every public method above is a one-liner over it, so refresh-on-401, backoff, and
+    /// the offline flag can never drift apart between the create/put/delete/list paths.
+    ///
+    /// `op` is re-invoked per attempt (hence `Fn`, and hence the callers cloning their record),
+    /// because a retry needs a client rebuilt from the possibly-rotated session.
+    async fn with_resilience<T, F, Fut>(&mut self, op: F) -> Result<T, SyncError>
+    where
+        F: Fn(PdsClient) -> Fut,
+        Fut: std::future::Future<Output = Result<T, SyncError>>,
+    {
         let mut refreshed = false;
         let mut attempt = 0u32;
         loop {
             let client = PdsClient::from_session(self.http.clone(), &self.session)?;
-            match client.create_record(collection, record.clone(), rkey).await {
-                Ok(r) => {
+            match op(client).await {
+                Ok(v) => {
                     self.online.store(true, Ordering::Relaxed);
-                    return Ok(r);
+                    return Ok(v);
                 }
                 // Token expired/revoked: refresh once, persist, and retry immediately.
                 Err(SyncError::Unauthorized) if !refreshed => {
