@@ -1009,13 +1009,7 @@ impl NavigatorApp {
             ui.label(egui::RichText::new(self.tr("delete.note")).weak().small());
             ui.add_space(12.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE))
-                            .fill(DANGER),
-                    )
-                    .clicked()
-                {
+                if self.danger_button(ui, "common.delete") {
                     let _ = self.tx.send(Command::DeleteBiosample(guid));
                     if self.selected_sample == Some(guid) {
                         self.selected_sample = None;
@@ -1049,13 +1043,7 @@ impl NavigatorApp {
             ui.label(egui::RichText::new(self.tr("clear.note")).weak().small());
             ui.add_space(12.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new(self.tr("common.clearData")).color(egui::Color32::WHITE))
-                            .fill(DANGER),
-                    )
-                    .clicked()
-                {
+                if self.danger_button(ui, "common.clearData") {
                     let _ = self.tx.send(Command::ClearBiosampleData(guid));
                     close = true;
                 }
@@ -1247,13 +1235,7 @@ impl NavigatorApp {
             ui.label(egui::RichText::new(self.tr("delete.dataNote")).weak().small());
             ui.add_space(12.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE))
-                            .fill(DANGER),
-                    )
-                    .clicked()
-                {
+                if self.danger_button(ui, "common.delete") {
                     let _ = self.tx.send(target.command());
                     close = true;
                 }
@@ -1587,13 +1569,7 @@ impl NavigatorApp {
             ui.label(egui::RichText::new(self.tr("editProject.deleteNote")).weak().small());
             ui.add_space(12.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new(self.tr("common.delete")).color(egui::Color32::WHITE))
-                            .fill(DANGER),
-                    )
-                    .clicked()
-                {
+                if self.danger_button(ui, "common.delete") {
                     let _ = self.tx.send(Command::DeleteProject(id));
                     if self.selected_project == Some(id) {
                         self.selected_project = None;

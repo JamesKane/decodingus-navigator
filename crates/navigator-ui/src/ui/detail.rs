@@ -1771,17 +1771,7 @@ impl NavigatorApp {
                 }
             }
             if self.analyzing {
-                let requested = self.cancelling;
-                let label = if requested {
-                    self.tr("analysis.cancelling")
-                } else {
-                    self.tr("common.cancel")
-                };
-                if ui.add_enabled(!requested, egui::Button::new(label)).clicked() {
-                    self.cancelling = true;
-                    let _ = self.tx.send(Command::CancelAnalysis);
-                    self.status = self.tr("analysis.cancelling").to_string();
-                }
+                self.cancel_button(ui);
             }
             if ui.button(self.tr("projects.exportCsv")).clicked() {
                 let csv = navigator_app::report_csv(&self.project_report);

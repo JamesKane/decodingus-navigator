@@ -39,6 +39,42 @@ impl NavigatorApp {
         crate::i18n::tr(self.lang, key)
     }
 
+    /// Whether the loaded alignment has a BAM/CRAM path on record — the gate on every control that
+    /// would have to walk reads. An alignment we can't find is treated as having no file, so a
+    /// stale id disables the button rather than launching a walk that would fail.
+    pub(crate) fn alignment_has_bam(&self, alignment_id: i64) -> bool {
+        self.alignments
+            .iter()
+            .any(|a| a.id == alignment_id && a.bam_path.is_some())
+    }
+
+    /// The cancel control shown beside a running analysis: it disables itself once clicked.
+    ///
+    /// The disable matters — cancellation is cooperative and doesn't take effect until the walk
+    /// reaches its next check, so a live button invited repeat clicks and made a working cancel
+    /// look ignored. Every place that can start a walk needs the same behaviour, so it lives here
+    /// rather than being re-derived per tab.
+    pub(crate) fn cancel_button(&mut self, ui: &mut egui::Ui) {
+        let requested = self.cancelling;
+        let label = if requested {
+            self.tr("analysis.cancelling")
+        } else {
+            self.tr("common.cancel")
+        };
+        if ui.add_enabled(!requested, egui::Button::new(label)).clicked() {
+            self.cancelling = true;
+            let _ = self.tx.send(Command::CancelAnalysis);
+            self.status = self.tr("analysis.cancelling").to_string();
+        }
+    }
+
+    /// A destructive-action button (filled [`DANGER`], white label) — the visual promise that this
+    /// one is not like the others. Returns whether it was clicked.
+    pub(crate) fn danger_button(&self, ui: &mut egui::Ui, key: &'static str) -> bool {
+        ui.add(egui::Button::new(egui::RichText::new(self.tr(key)).color(egui::Color32::WHITE)).fill(DANGER))
+            .clicked()
+    }
+
     /// The loaded subject for `guid`, from whichever list holds it: `all_biosamples` (the workspace
     /// table) or `samples` (the current project's members).
     pub(crate) fn find_subject(&self, guid: SampleGuid) -> Option<&Biosample> {
