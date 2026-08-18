@@ -126,7 +126,7 @@ ING_OK = {
     "processing", "pending", "missing", "remaining", "existing", "following",
     "corresponding", "underlying", "according", "including",
     # Technical Names from documents/STE-dictionary.md that end in -ing.
-    "operating", "pacing", "sampling", "scaling", "streaming", "spilling", "phasing",
+    "operating", "genotyping", "pacing", "sampling", "scaling", "streaming", "spilling", "phasing",
     "binning", "masking", "trimming", "clipping", "calling", "sorting", "merging",
     "reading", "writing", "counting", "timing", "build", "backing",
 }
@@ -218,7 +218,9 @@ def analyse(items, kind):
         for idiom in IDIOMS:
             if re.search(rf"\b{re.escape(idiom.lower())}\b", low):
                 v["STE8 idiom/metaphor/informal"].append((ln, idiom))
-        if "—" in ptext or " -- " in ptext:
+        # Judge the code-stripped text: a fenced shell block puts cargo's `--` argument separator
+        # in the paragraph, and that is not an em-dash aside.
+        if "—" in clean or " -- " in clean:
             v["STE6 em-dash aside"].append((ln, ""))
     return v
 

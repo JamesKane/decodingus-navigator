@@ -2,10 +2,15 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
-/// Process-wide memo of the parsed Y-SNP dictionary. Now that [`YsnpDictionary`] prefers the full
-/// ~2M-row catalog, parsing it per resolve/annotate call (`y_snp_names_at` runs on every Y-SNP-table
-/// view) would re-read ~200 MB each time; this parses once and reuses it. Keyed by the resolved
-/// dictionary file's path + signature (mtime:size), so a refreshed dictionary is picked up.
+/// One copy of the parsed Y-SNP dictionary for the full process.
+///
+/// [`YsnpDictionary`] now selects the full catalog, which holds about 2 million rows. A parse of
+/// that file at each call would read about 200 MB each time. The `y_snp_names_at` function runs at
+/// each view of the Y-SNP table, so those calls are frequent. This value holds the result of one
+/// parse.
+///
+/// The key is the path of the dictionary file together with its signature, which is the mtime and
+/// the size. So the code reads a new dictionary after the user replaces the file.
 type YsnpMemo = Mutex<Option<(String, Arc<YsnpDictionary>)>>;
 static YSNP_MEMO: std::sync::OnceLock<YsnpMemo> = std::sync::OnceLock::new();
 
@@ -47,9 +52,10 @@ impl App {
     ) -> Result<StrProfile, AppError> {
         let text = std::fs::read_to_string(csv_path)?;
         let markers = strprofile::parse_csv(&text).map_err(AppError::Import)?;
-        // Merge into an existing same-panel profile rather than creating a duplicate — e.g. a Big Y
-        // CUSTOM (700/500) panel re-imported after the FTDNA project import already made one. Union
-        // the markers, the freshly-imported value winning on a conflict.
+        // Add the markers to a profile of the same panel, when one exists. Do not make a second
+        // profile. One example is a Big Y CUSTOM panel, of 700 or 500 markers, that the user
+        // imports after the FTDNA project import made the profile. The code joins the two marker
+        // sets. On a conflict, the value from the new import wins.
         if let Some(existing) = str_profile::find_by_panel(self.store.pool(), biosample_guid, panel_name).await? {
             let mut merged = existing.markers.clone();
             for m in markers {
@@ -84,10 +90,15 @@ impl App {
 
     // ---- SNP variants ------------------------------------------------------
 
-    /// Import a subject's SNP variant calls from a file. `.vcf` is parsed as a VCF (reusing
-    /// the shared column parser); `.csv`/`.tsv` as a `contig,position,ref,alt[,rsid][,gt]`
-    /// table (a YSEQ/Sanger panel export fits this). Indels/symbolic alleles are dropped
-    /// (SNP-only). `source_type` sets the concordance weight (Sanger = gold standard).
+    /// Import the SNP variant calls of a subject from a file.
+    ///
+    /// The code parses a `.vcf` file as a VCF, with the shared column parser. It parses a `.csv`
+    /// file or a `.tsv` file as a `contig,position,ref,alt[,rsid][,gt]` table. A YSEQ panel export
+    /// and a Sanger panel export have that shape.
+    ///
+    /// The code keeps only SNPs. It removes each indel and each symbolic allele. `source_type` sets
+    /// the weight of the source in the concordance calculation, and a Sanger source has the highest
+    /// weight.
     pub async fn import_variants_from_file(
         &self,
         biosample_guid: SampleGuid,
@@ -98,8 +109,9 @@ impl App {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "variants".into());
-        // Match `.vcf`, plus bgzipped/gzipped `.vcf.gz` / `.vcf.bgz` (extension() alone sees only
-        // the trailing `.gz`, which would mis-route a compressed VCF to the CSV branch).
+        // Match `.vcf`, and also `.vcf.gz` and `.vcf.bgz` from bgzip or gzip. The `extension()`
+        // function reads only the last `.gz` part, and that value would send a compressed VCF to
+        // the CSV branch.
         let is_vcf = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -107,9 +119,10 @@ impl App {
             .is_some_and(|n| n.ends_with(".vcf") || n.ends_with(".vcf.gz") || n.ends_with(".vcf.bgz"));
 
         let calls = if is_vcf {
-            // Genotype-aware: a vendor VCF (FTDNA Big Y / YSEQ) reports reference sites too, so only
-            // the genotype-selected ALT is kept (see parse_vcf_subject_snps). Sites-only VCFs keep
-            // every listed variant. Handles a bgzipped `.vcf.gz` transparently.
+            // The parser reads the genotype. A vendor VCF from FTDNA Big Y or YSEQ also reports
+            // a reference site. So the code keeps only the ALT value that the genotype selects.
+            // See parse_vcf_subject_snps. For a VCF with sites only, the code keeps each listed
+            // variant. The parser also reads a `.vcf.gz` file from bgzip.
             parse_vcf_subject_snps(path)?
         } else {
             let text = std::fs::read_to_string(path)?;
@@ -119,10 +132,15 @@ impl App {
             return Err(AppError::Import("no SNP variants found in file".into()));
         }
 
-        // Vendor-aware tagging for VCFs: recognize FTDNA Big Y / Y Elite / YSEQ / mtFull from the
-        // header + filename + sibling readme, and record the vendor label, a meaningful SourceType,
-        // and the reference build (feeds Y/mt placement liftover). A generic VCF keeps the caller's
-        // label/source_type. CSV imports are unchanged.
+        // Find the vendor of a VCF and mark the record. The code recognizes FTDNA Big Y, Y Elite,
+        // YSEQ, and mtFull. It reads the header, the file name, and a readme file in the same
+        // directory.
+        //
+        // The code then records the vendor label, a correct SourceType, and the reference build.
+        // The Y placement and the mt placement use that build for the liftover.
+        //
+        // A VCF with no vendor keeps the label and the source_type of the caller. A CSV import does
+        // not change.
         let (source_label, source_type, reference_build) = if is_vcf {
             let (meta, contigs) = peek_vcf_header(path);
             let vendor =
@@ -147,15 +165,20 @@ impl App {
             source_type,
             reference_build,
             calls,
-            // Recorded so the VCF can be re-read to genotype at tree positions (the role
-            // `alignment.bam_path` plays for a CRAM) — see `App::vset_base_calls`.
+            // The code records this path, so it can read the VCF again and genotype at the
+            // positions of the tree. The `alignment.bam_path` field has the same role for a CRAM.
+            // See `App::vset_base_calls`.
             source_path: Some(path.to_string_lossy().into_owned()),
         };
         let set = variant_set::create(self.store.pool(), &new).await?;
 
-        // Place a vendor Y-NGS VCF (FTDNA Big Y / YSEQ / Full Genomes / …) on import so it lands a
-        // Y haplogroup without a manual Refresh — the VCF *is* the called Y-SNP set. Best-effort: an
-        // offline tree or an autosomal/mt-only VCF just leaves the calls (no chrY → no-op).
+        // Place a vendor Y-NGS VCF at the import, so the subject gets a Y haplogroup and the user
+        // does not press Refresh. Such a VCF comes from FTDNA Big Y, YSEQ, Full Genomes, or a
+        // similar test, and the file *is* the set of Y-SNP calls.
+        //
+        // The step is optional. The cache can hold no tree, and a VCF can hold only autosomal
+        // data or mt data. In each case the code writes the calls and does nothing more. A file
+        // with no chrY data gives no placement.
         let has_chr_y = set
             .calls
             .iter()
@@ -168,13 +191,21 @@ impl App {
         Ok(set)
     }
 
-    /// Import a CompleteGenomics **masterVar** whole-genome variant table (`var-*-ASM.tsv[.bz2]`,
-    /// the old CG sequencing service's `cgatools` output). The file is streamed and decompressed
-    /// off-thread ([`navigator_analysis::mastervar`]) into SNP calls — each diploid het becomes a
-    /// `0/1`, a homozygous/haploid call a `1/1` / `1`, indels and `ref`/`no-call` spans dropped
-    /// (SNP-only, matching the VCF/CSV importer). Stored as a `WgsShortRead` set on GRCh37 (CG's
-    /// only build; chrM = rCRS), then Y-placed on import like a vendor Y-NGS VCF. mtDNA falls out
-    /// via the multi-source mt consensus (a non-chip set's chrM feeds `mt_source_calls`).
+    /// Import a CompleteGenomics **masterVar** whole-genome variant table. The file name is
+    /// `var-*-ASM.tsv` or `var-*-ASM.tsv.bz2`, and the `cgatools` program of the old CG sequencing
+    /// service wrote it.
+    ///
+    /// [`navigator_analysis::mastervar`] reads and decompresses the file on another thread, and it
+    /// makes SNP calls. A diploid heterozygous call becomes `0/1`. A homozygous call becomes `1/1`,
+    /// and a haploid call becomes `1`. The code removes each indel, each `ref` span, and each
+    /// `no-call` span. It keeps only SNPs, as the VCF importer and the CSV importer do.
+    ///
+    /// The code stores the result as a `WgsShortRead` set on GRCh37, which is the only build of CG.
+    /// The chrM contig uses rCRS. The code then places the Y haplogroup at the import, as it does
+    /// for a vendor Y-NGS VCF.
+    ///
+    /// The mtDNA result comes from the mt consensus of many sources. The chrM data of a set that is
+    /// not a chip feeds `mt_source_calls`.
     pub async fn import_mastervar_from_file(
         &self,
         biosample_guid: SampleGuid,
@@ -219,12 +250,17 @@ impl App {
         Ok(set)
     }
 
-    /// Import an FTDNA Big Y CSV variant report (Named or Private Variants) — the data a project
-    /// admin gets when their access tier exposes the browser CSVs but not the BAM/CRAM/VCF. The
-    /// rows are GRCh38 chrY derived-allele calls, so they are stored as a `TargetedNgs` variant set
-    /// on GRCh38 (FTDNA's native Y-tree build) and placed via the vendor path on import — the Named
-    /// report lands a Y haplogroup directly (positions match the tree, no liftover). Private
-    /// Variants are stored too (novel loci, off-tree) for the record.
+    /// Import a Big Y CSV variant report from FTDNA. The report is the Named report or the Private
+    /// Variants report. A project administrator receives these files when the access level gives
+    /// the browser CSV files but no BAM file, CRAM file, or VCF file.
+    ///
+    /// Each row is a derived-allele call on chrY in GRCh38. So the code stores the rows as a
+    /// `TargetedNgs` variant set on GRCh38, which is the native build of the Y tree of FTDNA. The
+    /// code then places the subject with the vendor path at the import.
+    ///
+    /// The Named report gives a Y haplogroup directly, because its positions match the tree and
+    /// need no liftover. The code also stores the Private Variants. Those loci are new and are not
+    /// on the tree, and the store keeps them as a record.
     pub async fn import_ftdna_csv_variants(
         &self,
         biosample_guid: SampleGuid,
@@ -241,15 +277,17 @@ impl App {
             source_path: Some(path.to_string_lossy().into_owned()),
         };
         let set = variant_set::create(self.store.pool(), &new).await?;
-        // Place Y from the vendor (non-Chip) sets — the Named report carries the tree-defining SNPs.
+        // Place the Y haplogroup from the vendor sets, which are the sets that are not a chip.
+        // The Named report holds the SNPs that define a node of the tree.
         if let Err(e) = self.assign_y_vendor_vcfs(biosample_guid).await {
             eprintln!("FTDNA CSV Y placement deferred ({e})");
         }
         Ok(set)
     }
 
-    /// Add a manually-entered variant set — paste `contig,position,ref,alt` rows (e.g.
-    /// Sanger/YSEQ confirmations). `source_type` sets the weight (Sanger = 1.0).
+    /// Add a variant set that the user typed. The user pastes `contig,position,ref,alt` rows. One
+    /// example is a set of confirmations from Sanger or YSEQ. `source_type` sets the weight, and a
+    /// Sanger source has the weight 1.0.
     pub async fn add_variants(
         &self,
         biosample_guid: SampleGuid,
@@ -269,8 +307,9 @@ impl App {
         Ok(variant_set::create(self.store.pool(), &new).await?)
     }
 
-    /// The build to emit a subject's BISDNA calls on: the first of its alignments whose
-    /// reference build maps to a dictionary key, else `"hs1"` (the project default).
+    /// The build for the BISDNA calls of a subject. The method takes the first alignment whose
+    /// reference build has a dictionary key. If there is none, it returns `"hs1"`, which is the
+    /// default of the project.
     pub(crate) async fn bisdna_target_build(&self, biosample_guid: SampleGuid) -> String {
         if let Ok(aligns) = alignment::list_for_biosample(self.store.pool(), biosample_guid).await {
             for a in &aligns {
@@ -282,13 +321,19 @@ impl App {
         "hs1".to_string()
     }
 
-    /// Annotate position-only Y variants with the catalogued Y-SNP **name** at that site, for the two
-    /// Y-SNP tables (multi-source variant profile + private-Y union). Resolves the subject's Y build
-    /// key (CHM13→`hs1`, else GRCh38/GRCh37 — same rule as the BISDNA importer), loads the Y-SNP
-    /// dictionary (the full catalog, memoized), and returns `position → canonical name` for the
-    /// requested positions only. Best-effort: a missing dictionary yields an empty map (not an error),
-    /// so the tables simply show no extra names. Looking a position up against the wrong build just
-    /// misses — there are no false labels, only possibly-absent ones.
+    /// Add the catalogued Y-SNP **name** to each Y variant that has a position and no name. Two
+    /// tables use this map: the variant profile with many sources, and the union of the private-Y
+    /// sets.
+    ///
+    /// The method finds the Y build key of the subject. A CHM13 build gives `hs1`, and the other
+    /// builds give GRCh38 or GRCh37. The BISDNA importer uses the same rule.
+    ///
+    /// The method then reads the Y-SNP dictionary, which is the full catalog and stays in memory.
+    /// It returns a map from a position to a canonical name, for the requested positions only.
+    ///
+    /// The step is optional. An absent dictionary gives an empty map and no error, and the tables
+    /// then show no extra name. A lookup against the wrong build finds nothing. So the table can
+    /// hold an absent name, but it never holds a wrong name.
     pub async fn y_snp_names_at(
         &self,
         biosample_guid: SampleGuid,
@@ -309,14 +354,23 @@ impl App {
         Ok(names)
     }
 
-    /// Ensure a Y-SNP dictionary is present, downloading the full catalog (`dictionary.tsv`,
-    /// ~208 MB) from the asset release on first use — it is too big and too volatile (~weekly YBrowse
-    /// refresh) to bundle in the installer. No-op when a dictionary (the chromo2 panel or the full
-    /// catalog) is already installed, or the user pointed `NAVIGATOR_YSNP_DIR` at one. The download
-    /// is verified against a small published manifest (`ysnp_manifest.json`, the ancestry
-    /// [`AssetManifest`](navigator_analysis::manifest::AssetManifest) shape) so a rebuild is a
-    /// re-publish, not a client change. Best-effort — the caller then loads, degrading clearly if the
-    /// dictionary is still absent. Publish with `packaging/publish-assets.sh ysnp`.
+    /// Make sure that a Y-SNP dictionary is on the machine. At the first use, the method downloads
+    /// the full catalog, `dictionary.tsv`, which is about 208 MB.
+    ///
+    /// The installer does not hold that file. The file is too large, and YBrowse refreshes it about
+    /// once each week.
+    ///
+    /// The method does nothing when the machine already holds a dictionary. That dictionary can be
+    /// the chromo2 panel or the full catalog. It also does nothing when `NAVIGATOR_YSNP_DIR` points
+    /// to one.
+    ///
+    /// The method checks the download against a small published manifest,
+    /// `ysnp_manifest.json`. That file has the shape of the ancestry
+    /// [`AssetManifest`](navigator_analysis::manifest::AssetManifest). So a rebuild of the catalog
+    /// is a new publish and not a change to the client.
+    ///
+    /// The step is optional. The caller then reads the dictionary, and it reports the state clearly
+    /// when the file is still absent. Publish the file with `packaging/publish-assets.sh ysnp`.
     pub async fn ensure_ysnp_dictionary(&self) -> Result<(), AppError> {
         const YSNP_ASSET_BASE: &str = "https://github.com/JamesKane/decodingus-navigator/releases/download/assets-ysnp";
 
@@ -349,8 +403,9 @@ impl App {
             &mut noop,
         )
         .await?;
-        // Verify the streamed digest against the manifest (no 208 MB re-read). A manifest without an
-        // entry passes through advisory, matching `AssetManifest::verify`.
+        // Check the digest from the stream against the manifest. The code does not read the 208 MB
+        // file again. A manifest with no entry for the file gives a warning only, as
+        // `AssetManifest::verify` does.
         if let Some(entry) = manifest.assets.get("dictionary.tsv") {
             if !got.eq_ignore_ascii_case(&entry.sha256) {
                 let _ = std::fs::remove_file(&dest);
@@ -363,12 +418,19 @@ impl App {
         Ok(())
     }
 
-    /// Import a BISDNA chromo2 Y-SNP export. Each named marker is resolved to a locus via the
-    /// Y-SNP dictionary on `build` (when `None`, the subject's alignment build, else `"hs1"`).
-    /// Only **positive** (derived) calls become variant calls: a negative is not a variant.
-    /// `no_call`, back-mutated, and dictionary-unresolved markers are tallied but not emitted.
-    /// The genotype is a QC cross-check only — the file's verdict (independent of the Illumina
-    /// TOP strand) decides derived/ancestral. Stored as a `Chip`-weighted [`VariantSet`].
+    /// Import a chromo2 Y-SNP export from BISDNA.
+    ///
+    /// The Y-SNP dictionary changes each marker name into a locus on `build`. When `build` is
+    /// `None`, the method uses the alignment build of the subject, and then `"hs1"`.
+    ///
+    /// Only a **positive**, or derived, call becomes a variant call. A negative call is not a
+    /// variant. The method counts a `no_call` marker, a back-mutated marker, and a marker that the
+    /// dictionary does not hold. It writes none of those three.
+    ///
+    /// The genotype is a quality cross-check only. The verdict in the file decides between derived
+    /// and ancestral, and that verdict does not depend on the Illumina TOP strand.
+    ///
+    /// The method stores the result as a [`VariantSet`] with the `Chip` weight.
     pub async fn import_bisdna_from_file(
         &self,
         biosample_guid: SampleGuid,
@@ -404,10 +466,13 @@ impl App {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "BISDNA".into());
 
-        // Also record an array QC summary so the chromo2 chip appears under Data Sources →
-        // Chip / Array Profiles (the placeable per-SNP calls live in the variant set below; a
-        // genotyping array legitimately has both a QC/provenance summary and its calls). BISDNA
-        // is a Y-only haploid panel: every called marker is a Y marker, heterozygosity is n/a.
+        // Also write a quality summary for the array. The chromo2 chip then appears under
+        // Data Sources, in the Chip and Array Profiles list. The variant set below holds the SNP
+        // calls that the code can place. An array correctly has both a quality summary with its
+        // provenance and a set of calls.
+        //
+        // BISDNA is a haploid Y panel. Each called marker is a Y marker, and heterozygosity does
+        // not apply.
         let total = calls.len() as i64;
         let called = total - outcome.no_call as i64;
         let chip = NewChipProfile {
@@ -442,10 +507,13 @@ impl App {
         };
         let variant_set = variant_set::create(self.store.pool(), &new).await?;
 
-        // Compute the Y haplogroup on import (best-effort; an offline tree just leaves the calls),
-        // mirroring the array path in `import_chip_profile_from_csv`. Without this a chromo2/BISDNA
-        // panel imports its calls but never auto-places — it has no cached alignment genotypes, so
-        // `rebuild-signatures` can't place it later either, leaving the subject's Y at <none>.
+        // Calculate the Y haplogroup at the import. The step is optional, and with no tree the
+        // code writes the calls only. The array path in `import_chip_profile_from_csv` does the
+        // same.
+        //
+        // Without this step, a chromo2 panel from BISDNA imports its calls and never gets a
+        // placement. Such a panel has no alignment genotypes in the cache, so `rebuild-signatures`
+        // can not place it later either. The Y value of the subject then stays at <none>.
         if derived_calls > 0 {
             if let Err(e) = self.assign_y_bisdna(biosample_guid, Some(&build)).await {
                 eprintln!("BISDNA Y placement deferred ({e})");
@@ -473,17 +541,26 @@ impl App {
 
     // ---- chip / array profiles ---------------------------------------------
 
-    /// Import a genotyping-array raw-data export (CSV/TSV) and store its QC summary.
-    /// `provider` overrides vendor detection when given; `chip_version` is optional.
-    /// Import a genotyping-array raw-data export and (1) store its QC summary as a [`ChipProfile`],
-    /// (2) store the haploid Y/MT genotype rows as a `Chip`-source [`VariantSet`], and (3)
-    /// best-effort place the Y (and, where present, mtDNA) haplogroup on import — the consumer-array
-    /// counterpart to BISDNA's chromo2 path. 23andMe carries both Y and MT rows; AncestryDNA carries
-    /// Y but no usable mtDNA. The stored observed bases flow through the same
-    /// [`assign_y_bisdna`](Self::assign_y_bisdna) / [`assign_mt_chip`](Self::assign_mt_chip) +
-    /// `assemble_assignment_robust` placement as BISDNA, with plus-strand reconciliation to the tree.
-    /// Placement is best-effort: an unreachable tree (offline) leaves the calls stored for a later
-    /// manual "Assign … (panel)" — it does not fail the import.
+    /// Import the raw-data export of a genotyping array, as a CSV file or a TSV file.
+    ///
+    /// The method does three things. It writes the quality summary as a [`ChipProfile`]. It writes
+    /// the haploid Y rows and MT rows as a [`VariantSet`] with the `Chip` source. It then tries to
+    /// place the Y haplogroup, and the mtDNA haplogroup when the file holds one.
+    ///
+    /// This method is the consumer-array form of the chromo2 path of BISDNA. A 23andMe file holds
+    /// both Y rows and MT rows. An AncestryDNA file holds Y rows and no mtDNA rows that the app can
+    /// use.
+    ///
+    /// The stored bases go through the same placement as BISDNA. That path is
+    /// [`assign_y_bisdna`](Self::assign_y_bisdna) or [`assign_mt_chip`](Self::assign_mt_chip),
+    /// followed by `assemble_assignment_robust`, and it reconciles each call to the plus strand of
+    /// the tree.
+    ///
+    /// The placement is optional. With no network, the code stores the calls, and the user can
+    /// press "Assign … (panel)" later. A failed placement does not fail the import.
+    ///
+    /// `provider` replaces the vendor that the code finds, when the caller gives it. `chip_version`
+    /// is optional.
     pub async fn import_chip_profile_from_csv(
         &self,
         biosample_guid: SampleGuid,
@@ -514,10 +591,12 @@ impl App {
         };
         let profile = chip_profile::create(self.store.pool(), &new).await?;
 
-        // Pull the haploid Y/MT genotype rows and store them as Chip-source variant calls so the
-        // haplogroup placement (and later re-placement) has them without re-reading the file. The
-        // observed allele goes in both `reference` and `alternate` (we do not know the ancestral);
-        // the placement reads `alternate`.
+        // Read the haploid Y rows and MT rows, and store them as variant calls with the Chip
+        // source. The haplogroup placement then has them, and a later placement also has them,
+        // with no second read of the file.
+        //
+        // The observed allele goes in `reference` and in `alternate`, because the app does not know
+        // the ancestral allele. The placement reads `alternate`.
         let haplo = chipprofile::haplo_calls(&text);
         if !haplo.is_empty() {
             let build = chipprofile::detect_build(&text);
@@ -556,8 +635,9 @@ impl App {
                     eprintln!("chip Y placement deferred ({e})");
                 }
             }
-            // AncestryDNA's stray MT rows are not a usable mtDNA panel — only place mtDNA when the
-            // array carries a real MT marker set (23andMe has thousands; the threshold filters noise).
+            // The few MT rows of an AncestryDNA file are not an mtDNA panel that the app can use.
+            // Place mtDNA only when the array holds a true MT marker set. A 23andMe file holds
+            // some thousands of such markers, and the limit below removes the noise.
             const MIN_MT_CALLS: usize = 20;
             if mt_count >= MIN_MT_CALLS {
                 if let Err(e) = self.assign_mt_chip(biosample_guid).await {
@@ -595,8 +675,9 @@ impl App {
         };
         let seq = mtdna_store::create(self.store.pool(), &new).await?;
 
-        // Derive rCRS-relative variants and persist them, so an mtDNA FASTA yields a variant set on
-        // import (not only on the on-demand "show mutations" view) — like a chip/VCF import does.
+        // Derive the variants against rCRS and write them to the store. An mtDNA FASTA then gives
+        // a variant set at the import. Before this step, the set appeared only in the "show
+        // mutations" view. A chip import and a VCF import behave in the same way.
         let derived = navigator_analysis::mtvariants::derive(navigator_analysis::mtvariants::rcrs(), &seq.sequence);
         if !derived.is_empty() {
             let label = mt_vendor_label(seq.source_file_name.as_deref(), seq.defline.as_deref());
@@ -609,7 +690,8 @@ impl App {
                     alternate: v.alternate.to_string(),
                     rs_id: None,
                     genotype: None,
-                    // Derived from an rCRS diff, not a source VCF — no evidence to carry.
+                    // These calls come from a comparison with rCRS and not from a source VCF. So
+                    // there is no evidence to store.
                     evidence: Default::default(),
                 })
                 .collect();
@@ -626,9 +708,10 @@ impl App {
             let _ = variant_set::create(self.store.pool(), &set).await;
         }
 
-        // Haplogroup placement is intentionally NOT run here: it needs the mt haplotree (network),
-        // and coupling a deterministic import to a network fetch is what the alignment import
-        // deliberately avoids too. The mtDNA tab's "Assign mtDNA haplogroup" places it on demand.
+        // This method does NOT place the haplogroup, by design. A placement needs the mt
+        // haplotree, and a read of that tree needs the network. An import must stay deterministic,
+        // so it must not depend on the network. The alignment import follows the same rule. The
+        // user presses "Assign mtDNA haplogroup" on the mtDNA tab to place the subject.
         Ok(seq)
     }
 
@@ -637,12 +720,17 @@ impl App {
         Ok(mtdna_store::list_for_biosample(self.store.pool(), biosample_guid).await?)
     }
 
-    /// Derive mtDNA variants for a stored sequence by comparing it to an rCRS reference
-    /// FASTA, and save them as a variant set (contig `rCRS`) so they appear alongside the
-    /// subject's other variants. The reference is validated as an mtDNA FASTA.
-    /// The mtDNA mutation list for a stored sequence: variants relative to the **bundled** rCRS
-    /// (NC_012920.1), via banded alignment — substitutions, insertions, and deletions in standard
-    /// mtDNA notation. On-demand (one ~16.5 kb alignment), not stored. The classic mtDNA result.
+    /// Derive the mtDNA variants of a stored sequence. The method compares that sequence with an
+    /// rCRS reference FASTA and writes the result as a variant set on the contig `rCRS`. The
+    /// variants then appear with the other variants of the subject. The method checks that the
+    /// reference file is an mtDNA FASTA.
+    ///
+    /// The mutation list holds the variants against the **bundled** rCRS sequence, NC_012920.1. A
+    /// banded alignment gives them. The list holds substitutions, insertions, and deletions, in the
+    /// standard mtDNA notation.
+    ///
+    /// The method runs at the request of the user, and it does one alignment of about 16.5 kb. It
+    /// stores nothing. This list is the classic mtDNA result.
     pub async fn mtdna_variants(&self, mtdna_id: i64) -> Result<Vec<MtVariant>, AppError> {
         let seq = mtdna_store::get(self.store.pool(), mtdna_id)
             .await?

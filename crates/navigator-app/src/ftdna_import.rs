@@ -1,11 +1,17 @@
-//! FTDNA project import — the matching/dedup engine + two-phase plan/commit (design §5/§6).
+//! The FTDNA project import. This module holds the engine that matches a kit to a subject and
+//! finds a duplicate. It also holds the two steps of the import, which are the plan and the commit.
+//! See design §5 and §6.
 //!
-//! Phase 1 scope (roster + ancestry, the spine): parse the batch CSVs, join by kit number, match
-//! each kit against the workspace, and produce a reviewable **plan** (dry-run, no writes). A separate
-//! commit step applies the plan with the admin's resolutions for fuzzy candidates.
+//! Phase 1 covers the roster and the ancestry, which are the base of the import. The module does
+//! four steps. It parses the batch CSV files, joins them by the kit number, matches each kit
+//! against the workspace, and makes a **plan** for the administrator. This phase writes nothing.
 //!
-//! Deep per-member data (Big Y / mtDNA / Family Finder) and the wide Y-STR chart are layered on by
-//! later slices; this module only wires identity + MDKA + membership.
+//! A separate commit step applies the plan. That step uses the decisions of the administrator for
+//! each candidate that the engine is not sure about.
+//!
+//! A later change adds the deep data of each member, which is Big Y, mtDNA, and Family Finder. It
+//! also adds the wide Y-STR chart. This module only connects the identity, the MDKA rows, and the
+//! membership.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -28,10 +34,11 @@ struct CatalogSample {
     accession: Option<String>,
 }
 
-/// Tuning for the matching engine.
+/// The values that control the engine that matches a kit to a subject.
 #[derive(Debug, Clone)]
 pub struct FtdnaImportOptions {
-    /// Minimum fuzzy score (0..1) for a workspace Subject to be offered as a merge candidate.
+    /// The lowest score, from 0 to 1, that lets the engine offer a subject as a merge candidate.
+    /// This score is not exact, and the engine calculates it from the name.
     pub fuzzy_threshold: f32,
 }
 
@@ -62,8 +69,9 @@ pub struct FuzzyCandidate {
     pub reasons: Vec<String>,
 }
 
-/// How the matcher proposes to handle a kit. Auto-merge is locked for an exact vendor-id hit; fuzzy
-/// hits are queued for the admin (never auto-merged).
+/// The action that the engine proposes for a kit. The engine merges without a question only for an
+/// exact match on the vendor id. For a match that is not exact, it adds the kit to a list, and the
+/// administrator decides. The engine never merges such a kit on its own.
 #[derive(Debug, Clone)]
 pub enum MatchKind {
     /// No workspace match → create a new Subject.
@@ -91,8 +99,10 @@ pub struct FtdnaPlanRow {
     pub input: FtdnaSubjectInput,
 }
 
-/// Recognized-input + scan counts for the review header — so a missing/misclassified file (e.g. no
-/// roster) is immediately visible rather than silently producing all-orphan rows.
+/// The counts of the input files that the code recognized, and of the rows that it read. The review
+/// header shows these counts. So the administrator sees an absent file, or a file with the wrong
+/// class, at once. One example is an import with no roster. Without these counts, such an import
+/// gives rows with no subject and no message.
 #[derive(Debug, Clone, Default)]
 pub struct FtdnaPlanStats {
     /// Roster rows parsed from `Member_Information`.
@@ -149,7 +159,7 @@ pub enum FtdnaResolution {
 /// What the commit did.
 #[derive(Debug, Clone, Default)]
 pub struct FtdnaImportSummary {
-    /// The project the kits were imported into (resolved/created at commit).
+    /// The project that received the kits. The commit step finds this project or makes it.
     pub project_id: i64,
     pub created: usize,
     pub merged: usize,
@@ -164,8 +174,11 @@ pub struct FtdnaImportSummary {
     pub errors: Vec<String>,
 }
 
-/// A Subject's imported genealogy bundle: vendor ids, FTDNA member labels, and MDKA rows. PII —
-/// for local display only (never federated). Empty when nothing was imported for the Subject.
+/// The genealogy data that the app imported for one subject. It holds the vendor ids, the FTDNA
+/// member labels, and the MDKA rows.
+///
+/// This data is personal. The app shows it on this machine only, and it never sends it to the
+/// network. The value is empty when the app imported nothing for the subject.
 #[derive(Debug, Clone, Default)]
 pub struct FtdnaGenealogy {
     pub external_ids: Vec<navigator_domain::identity::ExternalId>,
@@ -174,7 +187,7 @@ pub struct FtdnaGenealogy {
 }
 
 impl FtdnaGenealogy {
-    /// Nothing imported → the detail card can be skipped.
+    /// Shows that the app imported nothing. The UI can then skip the detail card.
     pub fn is_empty(&self) -> bool {
         self.external_ids.is_empty() && self.member.is_none() && self.mdka.is_empty()
     }
@@ -191,10 +204,15 @@ impl App {
         })
     }
 
-    /// Attach a vendor id (kit number) to a Subject from the subject editor. Rejects a blank
-    /// source/id, and refuses to bind a `(source, external_id)` that already belongs to a *different*
-    /// Subject (the `(source, external_id)` uniqueness is the dedup anchor — never silently re-point
-    /// it; the caller resolves the conflict). Idempotent for the same Subject.
+    /// Add a vendor id, which is a kit number, to a subject from the subject editor.
+    ///
+    /// The method refuses a blank source and a blank id. It also refuses a `(source, external_id)`
+    /// pair that belongs to a *different* subject.
+    ///
+    /// That pair is unique, and the app uses it to find a duplicate donor. The method must never
+    /// move the pair to another subject without a message. The caller resolves such a conflict.
+    ///
+    /// A second call for the same subject is safe.
     pub async fn add_external_id(
         &self,
         guid: SampleGuid,
@@ -218,7 +236,8 @@ impl App {
 
     /// Detach a vendor id (by row id) from a Subject.
     pub async fn delete_external_id(&self, id: i64) -> Result<(), AppError> {
-        // Recover the owning subject before the row is gone, so we can refresh its published record.
+        // Read the subject of this row before the code deletes the row. The app then refreshes
+        // the published record of that subject.
         let guid = external_id::get(self.store.pool(), id).await?.map(|e| e.biosample_guid);
         external_id::delete(self.store.pool(), id).await?;
         if let Some(guid) = guid {
@@ -227,13 +246,22 @@ impl App {
         Ok(())
     }
 
-    /// Backfill public-catalog external ids (`IGSR`/`HGDP`/INSDC) derivable from each subject's local
-    /// provenance ([`navigator_domain::identity::catalog_ids_from_provenance`]) — so bulk-imported
-    /// public datasets publish ids that match their existing AppView catalog rows. Deterministic and
-    /// network-free; a friendly-name-only sample contributes nothing. Idempotent (skips ids already
-    /// present); a `(namespace, value)` already owned by a *different* subject is counted as a
-    /// conflict and left untouched (never silently re-pointed). `apply == false` is a dry run.
-    /// Adds via the store directly (no per-id re-publish); re-publish the affected subjects after.
+    /// Add the public-catalog external ids that the code can derive from the local provenance of
+    /// each subject. The namespaces are `IGSR`, `HGDP`, and INSDC, and
+    /// [`navigator_domain::identity::catalog_ids_from_provenance`] derives them.
+    ///
+    /// A public dataset that a user imported in bulk then publishes ids that match its rows in the
+    /// catalog of the AppView.
+    ///
+    /// The method is deterministic and uses no network. A sample with only a friendly name gives no
+    /// id. A second call is safe, because the method skips an id that already exists.
+    ///
+    /// The method counts a `(namespace, value)` pair that belongs to a *different* subject as a
+    /// conflict, and it changes nothing. It never moves such a pair without a message.
+    /// `apply == false` makes the method report the changes and write nothing.
+    ///
+    /// The method writes to the store directly, and it does not publish a record for each id.
+    /// Publish the subjects that changed after the method completes.
     pub async fn backfill_catalog_ids(
         &self,
         project_id: Option<i64>,
@@ -274,7 +302,8 @@ impl App {
                     if row.biosample_guid == b.guid {
                         out.ids_added += 1;
                     } else {
-                        // (namespace,value) already belongs to another subject — a dup import; leave it.
+                        // This (namespace, value) pair belongs to another subject. The user
+                        // imported the same data twice. Change nothing.
                         out.conflicts += 1;
                     }
                 }
@@ -283,10 +312,14 @@ impl App {
         Ok(out)
     }
 
-    /// Fetch one public-catalog sample record from the AppView samples API (`/api/v1/samples/{alias}`,
-    /// public read) by its alias (= our `donor_identifier`). `Ok(None)` for a 404 (alias unknown to
-    /// the catalog — expected while server-side corrections are pending). The authoritative
-    /// `accession` it returns is the datum our local `sample_accession` lacks.
+    /// Read one public-catalog sample record from the samples API of the AppView. The path is
+    /// `/api/v1/samples/{alias}`, the read is public, and the alias is our `donor_identifier`.
+    ///
+    /// A 404 response gives `Ok(None)`, which means that the catalog does not know the alias. That
+    /// result is normal while a correction on the server is not complete.
+    ///
+    /// The `accession` value in the response has authority. Our local `sample_accession` field does
+    /// not hold it.
     async fn fetch_catalog_sample(&self, base: &str, alias: &str) -> Result<Option<CatalogSample>, AppError> {
         let url = format!("{}/api/v1/samples/{alias}", base.trim_end_matches('/'));
         let resp = self
@@ -309,14 +342,24 @@ impl App {
         Ok(Some(s))
     }
 
-    /// Resolve each subject against the AppView samples API and attach, **in one pass**, the full set
-    /// of public-catalog ids: the catalog *name* id (IGSR/HGDP, derived from the donor id) **and** the
-    /// authoritative INSDC *accession* the API returns (`SAMN…` → BIOSAMPLE, `ERS…` → ENA, `SRS…` →
-    /// SRA) — plus correcting the local `sample_accession` placeholder. A superset of
-    /// [`backfill_catalog_ids`](Self::backfill_catalog_ids) (the offline name-only path); use that one
-    /// when the API is unavailable. By default only subjects whose `donor_identifier` looks like a
-    /// catalog alias (IGSR/HGDP) are queried (`all` overrides), to avoid hammering the API with
-    /// friendly-name 404s. `apply == false` is a dry run. `limit` caps how many are queried.
+    /// Look up each subject in the samples API of the AppView and add the full set of
+    /// public-catalog ids **in one pass**.
+    ///
+    /// The set holds two kinds of id. The first is the catalog *name* id, which is an IGSR id or an
+    /// HGDP id, and the code derives it from the donor id. The second is the INSDC *accession* that
+    /// the API returns, and that value has authority. A `SAMN` prefix gives BIOSAMPLE, an `ERS`
+    /// prefix gives ENA, and an `SRS` prefix gives SRA. The method also corrects the local
+    /// `sample_accession` field, which holds a temporary value.
+    ///
+    /// This method does more than [`backfill_catalog_ids`](Self::backfill_catalog_ids), which uses
+    /// the name only and needs no network. Use that method when the API is not available.
+    ///
+    /// By default the method queries only a subject whose `donor_identifier` looks like a catalog
+    /// alias, which is an IGSR alias or an HGDP alias. The `all` option removes that limit. The
+    /// default stops many 404 responses for a friendly name.
+    ///
+    /// `apply == false` makes the method write nothing. `limit` sets the maximum count of
+    /// queries.
     pub async fn backfill_accessions(
         &self,
         project_id: Option<i64>,
@@ -356,8 +399,9 @@ impl App {
             };
             out.resolved += 1;
             let fetched_acc = sample.accession.as_deref().map(str::trim).filter(|a| !a.is_empty());
-            // One pass: the catalog *name* id (from the donor id) + the authoritative INSDC *accession*
-            // (from the API, when it is a real one) — the union of both sources via the shared helper.
+            // One pass gives both ids. The catalog *name* id comes from the donor id. The INSDC
+            // *accession* comes from the API, when the API holds a real one. The shared helper
+            // joins the two sources.
             let ids = navigator_domain::identity::catalog_ids_from_provenance(&b.donor_identifier, fetched_acc);
             if ids.is_empty() {
                 continue;
@@ -403,11 +447,15 @@ impl App {
         Ok(out)
     }
 
-    /// Re-publish a subject's biosample anchor after its identifier set changed, so the AppView's
-    /// mirror (which full-replaces `external_ids`) honors the add/remove. Deterministic rkey → the
-    /// re-publish overwrites in place. **Only for a subject already federated** and while signed in —
-    /// signed out, or a never-published subject, is a no-op (we do not newly federate a donor just
-    /// because a local id was attached).
+    /// Publish the biosample anchor of a subject again, after the set of identifiers of that
+    /// subject changed. The mirror of the AppView replaces the full `external_ids` field, so it
+    /// then holds each addition and each removal.
+    ///
+    /// The method uses a fixed rkey, so the second publish replaces the record.
+    ///
+    /// The method acts **only for a subject that the app already published**, and only while an
+    /// account is active. With no active account, or for a subject that the app never published, it
+    /// does nothing. A new local id must not put a donor on the network for the first time.
     async fn republish_biosample_ids(&self, guid: SampleGuid) -> Result<(), AppError> {
         let Some(did) = self.current_account() else {
             return Ok(());
@@ -421,8 +469,9 @@ impl App {
         self.publish_biosample(guid).await
     }
 
-    /// Insert or update a Subject's MDKA for one lineage from the subject editor (one row per
-    /// lineage; stamps `updated_at`). Pass a `source` of `MANUAL` for hand-entered rows.
+    /// Insert or change the MDKA of a subject for one lineage, from the subject editor. There is
+    /// one row for each lineage, and the method sets `updated_at`. Give a `source` of `MANUAL` for
+    /// a row that the user typed.
     pub async fn upsert_mdka(&self, guid: SampleGuid, mdka: NewMdka) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
         mdka::upsert(self.store.pool(), guid, &mdka, &now).await?;
@@ -485,8 +534,8 @@ impl App {
             ystr: ystr.len(),
             scanned_subjects: 0,
         };
-        // A roster was provided iff there are member rows — only then is "orphan" (data without a
-        // roster row) a meaningful flag.
+        // The import holds a roster only when it holds member rows. The "orphan" mark applies
+        // only in that case. An orphan is data with no roster row.
         let roster_provided = !members.is_empty();
 
         // Join by kit number (BTreeMap → stable, kit-sorted plan).
@@ -530,7 +579,8 @@ impl App {
                 label: display_label(&kit, &input),
                 kit_number: kit,
                 y_terminal,
-                // Orphan only when a roster was provided but this kit is not in it.
+                // Mark the kit as an orphan only when the import holds a roster and that roster
+                // does not name the kit.
                 in_roster: !roster_provided || roster.contains(&input.kit_number),
                 ystr_count: input.ystr_markers.len(),
                 kind,
@@ -545,8 +595,9 @@ impl App {
         })
     }
 
-    /// Apply a plan. `resolutions` carries the admin's choice for each fuzzy (`NeedsConfirm`) kit;
-    /// an unresolved fuzzy row defaults to **New** (conservative — never silently merge).
+    /// Apply a plan. `resolutions` holds the decision of the administrator for each kit with the
+    /// `NeedsConfirm` mark. A kit with that mark and no decision becomes a **New** subject. This
+    /// default is the safe one, because the method must never merge a kit without a decision.
     pub async fn commit_ftdna_import(
         &self,
         plan: &FtdnaImportPlan,
@@ -555,7 +606,7 @@ impl App {
         let mut summary = FtdnaImportSummary::default();
         let now = Utc::now().to_rfc3339();
 
-        // Resolve the target project, creating it now if the plan targeted a new one.
+        // Find the target project. Make the project now when the plan names a new one.
         let project_id = match plan.project_id {
             Some(id) => id,
             None => {
@@ -629,7 +680,8 @@ impl App {
             }
         };
 
-        // Vendor identity (idempotent; never steals a conflicting id).
+        // The vendor identity. A second call is safe, and the code never moves an id that
+        // belongs to another subject.
         external_id::add(pool, guid, IdSource::FTDNA, &input.kit_number).await?;
 
         // FTDNA-reported member labels.
@@ -648,7 +700,8 @@ impl App {
         )
         .await?;
 
-        // MDKA from paternal (Y) + maternal (Mt) ancestry, when there is anything worth storing.
+        // The MDKA rows from the paternal (Y) ancestry and the maternal (Mt) ancestry. The code
+        // writes a row only when the ancestry holds a value.
         let mut wrote = 0;
         if let Some(m) = input.paternal.as_ref().and_then(|a| mdka_from(a, Lineage::Y)) {
             mdka::upsert(pool, guid, &m, now).await?;
@@ -667,9 +720,10 @@ impl App {
             .map(subgroup_role);
         biosample_project::add(pool, guid, project_id, role.as_deref(), now).await?;
 
-        // Y-STR profile from the wide overview (Phase 2). Attached only when CREATING a new Subject;
-        // on a merge the existing Subject already carries its own data sources, so we add the FTDNA
-        // identity/membership/MDKA metadata above but skip duplicating the Y-STR profile.
+        // The Y-STR profile from the wide overview, which is Phase 2. The code adds the profile
+        // only when it makes a new subject. On a merge, the subject already holds its own data
+        // sources. So the code adds the FTDNA identity, the membership, and the MDKA data above,
+        // and it does not add a second Y-STR profile.
         let wrote_str = !input.ystr_markers.is_empty() && target.is_none();
         if wrote_str {
             str_profile::create(
@@ -699,9 +753,12 @@ impl App {
         Ok(external_id::list_for(self.store.pool(), guid).await?)
     }
 
-    /// Reverse of [`external_ids`]: the Subject bound to a `(source, external_id)` vendor id, if any.
-    /// This is the exact-match dedup anchor (design §5.1) — e.g. resolve an FTDNA kit number to the
-    /// biosample it was imported under. Returns `None` when the id is unknown to the workspace.
+    /// The reverse of [`external_ids`]. The method returns the subject of a
+    /// `(source, external_id)` vendor id, when one exists.
+    ///
+    /// This lookup is the exact-match anchor that finds a duplicate donor, in design §5.1. One use
+    /// is to find the biosample of an FTDNA kit number. The method returns `None` when the
+    /// workspace does not hold the id.
     pub async fn find_biosample_by_external_id(
         &self,
         source: &str,
@@ -724,14 +781,17 @@ impl App {
         Ok(mdka::list_for(self.store.pool(), guid).await?)
     }
 
-    /// Project ids a Subject belongs to (via the M:N membership table).
+    /// The ids of the projects that hold this subject. The method reads the M:N membership
+    /// table.
     pub async fn project_membership_ids(&self, guid: SampleGuid) -> Result<Vec<i64>, AppError> {
         Ok(biosample_project::list_projects_for(self.store.pool(), guid).await?)
     }
 
-    /// Autocluster a project's members by Y-STR and propagate SNP branches to STR-only members
-    /// (the project clustering view). Branch per member = its FTDNA-reported terminal SNP; markers =
-    /// the merged Y-STR profiles. The O(n²) compute runs on a blocking thread.
+    /// Group the members of a project by their Y-STR values, and copy an SNP branch to a member
+    /// that has only STR values. The project cluster view shows this result.
+    ///
+    /// The branch of a member is the terminal SNP that FTDNA reports for it. The markers are the
+    /// merged Y-STR profiles. The calculation costs O(n²), so it runs on its own thread.
     pub async fn cluster_project_ystr(
         &self,
         project_id: i64,
@@ -839,10 +899,15 @@ impl App {
                     reasons.push(format!("same Y terminal {ex}"));
                 }
             }
-            // Y-STR genetic distance — a SAME-PERSON signal only at (near-)zero GD over many markers.
-            // A loose GD threshold floods inside a single-haplogroup project, where every member is
-            // related and within-project distances of GD 3–11 over 100 markers are normal. Only an
-            // exact (or off-by-one) haplotype uniquely identifies the same person, not a clade cousin.
+            // The genetic distance of the Y-STR values. This distance shows the SAME PERSON only
+            // when it is zero, or almost zero, across many markers.
+            //
+            // A high limit gives many false results in a project with one haplogroup. Each member
+            // of such a project is a relative, and a distance of 3 to 11 across 100 markers is
+            // normal there.
+            //
+            // Only an exact haplotype, or a haplotype with one difference, names the same person. A
+            // larger distance names a cousin in the same clade.
             if !input.ystr_markers.is_empty() && !e.ystr.is_empty() {
                 let (diff, compared) = navigator_domain::strprofile::str_distance(&input.ystr_markers, &e.ystr);
                 if compared >= 67 && diff <= 1 {
@@ -882,8 +947,9 @@ impl App {
 struct ExistingSubject {
     guid: SampleGuid,
     donor_identifier: String,
-    /// Terminal SNP of the subject's computed Y consensus (may be an ISOGG long-form label that
-    /// does not reduce to an SNP — then Y-STR is the reliable signal).
+    /// The terminal SNP of the Y consensus that the app calculated for the subject. The value can
+    /// be a long ISOGG label with no SNP inside it. In that case the Y-STR values are the signal
+    /// that the code can trust.
     y_terminal: Option<String>,
     /// The subject's merged Y-STR markers (across all imported profiles), for genetic-distance match.
     ystr: Vec<StrMarker>,
@@ -899,8 +965,9 @@ fn empty_input(kit: &str) -> FtdnaSubjectInput {
     }
 }
 
-/// The terminal SNP token of a haplogroup label or clade path: the last segment after splitting on
-/// `>` (clade) or `-` (haplogroup prefix). `"R-FGC29071"` and `"CTS4466>S1115>FGC29071"` → `FGC29071`.
+/// The terminal SNP token of a haplogroup label or a clade path. The function splits the text on
+/// `>` for a clade, or on `-` for a haplogroup prefix, and returns the last part. Both
+/// `"R-FGC29071"` and `"CTS4466>S1115>FGC29071"` give `FGC29071`.
 fn terminal_snp(label: &str) -> Option<String> {
     let t = label.rsplit(['>', '-']).next()?.trim();
     (!t.is_empty()).then(|| t.to_string())
@@ -929,7 +996,8 @@ fn clean_name(name: Option<&str>) -> Option<String> {
     }
 }
 
-/// Build an MDKA payload from an ancestry row, or `None` if it carries nothing worth storing.
+/// Build an MDKA value from an ancestry row. The function returns `None` when the row holds no
+/// data for the store.
 fn mdka_from(a: &AncestryRow, lineage: Lineage) -> Option<NewMdka> {
     if a.ancestor_name.is_none() && a.origin_place.is_none() && a.country.is_none() && a.latitude.is_none() {
         return None;
@@ -957,13 +1025,14 @@ fn panel_name_for_count(n: usize) -> String {
     }
 }
 
-/// The clade `Sub Group` value as a membership role: keep it compact (the terminal segment), dropping
-/// the leading sort number.
+/// The `Sub Group` value of a clade, as a membership role. The function keeps the last part only,
+/// and it removes the sort number at the start.
 fn subgroup_role(sub_group: &str) -> String {
     terminal_snp(sub_group).unwrap_or_else(|| sub_group.trim().to_string())
 }
 
-/// Jaccard overlap of lowercased word tokens (len ≥ 2) — a cheap name-similarity proxy in `0..=1`.
+/// The Jaccard overlap of the word tokens, in lower case, with a length of 2 or more. The value is
+/// a fast measurement of the similarity of two names, from 0 to 1.
 fn name_similarity(a: &str, b: &str) -> f32 {
     let toks = |s: &str| -> std::collections::HashSet<String> {
         s.split(|c: char| !c.is_ascii_alphanumeric())

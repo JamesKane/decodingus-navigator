@@ -32,8 +32,9 @@ A Technical Name is a noun. It can be a compound noun. It cannot be a verb.
 ### Genetics and sequence data
 
 alignment · allele · ancestry · admixture · autosome · base · biosample · build · call · caller ·
-chromosome · consensus · contig · coverage · depth · donor · genome · genotype · haplogroup ·
-haplotype · indel · kit · lineage · marker · panel · pedigree · ploidy · position · read ·
+chromosome · consensus · contig · coverage · depth · donor · genome · genotype ·
+genotyping array · haplogroup · haplotype · indel · kit · lineage · marker · panel · pedigree ·
+ploidy · position · read ·
 read metrics · reference · reference genome · region · segment · sequence · sequence run · sex ·
 signature · site · subject · variant · Y-STR
 
@@ -50,6 +51,14 @@ query · realignment · record · row · schema · store · table · workspace �
 
 AppView · attestation · consent · device key · DID · exchange · handle · IBD · PDS · record key ·
 session · signature · suggestion · token
+
+### Technical Names that end in `-ing`
+
+STE 2 forbids an `-ing` form as a verb or an adjective. These are declared nouns, so they are
+permitted: genotyping array · mapping · sequencing · painting · matching · encoding · decoding ·
+indexing · logging · polling · signing · setting · heading · listing · ordering · padding · casing ·
+tracking · caching · processing · operating system · pacing · sampling · scaling · streaming ·
+spilling · phasing · binning · masking · trimming · clipping · calling · sorting · merging
 
 ## Technical Verbs
 
