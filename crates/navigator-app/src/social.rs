@@ -1,12 +1,17 @@
-//! `impl App` methods for the AppView's signed social Edge API (`/api/v1/social/*`) — the
-//! communication core the alpha/beta testers use to reach the team (support threads), read the
-//! community feed (+ federated posts), and receive notifications.
+//! `impl App` methods for the signed social Edge API of the AppView (`/api/v1/social/*`).
 //!
-//! Every call is **device-key-signed** (no per-call OAuth), exactly like the IBD `exchange` client:
-//! reads are a replay-guarded signed GET (`did`/`ts`/`sig` query); writes carry `did` + `signature`
-//! (and `ts` where the canonical string includes it) in the JSON body. Canonical signing strings live
-//! in [`navigator_sync::social::messages`] and mirror the AppView byte-for-byte. PII-free: only a DID,
-//! a signature, and content the user chose to send crosses the wire.
+//! This module is the communication core. A tester uses it for three tasks. The tester speaks to
+//! the team in a support thread, reads the community feed with its federated posts, and receives a
+//! notification.
+//!
+//! The device key signs **each call**, and no call uses OAuth. The IBD `exchange` client works in
+//! the same way. A read is a signed GET with a replay guard, and its `did`, `ts`, and `sig` values
+//! go on the query. A write puts `did` and `signature` in the JSON body. The write also puts `ts`
+//! there when the canonical string holds a timestamp.
+//!
+//! [`navigator_sync::social::messages`] holds the canonical strings for a signature. These strings
+//! are the same as the strings of the AppView. The module sends no personal data. Only a DID, a
+//! signature, and the content that the user chose to send cross the network.
 
 use super::*;
 
@@ -15,7 +20,7 @@ use navigator_sync::social::messages;
 /// One of the caller's support threads (team↔tester), as listed by `GET /social/threads`.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct SocialThreadSummary {
-    /// Conversation id (UUID string) — the key for reading/replying.
+    /// The conversation id, as a UUID string. It is the key to read the thread and to reply.
     pub conversation_id: String,
     #[serde(default)]
     pub subject: Option<String>,
@@ -77,7 +82,8 @@ pub struct FeedItem {
     pub parent_post_id: Option<String>,
 }
 
-/// A PDS-federated community post mirrored into the feed (read-only — voting/reply/block stay native).
+/// A federated community post from a PDS, copied into the feed. The user can only read it. A vote,
+/// a reply, and a block stay in the native AppView records.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct FederatedItem {
     #[serde(default)]
@@ -190,9 +196,11 @@ impl App {
         self.appview_get_signed("social/feed", messages::poll, &[]).await
     }
 
-    /// Post to the community feed (optionally tagged with a `topic`, or as a reply to `parent`);
-    /// returns the new post id. A reputation gate maps to [`AppError`] (HTTP 403) — surface it as a
-    /// "not enough reputation yet" hint in the UI.
+    /// Send a post to the community feed and return the id of the new post. The caller can add a
+    /// `topic` tag, or make the post a reply to `parent`.
+    ///
+    /// A reputation gate gives HTTP 403, which becomes an [`AppError`]. Show it in the UI as a hint
+    /// that the user does not have enough reputation.
     pub async fn post_community(
         &self,
         content: &str,
@@ -214,21 +222,28 @@ impl App {
         Ok(v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_string())
     }
 
-    /// Publish a community post to the signed-in account's PDS as a federated
-    /// `com.decodingus.atmosphere.feed.post` record (roadmap 3b). The AppView mirrors it into the
-    /// community feed via its Jetstream consumer (the read-only "via Atmosphere" entries), so this
-    /// is the portable, federated counterpart to the AppView-native [`post_community`](Self::post_community).
+    /// Publish a community post to the PDS of the active account. The record is a federated
+    /// `com.decodingus.atmosphere.feed.post` record (roadmap 3b).
     ///
-    /// Durable: the record goes through the sync **outbox**, so the publish survives restart and
-    /// retries with backoff on a transient/offline failure. Each post is a **distinct** record — the
-    /// outbox `entity_ref` is a fresh id (posts are append-only, never coalesced like the per-entity
-    /// summary records), and `rkey: None` lets the PDS assign the TID. Federated posts are
-    /// deliberately **not** in `PUBLISHED_COLLECTIONS`: a PULL reconcile must never resurrect a post
-    /// the user deleted on their PDS.
+    /// The Jetstream consumer of the AppView copies the record into the community feed as a
+    /// read-only "Atmosphere" entry. So this method is the portable, federated form of
+    /// [`post_community`](Self::post_community), which writes a native AppView record.
     ///
-    /// Errors when signed out, and for a local `did:key` identity (self-certifying, no PDS repo to
-    /// write to) — the federated feed needs a real OAuth/PDS account. The UI gates the opt-in
-    /// accordingly and surfaces the error as a hint.
+    /// The record goes through the sync **outbox**, so the publish is durable. It continues after a
+    /// restart, and it tries again with a longer delay after a temporary failure or an offline
+    /// failure.
+    ///
+    /// Each post is a **separate** record. The outbox `entity_ref` is a new id, because the app only
+    /// appends a post and never joins two posts. A summary record for one entity behaves in a
+    /// different way. `rkey: None` lets the PDS choose the TID.
+    ///
+    /// A federated post is **not** in `PUBLISHED_COLLECTIONS`, by design. A PULL reconcile must never
+    /// return a post that the user deleted on their PDS.
+    ///
+    /// The method fails when no account is active. It also fails for a local `did:key` identity,
+    /// because that identity certifies itself and has no PDS repository to write to. The federated
+    /// feed needs an OAuth account with a PDS. The UI gates the option and shows the error as a
+    /// hint.
     pub async fn publish_feed_post(&self, content: &str, topic: Option<&str>) -> Result<(), AppError> {
         let did = self.require_account()?;
         if did.starts_with("did:key:") {
@@ -251,7 +266,8 @@ impl App {
             .await
     }
 
-    /// Mark one notification read (`id = Some`) or all (`id = None`); returns how many were marked.
+    /// Mark one notification as read with `id = Some`, or mark all of them with `id = None`. The
+    /// method returns the count of the notifications that it marked.
     pub async fn mark_notification_read(&self, id: Option<&str>) -> Result<i64, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
@@ -337,7 +353,7 @@ mod tests {
         assert!(v.get("createdAt").and_then(|c| c.as_str()).is_some());
         assert!(v.get("meta").is_none() && v.get("reply").is_none());
 
-        // A blank topic is omitted entirely.
+        // The code removes a blank topic.
         let v2 = crate::feed_post_record("no topic", Some("   "), None);
         assert!(v2.get("topic").is_none());
     }

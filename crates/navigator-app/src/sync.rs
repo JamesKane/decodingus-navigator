@@ -5,10 +5,14 @@ use super::*;
 impl App {
     // ---- sync durability: outbox enqueue + drain (gap §5) -------------------
 
-    /// Enqueue a built record for publishing to the signed-in account's PDS. The publish becomes
-    /// durable: it survives restart and retries automatically (with backoff) on a transient/offline
-    /// failure instead of being lost. Re-enqueuing the same `entity_ref` coalesces (newest wins).
-    /// Errors [`AppError::NotAuthenticated`] when signed out (we need the destination DID).
+    /// Put a record in the queue for a publish to the PDS of the active account.
+    ///
+    /// The publish is then durable. It continues after a restart, and it tries again with a longer
+    /// delay after a temporary failure or an offline failure. The app does not lose it.
+    ///
+    /// A second entry for the same `entity_ref` replaces the first entry, and the newest record
+    /// wins. The method returns [`AppError::NotAuthenticated`] when no account is active, because
+    /// the queue needs the DID of the destination.
     pub(crate) async fn enqueue_publish(
         &self,
         kind: &str,
@@ -30,8 +34,8 @@ impl App {
         Ok(())
     }
 
-    /// Pending (not-yet-published) outbox rows for the signed-in account — drives the UI's
-    /// "N pending" indicator. `0` when signed out.
+    /// The count of outbox rows for the active account that the app did not publish. The UI shows
+    /// this count in its "N pending" indicator. The value is `0` when no account is active.
     pub async fn outbox_pending_count(&self) -> Result<i64, AppError> {
         let Some(did) = self.current_account() else {
             return Ok(0);
@@ -39,7 +43,8 @@ impl App {
         Ok(sync_outbox::pending_count(self.store.pool(), &did).await?)
     }
 
-    /// All non-completed outbox rows (PENDING + FAILED) for the signed-in account — a sync detail view.
+    /// Each outbox row for the active account that is not complete. The rows have the state
+    /// PENDING or FAILED. The sync detail view shows them.
     pub async fn outbox_entries(&self) -> Result<Vec<sync_outbox::OutboxEntry>, AppError> {
         let Some(did) = self.current_account() else {
             return Ok(Vec::new());
@@ -47,7 +52,8 @@ impl App {
         Ok(sync_outbox::list(self.store.pool(), &did).await?)
     }
 
-    /// Recent publish outcomes (success/failure) for the signed-in account — the audit trail.
+    /// The recent results of a publish for the active account. A result is a success or a failure.
+    /// Together the results are the audit trail.
     pub async fn sync_history(&self, limit: i64) -> Result<Vec<sync_history::HistoryEntry>, AppError> {
         let Some(did) = self.current_account() else {
             return Ok(Vec::new());
@@ -55,16 +61,24 @@ impl App {
         Ok(sync_history::recent(self.store.pool(), &did, limit).await?)
     }
 
-    /// Prune orphaned alignment (coverage-summary) records from the signed-in account's PDS repo —
-    /// the duplicates left by the pre-deterministic-rkey `create` race (two records for one
-    /// alignment, only one tracked in `sync_state`). Lists every alignment record in the repo and
-    /// removes any whose rkey is **not accounted for** — i.e. neither a `sync_state`-tracked rkey nor
-    /// the deterministic `aln-{id}` of a live local alignment. With `apply == false` it's a dry run
-    /// (reports what it would delete, touches nothing). Returns the outcome.
+    /// Remove orphan alignment records, which hold a coverage summary, from the PDS repository of
+    /// the active account.
+    ///
+    /// These orphans are duplicates. An earlier `create` call chose the record key itself, and two
+    /// calls could race. The repository then held two records for one alignment, and `sync_state`
+    /// held only one of them.
+    ///
+    /// The method lists each alignment record in the repository. It removes a record when the rkey
+    /// of that record has no source. A rkey has a source when `sync_state` holds it, or when it is
+    /// the `aln-{id}` key of a local alignment that still exists.
+    ///
+    /// With `apply == false`, the method only reports the records that it would delete and changes
+    /// nothing. The method returns the result.
     pub async fn prune_orphan_alignments(&self, apply: bool) -> Result<PruneReport, AppError> {
         let did = self.require_account()?;
-        // Accounted-for rkeys: everything tracked in sync_state for the alignment collection, plus
-        // the deterministic key for every live local alignment (so a not-yet-drained one isn't culled).
+        // The rkeys with a source. These are each rkey in sync_state for the alignment
+        // collection, and the fixed key of each local alignment that still exists. The second group
+        // keeps a row that the app did not yet publish.
         let mut keep: std::collections::HashSet<String> =
             sync_state::list_for_collection(self.store.pool(), &did, NS_ALIGNMENT)
                 .await?
@@ -104,10 +118,15 @@ impl App {
         Ok(report)
     }
 
-    /// Attempt to publish the ready outbox rows for the signed-in account. Each success is logged to
-    /// history and its row removed; a transient failure reschedules the row with exponential backoff
-    /// and stops the batch (we're likely offline); a non-transient failure marks the row `FAILED`.
-    /// A no-op (and `Ok`) when signed out. Safe to call repeatedly (periodically + after a publish).
+    /// Try to publish the ready outbox rows for the active account.
+    ///
+    /// After a success, the method writes a history row and removes the outbox row. After a
+    /// temporary failure, it sets a later time for the row and stops the batch, because the machine
+    /// is probably offline. The delay becomes longer after each try. After a permanent failure, it
+    /// sets the row to `FAILED`.
+    ///
+    /// The method does nothing and returns `Ok` when no account is active. The caller can call it
+    /// many times, at an interval and after a publish.
     pub async fn drain_outbox(&self) -> Result<DrainOutcome, AppError> {
         let Some(did) = self.current_account() else {
             return Ok(DrainOutcome::default());
@@ -122,8 +141,8 @@ impl App {
         let batch = sync_outbox::ready(self.store.pool(), &did, &now.to_rfc3339(), OUTBOX_BATCH).await?;
         for entry in batch {
             let value: serde_json::Value = serde_json::from_str(&entry.payload)?;
-            // Idempotency: if we've published this entity before, update the PDS-assigned record in
-            // place (putRecord at the kept rkey) instead of creating a duplicate.
+            // If the app published this entity before, change the record that the PDS holds. Use
+            // putRecord at the rkey that the app kept. Do not make a duplicate record.
             let known = sync_state::get(self.store.pool(), &did, &entry.entity_ref).await?;
             let result = match (&known, &entry.rkey) {
                 (Some(ss), _) => engine.push_put(&entry.collection, &ss.rkey, value).await,
@@ -152,7 +171,8 @@ impl App {
                     outcome.published.push((entry.kind.clone(), rref.uri));
                 }
                 Err(e) if e.is_transient() => {
-                    // Offline / 5xx / timeout: back off and stop — the rest of the batch will wait too.
+                    // The machine is offline, or the server gave a 5xx or a timeout. Wait, and
+                    // stop. The other rows of the batch also wait.
                     let next = now + chrono::Duration::seconds(backoff_secs(attempt));
                     sync_outbox::reschedule(
                         self.store.pool(),
@@ -180,7 +200,7 @@ impl App {
         Ok(outcome)
     }
 
-    /// Append a sync-history row for a finished push attempt.
+    /// Add a sync-history row for a push that is complete.
     async fn log_history(
         &self,
         entry: &sync_outbox::OutboxEntry,
@@ -204,16 +224,22 @@ impl App {
         Ok(())
     }
 
-    /// **PULL reconcile** (gap §5-p2): fetch the account's own records from the PDS and reconcile
-    /// against what we published (`sync_state`), last-write-wins / remote-authoritative. For records
-    /// we recognise (via the kept rkey) that changed on the PDS, apply remote→local where the data
-    /// model allows (today: a biosample's sex / center) and re-track the CID. Records missing remotely
-    /// are flagged for re-publish; remote records with no local mapping are counted (the fed records
-    /// are PII-free *summaries* and carry no local guid, so they can't reconstruct a local entity).
+    /// Do a **PULL reconcile** (gap §5-p2). The method reads the records of the account from the
+    /// PDS and compares them with the records that the app published, which `sync_state` holds. The
+    /// policy is last-write-wins, and the remote copy has authority.
+    ///
+    /// The app knows a record by the rkey that it kept. When such a record changed on the PDS, the
+    /// method applies the remote values to the local record where the data model permits it. Today
+    /// this is the sex and the center of a biosample. The method then stores the new CID.
+    ///
+    /// The method marks a record for a new publish when the PDS no longer holds it. It counts a
+    /// remote record that has no local record. A federated record is a summary with no personal
+    /// data. It holds no local guid, so the app can not make a local entity from it.
     pub async fn pull_sync(&self) -> Result<PullOutcome, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         if did.starts_with("did:key:") {
-            // A local did:key identity has no PDS repo — PULL/publish need a real OAuth (did:plc) account.
+            // A local did:key identity has no PDS repository. A PULL and a publish need an OAuth
+            // account with a did:plc identity.
             return Err(AppError::Import(
                 "PDS sync needs a signed-in PDS account — the local did:key identity has no PDS repo".into(),
             ));
@@ -266,9 +292,12 @@ impl App {
         Ok(out)
     }
 
-    /// Apply a remote record onto local state. Only the editable, locally-authoritative bits the
-    /// PII-free fed record carries can be applied; derived-summary collections are recomputed locally,
-    /// so they're tracked but not overwritten.
+    /// Apply a remote record to the local state.
+    ///
+    /// The method applies only the values that the user can edit and that the local store owns. A
+    /// federated record has no personal data and carries only those values. The app calculates a
+    /// derived summary again on this machine. So the app tracks such a collection but does not
+    /// write to it.
     pub(crate) async fn apply_remote(
         &self,
         collection: &str,
@@ -338,23 +367,31 @@ impl App {
         Ok(())
     }
 
-    /// Load (or, on first use, generate + publish) this installation's Ed25519 **device key**
-    /// — the signing key that authenticates Edge→AppView calls (federated IBD and, later, the
-    /// whole signed surface). The key seed lives in the OS keychain scoped to the signed-in
-    /// DID; its public half is published once to the user's PDS as a
-    /// [`DEVICE_KEY_COLLECTION`] record so the AppView (which ingests it via Jetstream) can
-    /// verify our signatures. Idempotent: the record is keyed by its own `did:key`, so a
-    /// re-publish overwrites rather than duplicates, and an already-present record is left
-    /// alone. Errors [`AppError::NotAuthenticated`] when signed out.
+    /// Read the Ed25519 **device key** of this installation. At the first use, the method makes
+    /// the key and publishes it.
     ///
-    /// This does *not* wait for ingest — the signed AppView calls absorb the 403→200 lag with
-    /// bounded retries (see the IBD client).
+    /// This key signs a call from the edge to the AppView. Federated IBD uses it today, and later
+    /// the full signed surface will use it. The OS keychain holds the seed of the key under the
+    /// active DID.
+    ///
+    /// The method publishes the public half of the key one time to the PDS of the user, as a
+    /// [`DEVICE_KEY_COLLECTION`] record. The AppView reads that record through Jetstream, and it
+    /// can then check our signatures.
+    ///
+    /// A second call is safe. The record key is the `did:key` value itself. So a second publish
+    /// replaces the record and does not add a duplicate, and the method does not change a record
+    /// that already exists. The method returns [`AppError::NotAuthenticated`] when no account is
+    /// active.
+    ///
+    /// The method does *not* wait for the AppView to read the record. A signed call to the AppView
+    /// absorbs the delay from 403 to 200 with a limited count of tries. See the IBD client.
     pub async fn ensure_device_key(&self) -> Result<DeviceKey, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let key = DeviceKey::load_or_generate(KEYCHAIN_SERVICE, &did)?;
 
-        // A local did:key identity self-certifies (the AppView verifies the signature against the DID
-        // itself), so there is no PDS record to publish — and no OAuth session to do it with.
+        // A local did:key identity certifies itself, because the AppView checks the signature
+        // against the DID. So there is no PDS record to publish. There is also no OAuth session
+        // for such a publish.
         if did.starts_with("did:key:") {
             return Ok(key);
         }
@@ -376,14 +413,16 @@ impl App {
         Ok(key)
     }
 
-    /// Federated IBD — **Step 1**: fetch this account's pseudonymous match suggestions from
+    /// Federated IBD, **Step 1**. Fetch this account's pseudonymous match suggestions from
     /// the AppView (`GET /api/v1/ibd/suggestions`).
     ///
-    /// The AppView mines our already-published `fed.*` records into a top-K candidate list;
-    /// no genotypes leave the device here. The call is authenticated by signing
-    /// `"ibd-poll\n<DID>\n<ts>"` with the device key (registered on first use). A 403 right
-    /// after first-time registration means the AppView hasn't ingested the device-key record
-    /// yet, so it's retried with exponential backoff.
+    /// The AppView reads the `fed.*` records that we published and makes a list of the best
+    /// candidates. No genotype leaves the device in this step.
+    ///
+    /// To authenticate the call, the device key signs `"ibd-poll\n<DID>\n<ts>"`. The app registers
+    /// that key at its first use. A 403 response directly after the first registration shows that
+    /// the AppView did not yet read the device-key record. The client then tries again, and the
+    /// delay becomes longer after each try.
     pub async fn ibd_suggestions(&self) -> Result<Vec<IbdSuggestion>, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let key = self.ensure_device_key().await?;
@@ -393,8 +432,8 @@ impl App {
         loop {
             let ts = Utc::now().timestamp().to_string();
             let sig = key.sign(&format!("ibd-poll\n{did}\n{ts}"));
-            // reqwest URL-encodes query values, so the STANDARD-base64 sig (`+` `/` `=`) is
-            // safely escaped.
+            // reqwest applies URL encoding to a query value. So it escapes the `+`, `/`, and `=`
+            // characters of a STANDARD base64 signature.
             let resp = self
                 .auth
                 .http
@@ -417,21 +456,24 @@ impl App {
         }
     }
 
-    /// Federated IBD — **Step 2**: request an introduction to a suggested candidate
+    /// Federated IBD, **Step 2**. Request an introduction to a suggested candidate
     /// (`POST /api/v1/ibd/introduce`).
     ///
-    /// Signs `"ibd-introduce\n<DID>\n<suggested_sample_guid>"` and posts
-    /// `{ did, suggestedSampleGuid, signature }`. Returns the AppView's `request_uri` and
-    /// status (`PENDING`). This endpoint only opens the request — it exchanges no genetic data.
-    /// The downstream consent round-trip and encrypted segment exchange run over the separate edge
-    /// channel in `ibd_exchange` once both parties consent.
+    /// The method signs `"ibd-introduce\n<DID>\n<suggested_sample_guid>"` and sends
+    /// `{ did, suggestedSampleGuid, signature }`. It returns the `request_uri` of the AppView and
+    /// the status, which is `PENDING`.
+    ///
+    /// This endpoint only opens the request. It exchanges no genetic data. After both parties
+    /// agree, the consent messages and the encrypted segment exchange use the separate edge channel
+    /// in `ibd_exchange`.
     pub async fn ibd_introduce(&self, suggested_sample_guid: &str) -> Result<IbdIntroResult, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let key = self.ensure_device_key().await?;
         let ts = Utc::now().timestamp();
         let sig = key.sign_fresh(ts, &format!("ibd-introduce\n{did}\n{suggested_sample_guid}"));
-        // The AppView's IntroduceBody deserializes plain snake_case (no serde rename), and
-        // parses the guid as a UUID — send it verbatim from the suggestion.
+        // The IntroduceBody type of the AppView reads plain snake_case names and has no serde
+        // rename. It parses the guid as a UUID. Send the guid exactly as the suggestion gives
+        // it.
         let body = serde_json::json!({
             "did": did,
             "suggested_sample_guid": suggested_sample_guid,

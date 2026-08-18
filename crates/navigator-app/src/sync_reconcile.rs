@@ -1,10 +1,15 @@
-//! Pure PULL reconcile planner (gap §5-p2). Given what we last published (`sync_state` rows, each with
-//! the PDS CID + payload fingerprint at push time) and the records currently on the PDS, decide what to
-//! do per record — with **no I/O**, so it's exhaustively unit-tested. The app executes the plan.
+//! The PULL reconcile planner (gap §5-p2). This module has no I/O, so a unit test can cover every
+//! case. The app does the plan that this module makes.
 //!
-//! Policy: **last-write-wins, remote authoritative on divergence** (the confirmed §5-p2 decision). A
-//! record that changed on the PDS since our push is applied locally; if our local copy *also* changed
-//! since the push (we can detect that via the payload hash), it's still applied but flagged a conflict.
+//! The planner reads two inputs. The first input is the record of our last publish. That record is
+//! the `sync_state` rows, and each row holds the PDS CID and the payload fingerprint at the time of
+//! the push. The second input is the set of records that the PDS holds now. The planner then
+//! decides the action for each record.
+//!
+//! The policy is **last-write-wins**, and the remote copy has authority when the two copies differ.
+//! This was the §5-p2 decision. The app applies a record that changed on the PDS after our push. If
+//! our local copy also changed after the push, the app still applies the remote record, but it
+//! marks a conflict. The payload hash shows a local change.
 
 use navigator_store::sync_state::StoredSyncState;
 use navigator_sync::RemoteRecord;
@@ -12,25 +17,32 @@ use navigator_sync::RemoteRecord;
 /// One reconcile decision for a record.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReconcileAction {
-    /// Remote matches what we published and local is unchanged — nothing to do.
+    /// The remote record is the same as our published record, and the local record did not change.
+    /// There is no action.
     InSync { entity_ref: String },
-    /// Remote changed since our push (or we have a local-only edit) — apply remote→local. `conflict`
-    /// ⇒ local *also* changed since the push (both diverged; remote wins, logged).
+    /// The remote record changed after our push, or there is a local edit. Apply the remote record
+    /// to the local record. `conflict` shows that the local record also changed after the push.
+    /// Both copies changed, the remote copy wins, and the app writes a log entry.
     ApplyRemote {
         entity_ref: String,
         collection: String,
         remote: RemoteRecord,
         conflict: bool,
     },
-    /// Local was published but the record is gone on the PDS — re-publish our copy.
+    /// The app published the local record, but the PDS no longer holds it. Publish our copy
+    /// again.
     RePush { entity_ref: String },
-    /// A record exists on the PDS we have no local sync-state for — adopt it locally.
+    /// The PDS holds a record, and we have no local sync-state row for it. Add the record to the
+    /// local store.
     AdoptRemote { collection: String, remote: RemoteRecord },
 }
 
-/// Plan the reconcile for one collection. `local` pairs each published entity with its *current* local
-/// payload hash (`None` = not recomputed / assume clean); compared to the stored push-time hash to tell
-/// whether local changed. `remote` is the PDS's current records for the same collection.
+/// Make the reconcile plan for one collection.
+///
+/// `local` gives the current local payload hash of each published entity. A value of `None` means
+/// that the app did not calculate the hash again, and the planner treats the record as clean. The
+/// planner compares this hash with the hash from the time of the push. A difference shows a local
+/// change. `remote` is the set of records that the PDS holds now for the same collection.
 pub fn plan(local: &[(StoredSyncState, Option<String>)], remote: &[RemoteRecord]) -> Vec<ReconcileAction> {
     use std::collections::HashSet;
     let mut actions = Vec::new();
@@ -63,7 +75,7 @@ pub fn plan(local: &[(StoredSyncState, Option<String>)], remote: &[RemoteRecord]
                 }
             }
             None => {
-                // We published it but it's gone on the PDS — re-publish.
+                // The app published the record, but the PDS no longer holds it. Publish again.
                 actions.push(ReconcileAction::RePush {
                     entity_ref: ss.entity_ref.clone(),
                 });

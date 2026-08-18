@@ -1,6 +1,9 @@
-//! Result exports (gap §6): pure formatters that turn a cached analysis result into a shareable
-//! file body — TSV / HTML / BED. Kept free of I/O and `App` so they're trivially unit-testable; the
-//! app layer loads the result and writes the returned `String` to the user-chosen path.
+//! Result exports (gap §6). Each function here is a formatter. It changes a cached analysis result
+//! into the body of a file that the user can share. The formats are TSV, HTML, and BED.
+//!
+//! These functions do no I/O and do not use `App`, so a unit test can call them directly. The app
+//! layer reads the result, calls a formatter, and writes the `String` to the path that the user
+//! chose.
 
 use navigator_analysis::coverage::CoverageResult;
 use navigator_analysis::haplo::CallState;
@@ -13,12 +16,13 @@ use navigator_domain::reconciliation::DnaType;
 
 use crate::{Block, BranchReport, DescentReport, ProjectBlockTree};
 
-/// Minimal HTML text escaping for the small, controlled strings we embed (population names etc.).
+/// A small HTML escape for the short strings that the app puts in a page. One example is the name
+/// of a population.
 fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-/// Shared inline stylesheet for the HTML exports (self-contained — no external assets).
+/// The stylesheet that each HTML export holds. The page is complete and needs no other file.
 const HTML_STYLE: &str = "body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:2rem;color:#222}\
 h1{font-size:1.3rem}h2{font-size:1rem;margin-top:1.5rem}\
 table{border-collapse:collapse;margin-top:.5rem}\
@@ -29,8 +33,9 @@ th{background:#f3f3f3}td:first-child,th:first-child{text-align:left}\
 
 // ---- coverage ----------------------------------------------------------------
 
-/// Coverage as TSV: a `#`-commented genome-wide metrics header, then a per-contig table (joining the
-/// samtools-style depth stats with the GATK-style callable breakdown).
+/// The coverage as TSV. The file starts with a header of genome-wide metrics, and each header line
+/// starts with `#`. A table for each contig follows. The table holds the depth values in the
+/// samtools form together with the callable values in the GATK form.
 pub fn coverage_tsv(cov: &CoverageResult) -> String {
     let mut out = String::new();
     out.push_str("# DUNavigator coverage export\n");
@@ -83,7 +88,8 @@ pub fn coverage_tsv(cov: &CoverageResult) -> String {
     out
 }
 
-/// Coverage as a self-contained HTML page (genome-wide summary + per-contig table).
+/// The coverage as a complete HTML page. The page holds a genome-wide summary and a table for each
+/// contig.
 pub fn coverage_html(cov: &CoverageResult, label: &str) -> String {
     let mut rows = String::new();
     for s in &cov.contig_coverage_stats {
@@ -169,8 +175,9 @@ pub fn read_metrics_tsv(m: &ReadMetrics) -> String {
 
 // ---- ancestry ----------------------------------------------------------------
 
-/// Ancestry as a single TSV table — super-population then fine-population rows distinguished by a
-/// `level` column — under a `#`-commented metadata header.
+/// The ancestry as one TSV table. The super-population rows come first, and the fine-population
+/// rows follow. The `level` column shows the difference. A metadata header is above the table, and
+/// each header line starts with `#`.
 pub fn ancestry_tsv(a: &AncestryResult) -> String {
     let mut out = String::new();
     out.push_str("# DUNavigator ancestry export\n");
@@ -259,13 +266,18 @@ pub fn ancestry_html(a: &AncestryResult) -> String {
 
 // ---- mtDNA variants ----------------------------------------------------------
 
-/// mtDNA variants (vs rCRS) as TSV: position, compact notation, region, ref/alt, type.
-/// The Y-DNA / mtDNA **descent report** (root→terminal lineage) as TSV: one row per defining SNP of
-/// each node on the path, with the subject's call state and observed base. Mirrors the on-screen
-/// per-node descent grid so it can be shared / diffed outside the app.
-/// TSV for a [`BranchReport`] — one row per defining marker in the reported subtree, with the
-/// sample's observed base + call state + evidence. Shareable for placement spot-checks / researcher
-/// exchange. Missing evidence renders as `.` (VCF convention).
+/// The mtDNA variants against rCRS as TSV. Each row holds the position, the short notation, the
+/// region, the reference allele, the alternate allele, and the type.
+///
+/// The Y-DNA or mtDNA **descent report** as TSV, from the root to the terminal lineage. The file
+/// holds one row for each SNP that defines a node on the path. Each row also holds the call state
+/// of the subject and the observed base. The file has the same content as the descent grid on the
+/// screen, so a user can share it or compare it outside the app.
+///
+/// TSV for a [`BranchReport`]. The file holds one row for each marker that defines a node in the
+/// reported subtree. Each row holds the observed base of the sample, the call state, and the
+/// evidence. A user can share the file to check a placement or to send it to a researcher. A row
+/// with no evidence shows `.`, which is the VCF convention.
 pub fn branch_report_tsv(report: &BranchReport) -> String {
     let dna = match report.dna {
         DnaType::Y => "Y-DNA",
@@ -348,13 +360,17 @@ pub fn descent_tsv(report: &DescentReport) -> String {
 
 // ---- project block tree ------------------------------------------------------
 
-/// The cohort block tree as TSV: one row per block, in the aggregate's own pre-order, with `depth`
-/// carrying the shape. Candidate branches (inferred from shared private variants, not named in the
-/// published tree) are marked in the `kind` column and named `candidate` rather than left blank, so
-/// a reader of the file alone can't mistake one for a published haplogroup.
+/// The cohort block tree as TSV. The file holds one row for each block, in the pre-order of the
+/// aggregate. The `depth` column gives the shape of the tree.
 ///
-/// Members are a comma-joined cell rather than one row each: the unit a researcher shares from this
-/// view is the *branch*, and exploding it per member would bury the tree shape.
+/// A candidate branch comes from private variants that members share. The published tree does not
+/// name it. The `kind` column marks such a branch with the word `candidate`, and the column is
+/// never blank. So a reader of the file alone can not mistake a candidate for a published
+/// haplogroup.
+///
+/// One cell holds all members, with a comma between them. The file does not use one row for each
+/// member. A researcher shares the *branch* from this view. One row for each member hides the shape
+/// of the tree.
 pub fn block_tree_tsv(tree: &ProjectBlockTree) -> String {
     let dna = match tree.dna {
         DnaType::Y => "Y-DNA",
@@ -399,9 +415,9 @@ pub fn block_tree_tsv(tree: &ProjectBlockTree) -> String {
             names.join(","),
         ));
     }
-    // Per-carrier evidence for every candidate. A candidate is an inference, and a shared export
-    // that showed only "1 SNP, 3 members" would ask the reader to trust it — the depth and derived
-    // fraction behind each call are what let them judge it instead.
+    // The evidence of each carrier, for every candidate. A candidate is a deduction. An export
+    // that showed only "1 SNP, 3 members" asks the reader to trust it. The depth and the derived
+    // fraction behind each call let the reader judge it.
     let candidates: Vec<&Block> = tree
         .blocks
         .iter()
@@ -427,8 +443,8 @@ pub fn block_tree_tsv(tree: &ProjectBlockTree) -> String {
         }
     }
 
-    // The members the tree does not account for belong in the same file — a shared export that
-    // silently covered only the placed fraction would misrepresent the cohort.
+    // The same file must hold the members that the tree does not cover. An export that held only
+    // the placed members, with no note, gives a false picture of the cohort.
     if !tree.unplaced.is_empty() {
         out.push_str("\n# not on this tree\nname\tterminal\treason\n");
         for u in &tree.unplaced {
@@ -442,8 +458,9 @@ pub fn block_tree_tsv(tree: &ProjectBlockTree) -> String {
     out
 }
 
-/// The cohort block tree as a self-contained HTML page: the same rows, indented by depth so the
-/// shape reads at a glance, with candidate branches called out.
+/// The cohort block tree as a complete HTML page. The page holds the same rows. Each row has an
+/// indent for its depth, so the reader sees the shape quickly. The page marks each candidate
+/// branch.
 pub fn block_tree_html(tree: &ProjectBlockTree, project: &str) -> String {
     let dna = match tree.dna {
         DnaType::Y => "Y-DNA",
@@ -530,8 +547,9 @@ pub fn mtdna_variants_tsv(variants: &[MtVariant]) -> String {
 
 // ---- IBD segments ------------------------------------------------------------
 
-/// IBD segments as TSV (`chromosome  start  end  length_cm  snp_count`), 1-based bp. The match
-/// browser's "Export segments CSV" — a tab-delimited table for downstream analysis / sharing.
+/// The IBD segments as TSV, with the columns `chromosome`, `start`, `end`, `length_cm`, and
+/// `snp_count`. The positions are 1-based. The "Export segments CSV" button of the match browser
+/// makes this file. A user can read the table into another tool or send it to a partner.
 pub fn ibd_segments_tsv(segments: &[IbdSegment]) -> String {
     let mut out = String::from("# DUNavigator IBD segments export\n");
     out.push_str("chromosome\tstart_position\tend_position\tlength_cm\tsnp_count\thalf_identical\n");
@@ -593,10 +611,13 @@ fn lineage_html(lb: &LineageBrief, title: &str) -> String {
     s
 }
 
-/// The subject brief as a self-contained "DNA Story" HTML document — the casual-reader report a user
-/// can save or print. Mirrors the Simple-mode card stack. When an AI narration is provided (a cached
-/// "Polish with AI" result), it leads the document as a clearly-labelled, additive section above the
-/// structured facts.
+/// The subject brief as a complete "DNA Story" HTML document. This report is for a reader who is
+/// not a specialist, and the user can save it or print it. It has the same content as the card
+/// stack of Simple mode.
+///
+/// The caller can supply an AI narration, which is a cached result of "Polish with AI". That text
+/// comes first in the document, above the structured facts, with a clear label. It adds to those
+/// facts and does not replace them.
 pub fn subject_brief_html(b: &SubjectBrief, narration: Option<&crate::NarratedBrief>) -> String {
     let mut body = String::new();
     body.push_str(&format!("<h1>{} — Your DNA Story</h1>\n", esc(&b.headline.name)));
@@ -674,8 +695,9 @@ pub fn subject_brief_html(b: &SubjectBrief, narration: Option<&crate::NarratedBr
         body.push_str("<h2>Neanderthal ancestry</h2>\n");
         body.push_str(&format!("<p class=\"hg\">{}</p>\n", esc(&a.pattern)));
         body.push_str(&format!("<p>{}</p>\n", esc(&a.summary_phrase)));
-        // A count over what was assayed, never a "percent Neanderthal" (design S1/S7) — the export
-        // has to hold the same line as the UI or the two disagree about what was measured.
+        // Report a count of the markers that the test measured. Never report a "percent
+        // Neanderthal" figure. See design S1 and S7. The export must give the same statement as
+        // the UI. If not, the two disagree about the measurement.
         body.push_str(&format!(
             "<p class=\"meta\">{} of {} marker copies</p>\n",
             a.total_copies, a.possible_copies
@@ -844,7 +866,7 @@ mod tests {
         assert!(tsv
             .lines()
             .any(|l| l.starts_with("chr1\t500\t42\t480\t96.00\t30.10\t35.0\t58.0\t470\t10\t15\t0\t0\t5")));
-        // HTML variant renders without panicking and includes the title.
+        // The HTML function completes with no panic, and the page holds the title.
         assert!(coverage_html(&cov, "KANE-0001").contains("Coverage — KANE-0001"));
     }
 
