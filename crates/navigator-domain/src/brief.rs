@@ -21,7 +21,7 @@ use std::collections::HashMap;
 // Reference pack (narrative content)
 // ---------------------------------------------------------------------------------------------
 
-/// One haplogroup's narrative content: when it formed, where it's associated with, and a short
+/// One haplogroup's narrative content: when it formed, where it is associated with, and a short
 /// curated story. Every field is optional so a sparse pack still contributes what it has.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct HaploEntry {
@@ -286,7 +286,7 @@ pub struct SubjectBrief {
     #[serde(default)]
     pub archaic: Option<ArchaicBrief>,
     pub test: TestBrief,
-    /// True when the subject has a sequencing alignment that hasn't been analyzed yet (data present,
+    /// True when the subject has a sequencing alignment that has not been analyzed yet (data present,
     /// no coverage computed) — the signal for the Simple-mode one-click "Analyze" prompt. False for
     /// an already-analyzed subject or one with no alignment (chip/VCF-only, nothing to analyze).
     #[serde(default)]
@@ -327,7 +327,7 @@ fn group_thousands(n: i64) -> String {
     }
 }
 
-/// Round an age to a friendly magnitude so a precise estimate doesn't read as false precision
+/// Round an age to a friendly magnitude so a precise estimate does not read as false precision
 /// (4,237 → "about 4,200"; 63,500 → "about 64,000"; 850 → "about 850").
 fn round_age(ybp: i32) -> i64 {
     let y = ybp.max(0) as i64;
@@ -383,7 +383,7 @@ pub fn confidence_phrase(lang: Lang, confidence: f64, run_count: usize, conflict
 
 /// Sequencing-depth quality, gated by what the test targets. Returns the phrase and an ok flag
 /// (drives a ✓/⚠ chip). A targeted test (Y/mt) is judged on its own target depth, which is much
-/// higher than a WGS average, so the WGS thresholds don't apply.
+/// higher than a WGS average, so the WGS thresholds do not apply.
 pub fn quality_phrase(lang: Lang, mean_coverage: f64, target: TargetType) -> (String, bool) {
     let (label_key, ok) = match target {
         // Whole-genome / autosomal / exome: judged on genome-wide average depth.

@@ -14,7 +14,7 @@
 //!
 //! ## The reference is part of the file
 //!
-//! A CRAM cannot be read without the reference it was compressed against, so `reference_path` is
+//! A CRAM can not be read without the reference it was compressed against, so `reference_path` is
 //! recorded on the row rather than resolved by convention later. An alignment whose reference has
 //! moved is unreadable, and the row is the only place that knows which one it was.
 
@@ -43,7 +43,7 @@ impl App {
     /// required, because a CRAM without its reference is unreadable rather than merely awkward.
     ///
     /// `backend` and `preset` are taken separately rather than as a ready-made derivation string
-    /// so the recorded format stays authoritative here; a caller cannot invent its own spelling
+    /// so the recorded format stays authoritative here; a caller can not invent its own spelling
     /// that later queries then fail to recognise.
     pub async fn register_realigned_alignment(
         &self,
@@ -212,7 +212,7 @@ pub fn is_target_build(build: &str) -> bool {
 /// the input is.
 ///
 /// Shared by the project-wide count and the Simple-mode single-subject offer, so that the two
-/// cannot drift apart. If they disagreed, a user would be told a batch covers a sample it then
+/// can not drift apart. If they disagreed, a user would be told a batch covers a sample it then
 /// silently skips — or be offered four hours of work that the job itself would refuse.
 pub(crate) fn realignable_for_subject(alignments: &[Alignment], target_build: &str) -> Vec<i64> {
     alignments

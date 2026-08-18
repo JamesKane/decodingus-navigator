@@ -294,7 +294,7 @@ impl App {
     /// prose to `on_chunk`. Grounded in only that signal's curated section (see
     /// [`navigator_domain::results_context::signal_section`]); cached and health-guarded like brief
     /// narration. `Err` when the assistant is off / unreachable / the subject has nothing for that
-    /// signal — the UI then just doesn't show an explanation.
+    /// signal — the UI then just does not show an explanation.
     pub async fn narrate_signal_streaming(
         &self,
         guid: SampleGuid,
@@ -400,7 +400,7 @@ impl App {
         if !cfg.enabled {
             return Err(AppError::Llm("The AI assistant is turned off.".into()));
         }
-        // Incoming scope guard: don't even ask the model a medical question.
+        // Incoming scope guard: do not even ask the model a medical question.
         if llm_prompt::mentions_health(&question) {
             return Ok(llm_prompt::health_deflection().to_string());
         }
@@ -473,7 +473,7 @@ impl App {
         };
 
         // Y-STR panels — name + marker count only (never the raw values: token cost, no answerable
-        // gain, and they're lineage patterns not facts to recite).
+        // gain, and they are lineage patterns not facts to recite).
         let ystr: Vec<YStrPanelFact> = self
             .list_str_profiles(guid)
             .await
@@ -586,7 +586,7 @@ impl App {
             max_tokens: cfg.max_tokens,
             stream: true,
             // Grounded "explain my results" never needs chain-of-thought — disable it at the server
-            // so Gemma 4 et al. don't waste tokens/latency on a reasoning channel we'd discard.
+            // so Gemma 4 et al. do not waste tokens/latency on a reasoning channel we'd discard.
             chat_template_kwargs: Some(serde_json::json!({ "enable_thinking": false })),
         };
         let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));

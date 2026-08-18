@@ -1,6 +1,6 @@
 //! Per-device Ed25519 signing key for authenticated Edge↔AppView calls.
 //!
-//! Navigator cannot sign as its `did:plc` account (the PDS custodies that signing key), so
+//! Navigator can not sign as its `did:plc` account (the PDS custodies that signing key), so
 //! each installation generates its own Ed25519 *device key*, persists the 32-byte seed in
 //! the OS keychain beside the OAuth session (keyed by account DID), and publishes the
 //! public half once as a `com.decodingus.atmosphere.deviceKey` record in the user's PDS
@@ -217,7 +217,7 @@ mod tests {
         );
     }
 
-    /// Keys are namespaced by account, so two identities on one install don't collide.
+    /// Keys are namespaced by account, so two identities on one install do not collide.
     #[test]
     fn device_keys_are_per_account() {
         let svc = "device-key-per-account-test";

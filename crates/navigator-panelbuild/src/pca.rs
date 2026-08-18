@@ -62,7 +62,7 @@ pub struct AncientPanelArgs {
     #[arg(long)]
     samples: String,
     /// `sample<TAB>population` for every sample across the matrices (the pipeline's pop map;
-    /// samples whose population isn't in `--components` are ignored).
+    /// samples whose population is not in `--components` are ignored).
     #[arg(long)]
     pops: PathBuf,
     /// The deep source (**left**) populations, comma-separated and **in panel-axis order**
@@ -95,7 +95,7 @@ pub struct AncientPanelArgs {
     /// **Ascertainment floor (Option A′).** Restrict the panel to the CHM13 `contig<TAB>pos` sites in
     /// this file — a consumer-array manifest. Allele-frequency admixture is only valid when the
     /// sample and the reference share ascertainment; the AADR/1240k universe includes capture sites
-    /// consumer chips don't assay, and on those the deep estimate is unstable (a WGS sample reads
+    /// consumer chips do not assay, and on those the deep estimate is unstable (a WGS sample reads
     /// ~90% Steppe where its own chip reads ~58%). Intersecting with the sites arrays actually assay
     /// makes the estimate agree across data sources. See `documents/design/ancient-ancestry-rebuild.md` §4.
     /// Optional: omit to build the full (unascertained) panel.
@@ -595,7 +595,7 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
         .collect();
 
     let pop_of = load_fine_map(&args.pops)?;
-    // No global call-rate filter: the AADR matrix is mostly individuals we don't reference, so a
+    // No global call-rate filter: the AADR matrix is mostly individuals we do not reference, so a
     // matrix-wide call rate says nothing about the sources. The per-component floor below is the
     // filter that matters.
     let (samples, metas, rows) = load_combined(&split_paths(&args.matrix), &split_paths(&args.samples), 0.0)?;

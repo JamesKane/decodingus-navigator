@@ -43,7 +43,7 @@ fn cells(line: &str) -> Vec<String> {
         .collect()
 }
 
-/// Recognize the report flavor from a header row's columns, or `None` if it isn't an FTDNA Big Y
+/// Recognize the report flavor from a header row's columns, or `None` if it is not an FTDNA Big Y
 /// Named/Private Variants header. Case-insensitive; quotes already stripped by [`cells`].
 pub fn report_of_header(cols: &[String]) -> Option<FtdnaReport> {
     let norm: Vec<String> = cols.iter().map(|c| c.to_ascii_lowercase()).collect();
@@ -67,7 +67,7 @@ pub fn looks_like_ftdna_variant_csv(text: &str) -> bool {
 }
 
 /// Parse an FTDNA Big Y Named/Private Variants CSV into chrY derived-allele SNP calls, returning
-/// the report flavor alongside. Errors if the header isn't a recognized FTDNA report or no SNP
+/// the report flavor alongside. Errors if the header is not a recognized FTDNA report or no SNP
 /// rows parse.
 pub fn parse(text: &str) -> Result<(FtdnaReport, Vec<VariantCall>), String> {
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());

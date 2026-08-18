@@ -245,7 +245,7 @@ impl YStructuralRegions {
     }
 
     /// Build from explicit masks (the seam the BED loader + unit tests share). XTR/STR/centromere
-    /// masks aren't sourced yet — those tiers exist in [`YRegionClass`] for when their data lands.
+    /// masks are not sourced yet — those tiers exist in [`YRegionClass`] for when their data lands.
     pub fn from_masks(
         par: RegionMask,
         palindrome: RegionMask,

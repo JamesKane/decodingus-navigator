@@ -293,7 +293,7 @@ impl HaplotypeReference {
 /// Project a sample's genotypes onto the reference PCA space: centre each site by its panel
 /// mean and accumulate `centered · loading` into each component. A missing genotype contributes
 /// 0 (mean-imputed), then the projection is rescaled by `total_sites / sites_used` so a sample
-/// with missing genotypes isn't shrunk toward the origin (which would pull it off its true
+/// with missing genotypes is not shrunk toward the origin (which would pull it off its true
 /// cluster). Returns the sample's coordinate in each principal component.
 pub fn project_pca(genotypes: &[SiteGenotype], pca: &PcaLoadings) -> Vec<f64> {
     let dosage: HashMap<(&str, i64), i32> = genotypes
@@ -313,7 +313,7 @@ pub fn project_pca(genotypes: &[SiteGenotype], pca: &PcaLoadings) -> Vec<f64> {
 
 /// The PCA projection kernel: accumulate `centered · loading` into each component over the sites
 /// the sample actually has, then un-shrink by `n_sites / used` so a sample with missing genotypes
-/// isn't pulled toward the origin (see [`project_pca`]).
+/// is not pulled toward the origin (see [`project_pca`]).
 ///
 /// `centered` yields `(site index, dosage − site mean)` for each present site; `loading` reads the
 /// `(site, component)` basis entry. Both are supplied by the caller because the runtime projector
@@ -646,7 +646,7 @@ fn haploid_viterbi(sites: &[(i64, Vec<f64>, u8)], pi: &[f64], rate: f64, k: usiz
 /// Paint local ancestry from **phased** genotypes: a haploid ancestry HMM run independently on each
 /// of the two phased sides, so the two output tracks are internally-consistent parental sides
 /// (segment `copy` = phased side 0/1, consistent across the whole genome) — the parent-split the
-/// unphased [`paint_local_ancestry`] cannot produce. `prior` is the genome-wide composition
+/// unphased [`paint_local_ancestry`] can not produce. `prior` is the genome-wide composition
 /// (anchors the state set); `panel` supplies per-super-pop allele frequencies.
 pub fn paint_local_ancestry_phased(
     phased: &crate::phasing::PhasedGenotypes,
@@ -731,7 +731,7 @@ impl Default for FineResolveParams {
 /// **fine** population *within that super-population* from the fine-frequency panel, scoring the
 /// segment's phased-side alleles by the haploid likelihood under each candidate fine population.
 /// Sets [`AncestrySegment::fine_population_code`] in place; leaves it `None` when the segment is too
-/// short or the best fine call isn't clearly ahead of the runner-up (mirrors the super→fine admixture
+/// short or the best fine call is not clearly ahead of the runner-up (mirrors the super→fine admixture
 /// hierarchy). `fine_panel.populations` are fine-pop codes; each site's `freqs` are per-fine-pop AF.
 pub fn resolve_fine_populations(
     segments: &mut [AncestrySegment],
@@ -934,9 +934,9 @@ fn collapse_copy(
 use navigator_domain::seq::complement_base as revcomp_base;
 
 /// Alt-allele dosage (0/1/2) for a chip diploid call `(a1,a2)` against a panel site's
-/// `ref_allele`/`alt_allele`. When the call's alleles don't both lie in `{ref,alt}`, retry once on
+/// `ref_allele`/`alt_allele`. When the call's alleles do not both lie in `{ref,alt}`, retry once on
 /// the **reverse-complemented** call (the array reported the other strand); `None` if it still
-/// doesn't match (no-call / multi-allelic mismatch). The minimal strand-flip logic chip→panel needs.
+/// does not match (no-call / multi-allelic mismatch). The minimal strand-flip logic chip→panel needs.
 pub fn dosage_from_alleles(a1: char, a2: char, ref_allele: char, alt_allele: char) -> Option<i32> {
     let (r, alt) = (ref_allele.to_ascii_uppercase(), alt_allele.to_ascii_uppercase());
     let count = |x: char, y: char| -> Option<i32> {
@@ -1133,10 +1133,10 @@ const ANCIENT_MAX_DISPERSION: f64 = 4.0;
 /// East Asian, and no term for Sub-Saharan African, so for a person who carries a lot of any of
 /// those, a three-way decomposition of their *whole genome* is not an approximation — it is a
 /// category error. A Punjabi fits at Steppe 67% here; their real Steppe ancestry is nearer 20–30%,
-/// with the rest Iranian-Neolithic and AASI that this model simply cannot see, so it piles the
+/// with the rest Iranian-Neolithic and AASI that this model simply can not see, so it piles the
 /// unexplained ancestry onto whichever source is least unlike it.
 ///
-/// Dispersion alone cannot catch that (South Asians overlap the European tail), but the *modern*
+/// Dispersion alone can not catch that (South Asians overlap the European tail), but the *modern*
 /// estimate — which is well validated and independent of this panel — separates them cleanly. So
 /// deep ancestry only runs for samples the modern model already calls predominantly European.
 const ANCIENT_MIN_WEST_EURASIAN: f64 = 50.0;
@@ -1169,7 +1169,7 @@ const QPADM_WEIGHT_TOL: f64 = 0.02;
 /// ancestry for a WHG/ANF/Steppe decomposition to mean anything, or a fit dispersion above
 /// [`ANCIENT_MAX_DISPERSION`] (the sample's ancestry lies outside the span of the three sources — a
 /// Yoruba is not *any* mixture of them). Reporting nothing is the entire point: the EM will always
-/// return *some* simplex vector, and presenting that vector for a sample the model cannot express is
+/// return *some* simplex vector, and presenting that vector for a sample the model can not express is
 /// precisely the failure this rebuild exists to prevent.
 pub fn estimate_ancient_admixture(
     genotypes: &[SiteGenotype],
@@ -2211,7 +2211,7 @@ mod tests {
 
     /// Ancestry-HETEROZYGOUS sample: every site het (one copy A, one copy B). Diploid painting must
     /// put A on one copy and B on the other across the whole chromosome (the case a single-track
-    /// painter cannot express).
+    /// painter can not express).
     #[test]
     fn painting_diploid_heterozygous_copies_differ() {
         let n = 60;
@@ -2274,7 +2274,7 @@ mod tests {
 
     /// Phased painting: two genuine parental sides. Side 0 is ancestry A (alt) on the first half,
     /// B (ref) on the second; side 1 is the mirror. Each side must paint as a consistent two-segment
-    /// track (A→B on side 0, B→A on side 1) — the parent-split the unphased painter cannot express.
+    /// track (A→B on side 0, B→A on side 1) — the parent-split the unphased painter can not express.
     #[test]
     fn painting_phased_two_consistent_sides() {
         use crate::phasing::{PhasedGenotypes, PhasedSite};
@@ -2381,7 +2381,7 @@ mod tests {
     //
     // The three-source model is the one that previously shipped fabricated numbers, so these tests
     // pin the two properties whose absence made that possible: it must recover a mixture it was
-    // never told, and it must refuse a sample its sources cannot express.
+    // never told, and it must refuse a sample its sources can not express.
 
     /// A deterministic LCG — the simulations below must give the same answer on every run.
     struct Lcg(u64);
@@ -2652,7 +2652,7 @@ mod tests {
     }
 
     /// A symmetric tree `((A,B),(C,D))` has `f4(A,B;C,D) = 0` in expectation (the A–B and C–D drift
-    /// paths don't overlap), while `f4(A,C;B,D)` sits on the shared internal edge and is non-zero.
+    /// paths do not overlap), while `f4(A,C;B,D)` sits on the shared internal edge and is non-zero.
     /// Simulate exactly that and require the jackknife SE to *tell them apart*: the null within a few
     /// SE of zero, the real edge many SE away. This is the test that the covariance is calibrated —
     /// the property §5.4 needs and simulation-of-frequencies alone can't fake.

@@ -82,7 +82,7 @@ fn a_reverse_strand_read_is_restored_to_sequencer_orientation() {
 }
 
 /// A forward-strand read must be passed through untouched — the mirror of the test above, so a
-/// bug that reverse-complements unconditionally cannot pass both.
+/// bug that reverse-complements unconditionally can not pass both.
 #[test]
 fn a_forward_strand_read_is_left_alone() {
     let dir = scratch("forward");
@@ -262,7 +262,7 @@ fn a_read_whose_mate_was_dropped_becomes_a_singleton() {
     assert_eq!(read_lines(&out.singletons)[0], "@b");
 }
 
-/// Flags that claim "paired" but not which end cannot be placed in a synchronized file.
+/// Flags that claim "paired" but not which end can not be placed in a synchronized file.
 #[test]
 fn a_paired_record_with_contradictory_segment_flags_is_a_singleton() {
     let dir = scratch("contradictory");

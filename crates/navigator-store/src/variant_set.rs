@@ -123,7 +123,7 @@ pub async fn create(pool: &SqlitePool, new: &NewVariantSet) -> Result<VariantSet
     })
 }
 
-/// One variant set (with its calls) by id, or `None` if it doesn't exist.
+/// One variant set (with its calls) by id, or `None` if it does not exist.
 pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<VariantSet>, StoreError> {
     let Some(r) = sqlx::query_as::<_, SetRow>(
         "SELECT id, biosample_guid, source_label, source_type, reference_build, call_schema, source_path FROM variant_set WHERE id = ?",

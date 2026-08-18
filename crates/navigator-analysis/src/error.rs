@@ -43,8 +43,8 @@ pub fn panic_text(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
 
 /// Run a BAM/CRAM walk, converting a **panic** into a clean [`AnalysisError`] so one undecodable
 /// file fails gracefully instead of unwinding into a cryptic `JoinError`/aborting a worker. The
-/// motivating cases are noodles' `todo!()`/`expect()` on inputs it doesn't handle (an unimplemented
-/// CRAM data series, or a decode that needs reference bases it wasn't given): without this, such a
+/// motivating cases are noodles' `todo!()`/`expect()` on inputs it does not handle (an unimplemented
+/// CRAM data series, or a decode that needs reference bases it was not given): without this, such a
 /// file panics deep inside the decoder. `what` labels the operation/file for the surfaced message.
 ///
 /// The panic's own text is included rather than a guessed explanation — this is a last-resort net,

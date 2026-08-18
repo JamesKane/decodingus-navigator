@@ -26,7 +26,7 @@ fn tests_never_touch_the_os_keychain() {
 
 /// Serializes tests that mutate the process-global `NAVIGATOR_TREE_DIR`: one test's `remove_var`
 /// would otherwise yank the seeded tree dir out from under another running concurrently. Held for
-/// the whole test body; ignores poisoning so a panicking test doesn't wedge the rest.
+/// the whole test body; ignores poisoning so a panicking test does not wedge the rest.
 static TREE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Reuse the analysis crate's committed fixtures (workspace-relative).
@@ -35,7 +35,7 @@ fn fixtures() -> PathBuf {
 }
 
 /// Serializes the `NAVIGATOR_REFGENOME_DIR` env write (read once in `App::new`) so
-/// parallel tests pointing the gateway cache at different temp dirs don't race.
+/// parallel tests pointing the gateway cache at different temp dirs do not race.
 static REF_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// An `App` whose reference-gateway cache is `cache`. The store is opened first (async), then
@@ -185,7 +185,7 @@ async fn import_mtdna_fasta_derives_variants() {
     app.import_mtdna_from_fasta(subject.guid, &path).await.unwrap();
 
     // The import derived + persisted an rCRS-relative variant set (haplogroup placement needs the
-    // network, so it's best-effort and not asserted here).
+    // network, so it is best-effort and not asserted here).
     let sets = app.list_variant_sets(subject.guid).await.unwrap();
     let mt = sets
         .iter()
@@ -620,7 +620,7 @@ async fn validate_gfx_decodingus_y() {
         eprintln!("set GFX_CHM13_BAM + GFX_CHM13_REF (+ DECODINGUS_APPVIEW_URL) to run this");
         return;
     };
-    // Force the DecodingUs provider (it's the default, but be explicit); host from env or :9000.
+    // Force the DecodingUs provider (it is the default, but be explicit); host from env or :9000.
     std::env::set_var("NAVIGATOR_Y_TREE_PROVIDER", "decodingus");
 
     let app = app().await;
@@ -1068,7 +1068,7 @@ async fn add_data_detects_and_routes() {
     assert_eq!(app.list_chip_profiles(subject.guid).await.unwrap().len(), 1);
 
     // A BAM/CRAM auto-imports: it creates a sequencing run + alignment (header probed
-    // best-effort; here the bytes aren't a real BAM so detection falls back to defaults).
+    // best-effort; here the bytes are not a real BAM so detection falls back to defaults).
     let bam = dir.join(format!("data-{}.bam", subject.guid.0));
     std::fs::write(&bam, b"\x1f\x8b").unwrap();
     assert_eq!(app.add_data(subject.guid, &bam).await.unwrap(), DetectedData::Alignment);
@@ -1077,9 +1077,9 @@ async fn add_data_detects_and_routes() {
     let alns = app.list_alignments(runs[0].id).await.unwrap();
     assert_eq!(alns.len(), 1);
     // The content hash is deferred (not computed at import) so a multi-GB alignment imports
-    // instantly; it's filled in lazily on the first analysis that needs it.
+    // instantly; it is filled in lazily on the first analysis that needs it.
     assert_eq!(alns[0].content_sha256, None, "content hash is deferred at import");
-    // Idempotent: re-adding the same path doesn't duplicate the run/alignment.
+    // Idempotent: re-adding the same path does not duplicate the run/alignment.
     assert_eq!(app.add_data(subject.guid, &bam).await.unwrap(), DetectedData::Alignment);
     assert_eq!(app.list_sequence_runs(subject.guid).await.unwrap().len(), 1);
 
@@ -1266,7 +1266,7 @@ async fn run_coverage_persists_and_reads_back_from_cache() {
     assert_eq!(result.callable_bases, 10);
 
     // now cached for this version (integer fields exact; floats survive round-trip to
-    // ~1 ULP, so compare those approximately rather than with fragile float ==)
+    // ~1 ULP, so compare those about rather than with fragile float ==)
     let cached = app.cached_coverage(aln).await.unwrap().unwrap();
     assert_eq!(cached.genome_territory, result.genome_territory);
     assert_eq!(cached.callable_bases, result.callable_bases);
@@ -1566,7 +1566,7 @@ async fn reimport_under_different_project_name_reuses_subject() {
     );
     assert_eq!(s2.samples_created, 0, "the subject is reused, not duplicated");
 
-    // Exactly one subject in the workspace, and it's a roster member of BOTH projects.
+    // Exactly one subject in the workspace, and it is a roster member of BOTH projects.
     assert_eq!(app.list_all_biosamples().await.unwrap().len(), 1);
     assert_eq!(app.list_biosamples(s1.project.id).await.unwrap().len(), 1);
     assert_eq!(app.list_biosamples(s2.project.id).await.unwrap().len(), 1);
@@ -2107,7 +2107,7 @@ async fn sex_and_read_metrics_persist_and_reload() {
 }
 
 /// Live: GFX0457637 carries a Y haplogroup (R-FGC29071), so sex inference should call Male.
-/// Uses the BAI fast-path, so it's quick. Requires GFX_CHM13_BAM.
+/// Uses the BAI fast-path, so it is quick. Requires GFX_CHM13_BAM.
 #[tokio::test]
 #[ignore = "requires GFX_CHM13_BAM"]
 async fn gfx_sex_is_male() {
@@ -2425,7 +2425,7 @@ async fn ftdna_matches_existing_subject_by_ystr_distance() {
     .await
     .unwrap();
 
-    // Plan with roster + Y-STR. B5163's SNP terminal won't match the ISOGG label, but the Y-STR
+    // Plan with roster + Y-STR. B5163's SNP terminal will not match the ISOGG label, but the Y-STR
     // genetic distance (GD 0) must surface KANE-0001 as a candidate.
     let plan = app
         .plan_ftdna_import(
@@ -2457,7 +2457,7 @@ async fn ftdna_matches_existing_subject_by_ystr_distance() {
 
     // Commit the merge into the (new) project. KANE-0001 has NO home project (`project_id` is NULL) —
     // the merge adds an M:N membership row only. The project report must still surface it (regression
-    // for "matched samples don't appear in the Project report" — it reads membership ∪ home column).
+    // for "matched samples do not appear in the Project report" — it reads membership ∪ home column).
     let mut res = std::collections::BTreeMap::new();
     res.insert("B5163".to_string(), navigator_app::FtdnaResolution::Merge(kane.guid));
     let summary = app.commit_ftdna_import(&plan, &res).await.unwrap();
@@ -2481,7 +2481,7 @@ async fn ftdna_matches_existing_subject_by_ystr_distance() {
 }
 
 /// Deleting a sequencing run purges the haplogroup calls + consensus placement derived from its
-/// alignments, so a wrong haplogroup doesn't linger after the run is removed.
+/// alignments, so a wrong haplogroup does not linger after the run is removed.
 #[tokio::test]
 async fn deleting_run_purges_derived_haplogroup_and_consensus() {
     use navigator_app::DnaType;
@@ -2627,7 +2627,7 @@ async fn branch_report_genotypes_the_mt_subtree_end_to_end() {
     let _ = std::fs::remove_dir_all(&trees);
 }
 
-/// `pick_mt_alignment` skips a Y-only run so the mtDNA report isn't genotyped against an
+/// `pick_mt_alignment` skips a Y-only run so the mtDNA report is not genotyped against an
 /// alignment that carries no chrM reads, while `pick_y_debug_alignment` still targets it.
 #[tokio::test]
 async fn mt_alignment_pick_skips_a_y_only_run() {
@@ -2639,7 +2639,7 @@ async fn mt_alignment_pick_skips_a_y_only_run() {
         .await
         .unwrap();
 
-    // A Big-Y (Y-only) run, recorded first so it's a candidate for both pickers.
+    // A Big-Y (Y-only) run, recorded first so it is a candidate for both pickers.
     let y_run = app
         .record_sequence_run(NewSequenceRun::new(b.guid, "ILLUMINA", "BIG_Y_700"))
         .await
@@ -2763,7 +2763,7 @@ async fn add_sample_dir_falls_back_to_per_file_for_a_loose_bundle() {
 #[tokio::test]
 async fn add_sample_dir_skips_called_vcf_when_gvcf_present() {
     // GATK repo layout: a bare `chrY.g.vcf.gz` (the Y source → fast path) sits beside the called
-    // `chrY.vcf.gz`. With the GVCF present the called VCF must NOT be imported — it's redundant and
+    // `chrY.vcf.gz`. With the GVCF present the called VCF must NOT be imported — it is redundant and
     // (variant-set import not being content-idempotent) would duplicate on a resumable re-run. The
     // GVCF is a stub here, so the placement itself is a best-effort no-op; this pins the routing.
     let app = app().await;
@@ -2940,7 +2940,7 @@ async fn maintenance_survey_reports_every_chore() {
     let app = app().await;
     let survey = app.maintenance_survey().await.expect("survey");
 
-    // Every chore is present, in a fixed order, so the panel cannot silently lose one.
+    // Every chore is present, in a fixed order, so the panel can not silently lose one.
     let chores: Vec<_> = survey.iter().map(|s| s.chore).collect();
     assert_eq!(chores, navigator_app::Chore::ALL.to_vec());
 
@@ -2948,7 +2948,7 @@ async fn maintenance_survey_reports_every_chore() {
         assert!(s.due <= s.total || s.total == 0, "{:?}: due exceeds total", s.chore);
     }
 
-    // Nothing to publish, and no account to publish with — the chore reports *why* it cannot run
+    // Nothing to publish, and no account to publish with — the chore reports *why* it can not run
     // rather than offering a button that would fail.
     let publish = survey
         .iter()

@@ -2,11 +2,11 @@
 //! [`navigator_analysis::lai::paint_copying_lai`].
 //!
 //! The painter's calibration knobs ([`CopyingLaiParams`]) were tuned by *looking* at one kit's
-//! painted chromosomes, which cannot distinguish "the smear is gone" from "the smear moved". This
+//! painted chromosomes, which can not distinguish "the smear is gone" from "the smear moved". This
 //! runs the shipping painter against ground truth we control and prints the numbers:
 //!
 //! 1. **Leave-one-out gate** — take a real reference individual (both of its haplotypes), remove
-//!    them from the reference so it cannot copy itself, paint, and score every site against the
+//!    them from the reference so it can not copy itself, paint, and score every site against the
 //!    individual's known population. A NW-European reference individual painted as Finnish is the
 //!    exact defect the recent recalibration commits were chasing, and here it is a number.
 //! 2. **Simulated-admixture gate** — splice held-out donor haplotypes from two (or more)
@@ -677,7 +677,7 @@ fn build_cases(
             );
             continue;
         }
-        // Evenly spaced picks so replicates aren't all neighbours in the panel's sample order.
+        // Evenly spaced picks so replicates are not all neighbours in the panel's sample order.
         let step = (pool.len() / args.replicates.max(1)).max(1);
         for r in 0..args.replicates.min(pool.len()) {
             let ind = pool[(r * step) % pool.len()];
@@ -1078,7 +1078,7 @@ fn contig_count(reference: &HaplotypeReference, sel: &[usize]) -> usize {
 }
 
 /// Base-pair weight of each selected site: half the distance to each neighbour within its contig,
-/// so a sparse region doesn't count the same as a dense one and the reported composition matches
+/// so a sparse region does not count the same as a dense one and the reported composition matches
 /// the painted (bp-proportioned) chromosomes.
 fn site_weights(reference: &HaplotypeReference, sel: &[usize]) -> Vec<f64> {
     let pos = |i: usize| reference.sites[sel[i]].position as f64;

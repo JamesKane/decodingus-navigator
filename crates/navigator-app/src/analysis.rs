@@ -53,7 +53,7 @@ impl App {
     ) -> Result<CoverageResult, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let bam = Self::alignment_file(&aln)?;
-        // The reference isn't asked for at import — resolve the alignment's build via the gateway
+        // The reference is not asked for at import — resolve the alignment's build via the gateway
         // (cached, else download) when no FASTA was stored.
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
@@ -153,7 +153,7 @@ impl App {
         Ok(result)
     }
 
-    /// Write the inferred sex back to the biosample when the user didn't provide one, so it
+    /// Write the inferred sex back to the biosample when the user did not provide one, so it
     /// shows in the subjects table + header instead of "Unknown". No-op for Unknown sex or
     /// when the biosample already carries a sex.
     pub(crate) async fn write_back_inferred_sex(
@@ -286,7 +286,7 @@ impl App {
         match tokio::task::spawn_blocking(move || copy_with_index(&remote_owned, &local2, remote_len)).await {
             // Registering can still fail if the copy was removed in the gap (a concurrent holder
             // finishing and dropping to zero). Returning an `owned` handle to a missing path would
-            // fail the walk with a confusing ENOENT and then "clean up" a file that isn't there.
+            // fail the walk with a confusing ENOENT and then "clean up" a file that is not there.
             Ok(Ok(())) if LocalAlignment::retain(&local, remote_len) => LocalAlignment::owned(local),
             Ok(Ok(())) => {
                 eprintln!(
@@ -320,7 +320,7 @@ impl App {
     /// Like [`run_unified_metrics`], reporting `progress(contigs_done, contigs_total)` as the
     /// (slow) whole-genome coverage portion finalizes each contig. Uses the per-contig parallel
     /// walker (falling back to a sequential pass for CRAM / unindexed BAM); the callback is
-    /// `Fn + Sync` because it's invoked concurrently from the fan-out's worker threads.
+    /// `Fn + Sync` because it is invoked concurrently from the fan-out's worker threads.
     pub async fn run_unified_metrics_with_progress(
         &self,
         alignment_id: i64,
@@ -377,7 +377,7 @@ impl App {
             .await?;
         self.write_back_read_stats(alignment_id, &result.read_metrics).await?;
         // Sex: a Y-targeted test (Big Y, Y Elite, …) sequences the donor's Y chromosome — he is male
-        // by definition. The chrX/autosome ratio the inference needs isn't present in a chrY-scoped
+        // by definition. The chrX/autosome ratio the inference needs is not present in a chrY-scoped
         // walk, and is unreliable even whole-genome (a Big Y's off-target chrX ≈ autosome ≈ 0.4×
         // reads as *female*). So force Male for a Y-targeted test, overriding the inference + any
         // prior auto-assignment; WGS / mt-targeted keep the walk's result.
@@ -510,7 +510,7 @@ impl App {
 
     /// Genotype short tandem repeats on `contig` from the alignment, via the enclosing-read caller
     /// over the HipSTR reference tracts (haploid for chrY/chrM, diploid elsewhere). Persisted as a
-    /// `str:{contig}` artifact (so it's cached + source-invalidated like other analyses). Errors if
+    /// `str:{contig}` artifact (so it is cached + source-invalidated like other analyses). Errors if
     /// no STR reference is configured for the alignment's build (the tracts are build-specific —
     /// CHM13/GRCh37 need their own reference or liftover, not yet wired).
     pub async fn run_str_calls(
@@ -531,7 +531,7 @@ impl App {
             ))
         })?;
         // Resolve the reference for decode (see alignment_reference_for_decode): required for a CRAM,
-        // None for a BAM. STR region-genotyping reads the alignment; it doesn't consult reference bases.
+        // None for a BAM. STR region-genotyping reads the alignment; it does not consult reference bases.
         let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
         // chrY / chrM are haploid (one allele); autosomes + chrX (in a female) are diploid. We
         // genotype chrY/chrM haploid and everything else diploid — sex-aware chrX is a refinement.
@@ -751,7 +751,7 @@ impl App {
 
     /// A **whole-genome** diploid VCF: de-novo SNV + indel calls over the diploid primary
     /// chromosomes (1–22, X) of the alignment, per-contig cached. chrY and chrM are **excluded** —
-    /// they're haploid, so the diploid (het 0/1) model is wrong for them; their variants come from
+    /// they are haploid, so the diploid (het 0/1) model is wrong for them; their variants come from
     /// the haploid caller and the Y/mt haplogroup + mtDNA-mutation features. Heavy (a real WGS
     /// calling pass); the caller runs it off the UI thread (the export path).
     pub async fn diploid_vcf_genome(&self, alignment_id: i64, cancel: CancelToken) -> Result<String, AppError> {
@@ -912,7 +912,7 @@ impl App {
     /// without the reference, so resolve it (stored path, else from the build via the gateway,
     /// cache-first); a BAM decodes without one, so return the stored path as-is (usually `None`) and
     /// never force a reference download. Use this for record/pileup reads and SNP-site genotyping
-    /// that don't consult reference bases; use [`alignment_bam_reference`](Self::alignment_bam_reference)
+    /// that do not consult reference bases; use [`alignment_bam_reference`](Self::alignment_bam_reference)
     /// for calling paths (de-novo SNV/indel) that need the reference even on a BAM.
     pub(crate) async fn alignment_reference_for_decode(
         &self,
@@ -941,7 +941,7 @@ impl App {
 
     /// The distinct reference builds across a subject's alignments — the builds whose FASTA an
     /// analysis of this subject may need. Used to pre-resolve references (with a progress bar) after
-    /// import and before a subject-level analysis, so on-demand downloads aren't silent.
+    /// import and before a subject-level analysis, so on-demand downloads are not silent.
     pub async fn reference_builds_for_subject(&self, biosample_guid: SampleGuid) -> Result<Vec<String>, AppError> {
         let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         let mut builds: Vec<String> = alns.into_iter().map(|a| a.reference_build).collect();
@@ -1076,7 +1076,7 @@ fn partial_path(local: &Path) -> PathBuf {
 /// last (via a temp + rename), so a present `local` always implies its index is present too — the
 /// cache check in [`App::localize`] can't see a half-copied pair.
 ///
-/// `expect_len` is the remote's size; when known, a copy that doesn't match it is rejected rather
+/// `expect_len` is the remote's size; when known, a copy that does not match it is rejected rather
 /// than published. A short copy is otherwise indistinguishable from corrupt data: it surfaces as a
 /// decode error ("unexpected end of file", a bad container checksum) tens of gigabytes into a walk,
 /// naming the cache path, and the copy is deleted on drop before anyone can look at it.
@@ -1131,7 +1131,7 @@ fn copy_with_index(remote: &Path, local: &Path, expect_len: Option<u64>) -> std:
 
 /// One step of a full analysis of a single alignment, in the order [`App::plan_full_analysis`]
 /// returns them. The variants carry whatever the step needs, so a caller's dispatch is total and it
-/// cannot silently run a step the plan excluded.
+/// can not silently run a step the plan excluded.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnalysisStep {
     /// Coverage + callable, read-level QC, and sex inference in one pass over the alignment.
@@ -1330,7 +1330,7 @@ impl LocalAlignment {
     ///
     /// A file with no registry entry is a **leftover from an earlier process** — `Drop` never ran,
     /// so the run was killed — and is validated against `expect_len` (the remote's size) before
-    /// being trusted, then discarded if it doesn't match. Adopting a leftover on its existence
+    /// being trusted, then discarded if it does not match. Adopting a leftover on its existence
     /// alone is how a truncated copy gets read as though it were the alignment: the failure then
     /// appears as a decode error deep into a walk, pointing at a cache path whose file is deleted
     /// moments later. A wrong-sized copy is worth exactly one re-copy to be rid of.
@@ -1559,7 +1559,7 @@ mod local_alignment_tests {
 
     #[test]
     fn the_original_is_never_removed() {
-        // A path we didn't copy (local disk, or a failed copy falling back to the remote) must be
+        // A path we did not copy (local disk, or a failed copy falling back to the remote) must be
         // left alone — deleting the user's own alignment would be catastrophic.
         let d = scratch("borrowed");
         let original = d.join("c.cram");

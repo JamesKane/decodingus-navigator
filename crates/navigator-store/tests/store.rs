@@ -456,7 +456,7 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
 #[tokio::test]
 async fn set_sequence_run_reparents_an_alignment() {
     // The merge primitive: an alignment's owning run can be changed (then the empty run deleted),
-    // and its artifacts travel with it (they're alignment-keyed).
+    // and its artifacts travel with it (they are alignment-keyed).
     let s = store().await;
     let b = sample(None);
     biosample::create(s.pool(), &b).await.unwrap();
@@ -809,7 +809,7 @@ async fn variant_call_evidence_round_trips_and_tags_the_schema() {
             source_label: "big-y".into(),
             source_type: SourceType::TargetedNgs,
             reference_build: Some("GRCh38".into()),
-            // One call carries evidence, one doesn't — a real VCF mixes both.
+            // One call carries evidence, one does not — a real VCF mixes both.
             calls: vec![call(100, evidence.clone()), call(200, CallEvidence::default())],
             source_path: Some("/tmp/big-y.vcf.gz".into()),
         },

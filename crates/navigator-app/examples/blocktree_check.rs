@@ -72,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Split the unplaced: "no placement at all" is expected (STR-only kits), but "has a terminal
-    // this tree doesn't carry" is provider/build skew worth naming.
+    // this tree does not carry" is provider/build skew worth naming.
     let (skew, unplaced_none): (Vec<_>, Vec<_>) = tree.unplaced.iter().partition(|u| u.terminal.is_some());
     println!(
         "unplaced: {} with no Y placement · {} with a terminal absent from this tree",

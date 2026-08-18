@@ -120,7 +120,7 @@ fn build_bai(path: &Path, dst: &Path, progress: ProgressFn) -> Result<(), Analys
             .add_record(alignment_context, chunk)
             .map_err(|e| AnalysisError::io(path, e))?;
 
-        // Report on ~32 MB of compressed progress so a multi-GB BAM doesn't flood the channel.
+        // Report on ~32 MB of compressed progress so a multi-GB BAM does not flood the channel.
         let done = end_position.compressed();
         if done.saturating_sub(last_reported) >= 32_000_000 {
             last_reported = done;

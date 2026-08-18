@@ -49,7 +49,7 @@ pub struct ChoreSurvey {
     /// Items it would consider — `due` of `total` is what makes "0 due" readable as "nothing to
     /// do" rather than "nothing found".
     pub total: usize,
-    /// Why the chore cannot run at all (not signed in, no tree). `Some` disables it.
+    /// Why the chore can not run at all (not signed in, no tree). `Some` disables it.
     pub blocked: Option<String>,
 }
 

@@ -399,7 +399,7 @@ impl NavigatorApp {
     /// The diagnosis modal: why the last alignment command actually failed, file by file.
     ///
     /// Shown when a command fails *and* the preflight found a concrete cause, because the one-line
-    /// status-bar message is exactly the part that isn't actionable — the reader helpers report
+    /// status-bar message is exactly the part that is not actionable — the reader helpers report
     /// whichever path the failing call was handed, which is routinely not the file at fault. The
     /// report is selectable and copyable so it can go straight into a bug report; that is the
     /// primary job of this modal, not a convenience.
@@ -482,7 +482,7 @@ impl NavigatorApp {
         let mut lift_request = false;
         let mut test_llm: Option<String> = None;
         let mut refresh_trees = false;
-        // While the scale slider is being dragged, DON'T live-apply the zoom (see the live-apply
+        // While the scale slider is being dragged, Do not live-apply the zoom (see the live-apply
         // block below): changing the zoom factor rescales the slider's own rail mid-drag, so the
         // cursor maps to a runaway value that collapses to a bound. Apply only once the drag ends.
         let mut scale_dragging = false;
@@ -875,7 +875,7 @@ impl NavigatorApp {
             self.dark_mode = theme_dark;
             apply_theme(ctx, self.dark_mode);
         }
-        // Apply the zoom only when the slider isn't mid-drag (typed/committed/button changes still
+        // Apply the zoom only when the slider is not mid-drag (typed/committed/button changes still
         // apply immediately). Applying during a drag would rescale the rail and make the value run
         // away to a bound — the reported "only 0.8 or 2.5" symptom.
         if !scale_dragging && (ctx.zoom_factor() - form.ui_scale).abs() > f32::EPSILON {
@@ -891,7 +891,7 @@ impl NavigatorApp {
 
         if save {
             let appview = form.appview_url.trim().to_string();
-            // The fields this dialog doesn't own are carried over from disk; read once rather than
+            // The fields this dialog does not own are carried over from disk; read once rather than
             // re-reading and re-parsing settings.json for each of them.
             let kept = AppSettings::load();
             let settings = AppSettings {
@@ -1154,7 +1154,7 @@ impl NavigatorApp {
             });
         });
         if skip {
-            // Persist the skip so this exact version doesn't notify again (a newer one still will).
+            // Persist the skip so this exact version does not notify again (a newer one still will).
             let mut settings = AppSettings::load();
             settings.skip_update_version = Some(info.latest_version.clone());
             match settings.save() {
@@ -1895,7 +1895,7 @@ impl NavigatorApp {
     /// The consent decision for an inbound matching request.
     ///
     /// A modal rather than an Accept button in a table row, because consenting does two things the
-    /// row cannot say: it reveals our DID to the counterpart, and it puts our IBD-panel dosages on
+    /// row can not say: it reveals our DID to the counterpart, and it puts our IBD-panel dosages on
     /// the encrypted channel. Neither is undoable. The three headings below are the whole point of
     /// the dialog — what we send, what they learn, and what never leaves the device.
     pub(crate) fn consent_modal(&mut self, ctx: &egui::Context) {
@@ -1967,7 +1967,7 @@ impl NavigatorApp {
 
     /// Review a candidate branch: the shared position(s) and every carrier's read evidence.
     ///
-    /// A candidate is inferred, not published, and "1 SNP shared by three men" cannot be judged from
+    /// A candidate is inferred, not published, and "1 SNP shared by three men" can not be judged from
     /// the canvas. What decides it is the evidence behind each call — depth, and how cleanly the
     /// derived allele dominates on a chromosome carrying one copy. A middling fraction or a thin
     /// depth is the signature of the mapping artefacts this view is most at risk of presenting as

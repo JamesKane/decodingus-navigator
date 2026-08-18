@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(parse_gt_phased("1|0"), (1, 0, false));
         assert_eq!(parse_gt_phased("1|1"), (1, 1, false));
         assert_eq!(parse_gt_phased("0|0"), (0, 0, false));
-        // Unphased separator still parses (defensive), phase just isn't meaningful.
+        // Unphased separator still parses (defensive), phase just is not meaningful.
         assert_eq!(parse_gt_phased("0/1"), (0, 1, false));
         // Missing → ref with the missing flag set.
         assert_eq!(parse_gt_phased(".|1"), (0, 1, true));

@@ -199,7 +199,7 @@ impl ReferenceGateway {
         // The cache stores chains as plain text (`load_liftover` reads them with `read_to_string`).
         // Every chain flows through the same path: if the downloaded artifact is gzipped (UCSC
         // serves `.over.chain.gz`; the curated bucket serves plain `.chain`), decompress it in place
-        // — detected by the gzip magic bytes, so the source URL/extension doesn't matter.
+        // — detected by the gzip magic bytes, so the source URL/extension does not matter.
         maybe_gunzip_in_place(&path)?;
         write_sidecar(&path, &sha);
         Ok(path)
@@ -349,7 +349,7 @@ impl ReferenceGateway {
     }
 
     /// Parse the cached chain for a build pair into a `du-bio` `Liftover` (call
-    /// [`resolve_chain`](Self::resolve_chain) first to ensure it's present).
+    /// [`resolve_chain`](Self::resolve_chain) first to ensure it is present).
     pub fn load_liftover(&self, from_name: &str, to_name: &str) -> Result<du_bio::liftover::Liftover, RefgenomeError> {
         let (from, to) = self.chain_builds(from_name, to_name)?;
         let path = cache::chain_path(&self.base, from, to);
@@ -582,7 +582,7 @@ impl ReferenceGateway {
 
     /// Re-hash a cached reference and compare to its integrity sidecar (TOFU, written at download
     /// time). Detects on-disk corruption of the cached `.fa`. Re-reads the whole FASTA, so call it
-    /// from a blocking context (it's an explicit, user-triggered check, not the hot path). A
+    /// from a blocking context (it is an explicit, user-triggered check, not the hot path). A
     /// user-pinned local FASTA has no sidecar → [`VerifyOutcome::NoSidecar`].
     pub fn verify_reference(&self, build_name: &str) -> Result<VerifyOutcome, RefgenomeError> {
         let fa = match self.reference_status(build_name) {

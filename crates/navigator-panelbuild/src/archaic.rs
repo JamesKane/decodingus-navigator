@@ -90,10 +90,10 @@ fn split_list(s: &str) -> Vec<PathBuf> {
 ///
 /// Returns `None` when the ancestral base is unusable — either low-confidence/absent (the EPO
 /// sequence lower-cases low-confidence calls and uses `.`/`-`/`N` for gaps) or matching neither
-/// allele, which means the site cannot be polarized and must be dropped rather than guessed.
+/// allele, which means the site can not be polarized and must be dropped rather than guessed.
 ///
 /// Only **upper-case** ancestral bases are accepted: in the EPO alignment lower case marks a
-/// low-confidence call, and polarity is the one thing this panel cannot afford to get wrong — an
+/// low-confidence call, and polarity is the one thing this panel can not afford to get wrong — an
 /// inverted site turns an archaic-derived allele into its opposite.
 fn derived_allele(ancestral: char, reference_allele: char, alternate_allele: char) -> Option<char> {
     if !matches!(ancestral, 'A' | 'C' | 'G' | 'T') {
@@ -254,7 +254,7 @@ pub fn build_archaic_candidates(args: ArchaicCandidatesArgs) -> Result<()> {
             continue;
         }
         // The site's allele pair comes from the genomes that actually carry a variant; a
-        // reference-confident record states only the REF base and cannot define the pair. At least
+        // reference-confident record states only the REF base and can not define the pair. At least
         // one genome must vary, otherwise the site is invariant across all four and carries no
         // information regardless of polarity.
         let Some((reference_allele, alternate_allele)) = present.iter().find_map(|(r, a, _)| a.map(|alt| (*r, alt)))
@@ -502,7 +502,7 @@ fn load_outgroup_af(path: &Path) -> Result<OutgroupAf> {
 /// The outgroup table and the candidate need not label ref/alt the same way, so the frequency is
 /// re-expressed against the *derived base* rather than against whichever allele happened to be
 /// called ALT. Returns `None` when the candidate's derived base is absent from the outgroup's
-/// allele pair, which means the two sources disagree about the site and it cannot be filtered.
+/// allele pair, which means the two sources disagree about the site and it can not be filtered.
 fn derived_freq(derived: char, og_ref: char, og_alt: char, af_alt: f32) -> Option<f32> {
     let d = derived.to_ascii_uppercase();
     if d == og_alt.to_ascii_uppercase() {
@@ -618,7 +618,7 @@ pub fn build_archaic_panel(args: ArchaicPanelArgs) -> Result<()> {
             continue;
         }
 
-        // Strand-ambiguous sites cannot be reconciled against a chip's unknown strand.
+        // Strand-ambiguous sites can not be reconciled against a chip's unknown strand.
         if is_palindromic(cand.reference_allele, cand.alternate_allele) {
             palindromic += 1;
             continue;
@@ -659,7 +659,7 @@ pub fn build_archaic_panel(args: ArchaicPanelArgs) -> Result<()> {
             }),
             grch38: hg38.get(&idx).cloned(),
             // Unchanged by the swap: the derived allele is stored as a base precisely so orientation
-            // cannot invert its meaning.
+            // can not invert its meaning.
             archaic_derived_allele: cand.derived,
             calls: cand.calls,
             diagnostic_class: classify_diagnostic(&cand.calls),
@@ -738,7 +738,7 @@ mod tests {
         // Ancestral == REF → ALT is derived, and vice versa.
         assert_eq!(derived_allele('A', 'A', 'G'), Some('G'));
         assert_eq!(derived_allele('G', 'A', 'G'), Some('A'));
-        // Matching neither allele cannot be polarized.
+        // Matching neither allele can not be polarized.
         assert_eq!(derived_allele('C', 'A', 'G'), None);
         // Gaps / unknowns.
         assert_eq!(derived_allele('N', 'A', 'G'), None);

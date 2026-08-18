@@ -30,7 +30,7 @@ fn is_gzip(path: &Path) -> Result<bool, RefgenomeError> {
     Ok(n == 2 && magic == [0x1f, 0x8b])
 }
 
-/// Read until the buffer is full or EOF; returns bytes read (a short final read isn't EOF).
+/// Read until the buffer is full or EOF; returns bytes read (a short final read is not EOF).
 fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     let mut filled = 0;
     while filled < buf.len() {

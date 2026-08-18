@@ -1,6 +1,6 @@
 //! Multi-build, chip-compatible IBD reference panel (ancestry-ibd-asset-wiring B2/B2c).
 //!
-//! IBD matching needs a neutral, dense SNP set that's also **assayed by consumer arrays** — chip
+//! IBD matching needs a neutral, dense SNP set that is also **assayed by consumer arrays** — chip
 //! kits outnumber WGS by orders of magnitude, so the panel must be where chip and WGS overlap.
 //! Each site carries its `(contig, pos, REF, ALT)` on **CHM13, GRCh37, and GRCh38** (built once via
 //! allele-aware GATK liftover, offline), so a chip genotype on *any* build resolves to the canonical
@@ -136,13 +136,13 @@ impl IbdPanel {
     /// Resolve a **whole-genome, variant-only** source (a WGS VCF or CompleteGenomics masterVar) to
     /// canonical CHM13 dosages over the panel. Unlike a chip — which reports a genotype at every
     /// array site — such a source lists *only* the non-reference sites, so every panel site the
-    /// source could have called but didn't is taken as **homozygous reference** (dosage 0). That
+    /// source could have called but did not is taken as **homozygous reference** (dosage 0). That
     /// assumption is valid **only** for a source that genotyped the whole genome (absent ⇒ hom-ref,
     /// not no-call); never pass a targeted panel (Big Y / Sanger) here.
     ///
     /// `variant_calls` are the source's variant sites on `build` as `(contig, pos, a1, a2)`
     /// reference-forward allele pairs. Contigs match `chr`-insensitively (a source's `chr1` lines up
-    /// with a panel `grch37` locus stored as `1`). A variant whose alleles don't reconcile to the
+    /// with a panel `grch37` locus stored as `1`). A variant whose alleles do not reconcile to the
     /// site (multiallelic mismatch) is dropped, not mis-called hom-ref. Palindromic (A/T, C/G) sites
     /// are skipped — strand-ambiguous across builds, exactly as [`resolve_chip`].
     pub fn resolve_whole_genome(&self, build: &str, variant_calls: &[(String, i64, char, char)]) -> Vec<SiteGenotype> {
@@ -413,7 +413,7 @@ mod tests {
         );
         // rs1 hom-alt (G/G → dosage 2); rs2 listed but the alleles are internally inconsistent with
         // the biallelic site: C matches ref directly, A only matches alt(T) under rc — neither a
-        // pure direct nor a pure rc pair, so it doesn't reconcile → dropped, NOT called hom-ref.
+        // pure direct nor a pure rc pair, so it does not reconcile → dropped, NOT called hom-ref.
         let calls = vec![("1".to_string(), 500, 'G', 'G'), ("1".to_string(), 600, 'C', 'A')];
         let g = panel.resolve_whole_genome("GRCh37", &calls);
         let by_pos: std::collections::HashMap<i64, i32> = g.iter().map(|s| (s.position, s.dosage)).collect();

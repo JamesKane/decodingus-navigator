@@ -5,7 +5,7 @@
 //! variants that no African outgroup individual carries. Anything Africans also carry is not
 //! evidence of introgression, so stripping them is what makes the remaining density informative.
 //!
-//! The HMM **cannot tell Neanderthal from Denisovan** — the two lineages coalesce before either
+//! The HMM **can not tell Neanderthal from Denisovan** — the two lineages coalesce before either
 //! meets modern humans (§3) — so it finds segments and a downstream pass labels them by counting
 //! derived-allele matches against the archaic genomes (`ArchaicClassify`).
 //!
@@ -27,7 +27,7 @@ pub enum ArchaicSource {
     Neanderthal,
     Denisovan,
     /// Archaic by density, but the diagnostic sites in it do not favour either lineage — the
-    /// honest label for a segment we cannot attribute, and a substantial share in real data
+    /// honest label for a segment we can not attribute, and a substantial share in real data
     /// (Skov 2020 reported ~12 % unknown on Icelanders).
     Unknown,
 }
@@ -102,7 +102,7 @@ pub struct ArchaicConfig {
     /// Expected fraction of Neanderthal-diagnostic sites at which a non-archaic-specific genome
     /// carries the derived allele, and the same for Denisovan-diagnostic sites.
     ///
-    /// These base rates are the reason raw match counts cannot attribute a lineage. Measured on the
+    /// These base rates are the reason raw match counts can not attribute a lineage. Measured on the
     /// ground-truth European: 4.3 % at Neanderthal-diagnostic sites versus 3.9 % at
     /// Denisovan-diagnostic ones — a ratio of 1.10, essentially no discrimination. Carrying a
     /// "Denisovan-diagnostic" allele mostly reflects ordinary shared ancestry, not Denisovan
@@ -191,7 +191,7 @@ fn span_cm(gmap: &GeneticMap, chr: &str, start_bp: i64, end_bp: i64) -> f64 {
 /// Call archaic tracts from a subject's genome-wide diploid calls.
 ///
 /// `calls` should be the de-novo diploid variant calls for one alignment (Tier B is gated to
-/// WGS/VCF input — a chip cannot supply the density this needs).
+/// WGS/VCF input — a chip can not supply the density this needs).
 pub fn call_archaic_segments(
     calls: &[SiteGenotype],
     outgroup: &ArchaicOutgroup,
@@ -443,7 +443,7 @@ fn call_contig(
         if mean_post < cfg.min_posterior {
             continue;
         }
-        // At least half the run's windows must be callable, so a tract cannot be carried by a
+        // At least half the run's windows must be callable, so a tract can not be carried by a
         // stretch of uninformative windows riding on the transition prior.
         let callable_windows = usable[start_w..=end_w].iter().filter(|u| **u).count();
         if callable_windows * 2 < end_w - start_w + 1 {

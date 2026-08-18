@@ -14,7 +14,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-/// The current user's home directory, or `None` if the platform's variables don't say.
+/// The current user's home directory, or `None` if the platform's variables do not say.
 ///
 /// Unix: `$HOME`. Windows: `%USERPROFILE%`, else `%HOMEDRIVE%%HOMEPATH%`.
 pub fn home_dir() -> Option<PathBuf> {

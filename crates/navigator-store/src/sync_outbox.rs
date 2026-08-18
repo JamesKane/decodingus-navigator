@@ -1,6 +1,6 @@
 //! Persistent PDS-publish outbox (sync durability, gap §5). A publish enqueues a fully-built
 //! record; a background drain pushes it with exponential backoff. A transient/offline failure
-//! reschedules the row (so it isn't lost); a non-transient failure marks it `FAILED`; a success
+//! reschedules the row (so it is not lost); a non-transient failure marks it `FAILED`; a success
 //! removes it (its outcome is logged in [`crate::sync_history`]).
 
 use sqlx::SqlitePool;

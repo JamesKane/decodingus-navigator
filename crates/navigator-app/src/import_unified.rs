@@ -37,8 +37,8 @@ impl App {
 
     /// Auto-import an alignment file by probing its header: create the sequencing run (test type,
     /// platform, instrument) and the alignment (reference build + aligner) with no questions
-    /// asked. The reference FASTA is **not** required — it's resolved from the build on demand;
-    /// if already cached it's stored so every analysis step has it immediately.
+    /// asked. The reference FASTA is **not** required — it is resolved from the build on demand;
+    /// if already cached it is stored so every analysis step has it immediately.
     async fn import_alignment_file(
         &self,
         biosample_guid: SampleGuid,
@@ -257,7 +257,7 @@ impl App {
 
     /// Batch [`add_data`]: expand any directories among `paths` into their recognized data files,
     /// then auto-detect + import each into the subject, collecting a [`BatchImportSummary`]. A
-    /// failed/unrecognized file is recorded (not propagated) so one bad file doesn't abort the
+    /// failed/unrecognized file is recorded (not propagated) so one bad file does not abort the
     /// batch. `progress(done, total)` ticks per file. The unified multi-file / folder importer
     /// behind the GUI's Add Data button + drag-and-drop. (Distinct from [`import_project_dir`],
     /// which builds a *new* multi-subject project from a NAS layout; this adds to *this* subject.)
@@ -269,7 +269,7 @@ impl App {
     ) -> Result<BatchImportSummary, AppError> {
         let mut files = Vec::new();
         for p in &paths {
-            // Guard against a single picked folder that's really a *parent* of several per-sample
+            // Guard against a single picked folder that is really a *parent* of several per-sample
             // folders (e.g. an FTDNA download root): recursing it would silently merge sibling
             // samples into this one subject. Refuse with guidance rather than import the wrong data.
             if p.is_dir() {
@@ -404,7 +404,7 @@ impl App {
         // Import bundled variant files ONLY when there is no haplogroup GVCF. When a GVCF is present
         // the fast path below is the authoritative Y/mt source, so a called `chrY.vcf.gz` sitting
         // beside it (the GATK repo layout ships both) is redundant — importing it would fire a second
-        // Y placement and, because variant-set import isn't content-idempotent, would duplicate the
+        // Y placement and, because variant-set import is not content-idempotent, would duplicate the
         // set on a resumable re-run. Non-GVCF tiers (e.g. the b38 aengine `variants.vcf.gz`) still
         // import here: there the VCF *is* the Y source. GVCFs themselves are `.g.vcf.gz`, which `scan`
         // also lists as variant files — the guard keeps them out of this loop too.
@@ -475,7 +475,7 @@ impl App {
     /// plus its Biosample → SequenceRun → Alignment rows. The reference is resolved per
     /// alignment: pass `Some(fasta)` to use a specific FASTA (validated with its `.fai`) for
     /// every alignment, or `None` to let the gateway resolve each file's inferred build from
-    /// the cache. If a needed build isn't cached, returns [`AppError::ReferenceNeeded`]
+    /// the cache. If a needed build is not cached, returns [`AppError::ReferenceNeeded`]
     /// **before any DB writes** so the UI can prompt + download, then retry. Idempotent: an
     /// existing project (by name), biosample (by donor id), or alignment (by path) is reused.
     /// Coverage is NOT computed here — run it per alignment or via the project report.
@@ -493,7 +493,7 @@ impl App {
     /// Re-run the sidecar fast path for every alignment of a subject whose source directory still
     /// carries the pipeline GVCFs — restoring external (GATK4) Y/mt calls that an older build's
     /// internal walk had overwritten before provenance existed. Cheap: reads the small GVCFs, never
-    /// the CRAM. The external calls land on their own `:ext` keys (they cannot clobber, and with the
+    /// the CRAM. The external calls land on their own `:ext` keys (they can not clobber, and with the
     /// "prefer external caller" policy they win the consensus). Returns `(y_placed, mt_placed)`.
     /// This is the operational fix for a workspace imported before external-caller precedence.
     pub async fn reingest_external_for_biosample(
@@ -553,9 +553,9 @@ impl App {
         let scan_dir = dir.to_path_buf();
         let discovered = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan(&scan_dir)).await??;
 
-        // Detect each alignment's reference build from its **header** (only the header, so it's
+        // Detect each alignment's reference build from its **header** (only the header, so it is
         // cheap and needs no reference FASTA). The filename is an unreliable signal — most NAS
-        // project layouts don't put the build in the name — so probe first, fall back to the
+        // project layouts do not put the build in the name — so probe first, fall back to the
         // filename, and record how each build was decided for the import diagnostics.
         let all_paths: Vec<PathBuf> = discovered
             .samples
@@ -575,7 +575,7 @@ impl App {
 
         // Resolve each *distinct* detected build to a reference path. A build the gateway can't
         // canonicalize falls back to the CHM13v2.0 default rather than aborting the whole batch;
-        // a known build that isn't cached is surfaced as a recoverable download need. `effective_of`
+        // a known build that is not cached is surfaced as a recoverable download need. `effective_of`
         // maps a detected build to the one actually stored on the alignment (after any fallback).
         let explicit = reference.as_ref().map(|p| p.to_string_lossy().into_owned());
         let mut resolved: HashMap<String, String> = HashMap::new(); // effective build -> FASTA path
@@ -792,7 +792,7 @@ impl App {
                 variant_caller: None,
                 bam_path: Some(path_str),
                 reference_path,
-                // Batch import: hash lazily on first analysis (don't stall a bulk NAS import
+                // Batch import: hash lazily on first analysis (do not stall a bulk NAS import
                 // hashing every multi-GB file up front).
                 content_sha256: None,
                 // An imported alignment is an original; see above.
@@ -862,7 +862,7 @@ impl App {
     }
 
     /// Re-hash a cached reference against its integrity sidecar (gap §7) — detects on-disk
-    /// corruption of the cached `.fa`. Runs on a blocking thread (re-reads the whole FASTA), so it's
+    /// corruption of the cached `.fa`. Runs on a blocking thread (re-reads the whole FASTA), so it is
     /// an explicit, user-triggered check (Settings), not the hot path.
     pub async fn verify_reference(&self, build: &str) -> Result<navigator_refgenome::VerifyOutcome, AppError> {
         let gw = self.gateway.clone();
@@ -921,14 +921,14 @@ impl App {
     /// See [`asset_action`] for the present/stale/absent decision this drives.
     ///
     /// Ensure a prebuilt ancestry/IBD asset at `path` is present **and current**, downloading it —
-    /// and the asset manifest it's verified against — from the published GitHub release. End users
+    /// and the asset manifest it is verified against — from the published GitHub release. End users
     /// get the panels this way instead of running the offline `panelbuild` tool.
     ///
     /// Three cases, all manifest-driven:
     ///
     /// * **Absent** → download it, provided the manifest lists it (an unpublished optional asset
     ///   simply stays absent and its feature degrades).
-    /// * **Manifest doesn't list it** → re-fetch the manifest once, then re-check. The cached
+    /// * **Manifest does not list it** → re-fetch the manifest once, then re-check. The cached
     ///   manifest is otherwise never refreshed, so an install that predates an asset's publication
     ///   would never learn the asset exists — which is exactly what happened to `ancestry_haps`.
     /// * **Present but the wrong size** → the published asset was revised; replace it. Without this
@@ -951,9 +951,9 @@ impl App {
         let manifest_name = format!("ancestry_manifest_{}.json", build.as_str());
         let manifest_path = default.with_file_name(&manifest_name);
 
-        // (1) The manifest: fetch when absent, and re-fetch when it doesn't list this asset (a
+        // (1) The manifest: fetch when absent, and re-fetch when it does not list this asset (a
         //     manifest cached before the asset was published). Keep the old copy in memory so a
-        //     failed refresh doesn't cost us the integrity data we already had.
+        //     failed refresh does not cost us the integrity data we already had.
         let listed = |m: &Option<navigator_analysis::manifest::AssetManifest>| {
             m.as_ref().is_some_and(|m| m.assets.contains_key(&name))
         };
@@ -984,7 +984,7 @@ impl App {
             return Ok(());
         };
 
-        // (2) What to do with what's on disk. Content is verified at read time by
+        // (2) What to do with what is on disk. Content is verified at read time by
         //     `read_verified_asset`; hashing every asset here would cost seconds per paint.
         let on_disk = std::fs::metadata(&default).ok().map(|m| m.len());
         let action = asset_action(Some(&entry), on_disk);
@@ -1066,7 +1066,7 @@ impl App {
     /// Resolve an imported chip's genotypes to canonical CHM13 **IBD-panel** dosages — the chip→IBD
     /// path (no alignment, no runtime liftover: the multi-build panel pre-computes coordinates). The
     /// output [`SiteGenotype`]s are over the same CHM13 sites a WGS caller would hit, so a chip and a
-    /// WGS sample compare uniformly. Errors if the IBD panel asset isn't built yet.
+    /// WGS sample compare uniformly. Errors if the IBD panel asset is not built yet.
     pub async fn chip_ibd_dosages(&self, chip_profile_id: i64) -> Result<Vec<SiteGenotype>, AppError> {
         let chip = chip_profile::get(self.store.pool(), chip_profile_id)
             .await?
@@ -1305,7 +1305,7 @@ impl App {
                 }
                 // Resolve the reference for decode (see alignment_reference_for_decode): required for
                 // a CRAM, None for a BAM. Panel genotyping tallies SNP sites (ref/alt come from the
-                // panel), so a BAM consults no reference bases — don't force a download for it.
+                // panel), so a BAM consults no reference bases — do not force a download for it.
                 let build = self.alignment_or_err(id).await?.reference_build;
                 let (bam, reference) = self.alignment_reference_for_decode(id).await?;
                 let panel = self.load_ibd_panel().await?;
@@ -1384,7 +1384,7 @@ impl App {
                     .await??;
                     panel.resolve_alignment(&build, &raw)
                 } else {
-                    // A build the panel doesn't carry — nothing to genotype (degrade gracefully rather
+                    // A build the panel does not carry — nothing to genotype (degrade gracefully rather
                     // than probe the wrong loci).
                     Vec::new()
                 };
@@ -1396,7 +1396,7 @@ impl App {
     }
 
     /// Cached IBD-panel dosages for an alignment, **without genotyping** — `Ok(None)` when they
-    /// haven't been computed yet (so callers can reduce over what's available progressively rather
+    /// have not been computed yet (so callers can reduce over what is available progressively rather
     /// than triggering a whole-genome decode). [`Self::ibd_panel_dosages`] is the compute-and-cache
     /// path; this is the read-only companion used by the progressive-consensus refresh.
     pub async fn cached_alignment_panel_dosages(
@@ -1442,7 +1442,7 @@ impl App {
 }
 
 /// What [`App::ensure_ancestry_asset`] must do for one asset, from the manifest entry (`None` when
-/// the manifest doesn't list it) and the on-disk size (`None` when the file is absent).
+/// the manifest does not list it) and the on-disk size (`None` when the file is absent).
 ///
 /// Size, not hash: a published asset is revised by rebuilding it, which changes its length, and the
 /// authoritative content check already happens at read time. Hashing a 133 MB panel on every call

@@ -132,7 +132,7 @@ impl BatchSize {
 
     /// Why [`BatchSize::for_this_machine`] chose what it did, for a log line or a UI tooltip.
     ///
-    /// A realignment is a multi-hour job whose memory profile the user cannot see; when it is
+    /// A realignment is a multi-hour job whose memory profile the user can not see; when it is
     /// sized automatically, the sizing has to be inspectable rather than a mystery.
     pub fn explain() -> String {
         if let Some(bases) = env_override() {
@@ -269,7 +269,7 @@ mod tests {
 
     /// Detection has to work on whatever machine this runs on — that is the entire point of taking
     /// the dependency. The assertions are about plausibility rather than a specific number, since
-    /// the test cannot know the host.
+    /// the test can not know the host.
     #[test]
     fn the_machine_reports_its_own_memory() {
         let memory = detect_memory().expect("every desktop target sysinfo supports reports memory");

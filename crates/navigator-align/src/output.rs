@@ -143,7 +143,7 @@ impl AlignmentWriter {
 
     /// Parse one SAM line from the mapper and hand it to `edit` before writing.
     ///
-    /// `edit` is where paired fields get set. It sees a typed record, so it cannot write a value
+    /// `edit` is where paired fields get set. It sees a typed record, so it can not write a value
     /// into the wrong column — which was the entire failure mode this module removes.
     pub fn write_line_with(
         &mut self,

@@ -25,7 +25,7 @@ enum Compression {
 /// Open `path` for buffered line reading, transparently decoding gzip/BGZF when the file
 /// begins with the gzip magic bytes. Plain (uncompressed) text is read directly.
 ///
-/// See [`open_maybe_compressed`] to additionally decode bzip2.
+/// See [`open_maybe_compressed`] to also decode bzip2.
 pub fn open_maybe_gz(path: &Path) -> io::Result<Box<dyn BufRead>> {
     let mut file = File::open(path)?;
     match detect_compression(&mut file)? {

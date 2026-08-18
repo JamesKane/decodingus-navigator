@@ -148,7 +148,7 @@ mod tests {
     fn translates_and_falls_back() {
         assert_eq!(tr(Lang::En, "nav.subjects"), "Subjects");
         assert_eq!(tr(Lang::Es, "nav.subjects"), "Sujetos");
-        // Missing in Es → English fallback (assuming this key isn't translated).
+        // Missing in Es → English fallback (assuming this key is not translated).
         assert_eq!(tr(Lang::Es, "status.label"), tr(Lang::Es, "status.label"));
         // Unknown key → the key itself.
         assert_eq!(tr(Lang::En, "totally.unknown.key"), "totally.unknown.key");

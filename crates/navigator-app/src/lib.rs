@@ -67,7 +67,7 @@ pub struct HaploAssignment {
     pub ranked: Vec<ScoredHaplogroup>,
     pub branches: Vec<BranchEvidence>,
     /// Per-SNP evidence along the placed lineage (root→terminal): every defining mutation the
-    /// sample carries (or doesn't), Derived/Ancestral/NoCall. This is the set the multi-source
+    /// sample carries (or does not), Derived/Ancestral/NoCall. This is the set the multi-source
     /// variant/mutation **profile** reconciles — distinct from `branches`, which is the *untaken*
     /// child branches (explaining why descent stopped, hence largely ancestral/no-call).
     pub lineage: Vec<SnpEvidence>,
@@ -92,7 +92,7 @@ pub struct DescentReport {
 /// to each other. Built by [`App::project_block_tree`]; see
 /// `documents/design/project-block-tree.md`.
 ///
-/// This view **reads** placements and never re-places, so it cannot introduce a placement error.
+/// This view **reads** placements and never re-places, so it can not introduce a placement error.
 #[derive(Debug, Clone)]
 pub struct ProjectBlockTree {
     pub dna: DnaType,
@@ -114,7 +114,7 @@ pub struct ProjectBlockTree {
     /// phylogenetic conflict in the cohort, which is worth knowing about.
     pub candidate_conflicts: usize,
     /// Positions rejected as **recurrent** — each would have defined a candidate branch under more
-    /// than one parent block, so it arose more than once and cannot mark a new branch. Counted
+    /// than one parent block, so it arose more than once and can not mark a new branch. Counted
     /// rather than hidden: a high number says the cohort's private calls carry systematic noise.
     pub candidate_recurrent: usize,
 }
@@ -143,7 +143,7 @@ pub struct Block {
     /// True when this is a **candidate branch** — not a node in the published tree, but a grouping
     /// inferred from private (unnamed) variants that two or more members share. `node_id` is
     /// synthetic and negative for these; `name` is empty, because the label is the view's to
-    /// localize. This is the thing a published tree cannot tell you and we can: a branch that is
+    /// localize. This is the thing a published tree can not tell you and we can: a branch that is
     /// real in the data but has not been named yet.
     pub candidate: bool,
     /// For a candidate branch: every carrier's evidence at each shared position, so it can be
@@ -280,7 +280,7 @@ pub enum PrivateClass {
     Novel,
 }
 
-/// A derived variant the sample carries that the haplogroup placement doesn't explain.
+/// A derived variant the sample carries that the haplogroup placement does not explain.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PrivateVariant {
     pub position: i64,
@@ -511,7 +511,7 @@ pub struct IbdComparison {
     pub segments: Vec<IbdSegment>,
     /// Sites called in **both** samples — the effective comparison size. Sparse overlap (a
     /// chip↔chip pair, or chip↔WGS limited to the chip's sites) weakens short-segment calls, so
-    /// it's surfaced rather than hidden.
+    /// it is surfaced rather than hidden.
     pub overlapping_sites: usize,
 }
 
@@ -556,7 +556,7 @@ pub struct AssetStatus {
 ///
 /// `target_sample_guid` is the AppView's handle for **our own** sample the candidate was ranked
 /// against. We already own it, so it discloses nothing — but a self-publishing client has no other
-/// way to learn its server-side sample handle, and [`App::ibd_attest`] cannot report a completed
+/// way to learn its server-side sample handle, and [`App::ibd_attest`] can not report a completed
 /// comparison without it. `None` when talking to an AppView that predates that field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IbdSuggestion {
@@ -764,7 +764,7 @@ pub struct EstablishedSession {
 }
 
 /// Jetstream-ingest retry budget for a freshly-published device key: a 403 right after
-/// publishing means the AppView hasn't ingested our `deviceKey` record yet. Exponential
+/// publishing means the AppView has not ingested our `deviceKey` record yet. Exponential
 /// backoff 1+2+4+8 s ≈ 15 s total before giving up.
 const DEVICE_KEY_INGEST_RETRIES: u32 = 4;
 
@@ -922,7 +922,7 @@ pub mod sync_reconcile;
 pub use settings::AppSettings;
 pub use update::UpdateInfo;
 
-/// Artifact kind for de-novo calls, keyed per contig so different contigs don't
+/// Artifact kind for de-novo calls, keyed per contig so different contigs do not
 /// overwrite each other in the cache.
 fn denovo_kind(contig: &str) -> String {
     format!("denovo_snps:{contig}")
@@ -976,7 +976,7 @@ fn tree_cache_is_fresh(path: &Path) -> bool {
 ///
 /// The Kulczynski `score` ranks the candidates by proportional similarity (and supplies the
 /// alternatives list), but the *reported terminal* is chosen in two steps: (1) the best-ranked
-/// candidate the path-supported parsimony guard admits — i.e. whose lineage doesn't tunnel
+/// candidate the path-supported parsimony guard admits — i.e. whose lineage does not tunnel
 /// through a branch the sample contradicts (the distal-Y paralog artifact); then (2)
 /// [`haplo::deepen_terminal`] descends further into any child the sample clearly entered,
 /// correcting under-calls at **unsplit tree nodes** (a half-ancestral SNP block scores below
@@ -1063,7 +1063,7 @@ fn assemble_assignment_robust(
     let mut ranked = haplo::score(tree, calls);
     if let Some(top_id) = ranked.first().map(|r| r.id) {
         let terminal_id = haplo::deepen_terminal(tree, calls, top_id);
-        // Parsimony back-off: don't report a deeper terminal than the evidence supports. Trim any
+        // Parsimony back-off: do not report a deeper terminal than the evidence supports. Trim any
         // net-contradicted tail of the lineage (sparse-panel / damaged-aDNA over-deepening) while
         // a lone contradiction outweighed by deeper derived support still reaches the deep terminal.
         let chosen_id = support_backoff_terminal(tree, calls, terminal_id);
@@ -1086,7 +1086,7 @@ fn assemble_assignment_robust(
     }
 }
 
-/// The root→`target` path of node ids (inclusive), or empty if `target` isn't reachable.
+/// The root→`target` path of node ids (inclusive), or empty if `target` is not reachable.
 fn lineage_ids(tree: &navigator_analysis::haplo::HaploTree, target: i64) -> Vec<i64> {
     fn dfs(tree: &navigator_analysis::haplo::HaploTree, id: i64, target: i64, acc: &mut Vec<i64>) -> bool {
         let Some(node) = tree.nodes.get(&id) else { return false };
@@ -1113,7 +1113,7 @@ fn lineage_ids(tree: &navigator_analysis::haplo::HaploTree, target: i64) -> Vec<
     Vec::new()
 }
 
-/// Root→`name` lineage of haplogroup names from the tree (empty if the name isn't found). Used to
+/// Root→`name` lineage of haplogroup names from the tree (empty if the name is not found). Used to
 /// derive a placed terminal's lineage path for cross-subject divergence/LCA without re-genotyping.
 fn lineage_names(tree: &navigator_analysis::haplo::HaploTree, name: &str) -> Vec<String> {
     let Some(id) = tree.nodes.values().find(|n| n.name == name).map(|n| n.id) else {
@@ -1178,8 +1178,8 @@ fn support_backoff_terminal(
 /// ancestral/derived convention. For each call at a tree position: keep the observed base if it
 /// already equals the ancestral or derived allele; else substitute its complement when *that*
 /// matches; else keep it (a genuine no-match the scorer will count against the branch). Positions
-/// absent from the tree pass through unchanged (they don't affect scoring). This is a no-op for
-/// dictionary-reconciled BISDNA calls (their base is always the derived allele), so it's safe to
+/// absent from the tree pass through unchanged (they do not affect scoring). This is a no-op for
+/// dictionary-reconciled BISDNA calls (their base is always the derived allele), so it is safe to
 /// apply on the shared chip-placement path.
 fn strand_reconcile_to_tree(
     tree: &navigator_analysis::haplo::HaploTree,
@@ -1442,10 +1442,10 @@ pub struct SeedSummary {
     pub skipped: usize,
 }
 
-/// Copy every regular file in `src_dir` into `dest_dir` that isn't already present there. Never
+/// Copy every regular file in `src_dir` into `dest_dir` that is not already present there. Never
 /// overwrites an existing file — a CDN-refreshed asset must win over the bundled one. Creates
 /// `dest_dir`. A missing/unreadable `src_dir` is a no-op (returns the empty summary). Pure over the
-/// two directories (no globals) so it's unit-testable.
+/// two directories (no globals) so it is unit-testable.
 pub fn seed_assets_from(src_dir: &Path, dest_dir: &Path) -> std::io::Result<SeedSummary> {
     let mut summary = SeedSummary::default();
     let Ok(entries) = std::fs::read_dir(src_dir) else {
@@ -1801,7 +1801,7 @@ impl ExportRequest {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StrConcordanceRow {
     pub marker: String,
-    /// Called FTDNA-convention value, or `None` if the marker wasn't called from sequence.
+    /// Called FTDNA-convention value, or `None` if the marker was not called from sequence.
     pub called: Option<i32>,
     /// Calibration status: `Reliable` | `ConventionOffset` | `Excluded` | `Uncalibrated` | `NotCalled`.
     pub status: String,
@@ -1939,7 +1939,7 @@ fn collect_data_files(path: &Path, out: &mut Vec<PathBuf>, depth: usize) {
 /// "this folder holds several samples" signal. A single sample's folder fans data into at most one
 /// subdirectory (e.g. FTDNA `<sample>/<kit>/<uuid>.bam` plus a top-level results CSV → just the kit
 /// dir); a *parent* of many per-sample folders spreads it across several. Files sitting directly in
-/// `root` aren't counted (they belong to the picked folder itself).
+/// `root` are not counted (they belong to the picked folder itself).
 fn contributing_subdirs(root: &std::path::Path, files: &[PathBuf]) -> std::collections::BTreeSet<String> {
     use std::path::Component;
     let mut set = std::collections::BTreeSet::new();
@@ -1965,7 +1965,7 @@ pub struct DrainOutcome {
     pub published: Vec<(String, String)>,
     /// Rows that hit a non-transient error and were marked FAILED.
     pub failed: usize,
-    /// Whether a transient failure rescheduled a row (i.e. we're likely offline).
+    /// Whether a transient failure rescheduled a row (i.e. we are likely offline).
     pub retry_scheduled: usize,
     /// Rows still awaiting a successful push after this pass.
     pub pending: i64,
@@ -2206,7 +2206,7 @@ fn peek_vcf_header(path: &Path) -> (String, Vec<String>) {
 /// homozygous-reference (`GT 0/0`) — e.g. `chrY 2781955 C T … 0/0`, where the sample is C, not T.
 /// Taking `ALT[0]` blindly (as a sites-only VCF parser does) records that T as a derived call, and
 /// a Big Y export carries thousands of such reference sites → the placement deepens into branches
-/// the sample doesn't actually carry. So when a genotyped sample column is present we read its `GT`
+/// the sample does not actually carry. So when a genotyped sample column is present we read its `GT`
 /// and keep a single-base ALT only when the genotype selects it (the first non-zero allele,
 /// multi-allelic-aware); `0/0` and `./.` rows are dropped. A VCF with no FORMAT/sample column
 /// (a sites-only list) keeps its old meaning: every listed ALT is one of the subject's variants.
@@ -2264,7 +2264,7 @@ fn parse_vcf_subject_snps(path: &Path) -> Result<Vec<variants::VariantCall>, App
         };
 
         // Evidence the source supplies. Every field stays `None` when absent — a missing DP means
-        // "the vendor didn't say", and recording it as 0 would make a good call look unsupported.
+        // "the vendor did not say", and recording it as 0 would make a good call look unsupported.
         let ad: Option<Vec<u32>> = sample_field("AD").map(|v| v.split(',').map(|x| x.parse().unwrap_or(0)).collect());
         let evidence = variants::CallEvidence {
             qual: f.get(5).and_then(|q| q.parse::<f64>().ok()),
@@ -2422,7 +2422,7 @@ use navigator_domain::seq::complement_base;
 /// (`chrM`) is rCRS and stays a direct query (no chain), so it returns `None`.
 /// Whether a stored reference-build string denotes GRCh38 (the FTDNA Y tree's native coordinate
 /// space). `None` → assumed GRCh38 (the vendor-Y-VCF import default). Used by the FTDNA-provider Y
-/// consensus to admit only GRCh38 vendor sets (others wouldn't match the GRCh38 tree positions).
+/// consensus to admit only GRCh38 vendor sets (others would not match the GRCh38 tree positions).
 fn is_grch38_build(build: &Option<String>) -> bool {
     match build {
         None => true,
@@ -2646,7 +2646,7 @@ const OAUTH_SCOPE: &str = "atproto transition:generic";
 
 /// Resolve Navigator's OAuth client config (pure). `DECODINGUS_OAUTH_CLIENT_ID` overrides the
 /// hosted default: the literal `loopback` selects the atproto dev loopback client (for logging in
-/// against a local / test PDS that hasn't registered the production document); any other non-blank
+/// against a local / test PDS that has not registered the production document); any other non-blank
 /// value is treated as a hosted client-metadata URL.
 fn resolve_oauth_config(env_client_id: Option<String>) -> OAuthConfig {
     match env_client_id.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
@@ -3021,7 +3021,7 @@ fn decodingus_build_key(reference_build: &str) -> Option<&'static str> {
 }
 
 /// Whether an alignment's reference build matches a GVCF name's build token (e.g. `chm13`),
-/// compared on the canonical build so `chm13`/`chm13v2`/`hs1` all agree. A token that doesn't
+/// compared on the canonical build so `chm13`/`chm13v2`/`hs1` all agree. A token that does not
 /// resolve to a known build is treated as a non-match (fall back to the first alignment).
 fn build_hint_matches(reference_build: &str, hint: &str) -> bool {
     match (canonical_build(reference_build), canonical_build(hint)) {
@@ -3115,7 +3115,7 @@ fn archaic_panel_cache_kind() -> String {
 }
 
 /// Count of sites called (dosage within ploidy) in **both** samples — the effective IBD comparison
-/// size, surfaced so a sparse chip↔chip / chip↔WGS overlap isn't mistaken for a confident result.
+/// size, surfaced so a sparse chip↔chip / chip↔WGS overlap is not mistaken for a confident result.
 fn overlapping_called_sites(a: &[SiteGenotype], b: &[SiteGenotype]) -> usize {
     let called = |g: &SiteGenotype| (0..=g.ploidy as i32).contains(&g.dosage);
     let set: std::collections::HashSet<(&str, i64)> = a
@@ -3386,7 +3386,7 @@ pub struct ProjectSampleReport {
     /// `false` when full (or no coverage yet).
     pub coverage_partial: bool,
     /// The last analysis attempt on the primary alignment failed (e.g. a corrupt/undecodable CRAM),
-    /// carrying the failure message. `Some` distinguishes a genuinely-failed sample from one that's
+    /// carrying the failure message. `Some` distinguishes a genuinely-failed sample from one that is
     /// merely un-analyzed, so the report shows "Failed" rather than a silent blank.
     pub decode_error: Option<String>,
 }
@@ -3478,7 +3478,7 @@ pub struct StrChartRow {
     /// Member's reached STR panel/tier (member rows only).
     pub test: String,
     /// Per-marker cells, aligned to [`ProjectStrChart::markers`]; empty for non-member rows that
-    /// don't fill every column.
+    /// do not fill every column.
     pub cells: Vec<StrChartCell>,
 }
 
@@ -3493,7 +3493,7 @@ pub struct ProjectStrChart {
     pub group_count: usize,
 }
 
-/// A reference build an import needs but doesn't have cached — surfaced so the UI can
+/// A reference build an import needs but does not have cached — surfaced so the UI can
 /// prompt and download it before retrying.
 #[derive(Debug, Clone)]
 pub struct BuildNeed {
@@ -3511,7 +3511,7 @@ pub struct AnalyzeSummary {
     pub y_done: usize,
     pub sex_done: usize,
     pub metrics_done: usize,
-    /// Per-sample failures (best-effort: one sample's error doesn't abort the rest).
+    /// Per-sample failures (best-effort: one sample's error does not abort the rest).
     pub errors: Vec<String>,
 }
 
@@ -3530,7 +3530,7 @@ pub struct SampleAnalyzeOutcome {
 }
 
 /// Outcome of a BISDNA chromo2 Y-SNP import: the variant set created plus a per-category
-/// tally so the UI/CLI can surface coverage and any names the dictionary couldn't place.
+/// tally so the UI/CLI can surface coverage and any names the dictionary could not place.
 #[derive(Debug, Clone)]
 pub struct BisdnaImportSummary {
     pub variant_set: VariantSet,
@@ -3546,7 +3546,7 @@ pub struct BisdnaImportSummary {
     pub no_call: usize,
     /// Back-mutated markers — flagged and excluded from placement.
     pub back_mutated: usize,
-    /// Markers whose name was absent from the dictionary on this build (cannot be placed).
+    /// Markers whose name was absent from the dictionary on this build (can not be placed).
     pub unresolved: usize,
     /// A sample of unresolved names for diagnostics (capped).
     pub unresolved_names: Vec<String>,
@@ -3555,7 +3555,7 @@ pub struct BisdnaImportSummary {
     pub strand_mismatches: usize,
 }
 
-/// Outcome of a batch project-directory import (idempotent — counts only what's new).
+/// Outcome of a batch project-directory import (idempotent — counts only what is new).
 #[derive(Debug, Clone)]
 pub struct ProjectImportSummary {
     pub project: Project,
@@ -3744,7 +3744,7 @@ mod placement_tests {
         assert_eq!(dirs.len(), 2);
         assert!(dirs.contains("42048") && dirs.contains("166433"));
 
-        // Files sitting directly in the picked folder don't count as a subdir.
+        // Files sitting directly in the picked folder do not count as a subdir.
         let flat = [PathBuf::from("/data/FTDNA/a.csv"), PathBuf::from("/data/FTDNA/b.bam")];
         assert!(contributing_subdirs(root, &flat).is_empty());
     }
@@ -4115,7 +4115,7 @@ mod publish_tests {
         let value = app.sequence_run_record("did:plc:test", &reloaded).await.unwrap();
         assert_eq!(value.get("instrumentId").and_then(|v| v.as_str()), Some("A00182"));
         // The known sequencing lab is published so the AppView can display it (its instrument→lab
-        // map doesn't cover every serial, e.g. PacBio).
+        // map does not cover every serial, e.g. PacBio).
         assert_eq!(
             value.get("sequencingFacility").and_then(|v| v.as_str()),
             Some("Dante Labs")
@@ -4229,7 +4229,7 @@ mod ymatch_tests {
         seed_str(&app, q.guid, &[("DYS393", "13")]).await;
         // A subject with no STR / Y data at all.
         let _empty = app.add_biosample(None, "Empty", None, None).await.unwrap();
-        // A subject whose markers don't overlap the query's.
+        // A subject whose markers do not overlap the query's.
         let other = app.add_biosample(None, "Other", None, None).await.unwrap();
         seed_str(&app, other.guid, &[("DYS999", "10")]).await;
 
@@ -4323,7 +4323,7 @@ mod ibd_attest_tests {
         );
     }
 
-    /// Two peers computing the same summary produce the same agreement hash; different summaries don't.
+    /// Two peers computing the same summary produce the same agreement hash; different summaries do not.
     #[test]
     fn summary_hash_drives_agreement() {
         use navigator_analysis::ibd_attest::summary_hash;

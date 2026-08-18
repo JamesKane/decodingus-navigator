@@ -17,7 +17,7 @@ pub const CALL_SCHEMA_BASIC: i64 = 1;
 pub const CALL_SCHEMA_EVIDENCE: i64 = 2;
 
 /// Per-call evidence carried over from the source VCF. Every field is optional — a sites-only VCF
-/// has no FORMAT column, and vendors vary in what they emit — so absence means "the source didn't
+/// has no FORMAT column, and vendors vary in what they emit — so absence means "the source did not
 /// say", never "zero".
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CallEvidence {
@@ -155,7 +155,7 @@ pub struct VariantSet {
     pub calls: Vec<VariantCall>,
     /// Which call schema this set was stored under — [`CALL_SCHEMA_BASIC`] or
     /// [`CALL_SCHEMA_EVIDENCE`]. Derived from what was captured, not from the importer version, so
-    /// it never promises evidence the source didn't supply. Check it before applying a quality gate:
+    /// it never promises evidence the source did not supply. Check it before applying a quality gate:
     /// a `BASIC` set can't satisfy one, and treating its absent DP/GQ as zero would silently reject
     /// every call.
     pub call_schema: i64,
@@ -212,7 +212,7 @@ pub fn snp_call(
 
 /// [`snp_call`] carrying the source's [`CallEvidence`]. Separate rather than a seventh parameter on
 /// `snp_call` because most call sites (CSV tables, chip exports, hand entry) have no evidence to
-/// give and shouldn't have to say so.
+/// give and should not have to say so.
 pub fn snp_call_with_evidence(
     contig: &str,
     position: i64,
@@ -256,7 +256,7 @@ impl Layout {
         }
     }
 
-    /// Map columns by a recognized header row, or `None` if the row isn't a header.
+    /// Map columns by a recognized header row, or `None` if the row is not a header.
     fn from_header(cols: &[&str]) -> Option<Self> {
         let find = |names: &[&str]| {
             cols.iter().position(|c| {
@@ -298,7 +298,7 @@ pub fn parse_csv(text: &str) -> Result<Vec<VariantCall>, String> {
     let first_cols: Vec<&str> = first.split(sep).map(str::trim).collect();
     let layout = Layout::from_header(&first_cols);
     let mut calls = Vec::new();
-    // If the first row wasn't a header, it's data — parse it positionally too.
+    // If the first row was not a header, it is data — parse it positionally too.
     let header_layout = match layout {
         Some(l) => l,
         None => {

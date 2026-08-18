@@ -5,7 +5,7 @@ use super::*;
 /// Every analysis artifact of a set of alignments, pre-loaded and indexed for the report builders.
 ///
 /// Reading one cached result through [`App::load_analysis`] costs two queries — the artifact, then
-/// the `alignment` row it needs in order to stat the BAM for staleness — plus that stat. A project
+/// the `alignment` row it needs to stat the BAM for staleness — plus that stat. A project
 /// report reads five kinds per alignment for every member, so the per-cell form meant thousands of
 /// round-trips to open one tab. This loads them all in a single `IN` query and stats each BAM once.
 ///
@@ -135,7 +135,7 @@ impl App {
 
     /// Batch-populate the read-profile fields backing the standardized test label
     /// ([`du_domain::testprofile`]) on runs imported before those fields existed — for the CLI
-    /// `backfill-profiles` command. Idempotent; only fills what's missing.
+    /// `backfill-profiles` command. Idempotent; only fills what is missing.
     ///
     /// - **`total_bases`** — recovered for free from a cached `read_metrics` artifact on any of the
     ///   run's alignments (`Σ read_length_histogram`), no file walk.
@@ -319,7 +319,7 @@ impl App {
 
     /// A specific persisted consensus ancestry estimate (keyed on the consensus pseudo-source +
     /// `method`) — e.g. `"FINE_ADMIXTURE"` (detailed modern populations) or `"PCA_PROJECTION_GMM"`
-    /// (ancient components). Filtered per-subject (alignment_id 0 isn't biosample-unique on its own).
+    /// (ancient components). Filtered per-subject (alignment_id 0 is not biosample-unique on its own).
     pub async fn consensus_ancestry(
         &self,
         biosample_guid: SampleGuid,
@@ -574,7 +574,7 @@ impl App {
                 median_insert_size: metrics.as_ref().map(|m| m.median_insert_size),
                 sv_count,
                 coverage_partial,
-                // Surface a persisted failure (corrupt/undecodable file) only when there's no
+                // Surface a persisted failure (corrupt/undecodable file) only when there is no
                 // coverage to show — a successful re-walk clears the marker anyway. Read without a
                 // freshness check, as `analysis_error` does: the marker stands until a success clears it.
                 decode_error: match (coverage.is_none(), primary_alignment_id) {
@@ -918,7 +918,7 @@ impl App {
 
         // Coverage + read-metrics + sex in ONE pass (the unified walker) instead of three separate
         // reads of the BAM/CRAM — a 3x I/O cut per subject, which dominates the batch on a slow /
-        // network volume (the single-subject Full Analysis already does this; the batch path didn't).
+        // network volume (the single-subject Full Analysis already does this; the batch path did not).
         // Walk only when something's missing: a full, correctly-scoped coverage (a stale whole-genome
         // result for a targeted-Y test is recomputed) plus cached read-metrics and sex = all done.
         let coverage_full = matches!(
@@ -1096,7 +1096,7 @@ fn read_type_from_mean_len(mean: f64) -> Option<&'static str> {
 /// alignment (see [`App::default_alignment_for_subject`]). Higher is broader: a whole-genome test
 /// carries paternal, maternal *and* autosomal ancestry; an autosomal/chip test carries the ancestry
 /// composition the brief leads with; a Y/mt/X test is a single-lineage close-up. `None` is an
-/// unrecognized test type — ranked above targeted (it may be a broad test whose label we didn't
+/// unrecognized test type — ranked above targeted (it may be a broad test whose label we did not
 /// recognize) but below anything we know is genome-wide.
 fn test_breadth_rank(target: Option<navigator_domain::testtype::TargetType>) -> u8 {
     use navigator_domain::testtype::TargetType::*;

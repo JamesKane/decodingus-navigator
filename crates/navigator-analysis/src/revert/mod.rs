@@ -58,7 +58,7 @@ const CANCEL_CHECK_INTERVAL: u64 = 4096;
 
 /// What to do with a **primary** record whose CIGAR contains a hard clip.
 ///
-/// Hard clipping means the aligner discarded sequence from the record, so the read cannot be fully
+/// Hard clipping means the aligner discarded sequence from the record, so the read can not be fully
 /// recovered. Mainstream aligners hard-clip only supplementary records (which we drop anyway), but
 /// some pipelines emit hard-clipped primaries, and emitting those as if whole would silently feed
 /// a truncated read to the mapper.

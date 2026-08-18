@@ -54,7 +54,7 @@ pub enum FtdnaFileKind {
     YdnaOverview,
 }
 
-/// Classify an FTDNA export from its header row. `None` if it doesn't look like one of ours.
+/// Classify an FTDNA export from its header row. `None` if it does not look like one of ours.
 /// Disambiguators: the marker block (`DYS…`) is unique to the Y-STR overview; the roster has the
 /// `Publicly Share DNA Results` consent column; the ancestry files use `Sub Group` (with a space)
 /// and a `Paternal`/`Maternal Ancestor Name`.
@@ -292,7 +292,7 @@ fn parse_ancestor_name(raw: &str) -> (Option<String>, Option<i32>, Option<i32>) 
 }
 
 /// Byte offset of a `b.`/`d.` date marker, requiring a word boundary before it (so the `b` in
-/// "Abbett" doesn't match). Returns the offset of the marker letter.
+/// "Abbett" does not match). Returns the offset of the marker letter.
 fn find_marker(lower: &str, marker: &str) -> Option<usize> {
     let bytes = lower.as_bytes();
     let mut from = 0;

@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::ibd::MatchSummary;
 
 /// One panel-site dosage on the wire — the minimal input the IBD detector consumes (the heavy
-/// [`crate::caller::SiteGenotype`] fields aren't sent). `dosage` is 0/1/2, or -1 for no-call.
+/// [`crate::caller::SiteGenotype`] fields are not sent). `dosage` is 0/1/2, or -1 for no-call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IbdSite {
     pub contig: String,
@@ -129,7 +129,7 @@ pub enum IbdExchangeMsg {
 
 impl IbdExchangeMsg {
     /// Gzipped JSON bytes for the channel. The dosage payload is large (a panel of sites), and the
-    /// relay caps an envelope at 1 MiB, so it's compressed (the dosage vector compresses well).
+    /// relay caps an envelope at 1 MiB, so it is compressed (the dosage vector compresses well).
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
         use flate2::{write::GzEncoder, Compression};
         use std::io::Write;

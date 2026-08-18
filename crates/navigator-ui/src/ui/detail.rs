@@ -420,7 +420,7 @@ impl NavigatorApp {
             .filter(|(a, _)| *a == key)
             .map(|(_, r)| r.as_slice())
             .unwrap_or(&[]);
-        // Don't render a degenerate one-point plot: without the reference cloud the scatter
+        // Do not render a degenerate one-point plot: without the reference cloud the scatter
         // auto-zooms onto the donor alone and is meaningless. Surface the missing asset instead.
         if reference.is_empty() {
             ui.label(egui::RichText::new(self.tr("pca.referenceMissing")).weak());
@@ -640,7 +640,7 @@ impl NavigatorApp {
     /// A per-tab "Explain this" affordance (M5): a small button that asks the local model to explain
     /// just one signal (`kind`) for the selected subject in plain language, plus the streamed/finalized
     /// explanation rendered below it. Additive — the structured facts in the tab always remain, and
-    /// it's a no-op when the AI assistant is off. Only one explanation runs at a time (one worker).
+    /// it is a no-op when the AI assistant is off. Only one explanation runs at a time (one worker).
     pub(crate) fn ai_explain(&mut self, ui: &mut egui::Ui, guid: SampleGuid, kind: SignalKind) {
         if !self.ai_enabled {
             return;
@@ -700,7 +700,7 @@ impl NavigatorApp {
     }
 
     /// "Ask about your results" chat (M2): a subject-scoped Q&A grounded in the brief. Sign-in is not
-    /// required (it's local), but the AI assistant must be enabled. Answers are AI-generated from the
+    /// required (it is local), but the AI assistant must be enabled. Answers are AI-generated from the
     /// results, so a persistent banner says to verify against the data.
     pub(crate) fn simple_chat_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if !self.ai_enabled {
@@ -883,7 +883,7 @@ impl NavigatorApp {
         });
         ui.add_space(10.0);
         // The subject anchor: publish the anonymized biosample summary + its sequence runs to the
-        // signed-in PDS. Every derived record (coverage / ancestry) links back to this, so it's the
+        // signed-in PDS. Every derived record (coverage / ancestry) links back to this, so it is the
         // one to publish first.
         card(ui, "Publish to PDS", |ui| {
             ui.label(
@@ -909,7 +909,7 @@ impl NavigatorApp {
     /// the Add affordances are reachable). Edits are collected in locals and dispatched after the
     /// render closure (which borrows `self.tr` immutably).
     fn genealogy_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        // Clone the loaded bundle for this subject so the closure doesn't hold a borrow of `self`.
+        // Clone the loaded bundle for this subject so the closure does not hold a borrow of `self`.
         let Some(data) = self
             .genealogy
             .as_ref()
@@ -1093,7 +1093,7 @@ impl NavigatorApp {
         ui.add_space(10.0);
         card(ui, self.tr("card.yHaplogroup"), |ui| self.y_haplogroup_section(ui, id));
         // Hide the mtDNA sections when the selected alignment's coverage shows no chrM reads (a
-        // targeted-Y test without mitochondrial reads). Shown when coverage hasn't been run yet.
+        // targeted-Y test without mitochondrial reads). Shown when coverage has not been run yet.
         let no_mtdna = self.coverage.as_ref().is_some_and(|c| {
             !c.contig_coverage_stats
                 .iter()
@@ -1195,7 +1195,7 @@ impl NavigatorApp {
                             ui.label(format!("{}>{}", v.reference, v.alternate));
                             ui.label(v.depth.to_string());
                             match &v.class {
-                                // A "novel" call that lands on a catalogued Y-SNP: surface that name (it's not
+                                // A "novel" call that lands on a catalogued Y-SNP: surface that name (it is not
                                 // on the placed lineage, but it is a known site, not a brand-new variant).
                                 PrivateClass::Novel => match names.get(&v.position) {
                                     Some(name) => ui
@@ -1672,7 +1672,7 @@ impl NavigatorApp {
         // `all_alignments` — the whole workspace — and label the result "in this project": a
         // project whose alignments were every one already on the target build was still offered 35
         // of them. The rule also lives in exactly one place now (`realignable_in_project`), so the
-        // number shown and the batch the button starts cannot disagree.
+        // number shown and the batch the button starts can not disagree.
         if self.project_realignable_asked != Some(project_id) {
             self.project_realignable_asked = Some(project_id);
             self.project_realignable = None;
@@ -1863,7 +1863,7 @@ impl NavigatorApp {
                 row.col(|ui| {
                     ui.label(r.alignment_count.to_string());
                 });
-                // Mean coverage, with a "lite" badge when it's a partial sidecar estimate that a
+                // Mean coverage, with a "lite" badge when it is a partial sidecar estimate that a
                 // deep walk (the per-row coverage button) would upgrade.
                 row.col(|ui| {
                     if let Some(err) = &r.decode_error {
@@ -1956,7 +1956,7 @@ impl NavigatorApp {
         use navigator_app::{StrChartCell, StrRowKind};
         use navigator_domain::strchart::Deviation;
 
-        // Header labels (pulled before borrowing the chart, so closures don't re-borrow `self.tr`).
+        // Header labels (pulled before borrowing the chart, so closures do not re-borrow `self.tr`).
         let (h_name, h_kit, h_hap, h_test) = (
             self.tr("ystr.col.name").to_string(),
             self.tr("ystr.col.kit").to_string(),
@@ -2208,7 +2208,7 @@ impl NavigatorApp {
     /// Y-STR clusters: members grouped by branch, with confirmed placements and STR-only branch
     /// suggestions (the "autocluster + propagate" view).
     fn samples_clustered(&mut self, ui: &mut egui::Ui) {
-        // Clone the lightweight view data so the render closures don't hold a borrow of `self` while
+        // Clone the lightweight view data so the render closures do not hold a borrow of `self` while
         // we also call `self.tr` / dispatch a selection.
         let Some((_, clustering)) = self.project_clustering.clone() else {
             return;
@@ -2226,7 +2226,7 @@ impl NavigatorApp {
         };
         let mut pick = None;
 
-        // The parent (samples_section) owns the scroll area — no nested one here (that's the widget-ID
+        // The parent (samples_section) owns the scroll area — no nested one here (that is the widget-ID
         // clash and double-scrollbar). Render clusters directly.
         for cluster in &clustering.clusters {
             // A cluster shows if its branch matches the filter (→ all members) or any member matches.
@@ -2528,7 +2528,7 @@ impl NavigatorApp {
                                     ui.label(egui::RichText::new(&a.reference_build).color(ACCENT).strong());
                                     // A realigned alignment sits next to the one it came from, on the
                                     // same run, often with the same aligner — so without a mark the two
-                                    // rows are indistinguishable and the user cannot tell which is the
+                                    // rows are indistinguishable and the user can not tell which is the
                                     // vendor's file.
                                     if let Some(source) = a.derived_from_alignment_id {
                                         chip(ui, "realigned", ui.visuals().selection.bg_fill, egui::Color32::WHITE)

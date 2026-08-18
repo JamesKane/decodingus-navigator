@@ -283,7 +283,7 @@ fn scan_file(
     Ok((seen, kept))
 }
 
-/// Parse a VCF data line into a [`Candidate`], or `None` if it's not a biallelic SNP with full
+/// Parse a VCF data line into a [`Candidate`], or `None` if it is not a biallelic SNP with full
 /// per-population allele-count data.
 fn parse_record(line: &str) -> Option<Candidate> {
     let mut f = line.split('\t');

@@ -224,7 +224,7 @@ async fn post_with_dpop(
 }
 
 /// The server's error body (usually `{"error":"invalid_grant",...}`), trimmed to keep the message
-/// readable — it's the difference between "your session expired, re-sign-in" and a real fault.
+/// readable — it is the difference between "your session expired, re-sign-in" and a real fault.
 fn truncate_body(body: &str) -> String {
     let b = body.trim();
     if b.len() > 200 {
@@ -436,7 +436,7 @@ mod tests {
     /// Live discovery + public-client PAR (DPoP + use_dpop_nonce) against a local atproto
     /// PDS container (see documents/atmosphere/13-Local-PDS-Testing.md). Exercises this
     /// crate's `post_with_dpop` (canonical htu vs transport URL) and loopback client_id.
-    /// The full browser→token loop needs HTTPS at the canonical host, so it's a manual smoke.
+    /// The full browser→token loop needs HTTPS at the canonical host, so it is a manual smoke.
     #[tokio::test]
     #[ignore = "requires PDS_TEST_URL (local atproto PDS container)"]
     async fn discovery_and_par_against_live_pds() {
@@ -449,7 +449,7 @@ mod tests {
         let pds = pds.trim_end_matches('/').to_string();
         let http = reqwest::Client::new();
 
-        // Fetch metadata from the reachable base (not the https issuer a container won't terminate).
+        // Fetch metadata from the reachable base (not the https issuer a container will not terminate).
         let meta: AuthServerMetadata = http
             .get(format!("{pds}/.well-known/oauth-authorization-server"))
             .send()

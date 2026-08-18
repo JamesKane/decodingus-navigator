@@ -159,7 +159,7 @@ impl App {
 
     /// A Y-targeted test (Big Y, Targeted Y, a Y-SNP pack, …) or any Y-STR profile is definitive
     /// evidence of a male subject. Set the biosample's sex to "Male" when such data is present and
-    /// it isn't already recorded as male. Best-effort and idempotent — safe to call after any run
+    /// it is not already recorded as male. Best-effort and idempotent — safe to call after any run
     /// or STR-profile import (it re-derives the verdict from the stored data each time).
     pub(crate) async fn assign_male_for_y_evidence(&self, guid: SampleGuid) -> Result<(), AppError> {
         use navigator_domain::testtype::{by_code, TargetType};
@@ -308,7 +308,7 @@ impl App {
 
     /// Merge `secondary` sequence run into `primary` (both must belong to `biosample_guid`):
     /// reparent the secondary run's alignments onto the primary, then delete the now-empty secondary
-    /// (its analysis artifacts travel with the alignments — they're alignment-keyed). Destructive +
+    /// (its analysis artifacts travel with the alignments — they are alignment-keyed). Destructive +
     /// irreversible. Returns the number of alignments moved.
     pub async fn merge_sequence_runs(
         &self,
@@ -516,7 +516,7 @@ impl App {
     /// Persist a marker that a Navigator walk failed for this alignment (e.g. an undecodable /
     /// corrupt CRAM). Stored as the `error`/`"1"` artifact so the project report can surface a
     /// "Failed" cell instead of a silent blank; cleared by [`clear_analysis_error`] on the next
-    /// successful walk. Best-effort — a failure to record the marker is swallowed (it's diagnostic).
+    /// successful walk. Best-effort — a failure to record the marker is swallowed (it is diagnostic).
     pub async fn record_analysis_error(&self, alignment_id: i64, step: &str, message: &str) {
         let mut message = message.to_string();
         message.truncate(500); // keep the payload small; the head carries the cause

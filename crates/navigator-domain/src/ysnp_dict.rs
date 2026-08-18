@@ -2,7 +2,7 @@
 //! its missing coordinates. A SNP name like `CTS10003` resolves to a position plus its
 //! ancestral/derived alleles — **per reference build**, so the codebase stays build-agnostic:
 //! `coordinates` is keyed by build label (`"GRCh38"`, `"GRCh37"`, `"hs1"`, …), exactly the
-//! convention the DecodingUs Y-tree uses. The importer is handed the build it's placing
+//! convention the DecodingUs Y-tree uses. The importer is handed the build it is placing
 //! against and reads that coordinate; nothing here is CHM13-specific.
 //!
 //! The bulk data is a generated asset (built from YBrowse + liftover by
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// One SNP's locus on a specific reference build. Alleles are on that build's + strand, so a
-/// strand-flipping liftover stores its own (complemented) alleles — they're per-coordinate,
+/// strand-flipping liftover stores its own (complemented) alleles — they are per-coordinate,
 /// not per-SNP.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coord {
@@ -151,12 +151,12 @@ impl YsnpDictionary {
     /// Candidate dictionary filenames in `load` preference order: the full ~200 MB / ~2M-name
     /// catalog first, then the small per-chip panel only as a fallback. The chromo2 chip panel is a
     /// stale ~14k-name subset that would shadow current names present in the full catalog, so the
-    /// catalog wins whenever it's installed (it's the one downloaded on first use).
+    /// catalog wins whenever it is installed (it is the one downloaded on first use).
     pub const ASSET_FILENAMES: &'static [&'static str] = &["dictionary.tsv", "chromo2-panel.tsv"];
 
     /// Read the asset from `dir`: the first of [`Self::ASSET_FILENAMES`] that exists, plus an
     /// optional sibling `aliases.tsv`. Prefers the full catalog for the widest, current name
-    /// coverage; the chromo2 panel is only used when the catalog isn't present.
+    /// coverage; the chromo2 panel is only used when the catalog is not present.
     pub fn load(dir: &Path) -> Result<Self, String> {
         let dict_path = Self::ASSET_FILENAMES
             .iter()
@@ -259,7 +259,7 @@ M269\tCTS10003
     #[test]
     fn load_prefers_full_dictionary_over_chromo2_panel() {
         // Both present → the full `dictionary.tsv` wins; the stale ~14k-name chromo2 chip panel must
-        // not shadow current names in the full catalog. With only the panel, it's the fallback.
+        // not shadow current names in the full catalog. With only the panel, it is the fallback.
         let dir = std::env::temp_dir().join(format!("dun-ysnp-pref-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

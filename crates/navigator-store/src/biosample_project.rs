@@ -141,7 +141,7 @@ mod tests {
 
         add(pool, s, p1, Some("subgroupX"), t).await.unwrap();
         add(pool, s, p2, None, t).await.unwrap();
-        // Re-add the same pair updates role, doesn't duplicate.
+        // Re-add the same pair updates role, does not duplicate.
         add(pool, s, p1, Some("subgroupY"), t).await.unwrap();
 
         let projects = list_projects_for(pool, s).await.unwrap();

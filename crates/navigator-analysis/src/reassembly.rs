@@ -43,7 +43,7 @@ pub struct ReassemblyParams {
     pub min_alt_fragments: u32,
     /// v2: assemble the alternate haplotype from the alt-supporting reads (majority consensus over
     /// the reference frame — [`assemble_alt_haplotype`]) so linked variants the true reads carry
-    /// don't penalise them against reference. **Default off**: it helps the synthetic linked-variant
+    /// do not penalise them against reference. **Default off**: it helps the synthetic linked-variant
     /// case but on real WGS229 it perturbs marginal ~50/50 sites (regressed `chrY:4284195`), and
     /// there is no real linked-variant truth site yet to validate the benefit. The mechanism is
     /// unit-tested and opt-in (this flag / `NAVIGATOR_REASSEMBLY_ASSEMBLE=1`) pending that validation;
@@ -168,7 +168,7 @@ fn genotype_candidate(
     let kept = dedup_spanning_fragments(reads, ci, params);
 
     // Stage C — alternate haplotype. v2: POA-assemble the alt-supporting reads so linked variants
-    // they carry don't penalise them against reference; fall back to reference-plus-one-substitution
+    // they carry do not penalise them against reference; fall back to reference-plus-one-substitution
     // when assembly is degenerate. v1 behaviour is the fallback, so simple sites are unchanged.
     let mut single_snv = ref_window.to_vec();
     if off < single_snv.len() {
@@ -298,7 +298,7 @@ fn assemble_alt_haplotype(
             hap[pos] = BASES[bi];
         }
     }
-    // The candidate substitution is why we're here — force it (its column may be exactly 50/50).
+    // The candidate substitution is why we are here — force it (its column may be exactly 50/50).
     if site_off < hap.len() {
         hap[site_off] = alt_base;
     }
@@ -329,7 +329,7 @@ fn argmax4(counts: &[u32; 4]) -> (usize, u32) {
 }
 
 /// Add `seq`'s bases to the per-reference-position `counts`/`cover` tallies by semiglobally aligning
-/// it to `ref_window` (only aligned match/mismatch columns contribute; insertions/deletions don't).
+/// it to `ref_window` (only aligned match/mismatch columns contribute; insertions/deletions do not).
 fn project_read_onto_ref(seq: &[u8], ref_window: &[u8], counts: &mut [[u32; 4]], cover: &mut [u32]) {
     let score = |a: u8, b: u8| if a == b { 1i32 } else { -4i32 };
     let mut aligner = PwAligner::new(-5, -1, score);
@@ -416,7 +416,7 @@ impl GapParameters for GapParams {
     }
 }
 
-/// Semiglobal in the read: free leading/trailing offset so window-edge trimming isn't penalised.
+/// Semiglobal in the read: free leading/trailing offset so window-edge trimming is not penalised.
 struct Semiglobal;
 impl StartEndGapParameters for Semiglobal {
     fn free_start_gap_x(&self) -> bool {

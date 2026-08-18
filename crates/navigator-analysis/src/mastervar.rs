@@ -62,7 +62,7 @@ struct Columns {
 
 impl Columns {
     /// Map the masterVar column header (the `>`-prefixed line) to field indices by name. Returns
-    /// `None` if a required column is missing (so a look-alike table isn't parsed as masterVar).
+    /// `None` if a required column is missing (so a look-alike table is not parsed as masterVar).
     fn from_header(line: &str) -> Option<Columns> {
         let header = line.strip_prefix('>').unwrap_or(line);
         let names: Vec<&str> = header.split('\t').map(str::trim).collect();
@@ -170,7 +170,7 @@ enum Hap {
 }
 
 /// Resolve one locus's rows into at most one biallelic SNP [`VariantCall`]. Returns `None` for
-/// a locus with no `snp` row (a `ref`/`no-call`/indel span) or one whose SNP alleles aren't a
+/// a locus with no `snp` row (a `ref`/`no-call`/indel span) or one whose SNP alleles are not a
 /// clean single-base substitution.
 fn locus_call(rows: &[Row]) -> Option<VariantCall> {
     // Site anchor: the first snp row carries the reference base + coordinates.
@@ -198,7 +198,7 @@ fn locus_call(rows: &[Row]) -> Option<VariantCall> {
     let hap = |which: Allele| -> Hap {
         // A compound locus can list several rows for one allele (e.g. a `ref` segment beside the
         // `snp` segment). Prefer the SNP call for that allele; fall back to ref, else missing —
-        // so a snp isn't hidden behind a same-allele ref/no-call row and the locus lost.
+        // so a snp is not hidden behind a same-allele ref/no-call row and the locus lost.
         let mut result = Hap::Missing;
         for r in rows.iter().filter(|r| r.allele == which) {
             match r.var_type {
@@ -216,7 +216,7 @@ fn locus_call(rows: &[Row]) -> Option<VariantCall> {
         (Hap::Alt(a), Hap::Alt(_)) => (a.clone(), "1/2"), // tri-allelic het; keep allele 1's alt
         (Hap::Alt(a), Hap::Ref) | (Hap::Ref, Hap::Alt(a)) => (a.clone(), "0/1"),
         (Hap::Alt(a), Hap::Missing) | (Hap::Missing, Hap::Alt(a)) => (a.clone(), "1/."),
-        // No alt on either haplotype — not a variant (shouldn't occur given the snp row above).
+        // No alt on either haplotype — not a variant (should not occur given the snp row above).
         _ => return None,
     };
     snp_call(contig, position, reference, &alt, rs_id, Some(genotype.into()))

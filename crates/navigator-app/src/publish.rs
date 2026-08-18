@@ -168,7 +168,7 @@ impl App {
             Utc::now().to_rfc3339(),
         )
         // Publish the known lab so the AppView can display it (and learn the instrument→lab map —
-        // many serials, e.g. PacBio, aren't in its dataset). See [`SequenceRun::sequencing_facility`].
+        // many serials, e.g. PacBio, are not in its dataset). See [`SequenceRun::sequencing_facility`].
         .with_facility(run.sequencing_facility.clone())
         // Exact sequenced yield + read chemistry back the standardized DTC test label the AppView
         // renders/groups by (`du_domain::testprofile`). Both `Option`al — older records omit them.
@@ -207,7 +207,7 @@ impl App {
             // reference-build mismatch — e.g. a GRCh38 alignment, whose chrY reference is far noisier
             // and whose shared-lineage variants the hs1-native tree can't fully resolve), the whole
             // set is suspect. Publish nothing rather than flood curators with candidates from a sample
-            // we've already flagged; the variants still show in the in-app DISPLAY under the banner.
+            // we have already flagged; the variants still show in the in-app DISPLAY under the banner.
             if let Some(warn) = bucket.qc_banner() {
                 eprintln!("private-variants publish skipped for alignment {alignment_id}: {warn}");
                 Vec::new()
@@ -428,7 +428,7 @@ impl App {
 /// Fold a [`CoverageResult`]'s two per-contig views (samtools-style stats +
 /// callable-state counts) into the shared lexicon's `contigs[]`, paired by contig
 /// name — the same join `export::coverage_tsv` uses. Contigs present in the stats
-/// but missing callable counts (shouldn't happen) fall back to zeros.
+/// but missing callable counts (should not happen) fall back to zeros.
 fn contig_metrics(cov: &CoverageResult) -> Vec<ContigMetrics> {
     cov.contig_coverage_stats
         .iter()

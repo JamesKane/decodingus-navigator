@@ -16,7 +16,7 @@ fn env_path(key: &str) -> Option<PathBuf> {
 
 /// A whole-genome walk over a real WGS file takes minutes. Cancel it a second in and assert it
 /// returns in well under that — the entire point of threading the token into the walkers, and the
-/// thing that a unit test on the token alone cannot demonstrate.
+/// thing that a unit test on the token alone can not demonstrate.
 #[test]
 #[ignore]
 fn cancelling_a_whole_genome_walk_returns_promptly() {

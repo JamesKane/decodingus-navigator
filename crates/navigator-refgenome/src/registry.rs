@@ -109,7 +109,7 @@ pub fn canonical_build(name: &str) -> Option<Build> {
 
 /// Where a reference FASTA is fetched from, with a rough size for the download prompt and an
 /// optional pinned SHA-256 of the downloaded artifact (publisher's hash, when known) used to
-/// verify the download before it's accepted. `None` = no authoritative hash to pin against yet.
+/// verify the download before it is accepted. `None` = no authoritative hash to pin against yet.
 #[derive(Debug, Clone)]
 pub struct ReferenceSource {
     pub build: Build,
@@ -186,7 +186,7 @@ pub struct BuildOverride {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub url: Option<String>,
     /// Pin an authoritative SHA-256 (lowercase hex) of the downloaded artifact; the download is
-    /// rejected if it doesn't match. Lets a user supply a publisher checksum we don't ship.
+    /// rejected if it does not match. Lets a user supply a publisher checksum we do not ship.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub sha256: Option<String>,
     /// Whether a missing reference may be auto-downloaded for this build (default `true`).
@@ -209,7 +209,7 @@ impl UserConfig {
     /// Load the config if present; a missing or unreadable file yields the empty default (overrides
     /// are advisory, never fatal — a novice with no config just gets the self-managed auto-download).
     ///
-    /// A file that **exists but doesn't parse** also falls back to defaults, but is **warned about**:
+    /// A file that **exists but does not parse** also falls back to defaults, but is **warned about**:
     /// silently dropping it is how a power user's `local_path` override vanishes and the app surprises
     /// them with a full reference download (issue #26 — the config had been corrupted by a racing
     /// non-atomic write; see [`crate::cache::atomic_write`]). Say so instead of reverting in silence.
@@ -240,7 +240,7 @@ impl UserConfig {
     /// (temp + rename, see [`crate::cache::atomic_write`]) — this file is rewritten from spawned worker
     /// tasks that can race, and a plain non-atomic write corrupts it into head-of-new + tail-of-old
     /// garbage. Callers should still avoid concurrent read-modify-write (prefer one bulk save) so an
-    /// update isn't lost; atomicity only guarantees the file is never *torn*.
+    /// update is not lost; atomicity only guarantees the file is never *torn*.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         crate::cache::atomic_write(path, json.as_bytes())

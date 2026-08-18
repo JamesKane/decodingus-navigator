@@ -115,7 +115,7 @@ pub fn regions_path(base: &Path, build: Build) -> PathBuf {
     base.join("regions").join(format!("{}.json", build.as_str()))
 }
 
-/// Age of a cached file in days (for TTL checks); `None` if it doesn't exist or its mtime is
+/// Age of a cached file in days (for TTL checks); `None` if it does not exist or its mtime is
 /// unreadable / in the future.
 pub fn age_days(path: &Path) -> Option<f64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;

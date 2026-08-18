@@ -10,7 +10,7 @@
 //! - `coverage.txt` (`samtools coverage`) + `callable.summary.txt` (GATK `CallableLoci`) →
 //!   a **lite** [`CoverageResult`]: genome-wide mean depth (length-weighted) + per-contig
 //!   stats + callable-base counts. The depth histogram and `pct_Nx` / median need the
-//!   per-base walk, so they're left zeroed and the result is flagged `partial` by the caller.
+//!   per-base walk, so they are left zeroed and the result is flagged `partial` by the caller.
 //!
 //! Unknown numeric fields are `0.0` (not `NaN`) because the cache round-trips through
 //! `serde_json`, which encodes `NaN` as `null` and then fails to read it back.
@@ -53,7 +53,7 @@ pub fn parse_sex(text: &str) -> SexInferenceResult {
 
 /// Parse `samtools stats` output into a fully-populated [`ReadMetrics`]. `SN` lines give the
 /// scalar counts; `RL`/`IS` lines give the read-length / insert-size histograms (and thus
-/// their median/std/min/max). `mean_mapping_quality` isn't emitted by samtools stats → 0.0.
+/// their median/std/min/max). `mean_mapping_quality` is not emitted by samtools stats → 0.0.
 pub fn parse_samtools_stats(text: &str) -> ReadMetrics {
     let mut sn: BTreeMap<&str, f64> = BTreeMap::new();
     let mut rl: BTreeMap<u32, u64> = BTreeMap::new();
@@ -125,7 +125,7 @@ pub fn parse_samtools_stats(text: &str) -> ReadMetrics {
         min_insert_size: is_min,
         max_insert_size: is_max,
         insert_size_histogram: is,
-        // samtools stats doesn't classify orientation; Illumina paired-end is FR.
+        // samtools stats does not classify orientation; Illumina paired-end is FR.
         pair_orientation: PairOrientation::Fr,
         // Picard-style chimera rate: read pairs mapping to different chromosomes / total pairs.
         pct_chimeras: pct(pairs_diff_chrom, total_reads / 2),
@@ -364,7 +364,7 @@ pub fn parse_flagstat(text: &str) -> ReadMetrics {
 
 /// Parse a Picard metrics table: skip to the header line beginning with `header_key`, then read the
 /// tab-separated data rows until a blank line (Picard appends a histogram section after a blank).
-/// Returns `(headers, rows)`. `None` if the header isn't found.
+/// Returns `(headers, rows)`. `None` if the header is not found.
 fn parse_picard_rows(text: &str, header_key: &str) -> Option<(Vec<String>, Vec<Vec<String>>)> {
     let mut lines = text.lines();
     let header = lines.by_ref().find(|l| l.trim_start().starts_with(header_key))?;
@@ -421,7 +421,7 @@ pub fn parse_wgs_metrics(text: &str) -> Option<CoverageResult> {
 
 /// Parse Picard `CollectAlignmentSummaryMetrics` → a [`ReadMetrics`] (the `PAIR` summary row,
 /// else `UNPAIRED`, else the first). Counts + alignment percentages + mean read length + chimera
-/// rate; read-length / insert-size histograms aren't in this metrics class, so they stay 0. Picard
+/// rate; read-length / insert-size histograms are not in this metrics class, so they stay 0. Picard
 /// `PCT_*` are 0–1 fractions → scaled to the `ReadMetrics` 0–100 convention. `None` if no table.
 pub fn parse_alignment_summary(text: &str) -> Option<ReadMetrics> {
     let (keys, rows) = parse_picard_rows(text, "CATEGORY")?;
@@ -623,7 +623,7 @@ chrY\t1\t500\t20\t400\t80.0\t10.0\t29.0\t40.0
     }
 
     /// Real-data smoke test: parse HG00096's actual pipeline sidecars off the NAS. No-ops
-    /// when the share isn't mounted. Run: `cargo test -p navigator-analysis sidecar -- --ignored --nocapture`.
+    /// when the share is not mounted. Run: `cargo test -p navigator-analysis sidecar -- --ignored --nocapture`.
     #[test]
     #[ignore = "reads NAS files; run explicitly"]
     fn real_sidecars_parse() {

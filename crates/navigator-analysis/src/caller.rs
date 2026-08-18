@@ -477,7 +477,7 @@ fn read_indel_events(record: &RecordBuf, start: i64) -> (Vec<(i64, IndelAllele)>
 /// guard and vetoes the whole lineage). So indels only ever *confirm* a branch, matching the intent:
 /// cover the many indel-defined DecodingUs branches when the sample carries them. Requires a
 /// `reference` (to left-normalize + know deleted bases); returns empty without one, or when the
-/// contig isn't in the FASTA.
+/// contig is not in the FASTA.
 pub fn call_indels_at(
     bam_path: &Path,
     contig: &str,
@@ -855,7 +855,7 @@ pub fn genotype_sites_all_contigs(
 /// site absent-as-hom-ref in one run is a real vote (resolving "run A het vs run B hom-ref") while a
 /// genuinely uncovered run abstains. Only **variant** consensus sites (het/hom-alt) are returned;
 /// hom-ref / no-call consensus is not a variant. Depth/AD are summed and GQ is the max over the
-/// supporting alignments; PLs are dropped (the per-run likelihoods don't compose into one PL here).
+/// supporting alignments; PLs are dropped (the per-run likelihoods do not compose into one PL here).
 pub fn reconcile_site_genotypes(per_alignment: &[Vec<SiteGenotype>], min_depth: u32) -> Vec<SiteGenotype> {
     use std::collections::BTreeMap;
     struct Acc {
@@ -2116,7 +2116,7 @@ mod tests {
         // An insertion of "A" before anchor 5 (in the A-run) left-aligns to anchor 2.
         let (a, al) = left_normalize(5, &IndelAllele::Ins(b"A".to_vec()), refc, 1);
         assert_eq!((a, al), (2, IndelAllele::Ins(b"A".to_vec())));
-        // A non-repeat deletion doesn't move: "ACGTC", delete the G (anchor 3).
+        // A non-repeat deletion does not move: "ACGTC", delete the G (anchor 3).
         let (a, _) = left_normalize(3, &IndelAllele::Del(1), b"ACGTC", 1);
         assert_eq!(a, 3);
     }

@@ -221,7 +221,7 @@ impl App {
 
     /// Import an FTDNA Big Y CSV variant report (Named or Private Variants) — the data a project
     /// admin gets when their access tier exposes the browser CSVs but not the BAM/CRAM/VCF. The
-    /// rows are GRCh38 chrY derived-allele calls, so they're stored as a `TargetedNgs` variant set
+    /// rows are GRCh38 chrY derived-allele calls, so they are stored as a `TargetedNgs` variant set
     /// on GRCh38 (FTDNA's native Y-tree build) and placed via the vendor path on import — the Named
     /// report lands a Y haplogroup directly (positions match the tree, no liftover). Private
     /// Variants are stored too (novel loci, off-tree) for the record.
@@ -310,7 +310,7 @@ impl App {
     }
 
     /// Ensure a Y-SNP dictionary is present, downloading the full catalog (`dictionary.tsv`,
-    /// ~208 MB) from the asset release on first use — it's too big and too volatile (~weekly YBrowse
+    /// ~208 MB) from the asset release on first use — it is too big and too volatile (~weekly YBrowse
     /// refresh) to bundle in the installer. No-op when a dictionary (the chromo2 panel or the full
     /// catalog) is already installed, or the user pointed `NAVIGATOR_YSNP_DIR` at one. The download
     /// is verified against a small published manifest (`ysnp_manifest.json`, the ancestry
@@ -516,7 +516,7 @@ impl App {
 
         // Pull the haploid Y/MT genotype rows and store them as Chip-source variant calls so the
         // haplogroup placement (and later re-placement) has them without re-reading the file. The
-        // observed allele goes in both `reference` and `alternate` (we don't know the ancestral);
+        // observed allele goes in both `reference` and `alternate` (we do not know the ancestral);
         // the placement reads `alternate`.
         let haplo = chipprofile::haplo_calls(&text);
         if !haplo.is_empty() {
@@ -556,7 +556,7 @@ impl App {
                     eprintln!("chip Y placement deferred ({e})");
                 }
             }
-            // AncestryDNA's stray MT rows aren't a usable mtDNA panel — only place mtDNA when the
+            // AncestryDNA's stray MT rows are not a usable mtDNA panel — only place mtDNA when the
             // array carries a real MT marker set (23andMe has thousands; the threshold filters noise).
             const MIN_MT_CALLS: usize = 20;
             if mt_count >= MIN_MT_CALLS {

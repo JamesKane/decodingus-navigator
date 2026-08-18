@@ -434,8 +434,8 @@ fn resolved_ui_scale() -> f32 {
 
 /// One-shot auto UI-scale probe (the "behave like a native app" default). On the first frame the
 /// monitor size is known, derive a zoom when the OS reports a ~1.0 scale factor on a clearly
-/// high-resolution panel (e.g. native-4K, where macOS itself doesn't up-scale). A Retina / scaled
-/// display (native ppp > 1) is already handled by egui's native scaling, so it's left at 1.0. Skipped
+/// high-resolution panel (e.g. native-4K, where macOS itself does not up-scale). A Retina / scaled
+/// display (native ppp > 1) is already handled by egui's native scaling, so it is left at 1.0. Skipped
 /// entirely when a manual scale is persisted (`probed` starts `true`). The result fills the Settings
 /// slider but is not persisted until the user saves — re-probed each launch otherwise.
 fn run_auto_scale(probed: &mut bool, form: &mut SettingsForm, ctx: &egui::Context) {
@@ -515,7 +515,7 @@ struct EditProject {
 }
 
 /// Editable copy of a sequence run, driving the run Edit modal (Some ⇒ the dialog is shown).
-/// Read-metric columns are not editable here, so they're not carried.
+/// Read-metric columns are not editable here, so they are not carried.
 #[derive(Clone)]
 struct EditRun {
     id: i64,
@@ -862,7 +862,7 @@ pub struct NavigatorApp {
     consensus_y: Option<Consensus>,
     consensus_mt: Option<Consensus>,
     /// YFull-style descent reports for the selected subject, loaded lazily per `DnaType` and cached
-    /// as `Some(report)` / `None` (placed-but-empty), so a built-once result isn't re-fetched; plus
+    /// as `Some(report)` / `None` (placed-but-empty), so a built-once result is not re-fetched; plus
     /// the (guid, dna) pairs currently loading. All cleared on subject switch.
     descent_reports: Vec<(SampleGuid, DnaType, Option<DescentReport>)>,
     descent_loading: Vec<(SampleGuid, DnaType)>,
@@ -916,7 +916,7 @@ pub struct NavigatorApp {
     ancient_ancestry: Option<AncestryResult>,
     /// Reference PC1/PC2 centroids for the PCA scatter, keyed by alignment_id (lazy-loaded).
     pca_reference: Option<(i64, PcaCentroids)>,
-    /// Which PCA-reference key we've already dispatched a load for (avoids re-sending every frame).
+    /// Which PCA-reference key we have already dispatched a load for (avoids re-sending every frame).
     pca_reference_attempted: Option<i64>,
     /// Donor-level private-Y union across the subject's sources.
     donor_private_y: Option<PrivateBucket>,
@@ -933,7 +933,7 @@ pub struct NavigatorApp {
     /// Catalogued Y-SNP names at variant positions (`position → name`), used to annotate the two
     /// Y-SNP tables' position-only / novel calls. Resolved once per subject from the Y-SNP dictionary.
     y_snp_names: std::collections::HashMap<i64, String>,
-    /// True once we've dispatched the Y-SNP-name resolution for the current subject (avoids re-sending).
+    /// True once we have dispatched the Y-SNP-name resolution for the current subject (avoids re-sending).
     y_snp_names_requested: bool,
     /// True while the (expensive) Y-variant profile is being built.
     y_profile_loading: bool,
@@ -987,7 +987,7 @@ pub struct NavigatorApp {
     genome_regions: Option<(i64, std::sync::Arc<navigator_app::GenomeRegions>)>,
     /// True while the cytoBand fetch is in flight.
     loading_regions: bool,
-    /// The alignment we've already kicked off (or completed) a region load for — avoids re-firing
+    /// The alignment we have already kicked off (or completed) a region load for — avoids re-firing
     /// the fetch every frame, including after a failure.
     regions_attempted: Option<i64>,
     /// Which contig's depth histogram the coverage view charts: `None` = whole-genome histogram,
@@ -1092,9 +1092,9 @@ pub struct NavigatorApp {
     /// The admin's per-kit resolutions for the fuzzy rows in [`Self::ftdna_plan`].
     ftdna_resolutions: std::collections::BTreeMap<String, FtdnaResolution>,
     /// The selected subject's imported genealogy (vendor ids + FTDNA member + MDKA), for the
-    /// Overview card. `(guid, data)` so a stale bundle from a prior subject isn't shown.
+    /// Overview card. `(guid, data)` so a stale bundle from a prior subject is not shown.
     genealogy: Option<(SampleGuid, FtdnaGenealogy)>,
-    /// The current project's Y-STR clustering, keyed by project id (so a stale one isn't shown).
+    /// The current project's Y-STR clustering, keyed by project id (so a stale one is not shown).
     project_clustering: Option<(i64, YstrClustering)>,
     /// True while the project Y-STR clustering is computing.
     clustering_running: bool,
@@ -1282,12 +1282,12 @@ impl NavigatorApp {
         let dark = !matches!(settings.theme.as_deref(), Some("light"));
         apply_theme(&cc.egui_ctx, dark);
         // Persisted UI scale (egui zoom) — fixes tiny text on a native-4K display the OS reports at
-        // scale factor 1.0. egui's keyboard zoom (Cmd +/-/0) also works but isn't persisted.
+        // scale factor 1.0. egui's keyboard zoom (Cmd +/-/0) also works but is not persisted.
         cc.egui_ctx.set_zoom_factor(resolved_ui_scale());
         // Restore the last navigation position (view / focused subject / detail tab). The subject is
         // applied once the list loads (see the `AllBiosamples` handler); nav/tab apply immediately
         // (nav is then reconciled to the interface mode by `normalize_for_mode`). Seed `saved_ui_sig`
-        // with the restored intent so a matching restore doesn't trigger a redundant re-save.
+        // with the restored intent so a matching restore does not trigger a redundant re-save.
         let restore = &settings;
         let restored_nav = restore
             .last_nav
@@ -2475,7 +2475,7 @@ mod icon_glyph_tests {
     /// Every string literal this crate draws must be drawable.
     ///
     /// `every_translated_string_is_renderable` covers the catalogs, which is where user-facing copy
-    /// belongs — but icons don't live there. A button label like `ui.small_button("✎")` is a bare
+    /// belongs — but icons do not live there. A button label like `ui.small_button("✎")` is a bare
     /// literal in the source, invisible to the catalog scan, and that is where the second round of
     /// tofu boxes was found: the MDKA edit/remove buttons and the kit-remove button on the
     /// Genealogy card, every clear-filter `✕`, the Y-STR agreement `✓`/`✗`, the sortable-table

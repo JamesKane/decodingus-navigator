@@ -1,4 +1,4 @@
-//! Dump the Tier B callability mask as BED, so what the segment caller can and cannot see is
+//! Dump the Tier B callability mask as BED, so what the segment caller can and can not see is
 //! checkable against an external callset rather than assumed.
 //!
 //! Windows below `min_frac` of `window_bp` callable are excluded by the caller itself, so the same

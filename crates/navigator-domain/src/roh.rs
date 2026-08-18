@@ -1,6 +1,6 @@
 //! Runs-of-homozygosity domain types.
 //!
-//! The pattern read is a *classification*, not a rendering: it's computed once by
+//! The pattern read is a *classification*, not a rendering: it is computed once by
 //! `navigator_analysis::roh` (which re-exports this enum) and then consumed by both the Advanced ROH
 //! chart and the Simple-mode brief. It lives here, below the analysis engine, so the brief builder
 //! in [`crate::brief`] can switch on the canonical verdict instead of re-deriving its own.

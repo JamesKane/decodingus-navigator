@@ -112,7 +112,7 @@ pub struct ArchaicClassifyArgs {
 pub fn build_archaic_classify(args: ArchaicClassifyArgs) -> Result<()> {
     // The classification track is the genome-wide superset of the marker panel: every polarized
     // candidate with an archaic hom-derived call, BEFORE the frequency filters that select markers.
-    // Segment attribution wants maximum diagnostic density, not the ascertained marker subset.
+    // Segment attribution wants maximum diagnostic density, not the found out marker subset.
     let want: Option<Vec<String>> = args
         .contigs
         .as_ref()

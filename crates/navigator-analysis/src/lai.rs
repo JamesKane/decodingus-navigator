@@ -59,7 +59,7 @@ pub struct CopyingLaiParams {
     /// populations stop being balanced at all).
     ///
     /// Capping is not the only size correction — see [`Self::size_normalize`], which divides by the
-    /// haplotype count and, on a dense panel, does the work capping cannot.
+    /// haplotype count and, on a dense panel, does the work capping can not.
     pub max_ref_haps: usize,
     /// Runs shorter than this many **centiMorgans** merge into the neighbouring segment.
     ///
@@ -146,7 +146,7 @@ fn kept_super_pops(prior: &[(String, f64)], min_ancestry: f64) -> Option<std::co
 /// the two phased sides is painted independently (segment `copy` = side 0/1); segments carry the
 /// resolved fine population in [`AncestrySegment::fine_population_code`] and its super-population in
 /// [`AncestrySegment::population_code`]. `prior` is the genome-wide composition `(pop, weight)` — the
-/// global-composition gate drops reference haplotypes from super-populations the sample doesn't have.
+/// global-composition gate drops reference haplotypes from super-populations the sample does not have.
 /// Returns empty if the reference is empty.
 pub fn paint_copying_lai(
     phased: &PhasedGenotypes,
@@ -162,7 +162,7 @@ pub fn paint_copying_lai(
 
     // Global-composition gate (keep only super-populations present genome-wide ≥ min_ancestry; the
     // dominant one is always kept) + per-population capping (≤ max_ref_haps each, balancing the panel
-    // so the largest 1000G samples don't out-vote by count). Gating stops spurious continents; capping
+    // so the largest 1000G samples do not out-vote by count). Gating stops spurious continents; capping
     // stops the southern-European / large-sample skew.
     let kept_super = kept_super_pops(prior, params.min_ancestry);
     let mut pop_used = vec![0usize; reference.populations.len()];
@@ -635,7 +635,7 @@ mod tests {
         );
     }
 
-    /// A tiny reference population (below `min_ref_haps`) folds into its super-pop, so it's never a
+    /// A tiny reference population (below `min_ref_haps`) folds into its super-pop, so it is never a
     /// callable fine label: a 1-hap TSI group is never painted "TSI" (it folds to EUR).
     #[test]
     fn tiny_populations_fold_into_super_pop() {
@@ -679,7 +679,7 @@ mod tests {
         // Ancestral → European branch → {GBR, TSI}; FIN drifts harder off the same branch. AFR
         // (YRI) splits at the root. The sibling separation here (Fst 0.02) is deliberately wider
         // than real intra-European Fst (~0.005) and the sites are independent: this gate tests the
-        // *model*, given information sufficient to separate the populations. Whether the shipped
+        // *model*, given information enough to separate the populations. Whether the shipped
         // panel carries that much information is the separate question `validate-lai` answers on
         // the real reference.
         let mut freqs: Vec<[f64; 4]> = Vec::with_capacity(n_sites); // GBR, TSI, FIN, YRI

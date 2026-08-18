@@ -50,7 +50,7 @@ impl AssetManifest {
     }
 
     /// Verify `bytes` for `filename`. `Ok` when the manifest has no entry for the file (advisory —
-    /// unlisted assets aren't gated) or the digest matches; `Err(expected, got)` on a mismatch.
+    /// unlisted assets are not gated) or the digest matches; `Err(expected, got)` on a mismatch.
     pub fn verify(&self, filename: &str, bytes: &[u8]) -> Result<(), (String, String)> {
         if let Some(e) = self.assets.get(filename) {
             let got = sha256_hex(bytes);

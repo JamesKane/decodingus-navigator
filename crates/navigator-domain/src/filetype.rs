@@ -157,7 +157,7 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
 /// chrY/chrM product never does.
 ///
 /// Returns `false` when there is **no contig evidence at all** (an empty or unreadable head). Absence
-/// of evidence is not evidence of absence: a `.g.vcf` we couldn't read should keep the claim its
+/// of evidence is not evidence of absence: a `.g.vcf` we could not read should keep the claim its
 /// extension makes rather than be demoted on a guess.
 ///
 /// This is the guard that keeps a haploid-lineage call set off the autosomal panel pipeline.
@@ -256,7 +256,7 @@ fn count_token(haystack: &str, prefix: &str, min_digits: usize, max_digits: usiz
 /// Recognize a named Y-SNP panel (BISDNA chromo2): either the exact
 /// `SNPID<TAB>genotype<TAB>result` header, or — lacking it — several tab rows whose third
 /// column is a positive/negative/no_call/back-mutated verdict. Tolerant of the multi-line
-/// prose preamble BISDNA prepends (those lines aren't tab-delimited and never match).
+/// prose preamble BISDNA prepends (those lines are not tab-delimited and never match).
 fn looks_like_ysnp_panel(lines: &[&str]) -> bool {
     let is_verdict = |s: &str| {
         let v = s.trim().trim_matches(|c| c == '"').to_ascii_lowercase();
@@ -497,7 +497,7 @@ chr1\t246193\trs3094315\tG\tA\t225\t.\tDP=29\tGT:DP\t0/0:29
 
     #[test]
     fn an_unreadable_head_keeps_the_gvcf_extensions_claim() {
-        // No contig evidence is not evidence of no autosomes — don't demote on a guess.
+        // No contig evidence is not evidence of no autosomes — do not demote on a guess.
         assert_eq!(detect("sample.g.vcf.gz", ""), DetectedData::GvcfCallSet);
     }
 
@@ -527,7 +527,7 @@ chr1\t246193\trs3094315\tG\tA\t225\t.\tDP=29\tGT:DP\t0/0:29
                     #TYPE\tVAR-ANNOTATION\n\
                     >locus\tploidy\tallele\tchromosome\tbegin\tend\tvarType\treference\talleleSeq\tvarScoreVAF\tvarScoreEAF\tvarQuality\thapLink\txRef\n\
                     1\t2\tall\tchr1\t0\t10000\tno-ref\t=\t?\t\t\t\t\t\n";
-        // Both the raw name and a `.tsv.bz2` (extension isn't consulted for this format) detect.
+        // Both the raw name and a `.tsv.bz2` (extension is not consulted for this format) detect.
         assert_eq!(
             detect("var-GS00253-DNA_A01_200_37-ASM.tsv", head),
             DetectedData::CompleteGenomicsVar

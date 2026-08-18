@@ -16,7 +16,7 @@
 //! 2. **Density.** `--downsample` re-runs on a random half of the sites; the answer must barely
 //!    move, or the fit is ill-conditioned.
 //! 3. **Fit residual.** The dispersion is reported for every population, so the separation between
-//!    "fits" and "doesn't fit" is visible rather than asserted.
+//!    "fits" and "does not fit" is visible rather than asserted.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ pub struct ValidateAncientArgs {
     reference: PathBuf,
     /// The modern super-population panel (`ancestry_panel_<build>.bin`). Deep ancestry is scoped by
     /// the modern estimate, so the validator must score both models or it would be validating a
-    /// policy the app doesn't actually run.
+    /// policy the app does not actually run.
     #[arg(long)]
     panel: PathBuf,
     /// Reference populations to simulate, comma-separated.
@@ -46,7 +46,7 @@ pub struct ValidateAncientArgs {
     /// **Use 1000G populations only.** The `freq_global` asset's SGDP-derived columns (Sardinian,
     /// Basque, French, Orcadian, Han, …) record `0.0` where a population had no called sample —
     /// indistinguishable from a true zero — so 60%+ of their sites are fake zeros and an individual
-    /// simulated from them is not that population, it's noise. The 1000G columns are called
+    /// simulated from them is not that population, it is noise. The 1000G columns are called
     /// essentially everywhere and are the only trustworthy simulation source in that asset.
     /// (This is the same no-data-as-zero defect the ancient panel exists to avoid; see
     /// `pca::build_ancient_panel`.)

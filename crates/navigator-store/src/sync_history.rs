@@ -1,6 +1,6 @@
 //! Append-only audit trail of completed PDS-publish attempts (sync durability, gap §5). One row is
 //! written per terminal outcome — a successful push (with the resulting `at://` URI + CID) or a
-//! non-transient failure. Transient retries don't write history (they stay in [`crate::sync_outbox`]).
+//! non-transient failure. Transient retries do not write history (they stay in [`crate::sync_outbox`]).
 
 use sqlx::SqlitePool;
 

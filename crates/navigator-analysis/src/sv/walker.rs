@@ -2,7 +2,7 @@
 //! collecting per-bin read depth (CNV), discordant read pairs (BreakDancer-style), and
 //! split reads from the SA tag (Pindel-style).
 //!
-//! Two walks share one per-record body ([`EvidenceSink::accept_read`]), so they cannot drift:
+//! Two walks share one per-record body ([`EvidenceSink::accept_read`]), so they can not drift:
 //! [`collect_evidence_parallel`] fans one region query per contig across a decode-safe rayon pool,
 //! and [`collect_evidence`] makes a single sequential pass for files with no coordinate index.
 //! Prefer the parallel entry point — it falls back to the sequential one on its own.

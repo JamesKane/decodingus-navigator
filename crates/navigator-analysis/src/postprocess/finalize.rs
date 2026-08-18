@@ -11,8 +11,8 @@
 //!   are no bases to difference. [`super::cram`] handles it by dropping those records.
 //! - **Indexing** then panics on any *multi-reference* slice: `cram::fs::index` decodes records
 //!   with `fasta::Repository::default()` — an empty one, still carrying its `// TODO` upstream —
-//!   and the reader `expect`s a name that cannot be there. With 25 contigs, every slice that
-//!   straddles a contig boundary is multi-reference, so a whole-genome CRAM cannot be indexed at
+//!   and the reader `expect`s a name that can not be there. With 25 contigs, every slice that
+//!   straddles a contig boundary is multi-reference, so a whole-genome CRAM can not be indexed at
 //!   all. Only the coordinates are actually needed, which is why the decode is a bug rather than
 //!   a requirement.
 //!

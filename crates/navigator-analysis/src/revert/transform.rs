@@ -23,7 +23,7 @@ const SYNTHETIC_PHRED: u8 = 40;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mate {
     /// Not part of a pair (`0x1` clear), or paired but with neither/both segment bits set — a
-    /// record whose flags contradict themselves cannot be placed in an R1/R2 file.
+    /// record whose flags contradict themselves can not be placed in an R1/R2 file.
     Unpaired,
     /// First segment (`0x40`).
     One,
@@ -186,7 +186,7 @@ fn mate_of(flags: noodles::sam::alignment::record::Flags) -> Mate {
     match (flags.is_first_segment(), flags.is_last_segment()) {
         (true, false) => Mate::One,
         (false, true) => Mate::Two,
-        // Both or neither: the record claims to be paired but won't say which end. It cannot go in
+        // Both or neither: the record claims to be paired but will not say which end. It can not go in
         // a synchronized R1/R2 file, so it becomes a singleton rather than corrupting the pairing.
         _ => Mate::Unpaired,
     }

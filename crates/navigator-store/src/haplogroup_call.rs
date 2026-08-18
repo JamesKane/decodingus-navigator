@@ -104,7 +104,7 @@ pub async fn stored_fingerprint(
 /// is the first 16 hex of the current tree's SHA-256.
 ///
 /// `include_unknown` decides what to do with a call carrying **no tree tag** — placed before the
-/// fingerprint existed, so which tree it used cannot be established. These are a different job from
+/// fingerprint existed, so which tree it used can not be established. These are a different job from
 /// a tree change, and much more expensive: in this workspace 3,780 Y calls are *provably* on a
 /// superseded tree while 15,648 have no fingerprint at all, and most of the latter own a BAM that a
 /// re-placement would re-walk. Default them out so the routine "a new tree landed" sweep stays

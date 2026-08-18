@@ -130,7 +130,7 @@ impl SequenceRun {
     }
 
     /// The standardized, vendor-neutral test label (`WGS150 45Gbases`, `HiFi 90Gbases`, `BigY-700`),
-    /// or `None` when this isn't a yield/product test we standardize (chips, panels) — the caller
+    /// or `None` when this is not a yield/product test we standardize (chips, panels) — the caller
     /// falls back to the raw `test_type`. See [`du_domain::testprofile`].
     pub fn standardized_label(&self) -> Option<String> {
         du_domain::testprofile::standardized_label(&du_domain::testprofile::RunProfile {

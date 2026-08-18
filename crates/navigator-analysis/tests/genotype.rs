@@ -203,7 +203,7 @@ fn call_indels_at_without_reference_is_empty() {
 fn denovo_diploid_calls_a_multiallelic_snv() {
     // snv_multi.bam (chr1): 10 reads carry G at pos 2, 10 carry T (ref C) → compound het 1/2.
     let dir = fixtures();
-    // A private chr1 reference dir (distinct from chr1_reference()'s, so parallel tests don't race).
+    // A private chr1 reference dir (distinct from chr1_reference()'s, so parallel tests do not race).
     let refdir = std::env::temp_dir().join(format!("dun-snvmulti-ref-{}", std::process::id()));
     std::fs::create_dir_all(&refdir).unwrap();
     let reference = refdir.join("chr1.fa");

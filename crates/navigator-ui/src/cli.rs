@@ -109,7 +109,7 @@ pub enum Command {
     /// node's descendant subtree (observed base + derived/ancestral status + evidence). For
     /// spot-checking placement and exchanging observations. Table by default; `--tsv` / `--json`.
     BranchReport(BranchReportArgs),
-    /// Diagnostic: explain why an alignment cannot be read. Probes the BAM/CRAM, its coordinate
+    /// Diagnostic: explain why an alignment can not be read. Probes the BAM/CRAM, its coordinate
     /// index, the reference FASTA and that FASTA's `.fai` **separately**, so a failure names the
     /// file actually at fault instead of whichever path the failing call happened to be handed —
     /// and reports the raw errno, which on macOS is the only thing distinguishing a privacy (TCC)
@@ -428,7 +428,7 @@ pub struct BackfillArgs {
 
 #[derive(Args)]
 pub struct AccessionArgs {
-    /// Actually attach the accessions and correct the local `sample_accession`. Without this it's a
+    /// Actually attach the accessions and correct the local `sample_accession`. Without this it is a
     /// dry run (queries the API read-only, writes nothing).
     #[arg(long)]
     apply: bool,
@@ -479,7 +479,7 @@ pub struct LoginArgs {
 #[derive(Args)]
 pub struct PruneArgs {
     /// Actually delete the orphans. Without this flag the command is a dry run (lists what it would
-    /// remove and touches nothing) — a PDS delete is irreversible, so it's opt-in.
+    /// remove and touches nothing) — a PDS delete is irreversible, so it is opt-in.
     #[arg(long)]
     apply: bool,
     /// Emit the outcome as JSON.
@@ -802,7 +802,7 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
             }
         }
         // Re-place the per-alignment calls *and* rebuild the signatures built from them — the same
-        // `replace_against_current_tree` the GUI chore runs, so the two surfaces cannot drift.
+        // `replace_against_current_tree` the GUI chore runs, so the two surfaces can not drift.
         // Rebuilding only the profiles (what this did) left every `haplogroup_call` row on the tree
         // it was placed against, which is both the "sources diverge" conflicts on the Y card and the
         // reason `--stale-tree` re-selected the same subjects forever: it selects *by* those call
@@ -914,7 +914,7 @@ async fn compare_callers(args: ShowArgs) -> i32 {
                     let ext = c.external.as_deref().unwrap_or("(none)");
                     let nav = c.navigator.as_deref().unwrap_or("(none)");
                     // Only a real disagreement (both present, different) is flagged — a missing side
-                    // is just "the other caller didn't produce a call here".
+                    // is just "the other caller did not produce a call here".
                     let differ = c.external.is_some() && c.navigator.is_some() && !c.agree();
                     if differ {
                         diverged += 1;
@@ -942,7 +942,7 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
     let id = args.alignment;
 
     // The step list comes from `App::plan_full_analysis` — the same one the GUI's Full Analysis
-    // uses, so the two cannot drift again. In particular this is what stops a `navigator analyze`
+    // uses, so the two can not drift again. In particular this is what stops a `navigator analyze`
     // from re-genotyping Y over a trusted external call the user asked to prefer.
     let mut steps = match app.plan_full_analysis(id, args.ancestry, args.sv, None).await {
         Ok(s) => s,
@@ -966,7 +966,7 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
         let total = steps.len();
         let t = Instant::now();
         // Each arm renders its own one-line summary; `Err` is reported and the run continues, since
-        // a failed step (e.g. SV below the depth threshold) doesn't invalidate the rest.
+        // a failed step (e.g. SV below the depth threshold) does not invalidate the rest.
         let outcome: Result<String, navigator_app::AppError> = match &step {
             AnalysisStep::QualityMetrics => match app.run_unified_metrics(id).await {
                 Ok(r) => {
@@ -2032,7 +2032,7 @@ pub struct DoctorArgs {
 /// gate in a script and not just by eye.
 ///
 /// `--file` deliberately skips opening the workspace: the file being undiagnosable is often *why*
-/// the user cannot import it, so requiring a workspace record first would make the diagnostic
+/// the user can not import it, so requiring a workspace record first would make the diagnostic
 /// unavailable in the case it exists for.
 async fn doctor(args: DoctorArgs) -> i32 {
     let diagnosis = if let Some(file) = args.file {

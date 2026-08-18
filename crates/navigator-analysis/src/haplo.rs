@@ -323,7 +323,7 @@ pub fn normalize_polarity(tree: &mut HaploTree, reference: &HashMap<String, (Str
 /// each position (`calls`: 1-based position → uppercase base, from the full sequence).
 /// `found` is the set of tree sites where the sample carries the derived allele; expected
 /// is the root→node derived loci. Best-first (highest score; shallower wins ties — a child
-/// that adds no matched mutation shouldn't outrank its parent).
+/// that adds no matched mutation should not outrank its parent).
 pub fn score(tree: &HaploTree, calls: &HashMap<i64, char>) -> Vec<ScoredHaplogroup> {
     // |F| — distinct tree sites whose derived allele the sample carries.
     let mut carried: HashSet<i64> = HashSet::new();
@@ -562,7 +562,7 @@ pub fn tree_positions(tree: &HaploTree) -> HashMap<i64, String> {
 /// Polarity map for the consensus interpreter: **SNP name → (ancestral, derived)** over every
 /// defining locus in the tree. This is the tree-of-record's per-SNP polarity, applied at read time by
 /// `navigator_domain::consensus::interpret` so a corrected tree flips states with no re-genotyping.
-/// Use for any parsed [`HaploTree`] (mtDNA rCRS, FTDNA) where a JSON polarity map isn't available;
+/// Use for any parsed [`HaploTree`] (mtDNA rCRS, FTDNA) where a JSON polarity map is not available;
 /// for the DecodingUs Y JSON prefer [`decodingus_polarity_map`] (true phylogenetic polarity). Loci
 /// without a name or derived allele are skipped; a recurrent name keeps its first-seen polarity.
 pub fn polarity_from_tree(tree: &HaploTree) -> std::collections::BTreeMap<String, (String, String)> {
@@ -632,7 +632,7 @@ pub struct SnpEvidence {
 }
 
 /// A child branch below the reported terminal, with the per-SNP evidence that explains why
-/// descent did or didn't continue into it.
+/// descent did or did not continue into it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchEvidence {
     pub name: String,
@@ -695,7 +695,7 @@ pub struct NodeEvidence {
 
 /// Group the root→`terminal_id` path into per-node defining-SNP evidence (root→terminal order):
 /// walk the tree from the terminal up to the root, and for each node attach its loci with the
-/// sample's state taken from `state_by_name` (`NoCall` for an equivalent the sample didn't call).
+/// sample's state taken from `state_by_name` (`NoCall` for an equivalent the sample did not call).
 /// Keyed by **SNP name** (build-independent: a name like `M269` is the same across coordinate
 /// systems), so a cached variant profile placed under any build can colour an FTDNA-tree path.
 pub fn descent_by_node(
@@ -922,7 +922,7 @@ const REDEEM_DERIVED: usize = 4;
 /// lineage (derived or merely no-call along its length) passes. Used to veto otherwise high-scoring
 /// tunnel artifacts from the [`score`] ranking.
 ///
-/// A contradicted ancestor only vetoes when it isn't *redeemed* by derived support further down the
+/// A contradicted ancestor only vetoes when it is not *redeemed* by derived support further down the
 /// path: a single stray ancestral at a sparse intermediate node (a Big Y miscall) is overridden
 /// when ≥[`REDEEM_DERIVED`] derived SNPs below it confirm the branch, while a coincidental tunnel —
 /// a contradicted branch-point with only a hit or two beneath it — stays vetoed.
@@ -1202,7 +1202,7 @@ mod tests {
     #[test]
     fn induced_subtree_ignores_terminals_absent_from_the_tree() {
         let t = parse_ftdna_json(BRANCHY).unwrap();
-        // 999 doesn't exist (provider/build skew); the real terminal still resolves.
+        // 999 does not exist (provider/build skew); the real terminal still resolves.
         let nodes = induced_subtree(&t, &[4, 999]);
         let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, vec!["root", "R", "R1", "R1a"]);
@@ -1393,7 +1393,7 @@ mod tests {
         // loci does not drop the node: it stays, named and on the path, with an empty `loci`, and
         // `descent_by_node` faithfully reports it with no SNPs. A renderer that hides empty blocks
         // (correctly — the root is genuinely empty) then shows the lineage stopping one branch
-        // short, while the terminal *name* remains right. Hence `DECODINGUS_NATIVE_BUILD`: parse in
+        // short, while the terminal *name* remains right. So `DECODINGUS_NATIVE_BUILD`: parse in
         // hs1 wherever the join is by SNP name.
         let json = r#"{
           "roots": [
@@ -1441,7 +1441,7 @@ mod tests {
         assert_eq!(terminal.snps[0].state, CallState::Derived);
     }
 
-    /// Mirrors `navigator_app::DECODINGUS_NATIVE_BUILD`, which this crate sits below and so cannot
+    /// Mirrors `navigator_app::DECODINGUS_NATIVE_BUILD`, which this crate sits below and so can not
     /// import. The test above is the reason that constant exists.
     const DECODINGUS_NATIVE_BUILD_FOR_TEST: &str = "hs1";
 
@@ -1555,7 +1555,7 @@ mod tests {
         assert!(!locus_carried(&locus, &calls(&[(146, 'T')])));
 
         // Strand-ambiguous SNP (C↔G): the complement of derived G is the ancestral C, so strand
-        // can't be inferred — keep strict literal matching and don't complement-flip.
+        // can't be inferred — keep strict literal matching and do not complement-flip.
         let palindrome = Locus {
             position: 200,
             ancestral: "C".into(),
@@ -1845,7 +1845,7 @@ mod tests {
             (700, 'A'),
             (800, 'A'),
         ]);
-        // Deepen enters C from P: it carries 3 derived (≥2) and isn't contradicted (3 anc ≤ 3 der).
+        // Deepen enters C from P: it carries 3 derived (≥2) and is not contradicted (3 anc ≤ 3 der).
         // (The "Kulczynski stops at the parent" condition needs a long backbone — validated on
         // the real WGS229 short-read sample, where the guard stops at R-FGC29067 and deepen
         // recovers R-FGC29071.)
@@ -1867,7 +1867,7 @@ mod tests {
             (800, 'A'),
         ]);
         assert_eq!(deepen_terminal(&t, &lone, id_of(&t, "P")), id_of(&t, "P"));
-        // 2 derived but 4 ancestral → contradicted (a > d), don't enter even at ≥2 derived.
+        // 2 derived but 4 ancestral → contradicted (a > d), do not enter even at ≥2 derived.
         let net_anc = calls(&[
             (100, 'G'),
             (200, 'G'),

@@ -34,8 +34,8 @@ pub fn is_main_assembly(name: &str) -> bool {
 }
 
 /// **Haploid** contigs: chrY and chrM/MT carry a single allele, so the diploid (het `0/1` +
-/// hom-alt `1/1`) model doesn't apply — the haploid caller and Y/mt haplogroup placement own them.
-/// (chrX is haploid only in a male; that's left to the sex-aware refinement, not decided here.)
+/// hom-alt `1/1`) model does not apply — the haploid caller and Y/mt haplogroup placement own them.
+/// (chrX is haploid only in a male; that is left to the sex-aware refinement, not decided here.)
 pub fn is_haploid(name: &str) -> bool {
     is_chr_y(name) || is_chr_m(name)
 }

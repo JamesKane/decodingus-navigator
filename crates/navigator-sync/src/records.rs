@@ -385,7 +385,7 @@ pub struct OriginExternalId {
 /// context and may be published; a given name is not, and the living tester never is. The fields
 /// here are the complete list of what may leave the workspace — there is deliberately no
 /// `ancestorName`, no `notes`, and no donor identifier. [`Self::build`] is the only constructor,
-/// so the gates cannot be bypassed by assembling one field-by-field.
+/// so the gates can not be bypassed by assembling one field-by-field.
 ///
 /// **No floats:** DAG-CBOR has none, so the coordinate is a pair of strings (see the module
 /// header). The AppView parses numbers or numeric strings either way.
@@ -430,7 +430,7 @@ pub const ANCESTOR_BIRTH_YEAR_MAX: i32 = 1900;
 const ANCESTOR_BIRTH_YEAR_MIN: i32 = 1000;
 
 /// Coarsen a coordinate to ~1 km before it leaves the workspace. A rooftop coordinate plus a
-/// surname narrows to one family; a county-scale view cannot use the precision anyway.
+/// surname narrows to one family; a county-scale view can not use the precision anyway.
 fn coarsen(v: f64) -> String {
     format!("{:.2}", (v * 100.0).round() / 100.0)
 }
@@ -554,8 +554,8 @@ mod ancestral_origin_tests {
         assert_eq!(r.death_year, None, "an undated ancestor has no dates at all");
     }
 
-    /// A rooftop coordinate plus a surname narrows to one family; a county-scale view cannot use
-    /// the precision anyway. Floats also cannot cross DAG-CBOR, hence the strings.
+    /// A rooftop coordinate plus a surname narrows to one family; a county-scale view can not use
+    /// the precision anyway. Floats also can not cross DAG-CBOR, hence the strings.
     #[test]
     fn coordinates_are_coarsened_and_sent_as_strings() {
         let r = build(Some("Thomas Kane"), Some(1830)).expect("publishable");

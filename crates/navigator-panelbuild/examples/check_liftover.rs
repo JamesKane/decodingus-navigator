@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     let mut chm = open(&chm13_fa)?;
     let mut g38 = open(&grch38_fa)?;
 
-    // Try the stored contig name, then chr/bare variants, so a naming mismatch doesn't masquerade
+    // Try the stored contig name, then chr/bare variants, so a naming mismatch does not masquerade
     // as a coordinate error.
     let g38_base = |g38: &mut _, l: &navigator_analysis::ibd_panel::Locus| -> Option<char> {
         let bare = navigator_analysis::contig::bare(&l.contig).to_string();

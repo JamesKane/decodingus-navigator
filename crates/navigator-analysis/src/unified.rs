@@ -75,7 +75,7 @@ struct ContigSink<'a> {
 
 impl RecordSink for ContigSink<'_> {
     fn accept(&mut self, record: &impl AlnRead) {
-        // Only this contig's own records (drop a multi-reference slice's foreign records — they're
+        // Only this contig's own records (drop a multi-reference slice's foreign records — they are
         // processed by their own contig's query). Keeps every per-record tally counted exactly once.
         if record.reference_sequence_id() != Some(self.ref_id) {
             return;
@@ -123,7 +123,7 @@ pub const UNIFIED_VERSION: &str = "unified-1";
 /// The three quality-metric results collected in one pass. Sex is `None` when inference
 /// can't be computed for the input (no autosomes/chrX, or no autosomal reads — e.g. a
 /// targeted panel or chrY-only test); coverage + read-metrics are unaffected, mirroring the
-/// pipeline where sex is an independent step whose failure doesn't kill the others.
+/// pipeline where sex is an independent step whose failure does not kill the others.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnifiedMetricsResult {
     pub coverage: CoverageResult,
@@ -266,7 +266,7 @@ struct ContigPartial {
 /// Like [`collect_unified_metrics_parallel`], reporting `progress(megabases_done, megabases_total)`
 /// — base-pair position walked across all contigs, so the bar advances continuously rather than
 /// stepping once per finished contig (the big autosomes run first and finish in a late burst,
-/// freezing a contig-count bar at 0 for ~half the run). The callback is `Fn + Sync` because it's
+/// freezing a contig-count bar at 0 for ~half the run). The callback is `Fn + Sync` because it is
 /// invoked concurrently from worker threads.
 pub fn collect_unified_metrics_parallel_with_progress(
     bam_path: &Path,
@@ -415,7 +415,7 @@ pub fn collect_unified_metrics_parallel_with_progress(
     // noodles' CRAM decoder can recurse deeply enough to blow rayon's default 2 MiB worker stack
     // (the main thread's larger stack handles the same file in the sequential walker). CRAM 3.1
     // files (new range/arithmetic + fqzcomp + name-tokenizer codecs) recurse deeper still. Give the
-    // workers a generous decode-safe stack so the per-contig CRAM decode doesn't overflow — an
+    // workers a generous decode-safe stack so the per-contig CRAM decode does not overflow — an
     // overflow aborts the whole process, so this must not be marginal.
     let pool = reader::decode_pool(n_threads)?;
 

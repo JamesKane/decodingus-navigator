@@ -83,7 +83,7 @@ async fn mastervar_feeds_autosomal_and_ancestry() {
                 }
             }
         }
-        // Don't fail the whole check if an ancestry asset is absent — the autosomal consensus (the
+        // Do not fail the whole check if an ancestry asset is absent — the autosomal consensus (the
         // thing this PR wires up) already proved the masterVar feeds the pipeline.
         Err(e) => println!("[{:>7.1?}] ancestry skipped: {e}", t.elapsed()),
     }

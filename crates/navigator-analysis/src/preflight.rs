@@ -74,7 +74,7 @@ pub enum CheckId {
 }
 
 impl CheckId {
-    /// The human label. Single source of truth, so a check's name and its identity cannot drift.
+    /// The human label. Single source of truth, so a check's name and its identity can not drift.
     pub fn label(self) -> &'static str {
         match self {
             CheckId::Format => "format",
@@ -146,7 +146,7 @@ pub struct Report {
 }
 
 impl Report {
-    /// Whether any check failed outright (warnings don't count — they have fallbacks).
+    /// Whether any check failed outright (warnings do not count — they have fallbacks).
     pub fn failed(&self) -> bool {
         self.checks.iter().any(|c| c.status == Status::Fail)
     }
@@ -157,7 +157,7 @@ impl Report {
         self.checks.iter().find(|c| c.status == Status::Fail)
     }
 
-    /// Whether the file cannot be read *at all* — not even by a sequential pass.
+    /// Whether the file can not be read *at all* — not even by a sequential pass.
     ///
     /// This is the question a batch has to answer before deciding to skip a sample. A failure that
     /// only blocks region queries (a missing or unreadable index) must not skip it: read metrics,
@@ -249,7 +249,7 @@ fn probe_file(id: CheckId, path: &Path) -> Check {
         }
         Err(e) => {
             let (status, mut detail, errno) = explain(path, &e);
-            // A file the OS won't open but that is visible in its own directory listing is being
+            // A file the OS will not open but that is visible in its own directory listing is being
             // withheld, not absent — worth saying, because "not found" would send the user looking
             // for a file that is sitting right there.
             if e.kind() == std::io::ErrorKind::NotFound && directory_lists(path) {
@@ -322,7 +322,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
 
     // The index. Its absence is a warning, not a failure: sequential walks (read metrics, coverage,
     // sex) fall back and succeed, which is exactly why an alignment can look healthy in the UI
-    // right up until something needs a region query. An index that exists but won't open is a
+    // right up until something needs a region query. An index that exists but will not open is a
     // failure, and is the case `has_region_index` silently reports as "no index".
     let candidates = index_candidates(alignment);
     let found = candidates.iter().find(|p| directory_lists(p));
@@ -415,7 +415,7 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
             v
         }
         Err(e) => {
-            // The whole point of this module: don't repeat the upstream message's mistake of
+            // The whole point of this module: do not repeat the upstream message's mistake of
             // blaming the alignment. If we already established there is no index, *that* is the
             // finding — an `ENOENT` naming the CRAM here means the reader could not autoload a
             // sibling index, not that the CRAM went missing between two reads of it.
@@ -590,7 +590,7 @@ mod tests {
         assert!(!CheckId::OpenIndexed.blocks_sequential_reads());
         assert!(!CheckId::RegionQuery.blocks_sequential_reads());
         // A reference problem does not skip the sample on its own — a BAM reads without one, and a
-        // CRAM that truly cannot use it fails the header read, which does.
+        // CRAM that truly can not use it fails the header read, which does.
         assert!(!CheckId::ReferenceFasta.blocks_sequential_reads());
         assert!(!CheckId::ReferenceIndex.blocks_sequential_reads());
         assert!(CheckId::AlignmentFile.blocks_sequential_reads());

@@ -111,7 +111,7 @@
 //! An independent arbiter settles this without asking another caller: the Tier A panel records, per
 //! site, which of the four archaic genomes carries the derived allele, and **this caller never sees
 //! that** — it reads only a derived base and a lineage class. So per-genome concordance is evidence
-//! it cannot have been fitted to.
+//! it can not have been fitted to.
 //!
 //! Of the sites where a given archaic genome is derived, what fraction does the subject carry
 //! (best-matching genome):
@@ -158,7 +158,7 @@
 //! **Still not enough to re-enable.** Beyond the ordering: precision is 34.9 % unfiltered on
 //! held-out Europeans, the cohort is **chr21+22 only**, and the reference callset is itself weakly
 //! supported (hmmix's own tracts are enriched just 1.84x for their own archaic SNPs), so agreement
-//! with it caps well below 100 % even for a correct caller — F1 alone cannot say when this is done.
+//! with it caps well below 100 % even for a correct caller — F1 alone can not say when this is done.
 
 use std::collections::BTreeMap;
 

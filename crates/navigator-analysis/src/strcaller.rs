@@ -134,7 +134,7 @@ fn call_diploid(observed: &[i32], p: &StrCallerParams) -> Option<(i32, i32)> {
     best.map(|(g, _)| g)
 }
 
-/// The repeat copies observed in one enclosing read at `locus`, or `None` if the read isn't a clean
+/// The repeat copies observed in one enclosing read at `locus`, or `None` if the read is not a clean
 /// enclosing read (not anchored `flank` bp of indel-free reference on both sides). Reads the length
 /// off the CIGAR: `tract_bp + insertions − deletions` within the tract, ÷ period.
 fn observed_copies(ops: &[(Kind, usize)], aln_start: i64, locus: &StrLocus, flank: i64) -> Option<i32> {

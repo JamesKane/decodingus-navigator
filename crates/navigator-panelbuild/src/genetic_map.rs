@@ -3,7 +3,7 @@
 //! IBD segment lengths in cM (and thus the relationship bands) are only as good as the map, so this
 //! replaces the app's flat 1 cM/Mb stand-in with a real sex-averaged map (deCODE 2019 / HapMap II),
 //! **already lifted to CHM13**. The lift is coordinate-only (no alleles), so a stage-2 CrossMap BED
-//! lift of the map's positions is sufficient — this step just parses the lifted text and serializes
+//! lift of the map's positions is enough — this step just parses the lifted text and serializes
 //! it to the bincode [`navigator_analysis::ibd::GeneticMap`] the app loads.
 //!
 //! Input is whitespace/tab-delimited with columns `chromosome  position(bp)  …  cumulative_cM`

@@ -260,7 +260,7 @@ pub fn read_diploid_calls_from<R: BufRead>(
             }
             let end = info_end(info).unwrap_or(pos);
             for &t in targets_in_range(sorted, pos, end) {
-                // Don't overwrite a variant call (variant records are authoritative; in a well-formed
+                // Do not overwrite a variant call (variant records are authoritative; in a well-formed
                 // gVCF they never overlap a ref block anyway).
                 out.entry((chrom.to_string(), t)).or_insert(GvcfDiploid::HomRef);
             }
@@ -716,7 +716,7 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
     /// Real-data smoke test: decode the pipeline's actual bgzipped chrY GVCF for HG00096
     /// over a dense synthetic target grid across the non-PAR span. Validates real bgzf
     /// inflation + record parsing at scale (thousands of records). No-ops when the NAS
-    /// file isn't mounted, so it's safe on any machine. Run with:
+    /// file is not mounted, so it is safe on any machine. Run with:
     ///   cargo test -p navigator-analysis gvcf -- --ignored --nocapture
     #[test]
     #[ignore = "reads a NAS file; run explicitly"]

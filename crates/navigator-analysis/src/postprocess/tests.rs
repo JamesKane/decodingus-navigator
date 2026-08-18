@@ -803,7 +803,7 @@ fn cancellation_stops_cram_emission() {
 }
 
 /// A secondary alignment with `SEQ: *` — legal SAM, and what minimap2 emits, since only the
-/// primary carries the bases. It cannot be encoded as differences from the reference, so it is
+/// primary carries the bases. It can not be encoded as differences from the reference, so it is
 /// dropped and counted rather than panicking the writer from inside noodles.
 #[test]
 fn cram_drops_a_secondary_record_that_carries_no_sequence() {
@@ -867,7 +867,7 @@ fn cram_refuses_a_primary_record_that_carries_no_sequence() {
 }
 
 /// Finalising moves the marked BAM into place and indexes it — across *several* contigs, which is
-/// the shape that cannot be indexed as CRAM: every slice straddling a contig boundary is
+/// the shape that can not be indexed as CRAM: every slice straddling a contig boundary is
 /// multi-reference, and `cram::fs::index` decodes those against an empty reference repository.
 #[test]
 fn finalizing_moves_the_bam_into_place_and_indexes_it() {

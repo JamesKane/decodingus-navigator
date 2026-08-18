@@ -143,7 +143,7 @@ impl GenomeRegions {
         regions
     }
 
-    /// Overlay the chrY pseudoautosomal regions for the build (PAR isn't in cytoBand). Best-known
+    /// Overlay the chrY pseudoautosomal regions for the build (PAR is not in cytoBand). Best-known
     /// constants for the builds we resolve; other builds get none.
     fn overlay_par(&mut self, build: &str) {
         let par = crate::registry::canonical_build(build)

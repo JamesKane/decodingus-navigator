@@ -2,7 +2,7 @@
 //!
 //! The invariant the mapper depends on: `_1.fastq` and `_2.fastq` must stay in lockstep, record
 //! for record. A template only reaches those files if it has exactly one R1 and exactly one R2;
-//! anything else — an unpaired library, a mate lost to hard clipping, flags that don't say which
+//! anything else — an unpaired library, a mate lost to hard clipping, flags that do not say which
 //! end a read is — goes to singletons. Silently writing an unmatched read into `_1` would shift
 //! every later pair by one and mis-pair the entire rest of the file, so the check is per-template
 //! rather than a trailing reconciliation.

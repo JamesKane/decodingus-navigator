@@ -4,7 +4,7 @@
 //! POS (via the UCSC chain), and on a reverse-strand (inverted) lift the REF/ALT alleles are
 //! reverse-complemented. REF/ALT-swap recovery reads the target reference base and, when the lifted
 //! REF no longer matches it, swaps REF↔ALT (flipping a biallelic single-sample GT). Records whose
-//! position doesn't map, whose multi-base REF straddles a chain break, or that can't be safely
+//! position does not map, whose multi-base REF straddles a chain break, or that can't be safely
 //! recovered are dropped and tallied. Output is coordinate-sorted (a lift can reorder/invert).
 //!
 //! Reuses the `du_bio` chain primitives and mirrors the drop-with-stats shape of
@@ -36,9 +36,9 @@ pub struct VcfLiftStats {
     pub unmapped: usize,
     /// A multi-base REF whose endpoints lifted to different target contigs (straddled a break).
     pub split: usize,
-    /// The lifted REF matched neither the target base nor any ALT (couldn't recover).
+    /// The lifted REF matched neither the target base nor any ALT (could not recover).
     pub ref_mismatch: usize,
-    /// A REF/ALT swap was needed but couldn't be applied safely (multiallelic or multi-sample).
+    /// A REF/ALT swap was needed but could not be applied safely (multiallelic or multi-sample).
     pub swap_ambiguous: usize,
     /// Dropped in the target PAR (only when `filter_par`).
     pub par: usize,
@@ -301,7 +301,7 @@ fn lift_record(
         if let Some(tbase) = ref_base_at(fasta_reader, &target_contig, q_pos) {
             let tb = (tbase as char).to_string();
             if !new_ref.eq_ignore_ascii_case(&tb) {
-                // REF doesn't match the target base — try to recover by swapping with a matching ALT.
+                // REF does not match the target base — try to recover by swapping with a matching ALT.
                 if let Some(idx) = new_alts.iter().position(|a| a.eq_ignore_ascii_case(&tb)) {
                     if new_alts.len() != 1 {
                         stats.swap_ambiguous += 1; // multiallelic swap — ambiguous to relabel
@@ -344,7 +344,7 @@ fn lift_record(
 }
 
 /// Flip the allele indices of a biallelic single-sample genotype (0↔1) in the first sample column,
-/// after a REF/ALT swap. No-op when there's no FORMAT/sample (sites-only VCF).
+/// after a REF/ALT swap. No-op when there is no FORMAT/sample (sites-only VCF).
 fn flip_biallelic_gt(f: &mut [String]) {
     if f.len() < 10 {
         return; // no FORMAT + sample columns

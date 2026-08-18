@@ -15,8 +15,8 @@ const NOCALL: egui::Color32 = egui::Color32::from_rgb(110, 110, 110); // no conf
 impl NavigatorApp {
     /// Render the descent report for `dna`, loading it lazily off the worker thread on first view and
     /// caching the result. `compact` = the Simple-view path chain; otherwise the full Advanced report.
-    /// Additive and self-contained: shows a spinner while loading and a plain note when there's no
-    /// placement, so it's safe to drop into any tab.
+    /// Additive and self-contained: shows a spinner while loading and a plain note when there is no
+    /// placement, so it is safe to drop into any tab.
     pub(crate) fn descent_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid, dna: DnaType, compact: bool) {
         self.ensure_descent(guid, dna);
         let entry = self
@@ -53,7 +53,7 @@ impl NavigatorApp {
                     }
                 }
             }
-            // Loaded but empty → the variant profile isn't built yet (or has no placement). Offer the
+            // Loaded but empty → the variant profile is not built yet (or has no placement). Offer the
             // one-time build, which persists and then feeds this report instantly.
             Some(false) => self.descent_build_prompt(ui, guid, dna),
             None => {
@@ -65,8 +65,8 @@ impl NavigatorApp {
         }
     }
 
-    /// Shown when there's no cached report: a one-time "Build" affordance that runs (and persists)
-    /// the variant profile this report is drawn from, or a plain note if it's built but unplaced.
+    /// Shown when there is no cached report: a one-time "Build" affordance that runs (and persists)
+    /// the variant profile this report is drawn from, or a plain note if it is built but unplaced.
     fn descent_build_prompt(&mut self, ui: &mut egui::Ui, guid: SampleGuid, dna: DnaType) {
         let (built, loading) = match dna {
             DnaType::Y => (self.y_profile.is_some(), self.y_profile_loading),
@@ -129,7 +129,7 @@ impl NavigatorApp {
         }
     }
 
-    /// Fire a `LoadDescentReport` command if this (subject, DNA) report isn't already loaded or in
+    /// Fire a `LoadDescentReport` command if this (subject, DNA) report is not already loaded or in
     /// flight. Idempotent — safe to call every frame.
     pub(crate) fn ensure_descent(&mut self, guid: SampleGuid, dna: DnaType) {
         let loaded = self.descent_reports.iter().any(|(g, d, _)| *g == guid && *d == dna);

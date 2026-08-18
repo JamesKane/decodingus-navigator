@@ -590,7 +590,7 @@ fn the_output_format_can_be_read_off_the_path() {
     assert_eq!(F::from_path(Path::new("x")), F::Bam, "BAM is the default");
 }
 
-/// CRAM cannot be written without the reference it is compressed against, and saying so up front
+/// CRAM can not be written without the reference it is compressed against, and saying so up front
 /// beats failing partway through a multi-hour job.
 #[test]
 fn cram_without_a_reference_is_refused_before_any_work() {

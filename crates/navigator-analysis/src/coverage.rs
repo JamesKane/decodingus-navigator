@@ -234,7 +234,7 @@ struct CurContig {
     map_q_total: u64,
     sum_depth: u128,
     /// Count of bases dropped because they mapped *before* the finalize frontier — only possible
-    /// when the input isn't strictly coordinate-sorted (see [`CurContig::add`]). Surfaced as a
+    /// when the input is not strictly coordinate-sorted (see [`CurContig::add`]). Surfaced as a
     /// warning in [`CurContig::finish`]; stays 0 for the standard sorted layout.
     dropped_unsorted: u64,
 }
@@ -312,7 +312,7 @@ impl CurContig {
     /// Add one covered base at 1-based `pos` to the window. The window only holds positions at or
     /// after the finalize frontier, so a base *before* it (`pos < emit_cursor`) belongs to an
     /// already-emitted column and is dropped rather than underflowing `pos - emit_cursor`. This can
-    /// only happen when the input isn't strictly coordinate-sorted (some vendor CRAMs, e.g. FTDNA
+    /// only happen when the input is not strictly coordinate-sorted (some vendor CRAMs, e.g. FTDNA
     /// Big Y): the streaming pileup fundamentally assumes sorted input, so the few out-of-order
     /// bases are counted as dropped (surfaced in `finish`) instead of crashing the walk. For the
     /// standard sorted layout `pos >= emit_cursor` always holds and this guard never fires.
@@ -490,7 +490,7 @@ impl CoverageState {
         self.total_tracked
     }
 
-    /// Feed one record. Records that coverage doesn't care about (unmapped/secondary/
+    /// Feed one record. Records that coverage does not care about (unmapped/secondary/
     /// supplementary/duplicate/qc-fail, or off a tracked contig) are ignored, so the fused
     /// walker can hand every record here unfiltered. Fires `progress` on contig finalization.
     pub(crate) fn accept(
@@ -682,7 +682,7 @@ fn assemble_coverage_result(
     let median = median_from_hist(&hist, n);
     // Exclusion fractions over total observed bases (Picard PCT_EXC_{MAPQ,BASEQ}). `sum_depth`
     // already counts every observed base (excluded ones included), so it is the denominator. Other
-    // exclusion reasons (dup/unpaired/overlap/capped) aren't tallied, so these don't sum to a total.
+    // exclusion reasons (dup/unpaired/overlap/capped) are not tallied, so these do not sum to a total.
     let (pct_exc_mapq, pct_exc_baseq) = if sum_depth == 0 {
         (0.0, 0.0)
     } else {

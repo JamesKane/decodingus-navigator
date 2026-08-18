@@ -124,7 +124,7 @@ fn detect_vendor_hint(header: &sam::Header) -> Option<String> {
         .map(|(_, canon)| (*canon).to_string())
 }
 
-/// Read just the SAM header from a BAM or CRAM (CRAM's header doesn't need the reference).
+/// Read just the SAM header from a BAM or CRAM (CRAM's header does not need the reference).
 fn read_header_only(path: &Path) -> Result<sam::Header, AnalysisError> {
     match detect_format(path) {
         Format::Bam => {
@@ -151,7 +151,7 @@ fn s<T: AsRef<[u8]>>(v: &T) -> String {
 fn detect_build(header: &sam::Header) -> Option<String> {
     // The Y-PAR-masked + rCRS CHM13 analysis set is indistinguishable from plain chm13v2.0
     // by `@SQ` (same contig names/lengths), so check the reference filename the aligner
-    // recorded (`@PG CL` / `@SQ UR`) first. Plain chm13 won't match this signature.
+    // recorded (`@PG CL` / `@SQ UR`) first. Plain chm13 will not match this signature.
     if header_mentions_masked_rcrs(header) {
         return Some("chm13v2.0_maskedY_rCRS".into());
     }
@@ -355,7 +355,7 @@ mod tests {
         let by700 =
             header_from_sam("@HD\tVN:1.4\n@SQ\tSN:chrY\tLN:57227415\n@RG\tID:r\tLB:unknown-library-Big Y-700\tSM:s\n");
         assert_eq!(detect_big_y_code(&by700), Some("BIG_Y_700"));
-        // The library label also marks the vendor (via the "big y" token) when @PG/@CN don't.
+        // The library label also marks the vendor (via the "big y" token) when @PG/@CN do not.
         assert_eq!(detect_vendor_hint(&by700).as_deref(), Some("FamilyTreeDNA"));
 
         let by500 =

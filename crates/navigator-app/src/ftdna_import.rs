@@ -142,7 +142,7 @@ pub enum FtdnaResolution {
     Merge(SampleGuid),
     /// Treat as a new Subject.
     New,
-    /// Don't import this kit at all.
+    /// Do not import this kit at all.
     Skip,
 }
 
@@ -335,7 +335,7 @@ impl App {
                     continue;
                 }
             }
-            // Skip samples whose name isn't a recognizable catalog alias unless `--all`.
+            // Skip samples whose name is not a recognizable catalog alias unless `--all`.
             if !all && navigator_domain::identity::catalog_ids_from_provenance(&b.donor_identifier, None).is_empty() {
                 continue;
             }
@@ -357,7 +357,7 @@ impl App {
             out.resolved += 1;
             let fetched_acc = sample.accession.as_deref().map(str::trim).filter(|a| !a.is_empty());
             // One pass: the catalog *name* id (from the donor id) + the authoritative INSDC *accession*
-            // (from the API, when it's a real one) — the union of both sources via the shared helper.
+            // (from the API, when it is a real one) — the union of both sources via the shared helper.
             let ids = navigator_domain::identity::catalog_ids_from_provenance(&b.donor_identifier, fetched_acc);
             if ids.is_empty() {
                 continue;
@@ -406,7 +406,7 @@ impl App {
     /// Re-publish a subject's biosample anchor after its identifier set changed, so the AppView's
     /// mirror (which full-replaces `external_ids`) honors the add/remove. Deterministic rkey → the
     /// re-publish overwrites in place. **Only for a subject already federated** and while signed in —
-    /// signed out, or a never-published subject, is a no-op (we don't newly federate a donor just
+    /// signed out, or a never-published subject, is a no-op (we do not newly federate a donor just
     /// because a local id was attached).
     async fn republish_biosample_ids(&self, guid: SampleGuid) -> Result<(), AppError> {
         let Some(did) = self.current_account() else {
@@ -530,7 +530,7 @@ impl App {
                 label: display_label(&kit, &input),
                 kit_number: kit,
                 y_terminal,
-                // Orphan only when a roster was provided but this kit isn't in it.
+                // Orphan only when a roster was provided but this kit is not in it.
                 in_roster: !roster_provided || roster.contains(&input.kit_number),
                 ystr_count: input.ystr_markers.len(),
                 kind,
@@ -648,7 +648,7 @@ impl App {
         )
         .await?;
 
-        // MDKA from paternal (Y) + maternal (Mt) ancestry, when there's anything worth storing.
+        // MDKA from paternal (Y) + maternal (Mt) ancestry, when there is anything worth storing.
         let mut wrote = 0;
         if let Some(m) = input.paternal.as_ref().and_then(|a| mdka_from(a, Lineage::Y)) {
             mdka::upsert(pool, guid, &m, now).await?;
@@ -883,7 +883,7 @@ struct ExistingSubject {
     guid: SampleGuid,
     donor_identifier: String,
     /// Terminal SNP of the subject's computed Y consensus (may be an ISOGG long-form label that
-    /// doesn't reduce to an SNP — then Y-STR is the reliable signal).
+    /// does not reduce to an SNP — then Y-STR is the reliable signal).
     y_terminal: Option<String>,
     /// The subject's merged Y-STR markers (across all imported profiles), for genetic-distance match.
     ystr: Vec<StrMarker>,
@@ -919,7 +919,7 @@ fn display_label(kit: &str, input: &FtdnaSubjectInput) -> String {
     }
 }
 
-/// Drop FTDNA redaction/placeholder names so they don't pollute identifiers or matching.
+/// Drop FTDNA redaction/placeholder names so they do not pollute identifiers or matching.
 fn clean_name(name: Option<&str>) -> Option<String> {
     let n = name?.trim();
     if n.is_empty() || n.eq_ignore_ascii_case("REDACTED") {

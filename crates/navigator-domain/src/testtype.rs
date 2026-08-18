@@ -176,7 +176,7 @@ pub fn by_code(code: &str) -> Option<&'static TestType> {
     CATALOG.iter().find(|t| t.code == code)
 }
 
-/// Classify a stored `test_type` into its [`TargetType`] — tolerant of values that aren't a
+/// Classify a stored `test_type` into its [`TargetType`] — tolerant of values that are not a
 /// canonical [`by_code`] code. A bulk import or a `--test-type` override may store a human label
 /// like `"Big Y"` rather than `BIG_Y_500`/`BIG_Y_700`; without recognizing it the targeted-Y
 /// scoping is lost and coverage walks the whole genome (slow on a targeted multi-reference CRAM).

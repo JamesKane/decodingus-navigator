@@ -29,7 +29,7 @@
 //! ## Why not the upstream file-level entry points
 //!
 //! `minimap2-pure-rs` ships `map_file_sam_split` and friends, which look like exactly this. They
-//! cannot be used: they write to **stdout** (unusable from a desktop app) and they take
+//! can not be used: they write to **stdout** (unusable from a desktop app) and they take
 //! `parts: &[MmIdx]`, holding every part resident — giving up the entire memory bound this design
 //! exists to buy. What is reused is the per-part record format and the merge; the loop is ours.
 //!
@@ -113,7 +113,7 @@ pub struct MapStats {
 
 /// Cancellation, as a callback rather than a shared token type.
 ///
-/// This crate is a leaf — it deliberately does not depend on `navigator-analysis`, so it cannot
+/// This crate is a leaf — it deliberately does not depend on `navigator-analysis`, so it can not
 /// take that crate's `CancelToken` without inverting the layering. A closure lets the caller wire
 /// whatever cancellation it already has, and costs this crate no dependency.
 pub type CancelFn<'a> = &'a dyn Fn() -> bool;

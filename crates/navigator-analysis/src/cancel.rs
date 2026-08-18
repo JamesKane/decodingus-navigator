@@ -2,7 +2,7 @@
 //!
 //! A whole-genome pass takes minutes, and the UI's Cancel button used to do nothing visible for
 //! all of them: the flag it set lived in `navigator-ui` and was only read *between* pipeline steps,
-//! while the step itself ran inside a `spawn_blocking` closure that tokio cannot interrupt. Once a
+//! while the step itself ran inside a `spawn_blocking` closure that tokio can not interrupt. Once a
 //! walk starts, the only thing that can stop it is the walk itself — so the walkers have to ask.
 //!
 //! [`CancelToken`] is that question, and the rule for using it is about *where* you ask: often
@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use crate::error::AnalysisError;
 
-/// A shared "stop what you're doing" flag, cheap to clone into worker threads.
+/// A shared "stop what you are doing" flag, cheap to clone into worker threads.
 ///
 /// [`CancelToken::none`] is a token that can never be cancelled. It exists so callers with nothing
 /// to cancel — tests, CLI one-shots, the non-progress convenience wrappers — pay nothing and read
@@ -52,7 +52,7 @@ impl CancelToken {
 
     /// Whether cancellation has been requested.
     ///
-    /// `Relaxed` is sufficient: this guards no other memory, and the only cost of observing the
+    /// `Relaxed` is enough: this guards no other memory, and the only cost of observing the
     /// store one loop iteration late is one more iteration of work.
     pub fn is_cancelled(&self) -> bool {
         self.0.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed))

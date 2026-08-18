@@ -5,7 +5,7 @@
 //! Phase 1 works at **super-population** granularity (AFR/AMR/EAS/EUR/SAS), the resolution
 //! the 1000G-on-CHM13 INFO allele counts give us directly. The fine-grained 26/33-population
 //! catalog (and PCA coordinates) is deferred to phase 2 — the `pca_coordinates` field is
-//! already carried so the result shape doesn't change when PCA lands.
+//! already carried so the result shape does not change when PCA lands.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +26,7 @@ pub fn super_populations() -> Vec<Population> {
         ("EAS", "East Asian", "#00CC00"),
         ("EUR", "European", "#0066CC"),
         ("SAS", "South Asian", "#9900CC"),
-        // Added with the SGDP diversity panel (continents 1000G doesn't cover).
+        // Added with the SGDP diversity panel (continents 1000G does not cover).
         ("MEA", "Middle Eastern", "#996633"),
         ("CAS", "Central Asian & Siberian", "#66CCCC"),
         ("OCE", "Oceanian", "#009999"),

@@ -3,7 +3,7 @@
 //! This is the independent evidence for arbitrating Tier B calls. The segment caller
 //! ([`navigator_analysis::archaic_match`]) reads only `ArchaicClassify` — a derived base and a
 //! lineage class per site — and never sees which archaic genome carries what. So the per-genome
-//! pattern is information the caller cannot have fitted to, which is what makes it usable as a
+//! pattern is information the caller can not have fitted to, which is what makes it usable as a
 //! referee.
 //!
 //! Why a referee is needed: precision has been measured against hmmix's callset, but a call absent

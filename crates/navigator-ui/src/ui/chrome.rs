@@ -50,7 +50,7 @@ impl NavigatorApp {
 
     /// The cancel control shown beside a running analysis: it disables itself once clicked.
     ///
-    /// The disable matters — cancellation is cooperative and doesn't take effect until the walk
+    /// The disable matters — cancellation is cooperative and does not take effect until the walk
     /// reaches its next check, so a live button invited repeat clicks and made a working cancel
     /// look ignored. Every place that can start a walk needs the same behaviour, so it lives here
     /// rather than being re-derived per tab.
@@ -440,7 +440,7 @@ impl NavigatorApp {
                 self.start_ftdna_import(paths);
             }
         }
-        // Panels (import sites VCF) moved to Settings (⚙) → they're a workspace-wide asset, not a
+        // Panels (import sites VCF) moved to Settings (⚙) → they are a workspace-wide asset, not a
         // per-project action.
     }
 
@@ -500,7 +500,7 @@ impl NavigatorApp {
         ui.heading(self.tr("nav.myDna"));
         ui.separator();
 
-        // Add New (kept above the scroll body so it's always reachable).
+        // Add New (kept above the scroll body so it is always reachable).
         if ui
             .add(
                 egui::Button::new(egui::RichText::new(self.tr("subjects.addNew")).color(egui::Color32::WHITE))

@@ -26,7 +26,7 @@ use super::transform::{Mate, RevertedRead};
 use crate::error::AnalysisError;
 
 /// Buffer size for run spill/read-back. Large enough that the merge's per-run reads stay
-/// sequential, small enough that the runs a WGS produces don't add up to real memory when the merge
+/// sequential, small enough that the runs a WGS produces do not add up to real memory when the merge
 /// holds all of them open at once.
 const RUN_IO_BUFFER: usize = 256 * 1024;
 

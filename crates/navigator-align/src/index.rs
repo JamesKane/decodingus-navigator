@@ -40,7 +40,7 @@ pub type ProgressFn<'a> = &'a mut dyn FnMut(usize, u64);
 /// Deliberately the same answer `navigator-refgenome::cache::base_dir` gives, reached the same way
 /// — through `navigator_domain::paths::decodingus_dir`, the one definition of the cache root — so
 /// `minimap2_index/` lands beside `references/` and `liftover/` rather than in a second location
-/// that only this crate knows about. This crate is a leaf and cannot depend on `navigator-refgenome`
+/// that only this crate knows about. This crate is a leaf and can not depend on `navigator-refgenome`
 /// (that would invert the layering), which is why the resolution is repeated rather than imported;
 /// the shared *definition* is what stops the two drifting.
 pub fn cache_root() -> PathBuf {

@@ -33,7 +33,7 @@ pub use sync::{AsyncSync, RetryPolicy};
 pub use tokens::{Session, TokenStore};
 
 // Federated atproto wire records — the single source of truth lives in the shared
-// `du-domain::fed` module so the AppView's Jetstream consumer cannot drift from us.
+// `du-domain::fed` module so the AppView's Jetstream consumer can not drift from us.
 // (Its `RecordMeta` is intentionally not re-exported to avoid colliding with the
 // reconciliation record's `RecordMeta`; `::new` builds it internally.)
 pub use du_domain::fed::{

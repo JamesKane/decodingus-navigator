@@ -263,7 +263,7 @@ impl NavigatorApp {
                             Err(msg) => format!("{} {msg}", self.tr("brief.aiUnavailable")),
                         };
                         // Set the authoritative answer on the pending assistant turn (pre-pushed on
-                        // send); fall back to appending one if it's missing.
+                        // send); fall back to appending one if it is missing.
                         match self.chat_history.last_mut().filter(|t| !t.from_user) {
                             Some(turn) => turn.text = text,
                             None => self.chat_history.push(ChatTurn { from_user: false, text }),
@@ -769,7 +769,7 @@ impl NavigatorApp {
                     self.y_matches = Some((biosample_guid, matches));
                 }
                 Event::DefaultAlignment { run_id, alignment_id } => {
-                    // Only auto-select if the user hasn't already chosen an alignment.
+                    // Only auto-select if the user has not already chosen an alignment.
                     if self.selected_alignment.is_none() {
                         self.pending_alignment = Some(alignment_id);
                         self.select_run(run_id); // loads the run's alignments → applied below
@@ -826,7 +826,7 @@ impl NavigatorApp {
                         self.y_snp_names_requested = false; // re-resolve names incl. the new positions
 
                         // A rebuild re-places the genome consensus (consensus_label); refresh the
-                        // Overview's cached Y/mt consensus so it doesn't lag until the next reload.
+                        // Overview's cached Y/mt consensus so it does not lag until the next reload.
                         let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
                         // The descent report is drawn from this profile — drop its cache so it rebuilds.
                         self.descent_reports
@@ -1204,7 +1204,7 @@ impl NavigatorApp {
                     self.pca_reference = Some((alignment_id, points));
                 }
                 Event::SourceFilesVerified { missing } => {
-                    // Don't clobber a live import's progress status with this workspace-wide sweep
+                    // Do not clobber a live import's progress status with this workspace-wide sweep
                     // (the sweep and the import are unrelated; overwriting made imports look stalled).
                     if !self.importing {
                         self.status = if missing == 0 {
@@ -1315,7 +1315,7 @@ impl NavigatorApp {
                     self.status = format!("Error: {message}");
                     self.diagnosis = Some(report);
                     // Open it unprompted: the whole point is that the one-line message is the part
-                    // that isn't actionable, so making the user go find the detail would reproduce
+                    // that is not actionable, so making the user go find the detail would reproduce
                     // the original problem.
                     self.show_diagnosis = true;
                     self.clear_in_flight();
@@ -1374,7 +1374,7 @@ impl NavigatorApp {
 
     pub(crate) fn select_sample(&mut self, guid: SampleGuid) {
         self.selected_sample = Some(guid);
-        // A plain selection isn't "from a project" — the project opener re-sets this after.
+        // A plain selection is not "from a project" — the project opener re-sets this after.
         self.return_to_project = None;
         self.y_sub = YSub::default();
         self.y_snp_sub = YSnpSub::default();
@@ -1530,7 +1530,7 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadReadMetrics(id));
         let _ = self.tx.send(Command::LoadSv(id));
         // Load cached chrM de-novo (mtDNA tab). chrY variant discovery is the masked private-Y
-        // pass, not a raw whole-chrY de-novo, so it isn't loaded here.
+        // pass, not a raw whole-chrY de-novo, so it is not loaded here.
         let _ = self.tx.send(Command::LoadDenovo {
             alignment_id: id,
             contig: "chrM".into(),

@@ -100,7 +100,7 @@ pub struct RealignProgress {
 ///
 /// The counts are optional because a resumed job did not necessarily run the stage that produces
 /// them. A run that picks up from a previous attempt's sorted BAM never reverted anything, so it
-/// cannot report how many unmapped reads that revert saw; [`ScratchState`] carries the figure
+/// can not report how many unmapped reads that revert saw; [`ScratchState`] carries the figure
 /// across when the earlier attempt recorded it, and `None` says plainly that nobody measured it
 /// rather than reporting a zero that reads like a finding.
 #[derive(Debug, Clone)]
@@ -128,7 +128,7 @@ pub struct RealignParams {
     /// Pick up from a previous attempt's intermediates instead of starting over.
     ///
     /// Off by default, because reusing files a *different* job left behind would be a correctness
-    /// bug, and the scratch path alone cannot prove they came from this source and this target.
+    /// bug, and the scratch path alone can not prove they came from this source and this target.
     /// The caller opting in is what supplies that knowledge. See [`Resumed`].
     pub resume: bool,
 }
@@ -161,7 +161,7 @@ impl Resumed {
     }
 }
 
-/// Counts a resumed job cannot re-derive, left beside the intermediates they describe.
+/// Counts a resumed job can not re-derive, left beside the intermediates they describe.
 ///
 /// Each stage's contribution to [`RealignOutcome`] is measured while that stage runs and is gone
 /// once it has. A resumed job skips stages by design, so the numbers are written down as they are
@@ -175,7 +175,7 @@ struct ScratchState {
     duplicates_marked: Option<u64>,
     /// The furthest stage that *returned successfully*, as opposed to merely leaving a file behind.
     ///
-    /// Written after the stage returns, never before, so it says something the file itself cannot:
+    /// Written after the stage returns, never before, so it says something the file itself can not:
     /// see [`discard_partial`] for why a finished-looking BAM is not proof on its own. A scratch
     /// directory predating this field has `None`, and then the marker is all there is to go on.
     completed_through: Option<Resumed>,
@@ -200,7 +200,7 @@ impl ScratchState {
 
 /// Remove a stage's output when the stage did not finish.
 ///
-/// The BGZF end-of-file marker cannot carry the whole weight of "this file is complete", and
+/// The BGZF end-of-file marker can not carry the whole weight of "this file is complete", and
 /// finding that out the hard way is what this function exists to prevent. noodles' multithreaded
 /// writer finishes its stream from `Drop`, so a stage that *unwinds* — cancelled, failed, panicked
 /// — leaves a partial file wearing a finished file's marker. Measured: a merge cancelled at 13.2 GB
@@ -232,7 +232,7 @@ async fn stage<T>(output: &Path, work: impl std::future::Future<Output = Result<
 /// Two things have to agree. The file must carry the BGZF end-of-file marker, and — when the
 /// previous attempt was new enough to have recorded one — its own account of the last stage it
 /// completed must reach at least as far. The lower of the two wins, because each catches a case the
-/// other cannot: the marker catches a scratch directory written by an older build, and the record
+/// other can not: the marker catches a scratch directory written by an older build, and the record
 /// catches a file whose marker was written by an unwinding `Drop`. See [`discard_partial`].
 fn resumable(scratch: &Path, state: &ScratchState) -> Resumed {
     let by_marker = resumable_by_marker(scratch);
@@ -257,7 +257,7 @@ fn resumable_by_marker(scratch: &Path) -> Resumed {
 
 /// Clear a stage's working directory before that stage runs.
 ///
-/// A resumed job re-runs the first stage it cannot skip, and that stage's leftovers from the
+/// A resumed job re-runs the first stage it can not skip, and that stage's leftovers from the
 /// killed attempt are pure cost: the sort ignores run files it did not write itself, so stale ones
 /// are not a correctness problem, but at WGS scale they are tens of GB held against a disk that
 /// the same job is about to need. Best-effort — a directory that will not clear is not a reason to
@@ -646,7 +646,7 @@ fn resume_preflight(scratch: &Path, mapped: &Path, sorted: &Path, marked: &Path)
     plan_for(scratch, largest.saturating_mul(3), "resume the realignment")
 }
 
-/// Measure the disk, refuse a job that cannot finish on it, and describe what was decided.
+/// Measure the disk, refuse a job that can not finish on it, and describe what was decided.
 ///
 /// The two preflights differ only in how they size `needed`; everything after that — probing free
 /// space, the refusal, the wording, the plan — was written out twice and had to be kept in step by
@@ -696,7 +696,7 @@ fn has_room(needed: u64, free: u64) -> bool {
     free == 0 || free >= needed
 }
 
-/// Free bytes on the filesystem holding `path`, or 0 when it cannot be determined.
+/// Free bytes on the filesystem holding `path`, or 0 when it can not be determined.
 ///
 /// Zero means "unknown", and preflight treats it as "do not block" — refusing a job because the
 /// free-space call failed would be worse than letting it run and fail honestly on a real write.
@@ -856,11 +856,11 @@ mod tests {
         }
     }
 
-    /// Preflight must refuse a job that cannot finish, and say how much is needed rather than
+    /// Preflight must refuse a job that can not finish, and say how much is needed rather than
     /// leaving the user to guess.
     ///
     /// Runs wherever [`fs_free_space`] has a real implementation, which is now both desktop
-    /// families. Platforms without one report "unknown" and cannot refuse anything — pinned
+    /// families. Platforms without one report "unknown" and can not refuse anything — pinned
     /// separately by `preflight_cannot_refuse_where_free_space_is_unknown`.
     #[cfg(any(unix, windows))]
     #[test]
@@ -926,7 +926,7 @@ mod tests {
     /// What the platforms without a free-space probe actually do, stated as a test rather than left
     /// as the absence of one.
     ///
-    /// `preflight` cannot refuse a job it has no measurement for, and refusing on an unknown would
+    /// `preflight` can not refuse a job it has no measurement for, and refusing on an unknown would
     /// block every realignment on that platform. So a job that would obviously not fit is allowed
     /// to start and fail honestly on a real write. Windows used to be in this bucket; it now has
     /// `GetDiskFreeSpaceExW` and is tested by the two above.
@@ -1017,7 +1017,7 @@ mod resume_tests {
         );
     }
 
-    /// The record cannot promise more than the files deliver either — a scratch directory whose
+    /// The record can not promise more than the files deliver either — a scratch directory whose
     /// `marked.bam` was removed must not be resumed from just because a stale record mentions it.
     #[test]
     fn the_record_cannot_outrun_the_files() {

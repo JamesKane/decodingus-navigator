@@ -62,7 +62,7 @@ pub struct CramOutput {
 /// This is not malformed input. SAM permits `SEQ: *` on a secondary alignment, and minimap2 uses
 /// that permission: only the primary carries the bases, and the secondaries point at other loci
 /// the same read could have come from. So the reads are not lost by dropping these — the primary
-/// holds the sequence — but the records cannot be represented and must not reach the writer.
+/// holds the sequence — but the records can not be represented and must not reach the writer.
 fn is_unencodable(record: &noodles::sam::alignment::RecordBuf) -> bool {
     !record.cigar().as_ref().is_empty() && record.sequence().as_ref().is_empty()
 }

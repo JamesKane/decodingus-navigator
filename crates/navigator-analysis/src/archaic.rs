@@ -51,7 +51,7 @@ impl ArchaicCall {
 
 /// Which archaic lineage a site's derived allele points to.
 ///
-/// The HMM in Tier B cannot itself separate Neanderthal from Denisovan (they coalesce before either
+/// The HMM in Tier B can not itself separate Neanderthal from Denisovan (they coalesce before either
 /// meets modern humans, design §3); this classification is what lets called segments be labelled
 /// downstream, so it is stored per site at build time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,7 +61,7 @@ pub enum DiagnosticClass {
     /// Derived in Denisova, and ≥1 Neanderthal positively **called ancestral**.
     Denisovan,
     /// Not attributable to one lineage: derived in both, or the other lineage had no call so its
-    /// absence cannot be established.
+    /// absence can not be established.
     SharedArchaic,
 }
 
@@ -72,9 +72,9 @@ pub enum DiagnosticClass {
 /// an earlier version did, and it was the dominant error in Tier B attribution: a site where the
 /// Neanderthals happened to be masked out and Denisova was called read as Denisovan-*specific*,
 /// inflating Denisovan-diagnostic sites to 18,551 against 24,077 Neanderthal on chr21+22 and
-/// producing ~19 % Denisovan for a European, where design §7 expects approximately zero.
+/// producing ~19 % Denisovan for a European, where design §7 expects about zero.
 ///
-/// Sites that cannot be attributed fall to [`DiagnosticClass::SharedArchaic`], which therefore means
+/// Sites that can not be attributed fall to [`DiagnosticClass::SharedArchaic`], which therefore means
 /// "archaic but not attributable" rather than strictly "derived in both".
 pub fn classify_diagnostic(calls: &[ArchaicCall; 4]) -> DiagnosticClass {
     let nea_derived = calls
@@ -118,7 +118,7 @@ pub struct ArchaicSite {
     pub reference_allele: char,
     pub alternate_allele: char,
     /// The archaic-derived allele — always one of `reference_allele` / `alternate_allele`. Stored as
-    /// a base, not a ref/alt flag, so a later orientation pass cannot silently invert its meaning.
+    /// a base, not a ref/alt flag, so a later orientation pass can not silently invert its meaning.
     pub archaic_derived_allele: char,
     /// Per-genome state, indexed by [`ARCHAIC_GENOMES`].
     pub calls: [ArchaicCall; 4],
@@ -1011,7 +1011,7 @@ impl ArchaicOutgroup {
 /// Asset 3 — genome-wide archaic diagnostic sites, for labelling a called segment Neanderthal vs
 /// Denisovan (design §5 step 3).
 ///
-/// The HMM itself cannot tell the lineages apart — they coalesce before either meets modern humans
+/// The HMM itself can not tell the lineages apart — they coalesce before either meets modern humans
 /// (§3) — so attribution is a downstream count of derived-allele matches against these sites.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArchaicClassify {
@@ -1104,7 +1104,7 @@ impl ArchaicCallable {
 
     /// Callable fraction (0.0–1.0) of the window containing `position`, or 0.0 when the contig or
     /// window is absent — an unknown region is treated as **not** callable, so the HMM skips it
-    /// rather than interpreting density it cannot trust.
+    /// rather than interpreting density it can not trust.
     pub fn callable_fraction(&self, contig: &str, position: i64) -> f64 {
         let Some(c) = self.contig(contig) else { return 0.0 };
         if position < c.start {

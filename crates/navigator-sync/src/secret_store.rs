@@ -7,14 +7,14 @@
 //! through [`get`], [`set`], and [`delete`] here.
 //!
 //! **The backend is in-memory unless a process explicitly opts in.** A test binary, a CI runner, a
-//! doctest, or an `examples/` probe therefore *cannot* reach the login keychain no matter what it
-//! constructs or in what order — the capability simply isn't switched on. The production binary
+//! doctest, or an `examples/` probe therefore *can not* reach the login keychain no matter what it
+//! constructs or in what order — the capability simply is not switched on. The production binary
 //! turns it on once, at the top of `main`, via [`use_os_keychain`].
 //!
 //! This is the safe direction for the default to fail. Under the old opt-*out* scheme a test had to
 //! remember to call an escape hatch, and forgetting meant silently reading the user's real
 //! credentials under the production service name (and, on macOS, an interactive unlock prompt that
-//! hangs CI). Under this scheme forgetting means a session doesn't persist across restarts — loud,
+//! hangs CI). Under this scheme forgetting means a session does not persist across restarts — loud,
 //! local to the one binary that owns `main`, and impossible to miss on first launch.
 
 use std::collections::HashMap;

@@ -256,7 +256,7 @@ impl GapParameters for GapParams {
     }
 }
 
-/// Semiglobal in the read: free leading/trailing offset so window-edge trimming isn't penalised.
+/// Semiglobal in the read: free leading/trailing offset so window-edge trimming is not penalised.
 struct Semiglobal;
 impl StartEndGapParameters for Semiglobal {
     fn free_start_gap_x(&self) -> bool {

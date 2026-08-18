@@ -75,7 +75,7 @@ pub struct SvCallerConfig {
     pub min_total_support: u32,
     pub min_quality: f64,
     /// Ceiling on retained discordant pairs, and separately on retained split reads, for one walk.
-    /// A safety valve, not a filter: the point is that a pathological library cannot take the whole
+    /// A safety valve, not a filter: the point is that a pathological library can not take the whole
     /// process — and in a batch, the other 147 samples — down with an OOM. See the default.
     pub max_evidence_records: u64,
 }

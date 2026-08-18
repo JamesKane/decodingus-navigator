@@ -58,7 +58,7 @@ const HAPLO_ENRICH_TTL_DAYS: u64 = 30;
 
 /// Live haplogroup content fetched from the AppView, cached per (dna-type, name). `found = false` is
 /// a negative-cache marker (the endpoint answered but had nothing) so a definitively-absent
-/// haplogroup isn't re-requested every rebuild.
+/// haplogroup is not re-requested every rebuild.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct HaploEnrichment {
     found: bool,
@@ -175,7 +175,7 @@ impl App {
             _ => None,
         };
 
-        // Runs-of-homozygosity (relatedness / endogamy). Read-only: only surfaced when it's already
+        // Runs-of-homozygosity (relatedness / endogamy). Read-only: only surfaced when it is already
         // been computed and cached (the brief must stay cheap — ROH computation is on-demand).
         let roh = self.cached_roh(biosample_guid).await?.map(|r| {
             brief::roh_brief(
@@ -248,8 +248,8 @@ impl App {
     ///   nothing else — ancestry, IBD and the autosomes already handle GRCh37/38 and give the same
     ///   answer either way. With no Y placed there is no payoff, so no offer.
     /// - **Reads to re-map.** A chip or VCF-only subject has no alignment; an alignment row without
-    ///   a file cannot be read.
-    /// - **No CHM13 alignment already.** The offer claims part of their paternal line cannot
+    ///   a file can not be read.
+    /// - **No CHM13 alignment already.** The offer claims part of their paternal line can not
     ///   currently be read; for someone who already has data on the complete assembly, by any route,
     ///   that claim is simply false — even if some older file of theirs has never been realigned.
     /// - **Reads the job would actually act on** — not already on CHM13, not itself a realignment,
@@ -370,8 +370,8 @@ impl App {
 
     /// Best-effort live enrichment for one haplogroup: cache-first (30-day TTL), else a short-timeout
     /// `GET {appview}/api/v1/haplogroup/{name}`. A definitive answer (200 / 404) is cached — including
-    /// "not found" — so it isn't re-requested each rebuild; a transient network error is *not* cached,
-    /// so enrichment self-heals once connectivity returns. Returns content only when there's something
+    /// "not found" — so it is not re-requested each rebuild; a transient network error is *not* cached,
+    /// so enrichment self-heals once connectivity returns. Returns content only when there is something
     /// worth folding in (an age or narrative).
     async fn enrich_haplogroup(&self, name: &str, dna_type: DnaType) -> Option<HaploEnrichment> {
         if name.trim().is_empty() {
@@ -404,7 +404,7 @@ impl App {
             }
             // The endpoint answered but had nothing (404 etc.) → cache a negative result.
             Ok(_) => HaploEnrichment::default(),
-            // Network/timeout error → don't cache (retry next time).
+            // Network/timeout error → do not cache (retry next time).
             Err(_) => return None,
         };
 
@@ -625,7 +625,7 @@ fn build_test(
     }
 }
 
-/// Plain-language test description when the pack doesn't cover the code, derived from what the test
+/// Plain-language test description when the pack does not cover the code, derived from what the test
 /// targets.
 fn fallback_test_text(lang: Lang, target: TargetType) -> (String, Option<String>) {
     let (what, limits) = match target {

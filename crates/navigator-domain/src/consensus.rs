@@ -204,7 +204,7 @@ pub struct ObservedProfile {
 }
 
 /// One source's call at a variant, fed into [`reconcile`]. Quality fields refine the concordance
-/// weight (see [`obs_weight`]); sources that don't carry them (chip, tree placement) leave them
+/// weight (see [`obs_weight`]); sources that do not carry them (chip, tree placement) leave them
 /// `None` / `1.0` and fall back to the plain source-type weight.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConsensusObs {
@@ -672,7 +672,7 @@ pub fn summarize(variants: &[ConsensusVariant]) -> ConsensusSummary {
             ConsensusStatus::Novel => s.novel += 1,
             ConsensusStatus::Conflict => s.conflict += 1,
             ConsensusStatus::SingleSource => s.single_source += 1,
-            // Pending / NoCoverage aren't headline counts; they fold into `total` only.
+            // Pending / NoCoverage are not headline counts; they fold into `total` only.
             ConsensusStatus::Pending | ConsensusStatus::NoCoverage => {}
         }
     }
@@ -850,7 +850,7 @@ pub fn reconcile_diploid(sources: &[(String, SourceType, Vec<DiploidObs>)]) -> V
     out
 }
 
-/// Per-status counts + overall confidence over a reconciled diploid variant list. `Novel` doesn't
+/// Per-status counts + overall confidence over a reconciled diploid variant list. `Novel` does not
 /// apply to autosomal sites, so the confidence is `(confirmed − 0.5·conflict) / total`.
 pub fn summarize_diploid(variants: &[DiploidVariant]) -> ConsensusSummary {
     let mut s = ConsensusSummary {

@@ -3,7 +3,7 @@
 //! The HipSTR reference already names the loci (DYS393, DYS19/DYS394, …; see [`crate::strref`]), so
 //! the caller emits DYS names directly. What differs is the **counting convention**: FTDNA reports a
 //! per-marker value that is the caller's repeat count plus a fixed offset (0 for most, ±1–3 for some),
-//! and a set of markers whose HipSTR tract doesn't correspond 1:1 to the FTDNA marker (large tract
+//! and a set of markers whose HipSTR tract does not correspond 1:1 to the FTDNA marker (large tract
 //! mismatches, plus multi-copy/nested markers like DYS385/DYS464/DYS389II) which can't be mapped by a
 //! single offset.
 //!
@@ -123,7 +123,7 @@ static OFFSETS: &[(&str, i32)] = &[
 
 /// Markers whose HipSTR tract can't be mapped to the FTDNA value by a single offset: large tract
 /// mismatches and multi-copy/nested markers (DYS385/DYS464 split sub-loci, DYS389II nesting). Reported
-/// as `Excluded` — the enclosing-read caller doesn't yield a vendor-comparable value here (yet).
+/// as `Excluded` — the enclosing-read caller does not yield a vendor-comparable value here (yet).
 static EXCLUDE: &[&str] = &[
     // Multi-copy / nested (split sub-loci, never a single vendor-comparable value).
     "DYS385",

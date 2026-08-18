@@ -12,7 +12,7 @@
 //! the density class array-based ROH tools (PLINK, BCFtools/RoH, detectRUNS) assume. Segment cM
 //! lengths and the F_ROH denominator come from the same [`GeneticMap`] the IBD path already loads.
 //!
-//! **What's deliberately simplified in the spike** (see the module tests + the follow-up notes):
+//! **What is deliberately simplified in the spike** (see the module tests + the follow-up notes):
 //! - The Normal-state heterozygosity expectation is a single `baseline_het` knob. A production
 //!   version should derive it per-site from panel allele frequencies (2·f·(1−f)), which
 //!   `AncestryPanel`/`IbdPanel` already carry, so the emission is properly frequency-aware.

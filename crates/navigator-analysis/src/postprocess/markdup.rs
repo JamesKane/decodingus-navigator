@@ -161,7 +161,7 @@ struct Signature {
     mate_reverse: bool,
 }
 
-/// The signature of an eligible record, or `None` when the record cannot be marked.
+/// The signature of an eligible record, or `None` when the record can not be marked.
 ///
 /// Unmapped records have no position to compare. Secondary and supplementary records describe an
 /// alignment of a read whose primary is elsewhere; marking them would double-count a template that
@@ -282,7 +282,7 @@ impl SeenSignatures {
         false
     }
 
-    /// Drop signatures the file has moved past. Anything further back than the window cannot be a
+    /// Drop signatures the file has moved past. Anything further back than the window can not be a
     /// duplicate of the current record, because only clipping separates two copies' positions.
     fn evict(&mut self, position: i64) {
         while let Some((pos, sig)) = self.order.front().copied() {

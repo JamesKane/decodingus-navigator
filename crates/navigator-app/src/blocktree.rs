@@ -11,7 +11,7 @@
 //!   reconciliation the subjects table and project report use. Nothing here can move a subject.
 //! - **A member that can't be placed is reported, not dropped** ([`UnplacedMember`]). On a multi-lab
 //!   cohort provider/build skew is expected; silently omitting those members would make the tree
-//!   look like it accounts for the whole project when it doesn't.
+//!   look like it accounts for the whole project when it does not.
 //!
 //! Design: `documents/design/project-block-tree.md`.
 
@@ -156,7 +156,7 @@ impl App {
                 evidence: Vec::new(),
             })
             .collect();
-        // Stable leaf order, so the layout doesn't reshuffle between opens.
+        // Stable leaf order, so the layout does not reshuffle between opens.
         for b in &mut blocks {
             b.members.sort_by(|x, y| (&x.name, x.guid.0).cmp(&(&y.name, y.guid.0)));
         }
@@ -185,7 +185,7 @@ impl App {
     /// A cohort spans builds, so there is no per-subject answer as there is in `descent_report`.
     /// Picking one is safe because node names and topology are build-independent — only the loci
     /// *positions* are, and the aggregate carries the key so the view can say which it means. Ties
-    /// break on the key name, so the choice doesn't depend on map iteration order.
+    /// break on the key name, so the choice does not depend on map iteration order.
     async fn project_build_key(&self, members: &[Biosample]) -> &'static str {
         let guids: Vec<SampleGuid> = members.iter().map(|b| b.guid).collect();
         let Ok(alns) = alignment::list_for_biosamples(self.store.pool(), &guids).await else {
@@ -278,7 +278,7 @@ fn drop_clustered(positions: &BTreeSet<i64>) -> BTreeSet<i64> {
 /// positions were carried by *all* 111 donors with private-Y — those are reference-vs-population
 /// differences, real but not private, and the bundled cohort-shared blocklist (derived from a
 /// 3,352-sample CHM13 cohort that predates this collection) does not list them. Deriving the
-/// exclusion from the cohort in hand catches what a bundled list cannot anticipate.
+/// exclusion from the cohort in hand catches what a bundled list can not anticipate.
 const COHORT_SHARED_FRACTION: f64 = 0.25;
 
 /// Donors required before the frequency rule engages at all.
@@ -365,7 +365,7 @@ fn clustered_candidate_positions(blocks: &[Block], private: &HashMap<SampleGuid,
 ///
 /// A variant defining a branch below two different parents did not arise once: it is recurrent, or a
 /// systematic call error. Either way it is the one thing a *new-branch* candidate must not be. The
-/// laminar check cannot see this — it reasons within a single block — so cross-block recurrence is
+/// laminar check can not see this — it reasons within a single block — so cross-block recurrence is
 /// caught here, before any group is accepted.
 fn recurrent_positions(blocks: &[Block], private: &HashMap<SampleGuid, PrivateBucket>) -> BTreeSet<i64> {
     let mut blocks_per_position: HashMap<i64, BTreeSet<i64>> = HashMap::new();
@@ -403,7 +403,7 @@ fn recurrent_positions(blocks: &[Block], private: &HashMap<SampleGuid, PrivateBu
 /// Groups are accepted greedily, largest first, and only while they stay **laminar**: any two
 /// accepted sets must be disjoint or nested. A set that partly overlaps an accepted one is a
 /// conflict (a recurrent call, or real phylogenetic disagreement) and is counted, not forced into a
-/// shape it doesn't fit. Returns the blocks plus that conflict count.
+/// shape it does not fit. Returns the blocks plus that conflict count.
 ///
 /// Each member then lands in the smallest accepted set containing it — unambiguous, because a
 /// laminar family is a tree — and members in no set stay on their named block.
@@ -943,7 +943,7 @@ mod tests {
     #[test]
     fn nested_sharing_nests_the_candidate_branches() {
         let b = block(1, "R-X", 0, &["a", "b", "c"]);
-        // All three share 100; a and b additionally share 200 — a finer branch inside the broader one.
+        // All three share 100; a and b also share 200 — a finer branch inside the broader one.
         let p = privates(
             &b,
             &[
@@ -979,7 +979,7 @@ mod tests {
     #[test]
     fn overlapping_non_nested_sharing_is_counted_as_a_conflict_not_forced() {
         let b = block(1, "R-X", 0, &["a", "b", "c"]);
-        // {a,b} share 100; {b,c} share 200. Neither set contains the other, so they cannot both be
+        // {a,b} share 100; {b,c} share 200. Neither set contains the other, so they can not both be
         // branches of one tree — the smaller-ranked one is dropped and counted.
         let p = privates(
             &b,
@@ -1017,7 +1017,7 @@ mod tests {
             "the whole cluster goes; there is no basis for electing one call the real one"
         );
 
-        // A lone call keeps its place, and a distant neighbour doesn't drag it down.
+        // A lone call keeps its place, and a distant neighbour does not drag it down.
         let spread = bucket(&[1_000_000, 2_000_000, 2_000_050]);
         let kept: Vec<i64> = candidate_positions(&spread).into_iter().collect();
         assert_eq!(kept, vec![1_000_000], "only the pair within 100 bp is dropped");
@@ -1026,7 +1026,7 @@ mod tests {
     #[test]
     fn a_position_defining_branches_under_two_parents_is_rejected() {
         // 11311865 was shared by two members under one block *and* two under another. A variant that
-        // arose twice cannot mark a new branch, and the laminar check can't see it — it reasons
+        // arose twice can not mark a new branch, and the laminar check can't see it — it reasons
         // inside a single block.
         let mut left = block(1, "R-A", 0, &["a", "b"]);
         left.subtree_members = 2;

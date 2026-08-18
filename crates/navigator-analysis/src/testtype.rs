@@ -100,14 +100,14 @@ pub fn coverage_profile_from_bai(bam_path: &Path, mean_read_length: Option<u64>)
 /// Map a free-text vendor hint to a specific targeted-Y test code (else the honest generic).
 fn targeted_y_for_vendor(vendor_hint: Option<&str>) -> &'static str {
     match vendor_hint.map(|v| v.to_lowercase()) {
-        // FTDNA only sells Big Y, but the *generation* (500 vs 700) isn't in the vendor token —
+        // FTDNA only sells Big Y, but the *generation* (500 vs 700) is not in the vendor token —
         // it comes from the `@RG LB` label ([`crate::probe`], passed as `big_y_label`) or, on older
         // headers that omit it, from the callable-chrY footprint resolved after analysis. Stay
         // generic here so neither generation is guessed from the vendor name alone.
         Some(v) if v.contains("ftdna") || v.contains("familytreedna") => "TARGETED_Y",
         Some(v) if v.contains("full genomes") || v.contains("fullgenomes") => "Y_ELITE",
         Some(v) if v.contains("yseq") => "Y_PRIME",
-        // An unknown vendor isn't mislabeled to a specific product.
+        // An unknown vendor is not mislabeled to a specific product.
         _ => "TARGETED_Y",
     }
 }
@@ -139,7 +139,7 @@ pub fn infer_test_type(
     mean_read_length: Option<u64>,
     big_y_label: Option<&str>,
 ) -> Option<String> {
-    // An explicit FTDNA Big Y generation from the header (`@RG LB`) is authoritative — it's FTDNA's
+    // An explicit FTDNA Big Y generation from the header (`@RG LB`) is authoritative — it is FTDNA's
     // own product label, so it overrides the coverage-shape guess entirely.
     if let Some(code) = big_y_label {
         return Some(code.to_string());
@@ -197,7 +197,7 @@ mod tests {
     fn targeted_y_maps_vendor_or_generic() {
         // Y-only reference (no autosomes) — clean targeted-Y.
         let p = prof(0.0, 35.0, 0.0, false);
-        // FTDNA without a generation label stays generic — 500 vs 700 isn't in the vendor token
+        // FTDNA without a generation label stays generic — 500 vs 700 is not in the vendor token
         // (the header `@RG LB` or the callable-chrY footprint decides it).
         assert_eq!(
             infer_test_type(Some(&p), Some("ILLUMINA"), Some("FamilyTreeDNA"), None, None).as_deref(),

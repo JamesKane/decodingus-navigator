@@ -262,7 +262,7 @@ impl App {
 
     /// Assign an mtDNA haplogroup from a precomputed chrM GVCF — no CRAM walk. Places against
     /// the FTDNA mt tree; on CHM13 the tree's rCRS positions are lifted onto `chrM` (the cheap
-    /// self-generated rCRS↔chrM map), on GRCh38 they're read directly. Recorded under the CRAM
+    /// self-generated rCRS↔chrM map), on GRCh38 they are read directly. Recorded under the CRAM
     /// path's mt source key (`aln:{id}:mt`) with a `gv:`-prefixed fingerprint.
     pub async fn assign_mt_from_gvcf(&self, alignment_id: i64, gvcf: &Path) -> Result<HaploAssignment, AppError> {
         let tree_json = self.fetch_ftdna_mt_tree().await?;
@@ -319,7 +319,7 @@ impl App {
         // placement made from a GVCF against the tree of the day could never be re-derived, and the
         // resulting `haplogroup_call` row outlived every tree it was placed against. See
         // `App::replace_against_current_tree`, which replays this. Best-effort — a workspace that
-        // cannot record the paths should still get the ingest.
+        // can not record the paths should still get the ingest.
         let _ = self
             .save_analysis_with_provenance(
                 alignment_id,
@@ -418,7 +418,7 @@ impl App {
         } else {
             return Ok(false);
         };
-        // Don't downgrade a full deep walk on reimport — keep it if it's already equal-or-fuller.
+        // Do not downgrade a full deep walk on reimport — keep it if it is already equal-or-fuller.
         let wrote = self
             .save_analysis_no_downgrade(
                 alignment_id,
@@ -515,7 +515,7 @@ impl App {
         .map_err(Into::into)
     }
 
-    /// The **private bucket**: de-novo SNP calls on chrY that the Y placement doesn't
+    /// The **private bucket**: de-novo SNP calls on chrY that the Y placement does not
     /// explain (not on the assigned backbone), classified as off-path-known (a finer/
     /// sibling FTDNA branch) or novel (a new-branch candidate). With `callable_bed` (e.g.
     /// the Poznik/1KG `b38_sites.bed`), calls outside reliable regions are dropped.
@@ -892,7 +892,7 @@ const VCF_PRIVATE_MIN_GQ: u32 = 20;
 
 /// Derived-allele fraction a call must reach to count as **deterministic** on a haploid chromosome.
 /// chrY carries one copy, so a genuine call is essentially all-alt; a middling fraction is an
-/// ambiguous locus, and an ambiguous call cannot support a private-variant claim.
+/// ambiguous locus, and an ambiguous call can not support a private-variant claim.
 const VCF_PRIVATE_MIN_AF: f64 = 0.95;
 
 /// Depth ceiling, as a multiple of the donor's own typical depth at good calls.
@@ -948,7 +948,7 @@ impl App {
 
         // Without per-call evidence every quality gate below is a no-op, and the result is a list of
         // whatever the vendor's caller emitted — on a real set that is 400-550 "novel" calls against
-        // ~70 for the same donor's evidence-bearing set. A call we cannot judge is the most
+        // ~70 for the same donor's evidence-bearing set. A call we can not judge is the most
         // non-deterministic kind there is, so refuse rather than publish a number that looks like a
         // finding. Re-importing the source populates `CallEvidence` (migration 0042).
         if !set.has_evidence() {
@@ -968,7 +968,7 @@ impl App {
                 .collect();
             // `pv2`: the chrY structural masks are now lifted to the set's own build, so a `pv1`
             // bucket was classified with **no** structural mask on anything but CHM13 and its counts
-            // are inflated. The version is the invalidation — `--force` cannot reach this cache.
+            // are inflated. The version is the invalidation — `--force` can not reach this cache.
             format!("pv2:{}", crate::haplogroup::genotype_cache_key("chrY", None, &targets))
         };
         if let Ok(Some(json)) = variant_set_private_y::get(self.store.pool(), set.id, &cache_key).await {

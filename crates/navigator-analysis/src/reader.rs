@@ -91,7 +91,7 @@ pub fn build_repository(reference: &Path) -> Result<fasta::Repository, AnalysisE
     )))
 }
 
-/// CRAM needs a reference; surface a clear error if one wasn't supplied.
+/// CRAM needs a reference; surface a clear error if one was not supplied.
 fn require_reference<'a>(path: &Path, reference: Option<&'a Path>) -> Result<&'a Path, AnalysisError> {
     reference.ok_or_else(|| AnalysisError::Message(format!("CRAM {} requires a reference FASTA", path.display())))
 }
@@ -220,7 +220,7 @@ pub enum IdxReader {
 /// File offsets of the `.crai` containers that can hold records overlapping `interval` on `ref_id`.
 ///
 /// **This is the whole reason CRAM region queries are usable.** A CRAM container is the unit of
-/// decode — you cannot decode part of one — so restricting *which containers get decoded* is the
+/// decode — you can not decode part of one — so restricting *which containers get decoded* is the
 /// only place a region query can save work. noodles' own `Query` (and, before this, our `for_each`)
 /// selected containers by reference sequence alone and then discarded non-overlapping records
 /// *after* decoding them, which made every query cost a whole chromosome no matter how small the
@@ -228,7 +228,7 @@ pub enum IdxReader {
 /// same query on a BAM. chr21 of a 30x WGS holds 1,140 containers and a point query needs exactly
 /// one of them.
 ///
-/// A container whose `alignment_start` is absent is **kept**: that is a container this index cannot
+/// A container whose `alignment_start` is absent is **kept**: that is a container this index can not
 /// place, and dropping it would silently lose records. Skipping is only ever done on positive
 /// evidence that the container lies outside the interval.
 fn cram_container_offsets(index: &cram::crai::Index, ref_id: usize, interval: Interval) -> Vec<u64> {
@@ -571,7 +571,7 @@ pub fn has_crai_index(path: &Path) -> bool {
 }
 
 /// Whether the file has a coordinate index supporting **per-contig region queries** — a BAM `.bai`
-/// or a CRAM `.crai`. The prerequisite for the parallel per-contig walker (CRAM additionally can't
+/// or a CRAM `.crai`. The prerequisite for the parallel per-contig walker (CRAM also can't
 /// region-query the unmapped tail; callers handle that separately).
 pub fn has_region_index(path: &Path) -> bool {
     has_bai_index(path) || has_crai_index(path)
@@ -696,7 +696,7 @@ mod tests {
     fn container_offsets_select_only_overlapping_containers() {
         let p = |n: usize| Position::new(n).unwrap();
         // ref 0 containers spanning [1000,1099], [2000,2099], [3000,3099]; one on ref 1; and one
-        // the index cannot place.
+        // the index can not place.
         let idx: cram::crai::Index = vec![
             cram::crai::Record::new(Some(0), Some(p(1000)), 100, 10, 0, 0),
             cram::crai::Record::new(Some(0), Some(p(2000)), 100, 20, 0, 0),

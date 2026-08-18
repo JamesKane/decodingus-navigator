@@ -1,5 +1,5 @@
 //! Throwaway (Option A′ concept test): emit a copy of the ancient AF panel restricted to
-//! consumer-array-ascertained sites. Reads the rsIDs assayed by one or more consumer chip files,
+//! consumer-array-found out sites. Reads the rsIDs assayed by one or more consumer chip files,
 //! maps them to CHM13 (contig,pos) via the IBD panel (which carries rsid + CHM13 locus), and keeps
 //! only ancient-panel sites at those positions. Usage:
 //!   ascertain_chip <ancient.bin> <ibd_panel.bin> <out.bin> <chip1.txt> [chip2.txt ...]
