@@ -1,36 +1,46 @@
-//! Project **block tree** — the cohort counterpart to the per-subject descent report.
+//! The project **block tree**. It is the cohort form of the descent report of one subject.
 //!
-//! Given a project, build the induced subtree of the haplotree spanning its members' terminal
-//! haplogroups: every branch that any member lies on, each carrying the run of defining SNPs that
-//! are phylogenetically equivalent on it (a *block*), with members hanging off their own terminal.
-//! This is the FTDNA "Block Tree" surface, over placements Navigator already computed.
+//! For a project, this module builds the part of the haplotree that covers the terminal haplogroups
+//! of its members. That subtree holds each branch that a member lies on.
 //!
-//! Two rules shape everything here:
+//! Each branch carries a *block*, which is the run of SNPs that define it and that the tree treats
+//! as equivalent. Each member appears below its own terminal branch.
 //!
-//! - **It reads placements, never re-places.** Terminals come from `haplogroup_terminals` — the same
-//!   reconciliation the subjects table and project report use. Nothing here can move a subject.
-//! - **A member that can't be placed is reported, not dropped** ([`UnplacedMember`]). On a multi-lab
-//!   cohort provider/build skew is expected; silently omitting those members would make the tree
-//!   look like it accounts for the whole project when it does not.
+//! This surface is the FTDNA "Block Tree", and it uses the placements that Navigator already made.
 //!
-//! Design: `documents/design/project-block-tree.md`.
+//! Two rules control this module:
+//!
+//! - **It reads a placement, and it never makes one.** Each terminal comes from
+//!   `haplogroup_terminals`. The subjects table and the project report use the same
+//!   reconciliation. No code here can move a subject.
+//! - **The report names a member with no placement** ([`UnplacedMember`]). It does not remove that
+//!   member. In a cohort from many laboratories, a difference between providers and builds is
+//!   normal. Without those members, the tree looks complete when it is not.
+//!
+//! The design is in `documents/design/project-block-tree.md`.
 
 use std::collections::BTreeSet;
 
 use super::*;
 
-/// Collapse a run of member-less single-child branches only when it is at least this long. A lone
-/// intermediate branch is worth naming; a run of two or more is noise between the splits the cohort
-/// actually resolves.
+/// The minimum length of a run of branches that the code joins into one. Each branch in the run has
+/// one child and no member.
+///
+/// One branch between two splits has a name that the reader needs. A run of two or more such
+/// branches only fills space between the splits that the cohort resolves.
 pub const COLLAPSE_MIN_RUN: usize = 2;
 
 impl App {
-    /// Build the [`ProjectBlockTree`] for `project_id`.
+    /// Build the [`ProjectBlockTree`] of `project_id`.
     ///
-    /// `Ok(None)` only when the project has no members at all. A project whose members are all
-    /// unplaced still yields a tree — empty `blocks`, everyone in `unplaced` — because that is a
-    /// meaningful answer ("nothing here is placed yet"), and it costs no tree fetch: the multi-MB
-    /// download + parse is skipped entirely when no member has a terminal.
+    /// The method returns `Ok(None)` only when the project has no member.
+    ///
+    /// A project with no placed member still gives a tree. That tree has an empty `blocks` list,
+    /// and it holds each member in `unplaced`. This answer is a useful one, because it tells the
+    /// user that the app placed nothing yet.
+    ///
+    /// That answer also costs nothing. When no member has a terminal, the method does not download
+    /// the tree and does not parse it. That document is many MB.
     pub async fn project_block_tree(
         &self,
         project_id: i64,
@@ -41,11 +51,12 @@ impl App {
             return Ok(None);
         }
 
-        // One bulk reconciliation for the whole workspace rather than a query per member — the same
-        // call `project_report` and `project_str_overview` make.
+        // One reconciliation covers the full workspace. The code does not send one query for each
+        // member. `project_report` and `project_str_overview` call the same function.
         let terminals = self.haplogroup_terminals().await?;
 
-        // (guid, display name, terminal) per member, for the requested lineage.
+        // The guid, the display name, and the terminal of each member, for the lineage that the
+        // caller requested.
         let wanted: Vec<(SampleGuid, String, Option<String>)> = members
             .iter()
             .map(|b| {
@@ -57,9 +68,9 @@ impl App {
             })
             .collect();
 
-        // Cheap first, as `descent_report` does: with nothing placed there is no tree to draw, and
-        // fetching + parsing a multi-MB document to discover that is pure waste. Common on a
-        // freshly imported project.
+        // Do the fast test first, as `descent_report` does. With no placement there is no tree to
+        // draw. A download and a parse of a document of many MB, only to learn that, is work with
+        // no result. This state is common in a project that a user imported a moment ago.
         if wanted.iter().all(|(_, _, t)| t.is_none()) {
             let mut unplaced: Vec<UnplacedMember> = wanted
                 .into_iter()
@@ -70,8 +81,9 @@ impl App {
                 dna,
                 blocks: Vec::new(),
                 unplaced,
-                // The *configured* provider: no tree was fetched, so no runtime fallback happened
-                // either. `build_key` stays empty for the same reason — nothing was parsed.
+                // This value is the provider in the settings. The code downloaded no tree, so it
+                // also used no second provider. `build_key` stays empty for the same reason,
+                // because the code parsed nothing.
                 provider: match y_tree_provider() {
                     YTreeProvider::DecodingUs => "decodingus".to_string(),
                     YTreeProvider::Ftdna => "ftdna".to_string(),
@@ -82,9 +94,9 @@ impl App {
             }));
         }
 
-        // Provider and build key are whatever the fetch actually resolved to, not what was
-        // configured: the mtDNA path falls back to FTDNA at runtime when the DecodingUs tree can't be
-        // remapped, and its loci are rCRS either way — not the Y coordinate space.
+        // The provider and the build key come from the download, and not from the settings. The
+        // mtDNA path uses the FTDNA tree when the code can not remap the DecodingUs tree. The loci
+        // of that path are rCRS loci in each case, and they are not in the Y coordinate space.
         let (tree, provider, build_key) = match dna {
             DnaType::Y => match y_tree_provider() {
                 YTreeProvider::DecodingUs => {
@@ -97,7 +109,8 @@ impl App {
                 YTreeProvider::Ftdna => {
                     let json = self.fetch_ftdna_y_tree().await?;
                     let tree = navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?;
-                    // The FTDNA Y tree is published on GRCh38, whatever the members are aligned to.
+                    // FTDNA publishes its Y tree on GRCh38. The build of each member does not
+                    // change that.
                     (tree, "ftdna", "GRCh38")
                 }
             },
@@ -107,12 +120,12 @@ impl App {
             }
         };
 
-        // One name index for the whole cohort. The per-subject path scans the node map linearly for
-        // its single terminal, which would be quadratic here.
+        // One name index covers the full cohort. The path for one subject reads the node map from
+        // start to end to find its terminal. Here that method would cost O(n²).
         let index = navigator_analysis::haplo::name_index(&tree);
-        // Resolve placement first, so the private-Y load below covers only members who actually
-        // appear on the tree — on a real cohort that is a fraction of the roster (243 of 1881 on
-        // R1b-CTS4466Plus), and an unplaced member's private variants can't be drawn anywhere.
+        // Find the placements first. The private-Y read below then covers only the members that
+        // appear on the tree. In a real cohort that group is small: 243 of 1,881 members on
+        // R1b-CTS4466Plus. The view can draw no private variant of a member with no placement.
         let mut placed: Vec<(SampleGuid, String, i64)> = Vec::new();
         let mut unplaced = Vec::new();
         for (guid, name, terminal) in wanted {
@@ -162,9 +175,9 @@ impl App {
         }
         roll_up_subtree_members(&mut blocks);
         let blocks = collapse_blocks(blocks, COLLAPSE_MIN_RUN);
-        // Candidates go in *after* the collapse: they are leaves with members, so they could never
-        // be absorbed, and inserting them earlier would only make the collapse reason about
-        // synthetic nodes.
+        // The code adds each candidate *after* the collapse step. A candidate is a leaf with
+        // members, so the collapse can never absorb it. An earlier insert only makes the collapse
+        // examine nodes that the code made.
         let (blocks, candidate_conflicts, candidate_recurrent) = insert_candidate_branches(blocks, &private);
         unplaced.sort_by(|a, b| (&a.name, a.guid.0).cmp(&(&b.name, b.guid.0)));
 
@@ -179,13 +192,18 @@ impl App {
         }))
     }
 
-    /// The one coordinate space the cohort's tree is parsed under: the **modal** DecodingUs build key
-    /// across the members' alignments, falling back to `hs1`.
+    /// The one coordinate space for the tree of the cohort. It is the most frequent DecodingUs
+    /// build key across the alignments of the members. The default is `hs1`.
     ///
-    /// A cohort spans builds, so there is no per-subject answer as there is in `descent_report`.
-    /// Picking one is safe because node names and topology are build-independent — only the loci
-    /// *positions* are, and the aggregate carries the key so the view can say which it means. Ties
-    /// break on the key name, so the choice does not depend on map iteration order.
+    /// A cohort holds more than one build, so there is no answer for one subject, as there is in
+    /// `descent_report`.
+    ///
+    /// One choice is safe, because the node names and the shape of the tree do not depend on the
+    /// build. Only the *positions* of the loci depend on it. The aggregate carries the key, so the
+    /// view can name the space that it shows.
+    ///
+    /// Two keys with the same count give the key that sorts first. So the choice does not depend on
+    /// the order of a map.
     async fn project_build_key(&self, members: &[Biosample]) -> &'static str {
         let guids: Vec<SampleGuid> = members.iter().map(|b| b.guid).collect();
         let Ok(alns) = alignment::list_for_biosamples(self.store.pool(), &guids).await else {
@@ -201,10 +219,10 @@ impl App {
     }
 }
 
-/// Fill `subtree_members` — members at or below each block.
+/// Fill `subtree_members`, which holds the members at each block and below it.
 ///
-/// `blocks` is in pre-order, so walking it **backwards** visits every child before its parent and one
-/// pass suffices.
+/// The `blocks` list is in pre-order. So a read from the end to the start reaches each child before
+/// its parent, and one pass is enough.
 fn roll_up_subtree_members(blocks: &mut [Block]) {
     let mut from_children: HashMap<i64, usize> = HashMap::with_capacity(blocks.len());
     for i in (0..blocks.len()).rev() {
@@ -216,8 +234,8 @@ fn roll_up_subtree_members(blocks: &mut [Block]) {
     }
 }
 
-/// Synthesize a [`Locus`] standing for a private (unnamed) variant, so a candidate branch's shared
-/// variants render through exactly the same path as a named branch's defining SNPs.
+/// Make a [`Locus`] value for a private variant, which has no name. The view then draws the shared
+/// variants of a candidate branch through the same code as the SNPs of a named branch.
 fn private_locus(v: &PrivateVariant) -> Locus {
     Locus {
         position: v.position,
@@ -227,14 +245,19 @@ fn private_locus(v: &PrivateVariant) -> Locus {
     }
 }
 
-/// The positions a subject carries as **high-confidence new-branch candidates**: novel (not in the
-/// tree at all) *and* in unique sequence.
+/// The positions that a subject carries as **new-branch candidates with high confidence**. Such a
+/// position is new, so the tree does not hold it, and it is in unique sequence.
 ///
-/// Off-path-*known* variants are excluded on purpose — those support an existing finer branch, which
-/// is a placement question, not a new one. Structural-region calls are excluded because chrY
-/// palindromes and amplicons are paralog-prone: two men "sharing" a call there are far more likely to
-/// share a mapping artefact than an ancestor. Sharing noise would manufacture branches, which is the
-/// one failure mode this feature must not have.
+/// The function removes a *known* variant that is off the path, by design. That variant supports a
+/// finer branch that already exists. It asks a question about the placement, and not about a new
+/// branch.
+///
+/// The function also removes a call in a structural region. A palindrome and an amplicon on chrY
+/// hold paralogs. Two men with the "same" call in such a region share a mapping artefact more often
+/// than they share an ancestor.
+///
+/// Shared noise makes a branch that does not exist. That result is the one fault that this feature
+/// must not produce.
 fn candidate_positions(bucket: &PrivateBucket) -> BTreeSet<i64> {
     let novel: BTreeSet<i64> = bucket
         .variants
@@ -245,18 +268,20 @@ fn candidate_positions(bucket: &PrivateBucket) -> BTreeSet<i64> {
     drop_clustered(&novel)
 }
 
-/// How far apart two novel calls must be to count as independent mutations.
+/// The minimum distance between two new calls that come from separate mutations.
 ///
-/// Real Y mutations are scattered across megabases; a handful of "novel" calls within tens of bases
-/// is one misaligned read smearing several false SNVs, which is why the GVCF path already imposes a
-/// depth floor for the same reason. On the CTS4466 cohort the first candidate branches were built
-/// almost entirely from such clusters — six positions inside 32 bp, gaps of 5–8 bp.
+/// A real Y mutation is far from the next one, at a distance of megabases. A group of "new" calls
+/// inside tens of bases comes from one read that the mapper placed wrongly, and that read gives
+/// some false SNVs. The GVCF path applies a depth limit for the same reason.
+///
+/// In the CTS4466 cohort, almost every first candidate branch came from such a group. One group
+/// held six positions inside 32 bp, with gaps of 5 bp to 8 bp.
 const CANDIDATE_MIN_SEPARATION_BP: i64 = 100;
 
-/// Drop every position that has another candidate within [`CANDIDATE_MIN_SEPARATION_BP`].
+/// Remove each position that has another candidate inside [`CANDIDATE_MIN_SEPARATION_BP`].
 ///
-/// The whole cluster goes, not the extras: when several calls share one mapping event there is no
-/// basis for electing one of them the real mutation.
+/// The function removes the full group, and not only the extra positions. When some calls come from
+/// one mapping event, no rule can select one of them as the real mutation.
 fn drop_clustered(positions: &BTreeSet<i64>) -> BTreeSet<i64> {
     let ordered: Vec<i64> = positions.iter().copied().collect();
     ordered
@@ -271,22 +296,27 @@ fn drop_clustered(positions: &BTreeSet<i64>) -> BTreeSet<i64> {
         .collect()
 }
 
-/// Share of the cohort's private-Y-bearing members above which a position is treated as
-/// **population-shared** rather than private.
+/// The share of the members with private-Y data above which the code treats a position as
+/// **shared by the population**, and not as private.
 ///
-/// A variant carried by most of a cohort did not arise on one branch of it. On R1b-CTS4466Plus five
-/// positions were carried by *all* 111 donors with private-Y — those are reference-vs-population
-/// differences, real but not private, and the bundled cohort-shared blocklist (derived from a
-/// 3,352-sample CHM13 cohort that predates this collection) does not list them. Deriving the
-/// exclusion from the cohort in hand catches what a bundled list can not anticipate.
+/// A variant that most of a cohort carries did not start on one branch of that cohort. On
+/// R1b-CTS4466Plus, *all* 111 donors with private-Y data carried five positions. Those positions
+/// are differences between the reference and the population. They are real, but they are not
+/// private.
+///
+/// The blocklist in the application bundle does not name them. That list comes from a CHM13 cohort
+/// of 3,352 samples, and that cohort is older than this collection. A rule that reads the cohort in
+/// the workspace finds what a fixed list can not.
 const COHORT_SHARED_FRACTION: f64 = 0.25;
 
-/// Donors required before the frequency rule engages at all.
+/// The count of donors that the frequency rule needs before it applies.
 ///
-/// The rule reasons about what a *large* population shares. A candidate branch needs two carriers by
-/// definition, so in a small cohort two carriers are already a large share — at four donors, every
-/// genuine branch would exceed a 25% ceiling and be thrown away. Below this many donors there is no
-/// population to argue from, so the rule abstains rather than guessing.
+/// The rule examines what a *large* population shares. A candidate branch needs two carriers, by
+/// definition. So in a small cohort, two carriers are already a large share. With four donors, each
+/// true branch goes past a limit of 25% and the code removes it.
+///
+/// Below this count of donors there is no population for the rule to examine. So the rule does
+/// nothing, and it makes no estimate.
 const COHORT_SHARED_MIN_DONORS: usize = 20;
 
 /// Positions carried by more than [`COHORT_SHARED_FRACTION`] of the members that have private-Y.
@@ -313,15 +343,18 @@ fn population_shared_positions(blocks: &[Block], private: &HashMap<SampleGuid, P
         .collect()
 }
 
-/// Window within which two *candidate-defining* positions are treated as one mapping event.
+/// The window in which the code treats two positions that define a candidate as one mapping event.
 ///
-/// Wider than the per-donor [`CANDIDATE_MIN_SEPARATION_BP`] because this is a different question.
-/// That rule asks whether one donor's calls smear across a read; this asks whether separate branches,
-/// with different member sets, land suspiciously close together. On R1b-CTS4466Plus three of nine
-/// candidates fell inside a **567 bp window** at 56.83 Mb — three independent lineage events in less
-/// than a kilobase is not a thing that happens, whereas one repeat unit mis-mapping across several
-/// donors is. A kilobase spans a sequencing fragment, so it is the scale at which one mis-mapping
-/// event can produce apparently separate branches.
+/// This window is wider than [`CANDIDATE_MIN_SEPARATION_BP`], which applies to one donor, because
+/// the question is different. That rule asks whether the calls of one donor come from one read.
+/// This rule asks whether separate branches, with different member sets, are very close together.
+///
+/// On R1b-CTS4466Plus, three of nine candidates were inside a **window of 567 bp** at 56.83 Mb.
+/// Three separate lineage events inside one kilobase do not occur. One repeat unit that the mapper
+/// places wrongly across some donors does occur.
+///
+/// A kilobase is the length of a sequencing fragment. So it is the scale at which one mapping fault
+/// can give branches that look separate.
 const CANDIDATE_CLUSTER_WINDOW_BP: i64 = 1_000;
 
 /// Every position that would define a candidate branch, anywhere in the cohort.
@@ -343,10 +376,11 @@ fn candidate_defining_positions(blocks: &[Block], private: &HashMap<SampleGuid, 
     out
 }
 
-/// Candidate-defining positions lying within [`CANDIDATE_CLUSTER_WINDOW_BP`] of another.
+/// The positions that define a candidate and that are inside [`CANDIDATE_CLUSTER_WINDOW_BP`] of
+/// another such position.
 ///
-/// The whole cluster is rejected, as in the per-donor rule: when several apparent branches share one
-/// mis-mapping there is no basis for electing one of them real.
+/// The code refuses the full group, as the rule for one donor does. When some branches come from one
+/// mapping fault, no rule can select one of them as real.
 fn clustered_candidate_positions(blocks: &[Block], private: &HashMap<SampleGuid, PrivateBucket>) -> BTreeSet<i64> {
     let defining: Vec<i64> = candidate_defining_positions(blocks, private).into_iter().collect();
     defining
@@ -361,12 +395,14 @@ fn clustered_candidate_positions(blocks: &[Block], private: &HashMap<SampleGuid,
         .collect()
 }
 
-/// Positions that would define a candidate branch under **more than one** named block.
+/// The positions that would define a candidate branch below **more than one** named block.
 ///
-/// A variant defining a branch below two different parents did not arise once: it is recurrent, or a
-/// systematic call error. Either way it is the one thing a *new-branch* candidate must not be. The
-/// laminar check can not see this — it reasons within a single block — so cross-block recurrence is
-/// caught here, before any group is accepted.
+/// A variant that defines a branch below two different parents did not occur one time. It occurs
+/// again in the tree, or the caller makes the same error at that site. In each case it is the one
+/// thing that a *new-branch* candidate must not be.
+///
+/// The laminar test can not find this state, because it examines one block only. So this function
+/// finds a repeat across two blocks, before the code accepts any group.
 fn recurrent_positions(blocks: &[Block], private: &HashMap<SampleGuid, PrivateBucket>) -> BTreeSet<i64> {
     let mut blocks_per_position: HashMap<i64, BTreeSet<i64>> = HashMap::new();
     for block in blocks {
@@ -393,26 +429,32 @@ fn recurrent_positions(blocks: &[Block], private: &HashMap<SampleGuid, PrivateBu
         .collect()
 }
 
-/// Insert **candidate branches**: for every block, group its members by the private variants they
-/// share, and hang a synthetic child block off each group of two or more.
+/// Add the **candidate branches**. For each block, the function groups the members by the private
+/// variants that they share. It then adds a new child block below each group of two members or
+/// more.
 ///
-/// Variants shared by exactly the same set of members are phylogenetically equivalent within this
-/// cohort — the same reasoning that makes a named node's SNPs a block — so each distinct member set
-/// becomes one candidate block carrying all of them.
+/// Variants that exactly the same set of members carries are equivalent inside this cohort. The
+/// SNPs of a named node form a block for the same reason. So each distinct member set becomes one
+/// candidate block, and that block carries each of those variants.
 ///
-/// Groups are accepted greedily, largest first, and only while they stay **laminar**: any two
-/// accepted sets must be disjoint or nested. A set that partly overlaps an accepted one is a
-/// conflict (a recurrent call, or real phylogenetic disagreement) and is counted, not forced into a
-/// shape it does not fit. Returns the blocks plus that conflict count.
+/// The function accepts a group at once, and it takes the largest group first. It accepts a group
+/// only while the set stays **laminar**. Two accepted sets must share no member, or one set must
+/// hold the other.
 ///
-/// Each member then lands in the smallest accepted set containing it — unambiguous, because a
-/// laminar family is a tree — and members in no set stay on their named block.
+/// A set that shares only some members with an accepted set is a conflict. The cause is a recurrent
+/// call, or a real disagreement in the phylogeny. The function counts such a set. It does not force
+/// the set into a shape that does not fit. The function returns the blocks and that count of
+/// conflicts.
+///
+/// Each member then goes to the smallest accepted set that holds it. That set is unique, because a
+/// laminar family of sets is a tree. A member in no set stays on its named block.
 pub(crate) fn insert_candidate_branches(
     blocks: Vec<Block>,
     private: &HashMap<SampleGuid, PrivateBucket>,
 ) -> (Vec<Block>, usize, usize) {
-    // Computed across all blocks before any group is accepted — a position defining branches under
-    // two parents is disqualified everywhere, not just wherever it happens to be seen second.
+    // The code calculates this set across each block, before it accepts any group. A position
+    // that defines a branch below two parents fails everywhere. It does not fail only at the
+    // second place where the code reads it.
     let recurrent: BTreeSet<i64> = recurrent_positions(&blocks, private)
         .into_iter()
         .chain(population_shared_positions(&blocks, private))
@@ -427,7 +469,8 @@ pub(crate) fn insert_candidate_branches(
             out.push(block);
             continue;
         }
-        // position → the members of *this block* carrying it, keyed by index into `block.members`.
+        // A map from a position to the members of *this block* that hold it. The key of a member
+        // is its index in `block.members`.
         let mut carriers: HashMap<i64, BTreeSet<usize>> = HashMap::new();
         for (i, m) in block.members.iter().enumerate() {
             let Some(bucket) = private.get(&m.guid) else { continue };
@@ -451,8 +494,9 @@ pub(crate) fn insert_candidate_branches(
             continue;
         }
 
-        // Largest first, so a broader branch is accepted before the finer ones nested inside it.
-        // Ties broken deterministically: more shared variants, then lowest position.
+        // Take the largest group first, so the code accepts a wide branch before the finer
+        // branches inside it. Two groups of the same size compare on the count of shared variants,
+        // and then on the lowest position. So the order is always the same.
         let mut ordered: Vec<(BTreeSet<usize>, Vec<i64>)> = groups.into_iter().collect();
         for (_, positions) in &mut ordered {
             positions.sort_unstable();
@@ -490,7 +534,7 @@ pub(crate) fn insert_candidate_branches(
                 .map(|(_, (_, _, id))| *id)
         };
 
-        // Each member goes to the smallest accepted set containing it.
+        // Each member goes to the smallest accepted set that holds it.
         let owner: HashMap<usize, i64> = (0..block.members.len())
             .filter_map(|m| {
                 accepted
@@ -598,15 +642,18 @@ pub(crate) fn insert_candidate_branches(
 /// Fold runs of **member-less single-child** branches into the branch below them, when the run is at
 /// least `min_run` long.
 ///
-/// An induced subtree over a deep haplotree is mostly such chains: intermediate branches no member
-/// sits on that split nothing within this cohort. Merging them is not a display trick — within this
-/// cohort those branches genuinely are one undivided block, so the absorbed loci join the survivor's
-/// own (root-most first) and the absorbed names are kept in [`Block::collapsed`].
+/// A subtree over a deep haplotree holds mostly such chains. Those are the branches that no member
+/// sits on, and that divide nothing inside this cohort.
 ///
-/// `subtree_members` survives untouched: an absorbed node has no members of its own and exactly one
-/// child, so its count already equals the survivor's.
+/// The join is not only a change to the display. Inside this cohort those branches are one block
+/// that nothing divides. So the loci of an absorbed branch go to the branch that stays, with the
+/// loci nearest the root first. [`Block::collapsed`] keeps the names of the absorbed branches.
 ///
-/// Pure — no tree, no I/O — so it is unit-testable on a hand-built `Vec<Block>`.
+/// The function does not change `subtree_members`. An absorbed node has no member of its own and
+/// has one child. So its count is already the count of the branch that stays.
+///
+/// The function is pure. It reads no tree and does no I/O, so a unit test can call it with a
+/// `Vec<Block>` that the test builds.
 pub(crate) fn collapse_blocks(blocks: Vec<Block>, min_run: usize) -> Vec<Block> {
     if blocks.is_empty() || min_run == 0 {
         return blocks;
@@ -626,8 +673,9 @@ pub(crate) fn collapse_blocks(blocks: Vec<Block>, min_run: usize) -> Vec<Block> 
     let mut by_id: HashMap<i64, Block> = blocks.iter().map(|b| (b.node_id, b.clone())).collect();
     let mut absorbed: HashSet<i64> = HashSet::new();
 
-    // `blocks` is pre-order, so a run's root-most node is always reached first. A node whose parent
-    // is itself absorbable is therefore mid-run and already handled by the run's head.
+    // The `blocks` list is in pre-order, so the code always reaches the node of a run that is
+    // nearest the root first. A node whose parent the code can also absorb is in the middle of a
+    // run. So the head of that run already covers it.
     for b in &blocks {
         if !absorbable(b) {
             continue;
@@ -671,8 +719,9 @@ pub(crate) fn collapse_blocks(blocks: Vec<Block>, min_run: usize) -> Vec<Block> 
         target.parent = head_parent;
     }
 
-    // Re-emit in the original pre-order minus the absorbed nodes, depth recomputed against the
-    // surviving parents. Rewiring only ever moves a node *up* to an ancestor, so pre-order holds.
+    // Write the list again in the first pre-order, with no absorbed node. The code calculates each
+    // depth against the parents that stay. A change to a link only moves a node *up* to an
+    // ancestor, so the list stays in pre-order.
     let mut depth: HashMap<i64, usize> = HashMap::new();
     let mut out = Vec::with_capacity(blocks.len() - absorbed.len());
     for b in &blocks {
@@ -764,10 +813,12 @@ mod tests {
     ///       └─> D(smith)
     /// ```
     ///
-    /// A run of exactly two member-less single-child branches (`A`, `B`) above a placed one. `D`
-    /// keeps `root` a branch point, so the run's head is `A` — otherwise `root` would be absorbable
-    /// too and the whole spine would fold (which is correct, and is what
-    /// `collapse_stops_a_run_at_a_placed_branch` covers).
+    /// A run of two branches, `A` and `B`, above a branch with a member. Each branch in the run
+    /// has one child and no member.
+    ///
+    /// The member `D` keeps `root` a point where the tree divides. So the head of the run is `A`.
+    /// Without `D`, the code could also absorb `root`, and the full line would become one block.
+    /// That result is correct, and `collapse_stops_a_run_at_a_placed_branch` covers it.
     fn chain() -> Vec<Block> {
         let mut b = vec![
             block(1, "root", 0, &[]),
@@ -814,7 +865,7 @@ mod tests {
 
     #[test]
     fn collapse_respects_min_run() {
-        // With a threshold of 3, the run of 2 is left alone.
+        // With a limit of 3, the code does not change the run of 2.
         let out = collapse_blocks(chain(), 3);
         let names: Vec<&str> = out.iter().map(|b| b.name.as_str()).collect();
         assert_eq!(names, vec!["root", "A", "B", "C", "D"]);
@@ -897,7 +948,8 @@ mod tests {
         assert!(cand.name.is_empty(), "the view localizes a candidate's label");
         assert_eq!(cand.parent, Some(1));
         assert_eq!(cand.depth, 1);
-        // Both shared positions are equivalent on this branch — one block, two loci.
+        // The two shared positions are equivalent on this branch. They give one block with two
+        // loci.
         let mut pos: Vec<i64> = cand.loci.iter().map(|l| l.position).collect();
         pos.sort_unstable();
         assert_eq!(pos, vec![100_000, 200_000]);
@@ -926,8 +978,9 @@ mod tests {
     #[test]
     fn structural_region_and_off_path_calls_never_form_a_branch() {
         let b = block(1, "R-X", 0, &["kane", "smith"]);
-        // Both men "share" a palindrome call and a known off-path SNP. Neither is evidence of a
-        // shared ancestor — the first is a paralog artefact, the second an existing branch.
+        // The two men "share" a call in a palindrome and a known SNP that is off the path.
+        // Neither call shows a shared ancestor. The first is a paralog artefact. The second marks
+        // a branch that already exists.
         let shared = PrivateBucket {
             terminal: "R-X".into(),
             variants: vec![
@@ -943,7 +996,8 @@ mod tests {
     #[test]
     fn nested_sharing_nests_the_candidate_branches() {
         let b = block(1, "R-X", 0, &["a", "b", "c"]);
-        // All three share 100; a and b also share 200 — a finer branch inside the broader one.
+        // Each of the three members shares position 100. Members a and b also share position 200,
+        // which gives a finer branch inside the wider one.
         let p = privates(
             &b,
             &[
@@ -971,7 +1025,7 @@ mod tests {
         let mut fine_names: Vec<&str> = fine.members.iter().map(|m| m.name.as_str()).collect();
         fine_names.sort_unstable();
         assert_eq!(fine_names, vec!["a", "b"]);
-        // Pre-order: a parent is emitted before its child.
+        // The list is in pre-order, so a parent comes before its child.
         let pos = |id: i64| out.iter().position(|x| x.node_id == id).unwrap();
         assert!(pos(broad.node_id) < pos(fine.node_id));
     }
@@ -979,8 +1033,9 @@ mod tests {
     #[test]
     fn overlapping_non_nested_sharing_is_counted_as_a_conflict_not_forced() {
         let b = block(1, "R-X", 0, &["a", "b", "c"]);
-        // {a,b} share 100; {b,c} share 200. Neither set contains the other, so they can not both be
-        // branches of one tree — the smaller-ranked one is dropped and counted.
+        // The set {a,b} shares position 100, and the set {b,c} shares position 200. Neither set
+        // holds the other. So one tree can not hold both as a branch. The code removes the set with
+        // the lower rank and counts it.
         let p = privates(
             &b,
             &[bucket(&[100_000]), bucket(&[100_000, 200_000]), bucket(&[200_000])],
@@ -997,8 +1052,8 @@ mod tests {
     #[test]
     fn a_member_with_no_computed_private_y_is_simply_not_grouped() {
         let b = block(1, "R-X", 0, &["kane", "smith"]);
-        // Only `kane` has a bucket at all — `smith` was never analyzed, which is not the same as
-        // having no private variants.
+        // Only `kane` has a bucket. No analysis ran for `smith`, and that state is not the same
+        // as a subject with no private variant.
         let p: HashMap<SampleGuid, PrivateBucket> = [(b.members[0].guid, bucket(&[100]))].into_iter().collect();
         let (out, _, _) = insert_candidate_branches(vec![b], &p);
         assert_eq!(out.len(), 1);
@@ -1009,8 +1064,9 @@ mod tests {
 
     #[test]
     fn clustered_calls_are_dropped_whole() {
-        // Six "novel" calls inside 32 bp is one misaligned read, not six mutations — the shape that
-        // produced most of the first candidate branches on the CTS4466 cohort.
+        // Six "new" calls inside 32 bp come from one read that the mapper placed wrongly. They are
+        // not six mutations. This shape produced most of the first candidate branches on the
+        // CTS4466 cohort.
         let cluster = bucket(&[16342231, 16342238, 16342245, 16342253, 16342258, 16342263]);
         assert!(
             candidate_positions(&cluster).is_empty(),
@@ -1025,9 +1081,9 @@ mod tests {
 
     #[test]
     fn a_position_defining_branches_under_two_parents_is_rejected() {
-        // 11311865 was shared by two members under one block *and* two under another. A variant that
-        // arose twice can not mark a new branch, and the laminar check can't see it — it reasons
-        // inside a single block.
+        // Two members below one block shared position 11311865, and two members below another
+        // block also shared it. A variant that occurred two times can not mark a new branch. The
+        // laminar test can not find this state, because it examines one block only.
         let mut left = block(1, "R-A", 0, &["a", "b"]);
         left.subtree_members = 2;
         let mut right = block(2, "R-B", 0, &["c", "d"]);
@@ -1068,9 +1124,9 @@ mod tests {
 
     #[test]
     fn candidates_clustering_across_the_cohort_are_all_rejected() {
-        // The 56.83 Mb case: three branches with *different* member sets inside 567 bp. Three
-        // independent lineage events in under a kilobase is not a thing; one repeat unit
-        // mis-mapping across several donors is.
+        // The case at 56.83 Mb. Three branches with *different* member sets are inside 567 bp.
+        // Three separate lineage events inside one kilobase do not occur. One repeat unit that the
+        // mapper places wrongly across some donors does occur.
         let mut a = block(1, "R-A", 0, &["a", "b"]);
         a.subtree_members = 2;
         let mut b = block(2, "R-B", 0, &["c", "d"]);
@@ -1108,8 +1164,8 @@ mod tests {
 
     // ---- export ---------------------------------------------------------------
 
-    /// A two-block tree with one candidate branch and one unplaced member — enough to exercise
-    /// every column the export has to get right.
+    /// A tree with two blocks, one candidate branch, and one member with no placement. This shape
+    /// covers each column that the export must write correctly.
     fn exportable() -> ProjectBlockTree {
         let mut named = block(1, "R-X", 0, &["kane"]);
         named.subtree_members = 3;

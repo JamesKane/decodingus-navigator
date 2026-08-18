@@ -2,20 +2,25 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
-/// Every analysis artifact of a set of alignments, pre-loaded and indexed for the report builders.
+/// Each analysis artifact of a set of alignments. The code reads them in advance and indexes them
+/// for the report builders.
 ///
-/// Reading one cached result through [`App::load_analysis`] costs two queries — the artifact, then
-/// the `alignment` row it needs to stat the BAM for staleness — plus that stat. A project
-/// report reads five kinds per alignment for every member, so the per-cell form meant thousands of
-/// round-trips to open one tab. This loads them all in a single `IN` query and stats each BAM once.
+/// A read of one cached result through [`App::load_analysis`] costs two queries and one stat call.
+/// The queries read the artifact and then the `alignment` row, and the code needs that row to stat
+/// the BAM file.
 ///
-/// The staleness rule is the same one [`App::load_analysis`] applies: a cached payload is a miss
-/// when the source file's `mtime:size` has changed since it was computed.
+/// A project report reads five kinds of artifact for each alignment of each member. So the earlier
+/// form, one read for each cell, sent thousands of queries to open one tab. This type reads each
+/// artifact in one `IN` query and stats each BAM file one time.
+///
+/// The rule for an old result is the rule of [`App::load_analysis`]. A cached payload is absent when
+/// the `mtime:size` value of the source file changed after the calculation.
 struct AlignmentArtifacts {
     /// `(alignment id, kind, algorithm version)` → the stored artifact.
     by_key: HashMap<(i64, String, String), AnalysisArtifact>,
-    /// Current source signature per alignment (`None` when the file is gone or unstattable, which
-    /// means "trust the cache" — there is nothing to recompute against).
+    /// The current source signature of each alignment. A value of `None` means that the file is
+    /// absent, or that the operating system can not read its metadata. The code then trusts the
+    /// cache, because it has no value to compare.
     sigs: HashMap<i64, Option<String>>,
 }
 
@@ -27,7 +32,8 @@ impl AlignmentArtifacts {
             .into_iter()
             .map(|a| ((a.alignment_id, a.kind.clone(), a.algorithm_version.clone()), a))
             .collect();
-        // One stat per alignment, from the row we already hold — not one per artifact read.
+        // One stat call for each alignment, from the row that the code already holds. The code
+        // does not make one stat call for each artifact.
         let sigs = alignments
             .iter()
             .map(|a| {
@@ -38,13 +44,14 @@ impl AlignmentArtifacts {
         Ok(Self { by_key, sigs })
     }
 
-    /// The stored artifact, with no staleness check — the equivalent of a bare `artifact::get`.
+    /// The stored artifact, with no check for an old result. The method does the same work as a
+    /// plain `artifact::get` call.
     fn raw(&self, alignment_id: i64, kind: &str, version: &str) -> Option<&AnalysisArtifact> {
         self.by_key.get(&(alignment_id, kind.to_string(), version.to_string()))
     }
 
-    /// The decoded payload, or `None` when absent, stale, or undecodable — matching
-    /// [`App::load_analysis`].
+    /// The decoded payload. The method returns `None` when the artifact is absent, when it is out
+    /// of date, or when the decoder refuses it. [`App::load_analysis`] behaves in the same way.
     fn fresh<T: DeserializeOwned>(&self, alignment_id: i64, kind: &str, version: &str) -> Option<T> {
         let a = self.raw(alignment_id, kind, version)?;
         let current = self.sigs.get(&alignment_id).and_then(|s| s.as_deref());
@@ -68,7 +75,8 @@ impl AlignmentArtifacts {
 impl App {
     // ---- queries -----------------------------------------------------------
 
-    /// Biosamples belonging to a project (M:N membership ∪ legacy home column).
+    /// The biosamples of a project. The set is the union of the M:N memberships and the old home
+    /// column.
     pub async fn list_biosamples(&self, project_id: i64) -> Result<Vec<Biosample>, AppError> {
         Ok(biosample::list_members_for_project(self.store.pool(), project_id).await?)
     }
@@ -78,10 +86,14 @@ impl App {
         Ok(biosample::list_all(self.store.pool()).await?)
     }
 
-    /// Bulk per-subject analysis status for the Subjects list, in one query (mirrors
-    /// [`haplogroup_terminals`](Self::haplogroup_terminals)). A subject is `Complete` once every
-    /// alignment it owns has a full `coverage` artifact at the current version; otherwise `Pending`.
-    /// Subjects with no alignments are omitted (the list shows no status for them).
+    /// The analysis status of each subject for the Subjects list, in one query. The method has the
+    /// same shape as [`haplogroup_terminals`](Self::haplogroup_terminals).
+    ///
+    /// A subject is `Complete` when each of its alignments has a full `coverage` artifact at the
+    /// current version. If not, the subject is `Pending`.
+    ///
+    /// The result holds no subject with no alignment, and the list then shows no status for such a
+    /// subject.
     pub async fn subject_analysis_status(&self) -> Result<HashMap<SampleGuid, SubjectAnalysisStatus>, AppError> {
         let census = artifact::analyzed_census(self.store.pool(), "coverage", coverage::COVERAGE_VERSION).await?;
         Ok(census
@@ -100,10 +112,13 @@ impl App {
     /// Sequence runs for a biosample.
     pub async fn list_sequence_runs(&self, biosample_guid: SampleGuid) -> Result<Vec<SequenceRun>, AppError> {
         let mut runs = sequence_run::list_for_biosample(self.store.pool(), biosample_guid).await?;
-        // One-time backfill: runs analyzed before read stats were mirrored onto the run carry no
-        // `total_reads` (and older imports no `library_layout`). Recover them from a cached
-        // `read_metrics` artifact on any of the run's alignments and persist, so the card shows
-        // library stats + PE/SE without a re-walk.
+        // A backfill that runs one time. A run that the app analyzed before it copied the read
+        // statistics to the run row holds no `total_reads` value. An older import also holds no
+        // `library_layout` value.
+        //
+        // The code reads those values from a cached `read_metrics` artifact on any alignment of the
+        // run, and writes them to the run row. The card then shows the library statistics and the
+        // PE or SE value with no second walk.
         for run in &mut runs {
             if run.total_reads.is_some() && run.library_layout.is_some() && run.total_bases.is_some() {
                 continue;

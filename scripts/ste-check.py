@@ -126,7 +126,7 @@ ING_OK = {
     "processing", "pending", "missing", "remaining", "existing", "following",
     "corresponding", "underlying", "according", "including",
     # Technical Names from documents/STE-dictionary.md that end in -ing.
-    "operating", "genotyping", "pacing", "sampling", "scaling", "streaming", "spilling", "phasing",
+    "operating", "genotyping", "reasoning", "pacing", "sampling", "scaling", "streaming", "spilling", "phasing",
     "binning", "masking", "trimming", "clipping", "calling", "sorting", "merging",
     "reading", "writing", "counting", "timing", "build", "backing",
 }

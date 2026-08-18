@@ -1,10 +1,16 @@
-//! Local-LLM client (OpenAI-compatible): configuration + resolvers, health/model discovery (M0),
-//! and brief narration via chat completions (M1).
+//! The client for a local LLM, in the OpenAI-compatible form.
 //!
-//! The entire feature is **local-only** by design (see `documents/design/local-llm-integration.md`):
-//! Navigator is a *client* of a model server the user runs (LM Studio / Ollama / llama.cpp). There is
-//! no hosted-provider path and no API key. The transport is the OpenAI Chat Completions wire format,
-//! the common denominator across local runtimes, spoken over the app's existing `reqwest` client.
+//! This module holds the configuration and its resolvers. It also holds the health check with the
+//! model list (M0), and the narration of a brief through chat completions (M1).
+//!
+//! The full feature is **local only**, by design. See
+//! `documents/design/local-llm-integration.md`.
+//!
+//! Navigator is a *client* of a model server that the user runs. That server is LM Studio, Ollama,
+//! or llama.cpp. There is no path to a hosted provider, and there is no API key.
+//!
+//! The transport is the OpenAI Chat Completions wire format, which each local runtime accepts. The
+//! module sends each request with the `reqwest` client of the app.
 
 use crate::{App, AppError, AppSettings};
 use navigator_domain::brief::SubjectBrief;
@@ -16,19 +22,24 @@ use navigator_domain::results_context::{
 use navigator_refgenome::cache as refgenome_cache;
 use serde::{Deserialize, Serialize};
 
-/// LM Studio's default OpenAI-compatible base URL — the happy-path local server.
+/// The default OpenAI-compatible base URL of LM Studio. That server is the one that most users
+/// run.
 pub const DEFAULT_LLM_BASE_URL: &str = "http://localhost:1234/v1";
 
-/// Default max response tokens. Generous so a reasoning model has room for its full chain-of-thought
-/// plus the answer (a small cap is consumed entirely by reasoning and `content` comes back empty).
-/// It is a ceiling, not a target — non-reasoning models stop well before it.
+/// The default maximum count of response tokens.
+///
+/// The value is large, so a model that reasons has space for each internal step and for the answer.
+/// With a small value, the internal steps use every token and the `content` field comes back empty.
+///
+/// The value is a limit and not a target. A model that does not reason stops long before it.
 pub const DEFAULT_LLM_MAX_TOKENS: u32 = 8192;
 
 /// Resolved local-LLM configuration (env → settings → default, like the other resolvers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlmConfig {
     pub enabled: bool,
-    /// Base URL including the OpenAI-compatible path prefix (e.g. `.../v1`), no trailing slash.
+    /// The base URL with the OpenAI-compatible path prefix, such as `.../v1`. It must not end with
+    /// a slash.
     pub base_url: String,
     /// Model id to request, or `None` to let the server use its single loaded model.
     pub model: Option<String>,
@@ -61,7 +72,7 @@ fn resolve_max_tokens(env: Option<String>, settings: Option<u32>) -> u32 {
         .unwrap_or(DEFAULT_LLM_MAX_TOKENS)
 }
 
-/// The configured local-LLM settings, honoring `NAVIGATOR_LLM_*` over the persisted values.
+/// The settings of the local LLM. A `NAVIGATOR_LLM_*` variable has priority over a stored value.
 pub fn llm_config() -> LlmConfig {
     let s = AppSettings::load();
     LlmConfig {
@@ -72,13 +83,17 @@ pub fn llm_config() -> LlmConfig {
     }
 }
 
-/// Is `base_url`'s host a loopback address? Drives the Settings warning when a user points the client
-/// at a non-local server (results would leave the machine). Conservative: anything we can't confirm
-/// is loopback is treated as remote.
+/// Shows whether the host of `base_url` is a loopback address.
+///
+/// The Settings screen uses this result. It gives a warning when the user points the client at a
+/// server on another machine. The results then cross the network.
+///
+/// The test is careful. It treats each host that it can not confirm as a loopback address as a
+/// remote host.
 pub fn is_loopback_url(base_url: &str) -> bool {
     let after_scheme = base_url.split_once("://").map(|(_, r)| r).unwrap_or(base_url);
     let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
-    // Strip an IPv6 bracket or a trailing :port to get the bare host.
+    // Remove an IPv6 bracket, and remove a `:port` at the end, to get the host alone.
     let host = if let Some(rest) = authority.strip_prefix('[') {
         rest.split(']').next().unwrap_or("")
     } else {
@@ -106,7 +121,8 @@ struct ChatMessage {
     content: String,
 }
 
-/// One prior turn of an "ask my results" conversation, carried by the UI and replayed as context.
+/// One earlier turn of an "ask my results" conversation. The UI holds it and sends it again as
+/// context.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatTurn {
     pub from_user: bool,
@@ -120,9 +136,13 @@ struct ChatRequest {
     temperature: f32,
     max_tokens: u32,
     stream: bool,
-    /// llama.cpp/LM Studio Jinja-template kwargs. We pass `{"enable_thinking": false}` so reasoning
-    /// models (Gemma 4, Qwen, DeepSeek-R1) never emit a thinking channel — saving the tokens/latency
-    /// `strip_reasoning` would otherwise discard. Skipped from the body when unset.
+    /// The Jinja-template arguments of llama.cpp and LM Studio.
+    ///
+    /// The app sends `{"enable_thinking": false}`. A model that reasons, such as Gemma 4, Qwen, or
+    /// DeepSeek-R1, then writes no internal channel. This setting saves the tokens and the time
+    /// that `strip_reasoning` would remove.
+    ///
+    /// The app leaves this field out of the body when it holds no value.
     #[serde(skip_serializing_if = "Option::is_none")]
     chat_template_kwargs: Option<serde_json::Value>,
 }
@@ -130,7 +150,8 @@ struct ChatRequest {
 /// One parsed SSE `data:` chunk from a streamed chat completion.
 struct StreamDelta {
     content: Option<String>,
-    /// `"stop"` | `"length"` | … — `"length"` on a reasoning model means it never reached the answer.
+    /// The reason that the model stopped, such as `"stop"` or `"length"`. A value of `"length"`
+    /// from a model that reasons shows that the model never reached the answer.
     finish_reason: Option<String>,
     model: Option<String>,
 }
@@ -156,18 +177,21 @@ fn parse_stream_event(data: &str) -> Option<StreamDelta> {
     })
 }
 
-/// Strip a reasoning model's chain-of-thought from the visible answer: drop any `<think>…</think>`
-/// blocks (some servers inline reasoning in `content` this way) and anything before a closing
-/// `</think>`. Returns the trimmed final answer.
+/// Remove the internal steps of a reasoning model from the answer that the user sees.
+///
+/// The function removes each `<think>…</think>` block, because some servers put those steps in
+/// `content`. It also removes each character before the last `</think>` tag. It returns the final
+/// answer with no space at the start and no space at the end.
 fn strip_reasoning(content: &str) -> String {
-    // Reasoning models emit a leading `<think>…</think>` block then the answer; keep only what
-    // follows the last close tag.
+    // A reasoning model writes a `<think>…</think>` block first, and the answer after it. Keep
+    // only the text after the last close tag.
     let after = match content.rfind("</think>") {
         Some(pos) => &content[pos + "</think>".len()..],
         None => content,
     };
-    // A remaining opening tag means reasoning was truncated with no answer (it ran out of budget) →
-    // drop it so the result is empty and the caller reports the reasoning-ran-out error.
+    // An open tag with no close tag shows that the model stopped in the middle of its internal
+    // steps, with no answer. It used each available token. Remove the text, so the result is empty
+    // and the caller reports that fault.
     let answer = match after.find("<think>") {
         Some(open) => &after[..open],
         None => after,
@@ -175,8 +199,9 @@ fn strip_reasoning(content: &str) -> String {
     answer.trim().to_string()
 }
 
-/// An AI-assisted narration of a [`SubjectBrief`], with the model that produced it (for labelling).
-/// Always rendered *alongside* the structured cards, never instead of them.
+/// A narration of a [`SubjectBrief`] from an AI model, with the name of that model for the label.
+/// The UI always shows this text *beside* the structured cards. It never shows the text in place of
+/// those cards.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NarratedBrief {
     pub prose: String,
@@ -201,9 +226,12 @@ impl App {
         self.llm_models_at(&cfg.base_url).await
     }
 
-    /// The on-disk cached narration for a brief, if one exists for the currently-configured model —
-    /// a **no-network** lookup (only when a model is explicitly set) used to fold the AI story into
-    /// the exported "DNA Story" without triggering generation.
+    /// The narration of a brief from the disk cache, when the cache holds one for the current
+    /// model.
+    ///
+    /// This lookup uses **no network**, and it runs only when the settings name a model. The
+    /// exported "DNA Story" uses it to add the AI text. The lookup never starts a new
+    /// generation.
     pub fn cached_narration(&self, brief: &SubjectBrief) -> Option<NarratedBrief> {
         let cfg = llm_config();
         let model = cfg.model?; // explicit only — avoid resolving the loaded model (a network call)
@@ -215,9 +243,13 @@ impl App {
             .and_then(|s| serde_json::from_str(&s).ok())
     }
 
-    /// Health check + model discovery against an explicit base URL — used by the Settings
-    /// "Test connection" button so the user can verify a URL *before* saving it. `GET {base}/models`
-    /// (the OpenAI-compatible discovery endpoint). Errors are plain-language for the UI.
+    /// Check the health of a server at an explicit base URL, and list its models.
+    ///
+    /// The "Test connection" button of the Settings screen calls this method. So the user can check
+    /// a URL *before* the app stores it.
+    ///
+    /// The method sends `GET {base}/models`, which is the OpenAI-compatible endpoint for a model
+    /// list. Each error message is in plain language for the UI.
     pub async fn llm_models_at(&self, base_url: &str) -> Result<Vec<String>, AppError> {
         let base = base_url.trim().trim_end_matches('/');
         if base.is_empty() {
@@ -245,17 +277,26 @@ impl App {
         Ok(parsed.data.into_iter().map(|m| m.id).collect())
     }
 
-    /// Build the subject's brief and narrate it via the local model (M1 entry point used by the UI).
+    /// Build the brief of the subject, and give it to the local model for a narration. The UI calls
+    /// this method, which is the entry point of M1.
     pub async fn narrate_subject(&self, guid: SampleGuid) -> Result<NarratedBrief, AppError> {
         let brief = self.subject_brief(guid).await?;
         self.narrate_brief(&brief).await
     }
 
-    /// Ask the local model to rewrite the brief's facts as casual-reader prose. Grounded by
-    /// [`llm_prompt`] (facts-only, no health, preserve uncertainty); cached on disk keyed by the
-    /// fact sheet + model (so changing inputs or model regenerates, and re-opening is free). Returns
-    /// `Err(AppError::Llm)` on disabled / unreachable / bad / unsafe output — the UI then keeps the
-    /// deterministic brief unchanged. Never the *only* output the user sees.
+    /// Ask the local model to write the facts of the brief as prose for a reader who is not a
+    /// specialist.
+    ///
+    /// [`llm_prompt`] gives the model its instructions. Those instructions allow facts only. They
+    /// do not allow health content, and they keep each statement of uncertainty.
+    ///
+    /// The disk cache holds the result. The key is the fact sheet with the model. So a change to the
+    /// input or to the model gives a new narration, and a second view of the same brief costs
+    /// nothing.
+    ///
+    /// The method returns `Err(AppError::Llm)` when the feature is off, when the server does not
+    /// answer, or when the output is bad or unsafe. The UI then shows the fixed brief with no
+    /// change. This text is never the *only* output that the user sees.
     pub async fn narrate_brief(&self, brief: &SubjectBrief) -> Result<NarratedBrief, AppError> {
         self.narrate_brief_streaming(brief, |_| {}).await
     }
@@ -290,11 +331,15 @@ impl App {
             .await
     }
 
-    /// Explain a single result signal (M5 per-tab "Explain this") in plain language, streaming the
-    /// prose to `on_chunk`. Grounded in only that signal's curated section (see
-    /// [`navigator_domain::results_context::signal_section`]); cached and health-guarded like brief
-    /// narration. `Err` when the assistant is off / unreachable / the subject has nothing for that
-    /// signal — the UI then just does not show an explanation.
+    /// Explain one result signal in plain language, for the "Explain this" button of M5 on each
+    /// tab. The method sends the prose to `on_chunk` as the model writes it.
+    ///
+    /// The model receives only the section for that signal. See
+    /// [`navigator_domain::results_context::signal_section`]. The cache and the health guard work as
+    /// they do for the narration of a brief.
+    ///
+    /// The method returns `Err` when the assistant is off, when the server does not answer, or when
+    /// the subject has no data for that signal. The UI then shows no explanation.
     pub async fn narrate_signal_streaming(
         &self,
         guid: SampleGuid,
@@ -315,12 +360,18 @@ impl App {
             .await
     }
 
-    /// Shared cached-streaming narration core for [`narrate_brief_streaming`] and
-    /// [`narrate_signal_streaming`]: cache-first (a hit replays the cached prose through `on_chunk`),
-    /// else stream a completion, reject health-straying output, and cache. The cache key is
-    /// `model + system + facts`, so changing the prompt, the facts, or the model regenerates rather
-    /// than serving a stale narration written under the old instructions. `subdir` separates brief
-    /// vs per-signal caches under `briefs/`.
+    /// The shared core that [`narrate_brief_streaming`] and [`narrate_signal_streaming`] call.
+    ///
+    /// The method reads the cache first. On a hit, it sends the stored prose through `on_chunk`. If
+    /// there is no hit, it reads a completion from the model, refuses output with health content,
+    /// and writes the result to the cache.
+    ///
+    /// The cache key is `model + system + facts`. So a change to the prompt, to the facts, or to the
+    /// model gives a new narration. The method never returns text that an older set of instructions
+    /// produced.
+    ///
+    /// `subdir` keeps the cache of a brief separate from the cache of each signal, below
+    /// `briefs/`.
     async fn run_cached_narration(
         &self,
         cfg: &LlmConfig,
@@ -374,10 +425,17 @@ impl App {
         Ok(result)
     }
 
-    /// Answer one "ask my results" question, grounded in the subject's brief (M2). The brief's fact
-    /// sheet is the only source of facts; chat `history` is replayed for continuity. Off / unreachable
-    /// / bad output → `Err`. A clearly health/medical question (in or out) is met with a fixed
-    /// ancestry-only deflection instead of a model answer.
+    /// Answer one "ask my results" question from the brief of the subject (M2).
+    ///
+    /// The fact sheet of the brief is the only source of facts. The method sends the chat `history`
+    /// again, so the conversation continues.
+    ///
+    /// The method returns `Err` when the feature is off, when the server does not answer, or when
+    /// the output is bad.
+    ///
+    /// A clear medical question receives a fixed answer about the ancestry limits of the app, and
+    /// not an answer from the model. The method applies that rule to the question and to the
+    /// answer.
     pub async fn answer_question(
         &self,
         guid: SampleGuid,
@@ -387,8 +445,9 @@ impl App {
         self.answer_question_streaming(guid, history, question, |_| {}).await
     }
 
-    /// Streaming variant of [`answer_question`]: visible answer text is sent to `on_chunk` as it
-    /// arrives (the final return value is authoritative). The scope-guard deflections do not stream.
+    /// The stream form of [`answer_question`]. The method sends each part of the answer to
+    /// `on_chunk` as it arrives, and the return value at the end has authority. A fixed answer from
+    /// the scope guard does not stream.
     pub async fn answer_question_streaming(
         &self,
         guid: SampleGuid,
@@ -400,7 +459,8 @@ impl App {
         if !cfg.enabled {
             return Err(AppError::Llm("The AI assistant is turned off.".into()));
         }
-        // Incoming scope guard: do not even ask the model a medical question.
+        // The scope guard for the question. The app must not send a medical question to the
+        // model.
         if llm_prompt::mentions_health(&question) {
             return Ok(llm_prompt::health_deflection().to_string());
         }
@@ -434,24 +494,31 @@ impl App {
         let (answer, _) = self
             .chat_complete_streaming(&cfg, &model, messages, &mut on_chunk)
             .await?;
-        // Outgoing scope guard: a strayed answer is replaced by the deflection, not shown.
+        // The scope guard for the answer. The app replaces an answer that leaves the permitted
+        // subjects with the fixed text, and it never shows that answer.
         if llm_prompt::mentions_health(&answer) {
             return Ok(llm_prompt::health_deflection().to_string());
         }
         Ok(answer)
     }
 
-    /// Assemble the broader grounding context for the M4 chat: the subject brief plus curated,
-    /// summary-level facts for the other signals (genetic sex, Y-STR panels, private-Y variants,
-    /// mtDNA mutations, IBD matches). Every signal is best-effort — a missing or un-run one is simply
-    /// omitted, so the chat grounds in whatever the subject actually has without erroring out.
+    /// Build the wider context for the M4 chat. That context is the brief of the subject and a
+    /// summary of each other signal.
+    ///
+    /// The signals are the genetic sex, the Y-STR panels, the private-Y variants, the mtDNA
+    /// mutations, and the IBD matches.
+    ///
+    /// Each signal is optional. The method leaves out a signal that is absent, and a signal that no
+    /// analysis produced. So the chat uses the data that the subject has, and the method gives no
+    /// error.
     pub async fn results_context(&self, guid: SampleGuid) -> Result<ResultsContext, AppError> {
         use navigator_analysis::mtvariants::MtRegion;
         use navigator_analysis::sex::{Confidence, InferredSex};
 
         let brief = self.subject_brief(guid).await?;
 
-        // Genetic sex (needs an alignment; only a definite call is grounded).
+        // The genetic sex. This value needs an alignment, and the context holds only a definite
+        // call.
         let sex = match self.default_alignment_for_subject(guid).await? {
             Some((_, aln_id)) => self.cached_sex(aln_id).await?.and_then(|r| {
                 let label = match r.inferred_sex {
@@ -472,8 +539,9 @@ impl App {
             None => None,
         };
 
-        // Y-STR panels — name + marker count only (never the raw values: token cost, no answerable
-        // gain, and they are lineage patterns not facts to recite).
+        // The Y-STR panels, as a name and a count of markers. The context never holds the values
+        // themselves. Those values cost many tokens, they answer no question, and they are patterns
+        // of a lineage and not facts for the model to repeat.
         let ystr: Vec<YStrPanelFact> = self
             .list_str_profiles(guid)
             .await
@@ -485,7 +553,7 @@ impl App {
             })
             .collect();
 
-        // Private Y variants — the PrivateBucket confidence split.
+        // The private Y variants, as the confidence groups of the PrivateBucket type.
         let private_y = self.donor_private_y(guid).await?.map(|b| PrivateYFact {
             novel_unique: b.novel_in_unique_sequence(),
             off_path: b.off_path(),
@@ -553,8 +621,9 @@ impl App {
         })
     }
 
-    /// Resolve a concrete model id for a request — `cfg.model` if set, else the server's single
-    /// loaded model (servers like Ollama require a name).
+    /// Find the model id for a request. The method uses `cfg.model` when the settings hold it. If
+    /// not, it uses the one model that the server holds in memory. A server such as Ollama needs a
+    /// name.
     async fn resolve_model_id(&self, cfg: &LlmConfig) -> Result<String, AppError> {
         match cfg.model.clone() {
             Some(m) => Ok(m),
@@ -567,11 +636,15 @@ impl App {
         }
     }
 
-    /// Stream a chat completion (`stream: true`), forwarding visible answer text to `on_chunk` as it
-    /// arrives and returning the final `(answer, model)` with reasoning stripped. Reasoning is
-    /// suppressed live: only the post-`</think>` answer streams (so a thinking model shows nothing
-    /// until it starts answering). Uses `Response::chunk()` (no extra dependency). Shared by
-    /// narration and Q&A; callers apply their own health guard.
+    /// Read a chat completion as a stream, with `stream: true`. The method sends each part of the
+    /// answer to `on_chunk` as it arrives. It returns the final `(answer, model)` pair, and it
+    /// removes the internal steps of the model from that answer.
+    ///
+    /// The method also removes those steps during the stream. Only the text after `</think>`
+    /// reaches `on_chunk`. So a reasoning model shows nothing until it starts the answer.
+    ///
+    /// The method uses `Response::chunk()` and needs no other crate. The narration path and the
+    /// question path both call it, and each caller applies its own health guard.
     async fn chat_complete_streaming(
         &self,
         cfg: &LlmConfig,
@@ -585,8 +658,9 @@ impl App {
             temperature: 0.4,
             max_tokens: cfg.max_tokens,
             stream: true,
-            // Grounded "explain my results" never needs chain-of-thought — disable it at the server
-            // so Gemma 4 et al. do not waste tokens/latency on a reasoning channel we'd discard.
+            // An "explain my results" answer never needs the internal steps of the model. Turn
+            // them off at the server. A model such as Gemma 4 then does not use tokens and time on
+            // a channel that the app removes.
             chat_template_kwargs: Some(serde_json::json!({ "enable_thinking": false })),
         };
         let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
@@ -595,7 +669,8 @@ impl App {
             .http
             .post(&url)
             .json(&req)
-            // Generous — a reasoning model on a large local model can take minutes to think + answer.
+            // The timeout is long. A large reasoning model on this machine can need some minutes
+            // for its internal steps and the answer.
             .timeout(std::time::Duration::from_secs(300))
             .send()
             .await
@@ -691,9 +766,10 @@ mod tests {
     fn strip_reasoning_keeps_final_answer() {
         assert_eq!(strip_reasoning("<think>pondering…</think>The answer."), "The answer.");
         assert_eq!(strip_reasoning("  plain answer  "), "plain answer");
-        // Reasoning closed, then a stray re-open with no answer.
+        // The model closed its internal steps, then opened a second block and gave no answer.
         assert_eq!(strip_reasoning("<think>a</think>answer <think>b"), "answer");
-        // Unterminated reasoning (hit the cap) → nothing usable.
+        // The internal steps have no close tag, because the model used each available token. The
+        // result holds nothing that the app can use.
         assert_eq!(strip_reasoning("<think>still thinking"), "");
     }
 

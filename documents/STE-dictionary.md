@@ -47,6 +47,11 @@ BAM · BED · CRAM · FASTA · gVCF · index · JSON · masterVar · sidecar · 
 app · artifact · cache · command · event · liftover · migration · outbox · profile · project ·
 query · realignment · record · row · schema · store · table · workspace · worker
 
+### Local LLM
+
+chat completion · context · fact sheet · model · model server · narration · prompt ·
+reasoning model · token
+
 ### Federation
 
 AppView · attestation · consent · device key · DID · exchange · handle · IBD · PDS · record key ·
@@ -58,7 +63,8 @@ STE 2 forbids an `-ing` form as a verb or an adjective. These are declared nouns
 permitted: genotyping array · mapping · sequencing · painting · matching · encoding · decoding ·
 indexing · logging · polling · signing · setting · heading · listing · ordering · padding · casing ·
 tracking · caching · processing · operating system · pacing · sampling · scaling · streaming ·
-spilling · phasing · binning · masking · trimming · clipping · calling · sorting · merging
+spilling · phasing · binning · masking · trimming · clipping · calling · sorting · merging ·
+reasoning model · streaming
 
 ## Technical Verbs
 
