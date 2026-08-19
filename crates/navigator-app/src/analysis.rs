@@ -879,9 +879,8 @@ impl App {
         ))
     }
 
-    /// The alignments of the subject on the **most frequent reference build**. That build is the one
-    /// that the most alignments use, and the code compares the canonical build, so `chm13v2` and
-    /// `hs1` are the same build here.
+    /// The alignments of the subject on the **most frequent reference build**. The code compares the
+    /// canonical build, so `chm13v2` and `hs1` count as one build here.
     ///
     /// The consensus diploid genotype pools the alignments of one build only. The position of a
     /// de-novo variant does not compare across two builds, and a join by position needs a liftover
@@ -909,13 +908,23 @@ impl App {
             .collect())
     }
 
-    /// **Subject-level consensus** diploid genotype across the subject's same-build WGS alignments —
-    /// the joint genotype (opportunity #3). Per [`reconcile_site_genotypes`]: call each alignment's
-    /// variants (cached [`run_diploid_calls`]), union the SNV sites, force-genotype **every**
-    /// alignment at the union (so a site absent from one run is its real hom-ref / no-call), and vote
-    /// a depth-weighted 0/1/2 dosage per site. Returns the variant (het/hom-alt) consensus sites.
-    /// `contigs` limits the scan (None = all primary chromosomes). Heavy (a call pass + a force-call
-    /// pass per alignment) — an explicit export action; nothing is persisted.
+    /// The **consensus diploid genotype of a subject**, across its WGS alignments on one build. This
+    /// value is the joint genotype, which is opportunity #3.
+    ///
+    /// [`reconcile_site_genotypes`] does the work in four steps.
+    ///
+    /// It calls the variants of each alignment, and [`run_diploid_calls`] gives those calls from the
+    /// cache. It joins the SNV sites of each alignment into one set. It then genotypes **each**
+    /// alignment at each site of that set. So a site that one run does not hold gets its real
+    /// hom-ref call or no-call. It then votes a dosage of 0, 1, or 2 at each site, and a deeper run
+    /// has more weight.
+    ///
+    /// The method returns the consensus sites with a variant, which are the heterozygous sites and
+    /// the homozygous alternate sites. The `contigs` value limits the scan, and `None` reads each
+    /// primary chromosome.
+    ///
+    /// The method costs much: one call pass and one forced-call pass for each alignment. The user
+    /// starts it from the export screen, and the method stores nothing.
     pub async fn consensus_diploid_calls(
         &self,
         biosample_guid: SampleGuid,
@@ -927,7 +936,8 @@ impl App {
             return Ok(Vec::new());
         }
 
-        // (bam, reference) per same-build alignment, resolved once.
+        // The pair (bam, reference) of each alignment on this build. The code finds each pair one
+        // time.
         let mut paths = Vec::new();
         for id in &aln_ids {
             paths.push((*id, self.alignment_bam_reference(*id).await?));
@@ -949,8 +959,8 @@ impl App {
                 }
             };
             for contig in clist {
-                // Tolerate a contig absent from this alignment's header (heterogeneous inputs) —
-                // skip it for this source rather than aborting the whole consensus.
+                // The header of this alignment can hold no such contig, because the inputs differ.
+                // Skip that contig for this source, and do not stop the full consensus.
                 let Ok(variants) = self.run_diploid_calls(*id, contig, cancel.clone()).await else {
                     continue;
                 };
@@ -987,14 +997,15 @@ impl App {
             per_aln.push(g);
         }
 
-        // 4. Vote per site → consensus. min_depth = 2: a run abstains only when essentially
-        // uncovered; depth-weighting lets deep runs dominate the rest.
+        // 4. Vote at each site to get the consensus. The value min_depth = 2 means that a run
+        // gives no vote only when it has almost no coverage there. A deeper run has more weight than
+        // a shallow one.
         Ok(caller::reconcile_site_genotypes(&per_aln, 2))
     }
 
-    /// A **consensus** diploid VCF (VCFv4.2) for the subject — the joint genotype across same-build
-    /// alignments (see [`consensus_diploid_calls`]), sample column `consensus`. Heavy; the export
-    /// path runs it off the UI thread.
+    /// A **consensus** diploid VCF file for the subject, in VCFv4.2. It holds the joint genotype
+    /// across the alignments on one build. See [`consensus_diploid_calls`]. The sample column is
+    /// `consensus`. The method costs much, and the export path runs it away from the UI thread.
     pub async fn consensus_diploid_vcf(&self, biosample_guid: SampleGuid) -> Result<String, AppError> {
         let calls = self
             .consensus_diploid_calls(biosample_guid, None, CancelToken::none())
@@ -1002,11 +1013,14 @@ impl App {
         Ok(navigator_analysis::vcf::write_diploid_vcf("consensus", &calls))
     }
 
-    /// Run de-novo calling on `contig` using the alignment's own stored paths.
-    /// The alignment's BAM + a usable reference FASTA: the stored path, else resolved from the
-    /// alignment's build via the gateway (cached, else downloaded). Errors only if no BAM is
-    /// recorded. Use this in steps that *require* the reference, so the user never has to supply
-    /// one (it follows from the header-detected build).
+    /// Call the de-novo variants on `contig` with the stored paths of the alignment.
+    ///
+    /// The method returns the BAM path of the alignment and a reference FASTA path that the code can
+    /// use. That reference is the stored path. When the alignment holds none, the gateway finds one
+    /// from the build of the alignment, from the cache or by a download.
+    ///
+    /// The method fails only when the alignment holds no BAM path. Use it in a step that *needs* the
+    /// reference. The user then supplies no reference, because the build in the header gives it.
     pub(crate) async fn alignment_bam_reference(&self, alignment_id: i64) -> Result<(PathBuf, PathBuf), AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let bam = Self::alignment_file(&aln)?;
@@ -1021,12 +1035,20 @@ impl App {
         Ok((bam, reference))
     }
 
-    /// The alignment's path and a reference suitable for **decoding** it: a CRAM can't be read
-    /// without the reference, so resolve it (stored path, else from the build via the gateway,
-    /// cache-first); a BAM decodes without one, so return the stored path as-is (usually `None`) and
-    /// never force a reference download. Use this for record/pileup reads and SNP-site genotyping
-    /// that do not consult reference bases; use [`alignment_bam_reference`](Self::alignment_bam_reference)
-    /// for calling paths (de-novo SNV/indel) that need the reference even on a BAM.
+    /// The path of the alignment, and a reference that the code can use to **decode** it.
+    ///
+    /// No reader can open a CRAM file without its reference. So for a CRAM file the method takes
+    /// the stored path first, and then the build through the gateway. It reads the cache before it
+    /// starts a download.
+    ///
+    /// A reader can open a BAM file with no reference. So for a BAM file the method returns the
+    /// stored path with no change, and that value is usually `None`. It never starts a download.
+    ///
+    /// Use this method to read records, to read a pileup, and to genotype a SNP site. None of those
+    /// steps reads a reference base.
+    ///
+    /// Use [`alignment_bam_reference`](Self::alignment_bam_reference) for a caller path, such as a
+    /// de-novo SNV call or indel call. Those paths need the reference for a BAM file also.
     pub(crate) async fn alignment_reference_for_decode(
         &self,
         alignment_id: i64,
@@ -1052,9 +1074,12 @@ impl App {
         self.gateway.cached_reference(build).is_some()
     }
 
-    /// The distinct reference builds across a subject's alignments — the builds whose FASTA an
-    /// analysis of this subject may need. Used to pre-resolve references (with a progress bar) after
-    /// import and before a subject-level analysis, so on-demand downloads are not silent.
+    /// Each distinct reference build across the alignments of a subject. An analysis of that subject
+    /// can need the FASTA file of any of them.
+    ///
+    /// The code reads this list after an import, and before an analysis of the subject. It then
+    /// downloads each file with a progress bar. So a download during the analysis never surprises
+    /// the user.
     pub async fn reference_builds_for_subject(&self, biosample_guid: SampleGuid) -> Result<Vec<String>, AppError> {
         let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         let mut builds: Vec<String> = alns.into_iter().map(|a| a.reference_build).collect();
@@ -1063,16 +1088,18 @@ impl App {
         Ok(builds)
     }
 
-    /// The reference build of a single alignment (`None` if it no longer exists) — for pre-resolving
-    /// that alignment's reference before a per-alignment analysis.
+    /// The reference build of one alignment. The method returns `None` when the store holds no such
+    /// alignment. The code reads this value to find the reference before it analyzes that
+    /// alignment.
     pub async fn reference_build_of_alignment(&self, alignment_id: i64) -> Result<Option<String>, AppError> {
         Ok(alignment::get(self.store.pool(), alignment_id)
             .await?
             .map(|a| a.reference_build))
     }
 
-    /// The alignment IDs (BAM/CRAM only) across a subject's alignments — for pre-building each one's
-    /// coordinate index (with a progress bar) after import and before a subject-level analysis.
+    /// The id of each alignment of a subject that has a BAM file or a CRAM file. The code reads this
+    /// list to make the coordinate index of each one, with a progress bar. It does that work after an
+    /// import, and before an analysis of the subject.
     pub async fn alignment_ids_for_subject(&self, biosample_guid: SampleGuid) -> Result<Vec<i64>, AppError> {
         let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         Ok(alns
@@ -1082,12 +1109,21 @@ impl App {
             .collect())
     }
 
-    /// Ensure the alignment's coordinate index (`.bai`/`.crai`) exists, **building it if missing** so
-    /// the query-driven analyses (the per-contig walker, callable intervals, the de-novo / STR
-    /// callers) can seek by region instead of erroring or degrading to a whole-file linear scan.
-    /// Returns the index path if one was built, `None` if it was already present. `progress(done,
-    /// total)` reports a byte fraction for a BAM and indeterminate progress (`total = None`) for a
-    /// CRAM. The build is a single sequential pass, run on a decode-safe blocking thread.
+    /// Make sure that the coordinate index of the alignment exists. That index is a `.bai` file or a
+    /// `.crai` file, and the method **makes it** when the disk holds none.
+    ///
+    /// Each analysis that queries a region needs that index. Those analyses are the walker that
+    /// works on one contig, the step that finds the callable intervals, the de-novo caller, and the
+    /// STR caller. Without an index, such a step fails, or it reads the full file from start to end.
+    ///
+    /// The method returns the path of the index when it made one. It returns `None` when the index
+    /// already existed.
+    ///
+    /// The method calls `progress(done, total)`. For a BAM file, that call gives a fraction of the
+    /// bytes. For a CRAM file, the `total` value is `None`, and the progress has no end value.
+    ///
+    /// The method reads the file one time, from start to end, on a thread that can decode
+    /// safely.
     pub async fn ensure_alignment_index(
         &self,
         alignment_id: i64,
@@ -1103,15 +1139,18 @@ impl App {
         Ok(built)
     }
 
-    /// Diagnose why an alignment can't be read, naming the **exact file** at fault rather than the
-    /// one the failing call happened to be handed. See [`navigator_analysis::preflight`] for why
-    /// that distinction is the whole point: an unreadable `.crai` and an unreadable CRAM produce
-    /// the same `io error on …cram` message today, and on macOS a privacy (TCC) denial and a Unix
-    /// permission denial are told apart only by the raw errno.
+    /// Report the reason that the app can not read an alignment. The report names the **exact
+    /// file** at fault, and not the file that the failed call received.
     ///
-    /// Deliberately **cache-only** for the reference: a diagnostic has to describe the machine as
-    /// it is, so resolving (and silently downloading) a missing FASTA here would paper over exactly
-    /// the state we were asked to report. A CRAM with no cached reference is a finding, not a task.
+    /// [`navigator_analysis::preflight`] gives the reason for that rule. A `.crai` file that the app
+    /// can not read, and a CRAM file that it can not read, give the same `io error on …cram` message
+    /// today. On macOS, only the raw errno separates a privacy denial from TCC and a Unix permission
+    /// denial.
+    ///
+    /// For the reference, the method reads the **cache only**, by design. A diagnostic must describe
+    /// the machine as it is. A download of an absent FASTA file here hides the exact state that the
+    /// user asked about. A CRAM file with no reference in the cache is a result of this check. It
+    /// is not a task for this method.
     pub async fn diagnose_alignment(
         &self,
         alignment_id: i64,
@@ -1141,9 +1180,11 @@ impl App {
             .await
     }
 
-    /// The [`PublishGate`] for an alignment, adapted to its mean read length (HiFi relaxes the
-    /// supporting-read floor — see [`PublishGate::for_read_len`]). Samples the BAM head; any error
-    /// falls back to the short-read default.
+    /// The [`PublishGate`] of an alignment, for its mean read length. A HiFi read needs fewer reads
+    /// at a site than a short read. See [`PublishGate::for_read_len`].
+    ///
+    /// The method reads the first records of the BAM file. After any error, it returns the default
+    /// gate for a short read.
     pub async fn publish_gate_for_alignment(&self, alignment_id: i64) -> Result<PublishGate, AppError> {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let read_len = tokio::task::spawn_blocking(move || {
@@ -1156,15 +1197,20 @@ impl App {
     }
 }
 
-/// True for a path on a removable/network mount (macOS `/Volumes/…`), where per-record random access
-/// is slow but a bulk sequential copy is fast — the case [`App::localize`] copies to local disk.
+/// True for a path on a removable mount or a network mount. On macOS such a mount is below
+/// `/Volumes/…`.
+///
+/// A read of one record at a random position is slow on that mount, and a bulk copy from start to
+/// end is fast. [`App::localize`] copies such a file to the local disk.
 fn is_removable_volume(p: &Path) -> bool {
     p.starts_with("/Volumes/")
 }
 
-/// A collision-free local filename for a remote alignment. Every kit's file is named `chrYM.cram`,
-/// so the basename alone collides; hash the full remote path and keep the extension so the reader
-/// still finds the sibling index at `<local>.crai` / `<local>.bai`.
+/// A local file name for a remote alignment. Two such names are never the same.
+///
+/// The file of each kit has the name `chrYM.cram`, so the base name alone gives the same local name
+/// for two kits. The function hashes the full remote path and keeps the extension. So the reader
+/// still finds the index beside the file, at `<local>.crai` or `<local>.bai`.
 fn local_cache_name(remote: &Path) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1173,11 +1219,16 @@ fn local_cache_name(remote: &Path) -> String {
     format!("{:016x}.{ext}", h.finish())
 }
 
-/// A scratch name for one caller's in-progress copy of `local`. **Unique per call**: a temp path
-/// derived from the destination alone (`<dest>.partial`) is shared by every concurrent copier of
-/// that alignment, which lets two of them open the same inode — one truncating what the other is
-/// writing, and continuing to write into it after the other has renamed it into place and started
-/// reading. Uniqueness makes that unrepresentable rather than merely unlikely.
+/// A scratch name for the copy of `local` that one caller is writing. Each call gives a **different
+/// name**.
+///
+/// A name from the destination alone, such as `<dest>.partial`, is the same name for each caller
+/// that copies that alignment at the same time. Two callers then open the same inode.
+///
+/// One caller empties the file that the other one writes. It also continues to write into that file
+/// after the other caller renames it into place and starts to read it.
+///
+/// A different name for each call makes that state impossible. It does not only make it rare.
 fn partial_path(local: &Path) -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1185,18 +1236,22 @@ fn partial_path(local: &Path) -> PathBuf {
     local.with_file_name(format!("{stem}.partial.{}.{n}", std::process::id()))
 }
 
-/// Copy `remote` → `local` plus its index sibling. The index is copied **first** and the main file
-/// last (via a temp + rename), so a present `local` always implies its index is present too — the
-/// cache check in [`App::localize`] can't see a half-copied pair.
+/// Copy `remote` to `local`, and copy the index beside it.
 ///
-/// `expect_len` is the remote's size; when known, a copy that does not match it is rejected rather
-/// than published. A short copy is otherwise indistinguishable from corrupt data: it surfaces as a
-/// decode error ("unexpected end of file", a bad container checksum) tens of gigabytes into a walk,
-/// naming the cache path, and the copy is deleted on drop before anyone can look at it.
+/// The function copies the index **first** and the main file last. For the main file it writes a
+/// temporary file and then renames it. So a `local` file that exists always has its index. The cache
+/// test in [`App::localize`] can then never see one file of the pair.
 ///
-/// Nothing partial survives a failure — neither the temp nor the index copied ahead of it. A
-/// leftover `.partial` used to sit in the cache indefinitely, occupying the disk while satisfying
-/// no one.
+/// `expect_len` is the size of the remote file. When the caller gives that value, the function
+/// refuses a copy with a different size and publishes nothing.
+///
+/// A short copy looks the same as damaged data. It gives a decode error tens of GB into a walk, such
+/// as "unexpected end of file" or a bad container checksum. That error names the cache path, and the
+/// code deletes the copy at the drop, before a user can look at it.
+///
+/// No partial file survives a failure. That rule covers the temporary file and the index that the
+/// function copied first. An old `.partial` file stayed in the cache for all time, and it filled the
+/// disk with data that no code used.
 fn copy_with_index(remote: &Path, local: &Path, expect_len: Option<u64>) -> std::io::Result<()> {
     if let Some(parent) = local.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1242,19 +1297,22 @@ fn copy_with_index(remote: &Path, local: &Path, expect_len: Option<u64>) -> std:
     result
 }
 
-/// One step of a full analysis of a single alignment, in the order [`App::plan_full_analysis`]
-/// returns them. The variants carry whatever the step needs, so a caller's dispatch is total and it
-/// can not silently run a step the plan excluded.
+/// One step of a full analysis of one alignment, in the order that [`App::plan_full_analysis`]
+/// gives. Each variant carries the values that its step needs. So a caller must handle each variant,
+/// and it can not run a step that the plan left out.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AnalysisStep {
     /// Coverage + callable, read-level QC, and sex inference in one pass over the alignment.
     QualityMetrics,
-    /// CNV + discordant pairs. Needs ≥10× — the step itself reports when the depth is too low.
+    /// The CNV calls and the discordant pairs. The step needs a depth of 10x or more, and it
+    /// reports a depth below that value.
     ///
-    /// **Opt-in only.** SV is experimental and, alone among the steps, walks every read in the file
-    /// for a result nothing else consumes — hours per whole-genome sample. It is planned only when
-    /// a caller asks for it (`include_sv`); the GUI's "Call SV" button and `analyze --sv` are the
-    /// ways in. Nothing runs it unattended.
+    /// **The user must select this step.** It is experimental. It is also the one step that reads
+    /// each record in the file for a result that no other step uses. It needs hours for one
+    /// whole-genome sample.
+    ///
+    /// The plan holds this step only when a caller sets `include_sv`. The "Call SV" button of the
+    /// GUI and the `analyze --sv` command do that. No code runs it without a user.
     StructuralVariants,
     /// De-novo calling on the mitochondrial contig (small and fully callable, unlike whole chrY).
     MitoDenovo { contig: String },
@@ -1266,7 +1324,8 @@ pub enum AnalysisStep {
     YSignature { biosample_guid: SampleGuid },
     /// Genotype the ancestry markers into the autosomal consensus profile.
     AutosomalProfile { biosample_guid: SampleGuid },
-    /// Estimate admixture/PCA *from* the autosomal profile — must follow [`Self::AutosomalProfile`].
+    /// Estimate the admixture and the PCA values *from* the autosomal profile. This step must come
+    /// after [`Self::AutosomalProfile`].
     Ancestry { biosample_guid: SampleGuid },
 }
 
@@ -1301,20 +1360,26 @@ impl AnalysisStep {
 }
 
 impl App {
-    /// The ordered steps a full analysis of `alignment_id` should run.
+    /// The steps of a full analysis of `alignment_id`, in their order.
     ///
-    /// This is the **one** definition of that pipeline. The GUI streams progress events and the CLI
-    /// prints a log, so how a step is reported differs — but which steps run, and the conditions
-    /// under which one is skipped, must not: the two had drifted, and the CLI's copy re-genotyped Y
-    /// unconditionally, overwriting a trusted external call (on ancient DNA, with a worse one).
+    /// This function is the **one** definition of that pipeline. The GUI sends progress events, and
+    /// the CLI writes a log. So the two report a step in different ways.
     ///
-    /// `coverage` is the just-computed result when [`AnalysisStep::QualityMetrics`] has already run,
-    /// which makes the mitochondrial decision authoritative; pass `None` before that and the cached
-    /// coverage (or, with none, the assumption that chrM is present) is used instead. Callers that
-    /// show a step count should re-plan after the metrics step, as the count can drop.
+    /// But the set of steps, and each condition that skips one, must be the same. The two did become
+    /// different. The copy in the CLI genotyped the Y chromosome at each run, and it replaced a
+    /// trusted external call. On ancient DNA it replaced that call with a worse one.
     ///
-    /// `include_sv` adds the experimental [`AnalysisStep::StructuralVariants`]; see that variant for
-    /// why it is off by default. `include_ancestry` likewise gates the two heaviest ancestry steps.
+    /// The `coverage` value is the result that [`AnalysisStep::QualityMetrics`] calculated, when
+    /// that step already ran. The mitochondrial decision then has the correct data. Before that
+    /// step, pass `None`. The function then reads the cached coverage. With no cached value, it
+    /// assumes that the file holds chrM reads.
+    ///
+    /// A caller that shows a count of steps must call this function again after the metrics step,
+    /// because that count can become smaller.
+    ///
+    /// `include_sv` adds the experimental step [`AnalysisStep::StructuralVariants`]. That variant
+    /// gives the reason for its default. `include_ancestry` adds the two ancestry steps that cost
+    /// the most.
     pub async fn plan_full_analysis(
         &self,
         alignment_id: i64,
@@ -1322,9 +1387,12 @@ impl App {
         include_sv: bool,
         coverage: Option<&CoverageResult>,
     ) -> Result<Vec<AnalysisStep>, AppError> {
-        // Skip the mitochondrial steps when the alignment has no chrM reads (e.g. an FTDNA Big Y):
-        // scoring zero chrM data just records a meaningless RSRS root. Unknown coverage (never run)
-        // keeps them rather than silently skipping.
+        // Leave out the mitochondrial steps when the alignment holds no chrM read. An FTDNA Big Y
+        // file is one example. A placement with no chrM data writes the RSRS root, and that result
+        // has no value.
+        //
+        // With no coverage result, the plan keeps those steps. The code must not remove a step with
+        // no message.
         let has_mtdna = match coverage {
             Some(c) => chrm_has_reads(c),
             None => self
@@ -1335,7 +1403,8 @@ impl App {
                 .map(|c| chrm_has_reads(&c))
                 .unwrap_or(true),
         };
-        // Subject-level steps need the owning subject; an unattached alignment simply skips them.
+        // A step at the level of a subject needs that subject. The plan leaves out each such step
+        // for an alignment with no subject.
         let guid = self.biosample_of_alignment(alignment_id).await.ok();
 
         let mut steps = vec![AnalysisStep::QualityMetrics];
@@ -1345,10 +1414,14 @@ impl App {
         if has_mtdna {
             steps.push(AnalysisStep::MitoDenovo { contig: "chrM".into() });
         }
-        // Skip the internal Y/mt genotyping when a trusted external caller (GATK4 GVCF, sidecar fast
-        // path) already placed this alignment and the user prefers it — re-walking would only produce
-        // a secondary call that loses the vote, and on ancient DNA a wrong one. The assign_* commands
-        // guard this too; planning around it also avoids the wasted decode. See external-caller-precedence.
+        // Leave out the internal Y step and the internal mt step under two conditions. A trusted
+        // external caller already placed this alignment, and the user prefers that caller. Such a
+        // caller is a GATK4 GVCF file through the sidecar fast path.
+        //
+        // A second walk gives a call that loses the vote. On ancient DNA it also gives a wrong call.
+        //
+        // Each `assign_*` command has the same guard. A plan without the step also saves the decode.
+        // See external-caller-precedence.
         if !self
             .has_preferred_external_call(alignment_id, DnaType::Y)
             .await
@@ -1364,9 +1437,12 @@ impl App {
         {
             steps.push(AnalysisStep::MtHaplogroup);
         }
-        // The Y signature makes the descent report ready without an explicit click (the button stays
-        // for an on-demand rebuild). Built once — an existing profile is left alone — and it needs no
-        // extra read of the file, since the Y assignment above just cached the chrY genotypes.
+        // The Y signature makes the descent report ready, and the user presses no button. That
+        // button stays, and it rebuilds the report at any time.
+        //
+        // The code builds the signature one time, and it does not change a profile that exists. It
+        // reads the file no more times, because the Y step above wrote the chrY genotypes to the
+        // cache.
         if let Some(guid) = guid {
             if self.cached_y_profile(guid).await?.is_none() {
                 steps.push(AnalysisStep::YSignature { biosample_guid: guid });
@@ -1383,27 +1459,32 @@ impl App {
     }
 }
 
-/// Whether a coverage result shows any reads on the mitochondrial contig, under either naming.
+/// Shows whether a coverage result holds a read on the mitochondrial contig. The function accepts
+/// both names of that contig.
 fn chrm_has_reads(c: &CoverageResult) -> bool {
     c.contig_coverage_stats
         .iter()
         .any(|s| contig::is_chr_m(&s.contig) && s.num_reads > 0)
 }
 
-/// Live localized copies: local path → how many [`LocalAlignment`]s hold it. A copy is removed when
-/// the count reaches zero, so its lifetime belongs to the copy rather than to a caller remembering
-/// to clean up.
+/// The local copies that exist now. The map takes a local path and gives the count of
+/// [`LocalAlignment`] values that hold it.
+///
+/// The code removes a copy when its count reaches zero. So the copy itself controls its life, and no
+/// caller must remember to remove it.
 fn localized_registry() -> &'static std::sync::Mutex<HashMap<PathBuf, usize>> {
     static REG: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, usize>>> = std::sync::OnceLock::new();
     REG.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
-/// The lock serializing cache copies for one destination path — see [`App::localize`], which holds
-/// it across the copy so a second caller waits for the first rather than duplicating it.
+/// The lock that orders the cache copies for one destination path. [`App::localize`] holds it across
+/// the copy, so a second caller waits for the first one and makes no second copy.
 ///
-/// Async, because it is held across the copy's `await`. Entries are never removed: one small entry
-/// per distinct alignment localized in this process, bounded by the workspace's alignment count,
-/// which is cheaper than the bookkeeping needed to retire them safely.
+/// The lock is async, because the code holds it across the `await` of the copy.
+///
+/// The map never removes an entry. It holds one small entry for each alignment that this process
+/// copies, and the count of alignments in the workspace limits that number. The code to remove an
+/// entry safely costs more than those entries.
 fn copy_gate(local: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     #[allow(clippy::type_complexity)]
     static GATES: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>>> =
@@ -1413,17 +1494,22 @@ fn copy_gate(local: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     std::sync::Arc::clone(gates.entry(local.to_path_buf()).or_default())
 }
 
-/// An alignment path to read from, owning any local copy made for it.
+/// A path to read an alignment from. This value owns the local copy of that alignment, when one
+/// exists.
 ///
-/// The previous design cached copies in a directory cleared by one caller — `analyze_biosample` —
-/// while three call sites created them. Every other path (notably the Y genotyping a batch drives)
-/// copied ~400 MB per alignment and never cleaned up; that reached 687 files and 145 GB, and filled
-/// the volume mid-run. Tying removal to `Drop` makes that leak unrepresentable, and the refcount
-/// keeps the original benefit: a subject's several passes still share one copy instead of re-copying
-/// per pass.
+/// The earlier design kept each copy in a directory that one caller emptied, and that caller was
+/// `analyze_biosample`. But three call sites made a copy.
+///
+/// Each other path copied about 400 MB for one alignment and removed nothing. The Y genotype step of
+/// a batch is the main example. That fault reached 687 files and 145 GB, and it filled the volume
+/// during a run.
+///
+/// A removal at the `Drop` call makes that fault impossible. The count of holders keeps the first
+/// advantage. The passes of one subject still share one copy, and the code copies that file one
+/// time.
 pub(crate) struct LocalAlignment {
     path: PathBuf,
-    /// False when `path` is the original (no copy was made, so nothing to remove).
+    /// False when `path` is the original file. The code made no copy, so it removes nothing.
     owned: bool,
 }
 
@@ -1439,17 +1525,22 @@ impl LocalAlignment {
         Self { path, owned: true }
     }
 
-    /// Register interest in an existing copy; `true` when one was present and is now retained.
+    /// Take a share of a copy that exists. The method returns `true` when such a copy was there and
+    /// now has one more holder.
     ///
-    /// A file with no registry entry is a **leftover from an earlier process** — `Drop` never ran,
-    /// so the run was killed — and is validated against `expect_len` (the remote's size) before
-    /// being trusted, then discarded if it does not match. Adopting a leftover on its existence
-    /// alone is how a truncated copy gets read as though it were the alignment: the failure then
-    /// appears as a decode error deep into a walk, pointing at a cache path whose file is deleted
-    /// moments later. A wrong-sized copy is worth exactly one re-copy to be rid of.
+    /// A file with no entry in the registry is a **file from an earlier process**. No `Drop` call
+    /// ran there, so something stopped that run.
     ///
-    /// An entry that *is* registered belongs to a live holder in this process and was validated
-    /// when it was made, so it is shared without re-statting.
+    /// The method compares such a file with `expect_len`, which is the size of the remote file. It
+    /// removes the file when the two differ.
+    ///
+    /// A method that took such a file on its existence alone would read a short copy as the
+    /// alignment. The fault then appears as a decode error deep in a walk. It names a cache path,
+    /// and the code deletes that file a moment later. One more copy is a small price to remove a
+    /// file of the wrong size.
+    ///
+    /// A file *with* an entry belongs to a holder in this process, and the code checked it when it
+    /// made that copy. So the method shares it and reads no metadata.
     fn retain(local: &Path, expect_len: Option<u64>) -> bool {
         let mut reg = localized_registry().lock().unwrap();
         if let Some(n) = reg.get_mut(local) {
@@ -1477,7 +1568,8 @@ impl LocalAlignment {
         true
     }
 
-    /// The path to read from — the local copy when one was made, else the original.
+    /// The path to read from. The value is the local copy when the code made one, and the original
+    /// path when it made none.
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
@@ -1500,8 +1592,8 @@ impl Drop for LocalAlignment {
             return;
         }
         reg.remove(&self.path);
-        // Best-effort: a copy left behind is a disk-space problem, not a correctness one, and a
-        // panic here would mask whatever the caller was actually doing.
+        // The step is optional. A copy that stays on the disk costs space, and it gives no wrong
+        // result. A panic here also hides the work of the caller.
         let _ = std::fs::remove_file(&self.path);
         let p = self.path.to_string_lossy().into_owned();
         for suffix in [".crai", ".bai"] {
@@ -1537,8 +1629,9 @@ mod local_alignment_tests {
 
     #[test]
     fn a_shared_copy_survives_until_the_last_holder_drops() {
-        // The reason for the refcount: a subject's passes each localize the same alignment, and
-        // removing it when the first finishes would force the rest to re-copy ~400 MB.
+        // The reason for the count of holders. Each pass of one subject localizes the same
+        // alignment. A removal after the first pass makes each later pass copy about 400 MB
+        // again.
         let d = scratch("shared");
         let cram = d.join("b.cram");
         std::fs::write(&cram, "x").unwrap();
@@ -1554,9 +1647,11 @@ mod local_alignment_tests {
         assert!(!cram.is_file(), "removed once nobody holds it");
     }
 
-    /// A leftover from a killed run must be checked, not trusted. Adopting a short copy is how a
-    /// truncated cache entry gets read as though it were the alignment — surfacing as a decode
-    /// failure tens of gigabytes into a walk, blamed on a cache file that is deleted moments later.
+    /// The code must check a file from a run that stopped. It must not trust that file.
+    ///
+    /// A method that took a short copy would read that copy as the alignment. The fault then appears
+    /// as a decode failure tens of GB into a walk. The message names a cache file, and the code
+    /// deletes that file a moment later.
     #[test]
     fn a_wrong_sized_leftover_is_discarded_rather_than_adopted() {
         let d = scratch("stale");
@@ -1580,9 +1675,11 @@ mod local_alignment_tests {
         drop(LocalAlignment::owned(cram.clone()));
     }
 
-    /// Two concurrent copiers must never be able to name the same scratch file: sharing one let
-    /// them open a single inode, where one truncates what the other is writing — and keeps writing
-    /// into it after the other renames it into place and starts reading.
+    /// Two callers that copy at the same time must never use the same scratch file name.
+    ///
+    /// With one name, the two open the same inode. One caller then empties the file that the other
+    /// one writes. It also continues to write into that file after the other caller renames it into
+    /// place and starts to read it.
     #[test]
     fn each_copy_gets_its_own_partial_path() {
         let local = PathBuf::from("/tmp/nav-cache/abc.cram");
@@ -1595,8 +1692,9 @@ mod local_alignment_tests {
         }
     }
 
-    /// A copy that arrives short is rejected instead of published, and leaves nothing behind — not
-    /// the scratch file, and not the index copied ahead of it. Both used to accumulate in the cache.
+    /// The code refuses a copy that is too short, and it publishes nothing. It also leaves no file
+    /// behind. That rule covers the scratch file and the index that it copied first. The cache used
+    /// to collect both of them.
     #[test]
     fn a_short_copy_is_rejected_and_leaves_no_debris() {
         let d = scratch("short");
@@ -1604,7 +1702,8 @@ mod local_alignment_tests {
         std::fs::write(&remote, "0123456789").unwrap();
         std::fs::write(d.join("src.cram.crai"), "idx").unwrap();
 
-        // Claim the remote is larger than it is — the same shape as a copy cut short.
+        // Give a remote size that is larger than the real size. The result has the same shape as a
+        // copy that stopped early.
         let err = copy_with_index(&remote, &local, Some(64)).expect_err("a short copy must fail");
         assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof, "{err}");
 
@@ -1618,9 +1717,10 @@ mod local_alignment_tests {
         assert!(debris.is_empty(), "scratch files left behind: {debris:?}");
     }
 
-    /// The gate is what stops two overlapping callers from both copying the same alignment. Every
-    /// worker command is `tokio::spawn`ed, so that overlap is real, and the duplicate was a second
-    /// full pull of a 40 GB CRAM over the network whose only outcome was a failed rename.
+    /// The lock stops two callers that overlap, so only one of them copies the alignment. Each
+    /// worker command
+    /// runs under `tokio::spawn`, so that overlap does occur. The second copy read a 40 GB CRAM file
+    /// over the network again, and its only result was a failed rename.
     #[tokio::test]
     async fn one_destination_copies_at_a_time_and_others_are_not_blocked() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1672,8 +1772,9 @@ mod local_alignment_tests {
 
     #[test]
     fn the_original_is_never_removed() {
-        // A path we did not copy (local disk, or a failed copy falling back to the remote) must be
-        // left alone — deleting the user's own alignment would be catastrophic.
+        // The code must not change a path that it did not copy. Such a path is a file on the local
+        // disk, or the remote file after a failed copy. A delete of the alignment of the user is a
+        // very bad fault.
         let d = scratch("borrowed");
         let original = d.join("c.cram");
         std::fs::write(&original, "x").unwrap();

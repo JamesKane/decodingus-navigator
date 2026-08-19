@@ -1,8 +1,12 @@
-//! Navigator application/command layer — the single API the UI dispatches to, and the
-//! antidote to the `WorkbenchViewModel` god object. Orchestrates `navigator-store` (and
-//! later analysis/sync) behind commands and queries; holds policy the old dialogs
-//! embedded (identity assignment, existence checks, result (de)serialization). The UI
-//! holds only view-state and dispatch — no DB calls or domain decisions in widgets.
+//! The application layer of Navigator, and its command layer. This crate is the one API that the UI
+//! calls. It takes the place of the `WorkbenchViewModel` type, which held too much.
+//!
+//! The crate controls `navigator-store`, and later the analysis code and the sync code, behind its
+//! commands and queries. It also holds each policy that an old dialog held. Those policies assign an
+//! identity, test that a record exists, and read and write a result.
+//!
+//! The UI holds the state of its views and sends commands. No widget calls the database, and no
+//! widget makes a decision about the domain.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -33,9 +37,12 @@ pub use navigator_analysis::preflight::{
 };
 pub use navigator_analysis::CancelToken;
 
-/// Diagnose a BAM/CRAM **path** with no workspace record behind it — the case that matters when a
-/// user is reporting a file the app refuses to read and we need the answer before deciding whether
-/// importing it is even possible. Blocking; call it off the async runtime.
+/// Report the state of a BAM **path** or CRAM **path** that has no record in the workspace.
+///
+/// This case matters when a user reports a file that the app refuses to read. The team needs the
+/// answer before it decides whether an import of that file is possible.
+///
+/// The function blocks, so call it away from the async runtime.
 pub fn diagnose_alignment_file(alignment: &std::path::Path, reference: Option<&std::path::Path>) -> PreflightReport {
     navigator_analysis::preflight::diagnose(alignment, reference)
 }
@@ -56,107 +63,148 @@ pub use navigator_domain::ancestry::{
     side_label_default, AncestryResult, AncestrySegment, ConfidenceInterval, PaintingResult, PopulationComponent,
     SuperPopulationSummary,
 };
-// The ancestry panel format, re-exported so panel tooling/tests depend only on navigator-app.
+// The format of the ancestry panel. This crate exports it again, so a panel tool and a test depend
+// on navigator-app alone.
 pub use navigator_analysis::ancestry::{AncestryPanel, PanelSite as AncestryPanelSite};
 
-/// A haplogroup assignment: the ranked candidates plus, for the reported terminal, the
-/// child branches with per-SNP evidence (why descent stopped — unsupported splits show
-/// ancestral SNPs, unresolved ones show no-calls).
+/// One haplogroup assignment. It holds the candidates in their order. For the terminal node that it
+/// reports, it also holds each child branch with the evidence of each SNP.
+///
+/// That evidence shows the reason that the descent stopped. A split with no support shows an
+/// ancestral SNP. A split with no answer shows a no-call.
 #[derive(Debug, Clone)]
 pub struct HaploAssignment {
     pub ranked: Vec<ScoredHaplogroup>,
     pub branches: Vec<BranchEvidence>,
-    /// Per-SNP evidence along the placed lineage (root→terminal): every defining mutation the
-    /// sample carries (or does not), Derived/Ancestral/NoCall. This is the set the multi-source
-    /// variant/mutation **profile** reconciles — distinct from `branches`, which is the *untaken*
-    /// child branches (explaining why descent stopped, hence largely ancestral/no-call).
+    /// The evidence of each SNP along the lineage, from the root to the terminal node. The list
+    /// holds each mutation that defines a node, and the state of the sample at that mutation. The
+    /// three states are Derived, Ancestral, and NoCall.
+    ///
+    /// The variant **profile**, which pools many sources, reconciles this set.
+    ///
+    /// This list is not `branches`. That field holds the child branches that the descent did not
+    /// take. It shows the reason that the descent stopped, so most of its states are Ancestral or
+    /// NoCall.
     pub lineage: Vec<SnpEvidence>,
 }
 
-/// A YFull-YReport-style descent report for one lineage (Y or mtDNA): the root→terminal path, each
-/// node carrying its defining SNPs with the subject's per-SNP call state. Generic over [`DnaType`]
-/// so the Y-DNA and mtDNA tabs share one model + renderer. Built by [`App::descent_report`].
+/// A descent report for one lineage, which is the Y lineage or the mtDNA lineage. The report has the
+/// shape of a YFull YReport.
+///
+/// It holds the path from the root to the terminal node. Each node holds the SNPs that define it,
+/// and the call state of the subject at each SNP.
+///
+/// The type takes a [`DnaType`] parameter, so the Y-DNA tab and the mtDNA tab share one model and
+/// one renderer. [`App::descent_report`] builds it.
 #[derive(Debug, Clone)]
 pub struct DescentReport {
     pub dna: DnaType,
     /// The reported terminal haplogroup name (e.g. "R-FGC29071", "U5a1b1g").
     pub terminal: String,
-    /// Nodes root→terminal, each with its defining SNPs + the sample's state (`NodeEvidence`).
+    /// The nodes from the root to the terminal node. Each node holds the SNPs that define it and
+    /// the state of the sample, in a `NodeEvidence` value.
     pub nodes: Vec<NodeEvidence>,
 }
 
-/// A cohort **block tree** for one project: the induced subtree of the haplotree spanning the
-/// members' terminal haplogroups, each node a *block* of phylogenetically equivalent SNPs, with the
-/// members hanging off their own terminal. The group-project counterpart to [`DescentReport`] —
-/// where that draws one subject's root→terminal path, this draws where a whole cohort sits relative
-/// to each other. Built by [`App::project_block_tree`]; see
-/// `documents/design/project-block-tree.md`.
+/// The **block tree** of the cohort of one project.
 ///
-/// This view **reads** placements and never re-places, so it can not introduce a placement error.
+/// The tree is the part of the haplotree that covers the terminal haplogroups of the members. Each
+/// node is a *block* of SNPs that the tree treats as equivalent. Each member appears below its own
+/// terminal node.
+///
+/// This type is the group-project form of [`DescentReport`]. That report draws the path of one
+/// subject from the root to its terminal node. This tree draws the place of each member of a cohort
+/// against the other members.
+///
+/// [`App::project_block_tree`] builds it. See `documents/design/project-block-tree.md`.
+///
+/// This view **reads** a placement and never makes one. So it can add no placement error.
 #[derive(Debug, Clone)]
 pub struct ProjectBlockTree {
     pub dna: DnaType,
     /// Induced-subtree blocks in pre-order (a parent always precedes its children).
     pub blocks: Vec<Block>,
-    /// Members with no placement, or whose terminal is absent from this tree. Reported rather than
-    /// dropped: on a multi-lab cohort provider/build skew is expected, and hiding it would
-    /// misrepresent how much of the project the tree actually accounts for.
+    /// The members with no placement, and the members whose terminal node this tree does not hold.
+    ///
+    /// The report names them and does not remove them. In a cohort from many laboratories, a
+    /// difference between providers and builds is normal. Without those members, the reader can not
+    /// see how much of the project the tree covers.
     pub unplaced: Vec<UnplacedMember>,
-    /// The tree the view was drawn on (`"decodingus"` / `"ftdna"`) — `Block::loci` belong to it.
+    /// The tree of this view, which is `"decodingus"` or `"ftdna"`. The `Block::loci` values belong
+    /// to that tree.
     pub provider: String,
-    /// The coordinate space `Block::loci` positions are in. Node names and topology are
-    /// build-independent; only the positions are, so the view is labelled with the one build key it
-    /// was parsed under (the cohort's modal build).
+    /// The coordinate space of each position in `Block::loci`.
+    ///
+    /// The node names and the shape of the tree do not depend on the build. Only the positions
+    /// depend on it. So the view carries the one build key that the code parsed it under, which is
+    /// the most frequent build of the cohort.
     pub build_key: String,
-    /// Shared-private groupings that were **dropped** because they conflicted: their member sets
-    /// overlapped an accepted group without nesting inside it, so keeping both would not be a tree.
-    /// Surfaced rather than silently discarded — a non-zero count means recurrent calls or genuine
-    /// phylogenetic conflict in the cohort, which is worth knowing about.
+    /// The count of groups of shared private variants that the code **removed** for a conflict.
+    ///
+    /// The member set of such a group shares some members with an accepted group, and the accepted
+    /// group does not hold it. Two such sets can not both be a branch of one tree.
+    ///
+    /// The report gives this count and does not hide it. A count above zero shows recurrent calls,
+    /// or a real conflict in the phylogeny of the cohort. The reader needs that fact.
     pub candidate_conflicts: usize,
-    /// Positions rejected as **recurrent** — each would have defined a candidate branch under more
-    /// than one parent block, so it arose more than once and can not mark a new branch. Counted
-    /// rather than hidden: a high number says the cohort's private calls carry systematic noise.
+    /// The count of positions that the code refused as **recurrent**. Each one would define a
+    /// candidate branch below more than one parent block. So it occurred more than one time, and it
+    /// can not mark a new branch.
+    ///
+    /// The report gives this count and does not hide it. A high value shows that the private calls
+    /// of the cohort hold noise from the same cause.
     pub candidate_recurrent: usize,
 }
 
-/// One block of a [`ProjectBlockTree`]: a branch plus the run of defining SNPs that are
-/// phylogenetically equivalent on it — every member below carries all of them, and nothing observed
-/// in this cohort separates them.
+/// One block of a [`ProjectBlockTree`]. It holds a branch and the run of SNPs that define that
+/// branch. The tree treats those SNPs as equivalent. Each member below the branch carries each of
+/// them, and no observation in this cohort separates them.
 #[derive(Debug, Clone)]
 pub struct Block {
     pub node_id: i64,
     pub name: String,
     /// Parent within the induced subtree (`None` at a root).
     pub parent: Option<i64>,
-    /// Depth within the induced subtree, root = 0 — the layout's x coordinate.
+    /// The depth of this block in the subtree. The root has the value 0. The layout uses this value
+    /// as its x coordinate.
     pub depth: usize,
-    /// The equivalent SNPs defining this block. After a collapse this is the concatenation of the
-    /// absorbed branches' loci, root-most first: within *this cohort* they are one undivided block.
+    /// The equivalent SNPs of this block. After a collapse, the list holds the loci of each absorbed
+    /// branch, with the loci nearest the root first. Inside *this cohort*, those branches are one
+    /// block that nothing divides.
     pub loci: Vec<Locus>,
     /// Members whose terminal *is* this block.
     pub members: Vec<BlockMember>,
-    /// Members at or below this block — the count to badge on a collapsed branch.
+    /// The count of members at this block and below it. A collapsed branch shows that count.
     pub subtree_members: usize,
     /// Names of the member-less branches this block absorbed when collapsed (root-most first).
     /// Empty for an ordinary block. Kept so the UI can still name what it folded away.
     pub collapsed: Vec<String>,
-    /// True when this is a **candidate branch** — not a node in the published tree, but a grouping
-    /// inferred from private (unnamed) variants that two or more members share. `node_id` is
-    /// synthetic and negative for these; `name` is empty, because the label is the view's to
-    /// localize. This is the thing a published tree can not tell you and we can: a branch that is
-    /// real in the data but has not been named yet.
+    /// True when this block is a **candidate branch**. The published tree holds no such node. The
+    /// code makes the group from the private variants that two members or more share, and those
+    /// variants have no name.
+    ///
+    /// For a candidate, `node_id` is a value that the code made, and it is negative. The `name`
+    /// field is empty, because the view supplies the label in the language of the user.
+    ///
+    /// A published tree can not give this answer, and the app can. The branch is real in the data,
+    /// and nobody has named it yet.
     pub candidate: bool,
-    /// For a candidate branch: every carrier's evidence at each shared position, so it can be
-    /// reviewed. Empty on a named block, whose SNPs are the tree's assertion rather than ours.
+    /// For a candidate branch, the evidence of each carrier at each shared position. A reader can
+    /// then judge the branch. The list is empty on a named block, because the tree states those SNPs
+    /// and this app does not.
     pub evidence: Vec<CandidateEvidence>,
 }
 
-/// One carrier's evidence at one of a candidate branch's shared positions.
+/// The evidence of one carrier at one shared position of a candidate branch.
 ///
-/// A candidate is an inference, and "1 SNP shared by three men" is not enough to judge it. What
-/// decides whether it is a branch or a mapping artefact is the read evidence behind each carrier's
-/// call — depth, and how cleanly the derived allele dominates on a chromosome that carries one copy.
-/// Carried on the aggregate so the branch can be reviewed rather than taken on trust.
+/// A candidate is a deduction, and the statement "three men share 1 SNP" is not enough to judge it.
+///
+/// The read evidence behind the call of each carrier decides between a branch and a mapping
+/// artefact. That evidence is the depth, and the share of the reads that hold the derived allele. A
+/// cell holds one copy of that chromosome, so a true call has almost no other allele.
+///
+/// The aggregate carries this evidence, so a reader can judge the branch and does not trust it
+/// without data.
 #[derive(Debug, Clone)]
 pub struct CandidateEvidence {
     pub guid: SampleGuid,
@@ -167,9 +215,10 @@ pub struct CandidateEvidence {
     pub alternate: char,
     /// Read depth at the site; `0` when the source reported none.
     pub depth: u32,
-    /// Reads supporting the derived allele.
+    /// The count of reads that hold the derived allele.
     pub alt_depth: u32,
-    /// Derived-allele fraction — on haploid chrY a real call is essentially 1.0.
+    /// The share of the reads that hold the derived allele. A cell holds one copy of chrY, so a
+    /// true call gives a value near 1.0.
     pub allele_fraction: f64,
     /// Whether this call clears the federation publish gate.
     pub publishable: bool,
@@ -179,16 +228,25 @@ pub struct CandidateEvidence {
 #[derive(Debug, Clone)]
 pub struct BlockMember {
     pub guid: SampleGuid,
-    /// Display name (donor identifier, else the guid) — what the tree leaf is labelled with.
+    /// The name for the display. The value is the donor identifier, and then the guid. The leaf of
+    /// the tree shows it.
     pub name: String,
-    /// Unnamed (private) variants below this member's terminal. `None` until private-Y has been
-    /// computed for the subject, which is distinct from `Some(0)` ("computed, none found").
-    /// Populated in phase 3 (`documents/design/project-block-tree.md` §9); `None` before that.
+    /// The count of private variants below the terminal node of this member. Those variants have no
+    /// name.
+    ///
+    /// The value is `None` until the app calculates the private-Y data of the subject. That state is
+    /// not the same as `Some(0)`, which means that the app calculated the data and found no variant.
+    ///
+    /// Phase 3 writes this value. See `documents/design/project-block-tree.md` §9. Before that
+    /// phase, the value is `None`.
     pub private_novel: Option<usize>,
-    /// The **publishable** subset of the above: novel, unique-sequence, near-homozygous, with enough
-    /// supporting reads ([`PublishGate`]). This is the count we would stake a branch claim on, and
-    /// the one the block tree averages — the permissive `private_novel` is a working figure, not a
-    /// finding.
+    /// The part of the count above that the app can **publish**. Each such variant is new, is in
+    /// unique sequence, has almost no other allele, and has enough reads. [`PublishGate`] holds
+    /// those rules.
+    ///
+    /// The app makes a claim about a branch only from this count, and the block tree takes the mean
+    /// of it. The `private_novel` count above uses weaker rules. It is a value for work in progress,
+    /// and it is not a result.
     pub private_publishable: Option<usize>,
     pub private_total: Option<usize>,
 }
@@ -202,24 +260,32 @@ pub struct UnplacedMember {
     pub terminal: Option<String>,
 }
 
-/// A per-marker branch report: the sample's genotype at every defining marker of a chosen tree
-/// node's **descendant subtree** (Y or mtDNA), for spot-checking placement accuracy and exchanging
-/// observations with other researchers. Built by [`App::branch_report`]; exported by
-/// [`crate::export::branch_report_tsv`]. Unlike [`DescentReport`] (which walks the placement's
-/// root→terminal ancestors from the persisted profile) this genotypes the subtree fresh, so
-/// off-path branches the sample is *ancestral* for are reported too.
+/// A branch report with one row for each marker. It holds the genotype of the sample at each marker
+/// that defines a node in the **subtree below** a tree node that the user chose. The lineage is the Y
+/// lineage or the mtDNA lineage.
+///
+/// A researcher uses this report to check a placement, and to send observations to another
+/// researcher.
+///
+/// [`App::branch_report`] builds it, and [`crate::export::branch_report_tsv`] writes it to a file.
+///
+/// This report is not a [`DescentReport`]. That report reads the ancestors of the placement from the
+/// stored profile, from the root to the terminal node. This report genotypes the subtree again. So
+/// it also holds each branch off the path where the sample is *ancestral*.
 #[derive(Debug, Clone)]
 pub struct BranchReport {
     pub dna: DnaType,
     /// The queried root node's haplogroup name (e.g. `R-FGC29071`).
     pub root: String,
     pub contig: String,
-    /// True when the observed bases + evidence came from a per-sample GVCF sidecar (else pileup).
+    /// True when the bases and the evidence came from the GVCF sidecar file of the sample. False
+    /// when they came from the pileup.
     pub gvcf_backed: bool,
     pub rows: Vec<BranchRow>,
 }
 
-/// One defining marker of a branch in a [`BranchReport`], with the sample's call + evidence.
+/// One marker that defines a branch in a [`BranchReport`]. It holds the call of the sample and the
+/// evidence for that call.
 #[derive(Debug, Clone)]
 pub struct BranchRow {
     pub node: String,
@@ -230,7 +296,8 @@ pub struct BranchRow {
     pub derived: String,
     pub observed_base: Option<char>,
     pub state: CallState,
-    /// `(ref, alt)` allele depths — `None` on ref blocks / the pileup path.
+    /// The depth of the reference allele and the depth of the alternate allele, as a pair. The value
+    /// is `None` on a reference block, and on the pileup path.
     pub ad: Option<(u32, u32)>,
     pub dp: Option<u32>,
     pub gq: Option<u32>,
@@ -256,7 +323,8 @@ impl BranchReport {
 }
 
 impl DescentReport {
-    /// Total defining SNPs across the path the sample carries (derived).
+    /// The count of SNPs on the path that define a node and that the sample carries. Each one has a
+    /// derived state.
     pub fn derived(&self) -> usize {
         self.nodes
             .iter()
@@ -265,7 +333,7 @@ impl DescentReport {
             .count()
     }
 
-    /// Total defining SNPs across the path (all states).
+    /// The count of SNPs on the path that define a node, in each state.
     pub fn total(&self) -> usize {
         self.nodes.iter().map(|n| n.snps.len()).sum()
     }
@@ -274,9 +342,10 @@ impl DescentReport {
 /// How a private (off-backbone) variant relates to the tree.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PrivateClass {
-    /// A known tree SNP off the assigned path — supports a finer/sibling branch.
+    /// A known SNP of the tree that is not on the path that the code assigned. It supports a finer
+    /// branch, or a branch beside the assigned one.
     OffPathKnown(String),
-    /// Not in the tree at all — a candidate for proposing a new branch.
+    /// The tree does not hold this SNP. It is a candidate for a new branch.
     Novel,
 }
 
@@ -287,16 +356,23 @@ pub struct PrivateVariant {
     pub reference: char,
     pub alternate: char,
     pub depth: u32,
-    /// Reads supporting the derived (alternate) allele. `alt_depth / depth` ≈ `allele_fraction`;
-    /// carried explicitly so the publish gate can require a minimum supporting-read count. Old
-    /// cached buckets predate this field → `serde(default)` reads them as 0 (they recompute).
+    /// The count of reads that hold the derived allele, which is the alternate allele. The value
+    /// `alt_depth / depth` is about equal to `allele_fraction`.
+    ///
+    /// The field is explicit, so the publish gate can set a minimum count of such reads. An older
+    /// cached bucket holds no such field, and `serde(default)` reads it as 0. The app then
+    /// calculates that bucket again.
     #[serde(default)]
     pub alt_depth: u32,
     pub allele_fraction: f64,
     pub class: PrivateClass,
-    /// Curated CHM13 chrY structural class at this position (palindrome / amplicon / AZF-DYZ),
-    /// if any — a paralog-prone zone where short-read mapping is unreliable, so the call is
-    /// suspect (annotation only; not dropped). `None` = unique sequence, or a non-CHM13 build.
+    /// The structural class of this position on chrY in CHM13, from the curated list. The classes
+    /// are a palindrome, an amplicon, and an AZF-DYZ region.
+    ///
+    /// Such a region holds paralogs, and a short read maps there without reliability. So the call is
+    /// doubtful. This value is an annotation only, and the code removes no call for it.
+    ///
+    /// A value of `None` means unique sequence, or a build that is not CHM13.
     #[serde(default)]
     pub region: Option<navigator_analysis::mask::YRegionClass>,
 }
@@ -319,13 +395,15 @@ impl PrivateBucket {
             .filter(|v| matches!(v.class, PrivateClass::OffPathKnown(_)))
             .count()
     }
-    /// Calls that fall in a curated chrY structural (paralog-prone) region — suspect, to be
-    /// down-weighted in reports rather than treated as confident new variants.
+    /// The calls in a curated structural region of chrY, which holds paralogs. Such a call is
+    /// doubtful. A report must give it less weight, and it must not show it as a confident new
+    /// variant.
     pub fn in_structural_region(&self) -> usize {
         self.variants.iter().filter(|v| v.region.is_some()).count()
     }
-    /// Novel calls in *unique* sequence (no structural-region flag) — the high-confidence
-    /// new-branch candidates, separated from the paralog-zone noise.
+    /// The new calls in *unique* sequence, with no structural-region mark. These calls are the
+    /// candidates for a new branch with high confidence, and they are separate from the noise of a
+    /// paralog region.
     pub fn novel_in_unique_sequence(&self) -> usize {
         self.variants
             .iter()
@@ -333,10 +411,14 @@ impl PrivateBucket {
             .count()
     }
 
-    /// The **publishable** subset: novel, unique-sequence calls that also clear the strict
-    /// novel-marker `gate` (near-homozygous allele fraction + a supporting-read floor). This is the
-    /// set we federate to the AppView as unverified singleton candidates — far stricter than the
-    /// caller's placement gates, so a paralog/contamination/low-evidence call never becomes a claim.
+    /// The part that the app can **publish**. Each such call is new, is in unique sequence, and also
+    /// passes the strict `gate` for a new marker. That gate needs a high share of derived reads and
+    /// a minimum count of reads.
+    ///
+    /// The app sends this set to the AppView as a set of single candidates that nobody verified.
+    ///
+    /// The rules are much stricter than the placement rules of the caller. So a call from a paralog,
+    /// from contamination, or with little evidence never becomes a claim.
     pub fn publishable(&self, gate: PublishGate) -> Vec<&PrivateVariant> {
         self.variants.iter().filter(|v| gate.admits(v)).collect()
     }
@@ -353,20 +435,25 @@ impl PrivateBucket {
     }
 }
 
-/// Thresholds gating which private variants are confident enough to **publish** to the AppView as
-/// novel-branch candidates. Haploid chrY should be effectively homozygous, so a mixed/paralog
-/// allele fraction (0.5–0.9, which the placement caller still accepts) is rejected here, as is a
-/// call with too few supporting reads to trust as a real singleton.
+/// The limits that decide which private variants the app can **publish** to the AppView as
+/// candidates for a new branch.
+///
+/// A cell holds one copy of chrY, so a call there has almost no second allele. The code refuses an
+/// allele fraction between 0.5 and 0.9, which marks a mixture or a paralog. The placement caller
+/// still accepts such a fraction.
+///
+/// The code also refuses a call with too few reads to trust as a real single variant.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PublishGate {
     /// Minimum derived-allele fraction (haploid → expect ≈1.0).
     pub min_allele_fraction: f64,
-    /// Minimum reads supporting the derived allele.
+    /// The minimum count of reads that hold the derived allele.
     pub min_alt_depth: u32,
 }
 
 impl Default for PublishGate {
-    /// Short-read WGS defaults: near-homozygous and ≥10 supporting reads.
+    /// The default values for a short-read WGS sample. The call needs almost no second allele, and
+    /// it needs 10 reads or more.
     fn default() -> Self {
         Self {
             min_allele_fraction: 0.9,
@@ -376,9 +463,11 @@ impl Default for PublishGate {
 }
 
 impl PublishGate {
-    /// Gate adapted to the sample's mean read length: HiFi/long reads make a confident haploid
-    /// observation from far fewer reads (same rationale as [`adaptive_min_depth`]), so the
-    /// supporting-read floor drops to 3. The allele-fraction requirement is unchanged.
+    /// The gate for the mean read length of the sample.
+    ///
+    /// A HiFi read, and each other long read, gives a confident haploid observation from many fewer
+    /// reads. [`adaptive_min_depth`] uses the same reason. So the minimum count of reads becomes 3.
+    /// The rule for the allele fraction does not change.
     pub fn for_read_len(read_len: f64) -> Self {
         let mut g = Self::default();
         if read_len > 1000.0 {
@@ -387,8 +476,8 @@ impl PublishGate {
         g
     }
 
-    /// Whether a variant clears the gate: it must be an unnamed novel in unique sequence, with a
-    /// near-homozygous derived fraction and enough supporting reads.
+    /// Shows whether a variant passes the gate. Such a variant must be new and have no name, must
+    /// be in unique sequence, must have almost no second allele, and must have enough reads.
     pub fn admits(&self, v: &PrivateVariant) -> bool {
         v.class == PrivateClass::Novel
             && v.region.is_none()
@@ -425,9 +514,10 @@ mod publish_gate_tests {
         assert!(!g.admits(&var(PrivateClass::OffPathKnown("M269".into()), None, 30, 1.0)));
         // Paralog-prone structural region → rejected even when deep/homozygous.
         assert!(!g.admits(&var(PrivateClass::Novel, Some(YRegionClass::Palindrome), 30, 1.0)));
-        // Mixed allele fraction (the placement caller accepts 0.5, publishing must not).
+        // The alleles are mixed. The placement caller accepts a fraction of 0.5, and a publish
+        // must not.
         assert!(!g.admits(&var(PrivateClass::Novel, None, 30, 0.6)));
-        // Too few supporting reads for short-read.
+        // A short-read sample needs more reads than this call holds.
         assert!(!g.admits(&var(PrivateClass::Novel, None, 4, 1.0)));
     }
 
@@ -509,15 +599,21 @@ const KEYCHAIN_SERVICE: &str = "decodingus-navigator";
 pub struct IbdComparison {
     pub summary: MatchSummary,
     pub segments: Vec<IbdSegment>,
-    /// Sites called in **both** samples — the effective comparison size. Sparse overlap (a
-    /// chip↔chip pair, or chip↔WGS limited to the chip's sites) weakens short-segment calls, so
-    /// it is surfaced rather than hidden.
+    /// The count of sites with a call in **both** samples. That count is the true size of the
+    /// comparison.
+    ///
+    /// A small overlap makes a call on a short segment weak. Two chips give such an overlap, and a
+    /// chip against a WGS sample also gives one, because the chip sites limit it. The report gives
+    /// this count and does not hide it.
     pub overlapping_sites: usize,
 }
 
-/// A sample for an IBD comparison — either a WGS/CRAM **alignment** (genotyped at the IBD-panel
-/// sites) or an imported **chip** profile (resolved to the same CHM13 sites). Both yield dosages
-/// over the canonical IBD panel, so the comparison is data-type-agnostic.
+/// One sample of an IBD comparison. It is a WGS **alignment** in a CRAM file, which the code
+/// genotypes at the IBD-panel sites. It can also be a **chip** profile that a user imported, which
+/// the code re-keys to the same CHM13 sites.
+///
+/// Both forms give a dosage at each site of the canonical IBD panel. So the comparison does not
+/// depend on the kind of data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IbdSource {
     Alignment(i64),
@@ -549,15 +645,20 @@ pub struct AssetStatus {
     pub verified: bool,
 }
 
-/// A pseudonymous federated-IBD candidate from the AppView's match engine. The
-/// `suggested_sample_guid` is the AppView's opaque handle for the counterpart (not a DID,
-/// not PII) — used to request an introduction. `signals` names the sources that contributed
-/// (e.g. `POPULATION_OVERLAP`, `HAPLOGROUP`, `SHARED_MATCH`) behind the composite `score`.
+/// A federated-IBD candidate from the match engine of the AppView. The candidate has no name.
 ///
-/// `target_sample_guid` is the AppView's handle for **our own** sample the candidate was ranked
-/// against. We already own it, so it discloses nothing — but a self-publishing client has no other
-/// way to learn its server-side sample handle, and [`App::ibd_attest`] can not report a completed
-/// comparison without it. `None` when talking to an AppView that predates that field.
+/// The `suggested_sample_guid` value is the opaque handle of the AppView for the other person. It is
+/// not a DID, and it holds no personal data. The app uses it to ask for an introduction.
+///
+/// The `signals` field names each source behind the `score` value, such as `POPULATION_OVERLAP`,
+/// `HAPLOGROUP`, and `SHARED_MATCH`.
+///
+/// The `target_sample_guid` value is the handle of the AppView for **our own** sample, and the
+/// engine ranked the candidate against that sample. We already own it, so it gives away nothing.
+///
+/// But a client that publishes its own records has no other way to learn its handle on the server.
+/// [`App::ibd_attest`] can not report a complete comparison without it. The value is `None` on an
+/// AppView from before that field.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IbdSuggestion {
     pub target_sample_guid: Option<String>,
@@ -567,30 +668,34 @@ pub struct IbdSuggestion {
     pub signals: Vec<String>,
 }
 
-/// How much a federated-IBD candidate's composite score is worth believing, as the Simple-mode
-/// "Genetic relatives" card frames it.
+/// The level of trust in the score of a federated-IBD candidate. The "Genetic relatives" card of
+/// Simple mode uses these words.
 ///
-/// This is a reading of the evidence, not a rendering of it: where the line falls between "strong"
-/// and "merely possible" decides which of three claims the app makes about a stranger's relatedness
-/// to the user. It lives beside [`IbdSuggestion`] rather than in the card that draws it so the rule
-/// has one home — and so tuning it later is a change to the interpretation, not to a widget.
+/// This value reads the evidence, and it does not only draw it. The line between "strong" and
+/// "possible" decides which of three statements the app makes about the relationship between a
+/// stranger and the user.
+///
+/// This code is beside [`IbdSuggestion`] and not in the card that draws it. So the rule has one
+/// home, and a later change to it is a change to the reading of the evidence and not to a
+/// widget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchStrength {
     /// The signals agree strongly; presented as a likely relative.
     Strong,
-    /// Enough agreement to be worth pursuing.
+    /// The two samples agree enough for the user to act.
     Likely,
     /// Weak or single-signal evidence; presented as a possibility only.
     Possible,
 }
 
 impl IbdSuggestion {
-    /// Classify this candidate's composite `score` into the tier the UI names.
+    /// Change the `score` of this candidate into the level that the UI names.
     ///
-    /// The AppView's score is a 0–1 composite over the contributing `signals`, so the cutoffs are
-    /// deliberately conservative: a candidate is only called strong when the evidence is well clear
-    /// of the middle of the range, because overstating a match invites someone to contact a stranger
-    /// on the strength of it.
+    /// The AppView gives a score from 0 to 1, and that score joins each of the `signals` values. So
+    /// the limits here are careful. The method names a candidate strong only when the evidence is
+    /// far above the middle of that range.
+    ///
+    /// A statement that is too strong makes a user write to a stranger on weak evidence.
     pub fn strength(&self) -> MatchStrength {
         if self.score >= 0.8 {
             MatchStrength::Strong
@@ -602,12 +707,15 @@ impl IbdSuggestion {
     }
 }
 
-/// Result of requesting an introduction to a candidate: the AppView's request URI and its
-/// status (initially `PENDING`, awaiting the consent round-trip).
+/// The result of a request for an introduction to a candidate. It holds the request URI of the
+/// AppView and the status of that request. The first status is `PENDING`, and the two parties then
+/// exchange their consent.
 ///
-/// `purpose` is chosen server-side from the suggestion's dominant signal (`IBD_AUTOSOMAL` / `IBD_Y`
-/// / `IBD_MT`) — it decides which genomic region a later attestation is filed under, so it is worth
-/// recording at introduction rather than waiting for the session to reveal it.
+/// The server chooses the `purpose` value from the strongest signal of the suggestion. The values
+/// are `IBD_AUTOSOMAL`, `IBD_Y`, and `IBD_MT`.
+///
+/// That value decides the genomic region of a later attestation. So the app records it at the
+/// introduction, and it does not wait for the session to give it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IbdIntroResult {
     pub request_uri: String,
@@ -615,8 +723,9 @@ pub struct IbdIntroResult {
     pub purpose: String,
 }
 
-/// An inbound, **symmetric-blind** exchange request awaiting this account's consent (the initiator
-/// is hidden until both parties consent). From `GET /api/v1/exchange/incoming`.
+/// An exchange request that arrived and that needs the consent of this account. The view is
+/// **symmetric-blind**: the app does not see the sender until both parties agree. The value comes
+/// from `GET /api/v1/exchange/incoming`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IncomingRequest {
     pub request_uri: String,
@@ -635,8 +744,9 @@ pub struct ExchangeSessionInfo {
     pub partner_key_uri: Option<String>,
 }
 
-/// Outcome of `POST /api/v1/exchange/consent`: `CONSENTED` (with the opened `session_id`),
-/// `DECLINED`, or `PENDING` (recorded, awaiting the counterpart).
+/// The result of `POST /api/v1/exchange/consent`. The value is `CONSENTED`, with the `session_id`
+/// of the new session. It can also be `DECLINED`. It can also be `PENDING`, which means that the
+/// server recorded our answer and waits for the other party.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConsentOutcome {
     pub status: String,
@@ -646,9 +756,9 @@ pub struct ConsentOutcome {
 /// Who opened a matching conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchingDirection {
-    /// We asked to be introduced.
+    /// This account asked for the introduction.
     Outbound,
-    /// Someone asked to be introduced to us.
+    /// Another person asked for an introduction to this account.
     Inbound,
 }
 
@@ -668,23 +778,24 @@ impl MatchingDirection {
     }
 }
 
-/// Where a matching conversation stands. Deliberately records only what this edge can *know*:
-/// the broker is symmetric-blind, so a partner declining is indistinguishable from a partner who
-/// has not answered yet — both stay [`MatchingStatus::Requested`], and [`MatchingStatus::Declined`]
-/// means **we** declined.
+/// The state of a matching conversation. The value records only what this device can *know*.
+///
+/// The broker is symmetric-blind. So a partner who declined looks the same as a partner who did not
+/// answer, and both stay at [`MatchingStatus::Requested`]. The value
+/// [`MatchingStatus::Declined`] means that **this account** declined.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchingStatus {
     /// We asked; the counterpart has not consented (or has not answered).
     Requested,
-    /// Inbound and awaiting our decision.
+    /// The request arrived, and this account must decide.
     AwaitingConsent,
     /// We declined.
     Declined,
-    /// Both consented — a session is open and the encrypted exchange can run.
+    /// Both parties agreed. A session is open, and the encrypted exchange can run.
     Ready,
-    /// The exchange ran and a result is stored.
+    /// The exchange ran, and the store holds a result.
     Exchanged,
-    /// The exchange was attempted and failed; `last_error` says why.
+    /// The exchange ran and failed. The `last_error` field gives the reason.
     Failed,
 }
 
@@ -710,8 +821,8 @@ impl MatchingStatus {
             _ => MatchingStatus::Requested,
         }
     }
-    /// True once the conversation has nothing further to do — it either produced a result or we
-    /// turned it down. The UI files these away from the actionable list.
+    /// True when the conversation has no more work. It gave a result, or this account declined it.
+    /// The UI keeps such a conversation out of the list of actions.
     pub fn is_terminal(self) -> bool {
         matches!(self, MatchingStatus::Exchanged | MatchingStatus::Declined)
     }
@@ -725,12 +836,14 @@ pub struct MatchingEntry {
     pub direction: MatchingDirection,
     pub purpose: String,
     pub status: MatchingStatus,
-    /// Revealed only after mutual consent — `None` while the request is still blind.
+    /// The server gives this value only after both parties agree. It is `None` while the request
+    /// stays blind.
     pub partner_did: Option<String>,
     pub session_id: Option<String>,
     /// The local subject whose dosages this conversation exchanges.
     pub biosample_guid: Option<SampleGuid>,
-    /// AppView sample handles (ours / theirs) — what an attestation is filed under.
+    /// The two sample handles of the AppView, ours and theirs. An attestation uses them as its
+    /// key.
     pub my_sample_ref: Option<String>,
     pub partner_sample_ref: Option<String>,
     /// Our own consent decision; `None` until we make one.
