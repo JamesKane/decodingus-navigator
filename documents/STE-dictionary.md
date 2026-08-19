@@ -64,7 +64,7 @@ permitted: genotyping array · mapping · sequencing · painting · matching · 
 indexing · logging · polling · signing · setting · heading · listing · ordering · padding · casing ·
 tracking · caching · processing · operating system · pacing · sampling · scaling · streaming ·
 spilling · phasing · binning · masking · trimming · clipping · calling · sorting · merging ·
-reasoning model · streaming
+reasoning model · streaming · copying
 
 ## Technical Verbs
 
@@ -195,6 +195,20 @@ The checker is careful but not perfect. Three cases came up often:
 `cargo check -p <crate> --all-targets` after each batch of files. A doc comment can break the build:
 a `[link]` that no longer resolves, or a line that starts with `-` or `+`, which
 `clippy::doc_lazy_continuation` reads as a Markdown list.
+
+**Separate a paragraph with a `///` line, never with a blank line.** A blank line ends the doc
+comment. The text above it then documents nothing, which is error E0585 and stops the build. This is
+easy to do when you split one long paragraph into three, and some files hold two doc comments that
+ran together into one block, which invites the mistake. Scan for it after each batch:
+
+```python
+import glob
+for f in glob.glob("crates/**/*.rs", recursive=True):
+    L = open(f, encoding="utf-8").read().split("\n")
+    for i in range(len(L) - 2):
+        if L[i].strip().startswith("///") and not L[i + 1].strip() and L[i + 2].strip().startswith("///"):
+            print(f"{f}:{i + 1}")
+```
 
 `cargo fmt --all` before each commit. The pre-commit hook enforces it.
 

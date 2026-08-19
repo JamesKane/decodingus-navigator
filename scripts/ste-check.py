@@ -128,9 +128,12 @@ ING_OK = {
     # Technical Names from documents/STE-dictionary.md that end in -ing.
     "operating", "genotyping", "reasoning", "pacing", "sampling", "scaling", "streaming", "spilling", "phasing",
     "binning", "masking", "trimming", "clipping", "calling", "sorting", "merging",
-    "reading", "writing", "counting", "timing", "build", "backing",
+    "reading", "writing", "counting", "timing", "build", "backing", "copying",
 }
-SENT_SPLIT = re.compile(r"(?<=[.!?:;])\s+(?=[A-Z`\[(])")
+# A sentence can end inside emphasis ("**...ancestries.**"), so step over any trailing
+# `*` or `_` before the space. Without this the rule reads two sentences as one and
+# reports a length violation that is not there.
+SENT_SPLIT = re.compile(r"(?<=[.!?:;])[*_]*\s+(?=[*_]*[A-Z`\[(])")
 
 
 def sentences(text):
