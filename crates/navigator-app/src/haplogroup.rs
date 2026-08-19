@@ -1357,7 +1357,7 @@ impl App {
     /// Diagnostic: genotype a **single alignment** against the DecodingUs Y tree in its native
     /// build. For each SNP down the placed lineage, dump the raw read pileup **behind** the call.
     /// The dump holds the reference base, the A/C/G/T tally of the reads that pass, the consensus
-    /// base, the two tree alleles, and the call state.
+    /// base, and the two tree alleles.
     ///
     /// This is the "calls the code made" log. Take a backbone SNP that reads ancestral. This says
     /// whether it is truly ancestral in the reads, or a coordinate mismatch, or an artifact of low
@@ -2653,7 +2653,7 @@ impl App {
     }
 
     /// The DecodingUs mt tree, parsed and remapped from `hs1` (CHM13 `chrM`) coordinates onto rCRS.
-    /// It gives `None`, and the caller falls back to FTDNA, in two cases: the fetch fails, or the
+    /// It gives `None`, and the caller falls back to FTDNA, in two cases. The fetch fails, or the
     /// cache has no CHM13 reference to build the `hs1`↔rCRS map from. It is best-effort, so a
     /// workspace that is offline, or that has no reference, still works.
     async fn decodingus_mt_tree_rcrs(&self) -> Option<navigator_analysis::haplo::HaploTree> {
@@ -2879,18 +2879,18 @@ impl App {
     }
 
     async fn fetch_tree(&self, url: &str, cache_file: &str) -> Result<String, AppError> {
-        // Session memo. The Y and mt haplotrees are 4–121 MB, and one placement consults them
-        // many times: for each alignment, for each vendor set, and for the polarity map. Without
-        // this memo, one genome-consensus build would read and check them again and again, and a
-        // refresh of a *stale* cache would block on the network.
+        // Session memo. The Y and mt haplotrees are 4–121 MB. One placement consults them many
+        // times: for each alignment, for each vendor set, and for the polarity map. Without this
+        // memo, one genome-consensus build would read and check them again and again. A refresh of
+        // a *stale* cache would also block on the network.
         //
         // So resolve each tree once for each process at most, and serve every later call from
         // memory. A tree does not change inside a session, so this is the biggest gain in the
         // batch. A project pass took minutes for each subject to fetch the 121 MB FTDNA tree again.
         //
         // The key is the *resolved* path, and not the bare file name. `NAVIGATOR_TREE_DIR` can
-        // point the same `cache_file` at a different tree, and a memo keyed by name would serve the
-        // first one for the rest of the process.
+        // point the same `cache_file` at a different tree. A memo keyed by name would then serve
+        // the first tree for the rest of the process.
         let path = tree_cache_path(cache_file);
         let key = path.to_string_lossy().into_owned();
         let memo = tree_memo();
@@ -3011,8 +3011,8 @@ impl App {
     }
 
     /// The internal-caller mtDNA placement. Place chrM against the FTDNA mt tree, and record it
-    /// under the walk key (`aln:{id}:mt`, `NavigatorWalk`). It does not score again when the
-    /// fingerprint is unchanged.
+    /// under the walk key (`aln:{id}:mt`, `NavigatorWalk`). It skips the score step when the
+    /// fingerprint stays the same.
     ///
     /// This is split out of [`assign_mtdna_haplogroup_from_alignment`], so that
     /// [`compare_callers`] can force the internal walk even when an external call is the preferred
@@ -3025,7 +3025,7 @@ impl App {
         let source_key = format!("aln:{alignment_id}:mt");
         let tree_json = self.fetch_ftdna_mt_tree().await?;
 
-        // Cache: do not score again when the file and the mt tree are unchanged.
+        // Cache: skip the score step when the file and the mt tree stay the same.
         let fingerprint = self
             .alignment_content_hash(alignment_id)
             .await
@@ -3088,17 +3088,18 @@ impl App {
         .map_err(Into::into)
     }
 
-    /// Estimate the donor's ancestry for an alignment by the allele-frequency likelihood. Load the
-    /// AIMs panel that matches the build, genotype the sample at its sites with the GL caller, and
-    /// score the binomial likelihood of each super-population. It stores the result, and returns it
-    /// to show. It needs a recorded BAM/CRAM, and a reference that the code can resolve, for the
-    /// CRAM and the genotype step.
+    /// Estimate the donor's ancestry for an alignment by the allele-frequency likelihood.
+    ///
+    /// Load the AIMs panel that matches the build. Genotype the sample at its sites with the GL
+    /// caller. Score the binomial likelihood of each super-population. It stores the result, and
+    /// returns it to show. It needs a recorded BAM/CRAM, and a reference that the code can resolve,
+    /// for the CRAM and the genotype step.
     ///
     /// Estimate autosomal ancestry from the subject's **consensus**, with no BAM genotyping.
     ///
     /// It reads the cached autosomal [`DiploidProfile`], which holds reconciled 0/1/2 dosages over
     /// the probe panel, pooled across every WGS and chip source. It bridges that to genotypes, and
-    /// runs the same estimators that the per-alignment path ran. The store keeps the result under
+    /// runs the same estimators that the alignment path ran. The store keeps the result under
     /// the consensus pseudo-source ([`CONSENSUS_SOURCE_ID`]). It gives an error when no build of
     /// the autosomal consensus has run yet.
     pub async fn estimate_ancestry_from_consensus(
@@ -3144,12 +3145,17 @@ impl App {
             if let Some(pca) = pca_bytes.and_then(|b| ancestry_analysis::PcaLoadings::from_bytes(&b).ok()) {
                 result.pca_coordinates = Some(ancestry_analysis::project_pca(&genotypes, &pca));
             }
-            // Deep (ancient) ancestry is NOT computed here — it is the separate `estimate_deep_ancestry`
-            // path. NB it is *not* a heavier genotyping pass: it reads the SAME cached autosomal
-            // consensus these modern/fine estimators use (the consensus is the full ~1.15M-site 1240k
-            // IBD-panel union, not a 20k subset), and just intersects the larger qpAdm f4 panel against
-            // it (documents/design/ancient-ancestry-rebuild.md §7.14). Kept out of this hot path because the
-            // qpAdm fit is a distinct, on-demand model.
+            // Deep (ancient) ancestry does NOT run here. It is the separate
+            // `estimate_deep_ancestry` path.
+            //
+            // It is *not* a heavier genotype pass. It reads the SAME cached autosomal
+            // consensus that these modern and fine estimators use. That consensus is the full
+            // 1240k IBD-panel union, of about 1.15M sites, and not a 20k subset. Deep ancestry only
+            // intersects the larger qpAdm f4 panel against it
+            // (documents/design/ancient-ancestry-rebuild.md §7.14).
+            //
+            // It stays out of this hot path because the qpAdm fit is a distinct model, and it runs
+            // on demand.
             let ancient: Option<AncestryResult> = None;
             let _ = &ancient_bytes;
             (result, ancient, fine)
@@ -3170,33 +3176,39 @@ impl App {
         Ok(result)
     }
 
-    /// **Deep (ancient) ancestry via qpAdm** (documents/design/ancient-ancestry-rebuild.md §7.14, §7.16) —
-    /// the validated WHG / EEF / Steppe breakdown.
+    /// **Deep (ancient) ancestry through qpAdm** (documents/design/ancient-ancestry-rebuild.md
+    /// §7.14, §7.16). This is the WHG / EEF / Steppe breakdown that passed its checks.
     ///
-    /// Consumes the subject's **autosomal consensus** ([`Self::build_autosomal_profile`]) — the same
-    /// multi-source object modern/fine ancestry uses. The consensus is built by the IBD panel's
-    /// per-build resolver, so it already pools every source **re-keyed to canonical CHM13**: WGS on
-    /// any reference (GRCh37/38 as well as CHM13) *and* consumer chips, with no alignment required.
-    /// That is why deep ancestry works multi-reference and chip-only — it inherits the frontend the
-    /// other estimates share. It fits `target = Σ wᵢ·sourcesᵢ` by qpAdm f4 over the (now
-    /// CHM13-canonical, §7.16) qpAdm panel and persists the result under the consensus pseudo-source.
+    /// It consumes the subject's **autosomal consensus** ([`Self::build_autosomal_profile`]), which
+    /// is the same multi-source object that modern and fine ancestry use. The IBD panel's resolver
+    /// builds that consensus for each build. So it already pools every source, **re-keyed to
+    /// canonical CHM13**. That covers WGS on any reference, GRCh37, GRCh38, and CHM13, and consumer
+    /// chips, and it needs no alignment.
     ///
-    /// **Requires** the autosomal consensus (errors if absent — build it via the Autosomal tab, same
-    /// contract as modern ancestry). Given it, this is a fast fit over cached genotypes; the heavy
-    /// full-1240k genotyping happens once, in the shared consensus build.
+    /// That is why deep ancestry works across references and on a chip alone: it inherits the front
+    /// end that the other estimates share. It fits `target = Σ wᵢ·sourcesᵢ` by qpAdm f4 over the
+    /// qpAdm panel, which is now CHM13-canonical (§7.16). The store keeps the result under the
+    /// consensus pseudo-source.
     ///
-    /// Returns `Ok(None)` when the feature is gated off, the asset is not installed, the consensus has
-    /// no autosomal calls, or the deep model does not apply (non-European / model rejected / infeasible
-    /// weights). `None` persists nothing — keeping an inapplicable breakdown off the UI *and* out of
-    /// the PDS.
+    /// It **needs** the autosomal consensus, and gives an error when that is absent. Build it from
+    /// the Autosomal tab, which is the same contract as modern ancestry. Given it, this is a fast
+    /// fit over cached genotypes. The heavy full-1240k genotype pass runs once, in the shared
+    /// consensus build.
+    ///
+    /// It returns `Ok(None)` in four cases. A gate holds the feature off, the asset is not
+    /// installed, the consensus has no autosomal calls, or the deep model does not apply. The model
+    /// does not apply to a non-European sample, to a fit that the test rejects, or to weights that
+    /// are infeasible. `None` stores nothing, which keeps an inapplicable breakdown off the UI
+    /// *and* out of the PDS.
     pub async fn estimate_deep_ancestry(&self, biosample_guid: SampleGuid) -> Result<Option<AncestryResult>, AppError> {
         if !crate::ANCIENT_ANCESTRY_ENABLED {
             return Ok(None);
         }
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
-        // Auto-download the prebuilt qpAdm + super-pop panels on first use (no `panelbuild`). qpAdm is
-        // best-effort (deep ancestry is simply unavailable if it can't be fetched); the super panel is required.
+        // Download the prebuilt qpAdm and super-pop panels on first use. Nobody must run
+        // `panelbuild`. qpAdm is best-effort: deep ancestry is unavailable when the fetch fails.
+        // The super panel is necessary.
         let _ = self.ensure_ancestry_asset(build, &ancestry_qpadm_path(build)).await;
         self.ensure_ancestry_asset(build, &ancestry_panel_path(build)).await?;
         let qpadm_path = ancestry_qpadm_path(build);
@@ -3209,11 +3221,13 @@ impl App {
             .ok_or_else(|| AppError::AncestryPanelMissing(super_path.clone()))?;
         let super_panel = AncestryPanel::from_bytes(&super_bytes)?;
 
-        // The pooled autosomal consensus (all sources, any build + chips, canonical CHM13, full 0/1/2
-        // dosages). **Required**, not built on demand — same contract as modern ancestry: the heavy
-        // build runs through the Autosomal-tab flow (with progress), and this is a fast read over it.
-        // Both the scope gate and the qpAdm fit read the *same* genotypes; every panel here is
-        // CHM13-canonical (§7.16), so no per-site re-keying is needed.
+        // The pooled autosomal consensus: all sources, any build, plus chips, on canonical CHM13,
+        // with full 0/1/2 dosages. It is **necessary**, and this code does not build it on demand.
+        // That is the same contract as modern ancestry. The heavy build runs through the
+        // Autosomal-tab flow, which shows progress, and this is a fast read over the result.
+        //
+        // The scope gate and the qpAdm fit read the *same* genotypes. Every panel here is
+        // CHM13-canonical (§7.16), so the code re-keys no site.
         let profile = self.cached_autosomal_profile(biosample_guid).await?.ok_or_else(|| {
             AppError::Import(
                 "build the autosomal consensus first (Autosomal tab) before estimating deep ancestry".into(),
@@ -3253,23 +3267,26 @@ impl App {
         Ok(result)
     }
 
-    /// **Deep-ancestry stability diagnostic** — the §3.4 validation gates, on a real subject.
+    /// **Deep-ancestry stability diagnostic**: the §3.4 check gates, on a real subject.
     ///
-    /// Fits the ancient mixture repeatedly over different *views* of the same person: the pooled
-    /// consensus, each contributing source on its own (a 30× WGS and a consumer chip are genotyped
-    /// by completely different means, so agreeing across them is the strongest evidence the estimate
-    /// tracks the donor and not the assay), and random subsets of the sites.
+    /// It fits the ancient mixture again and again, over different *views* of the same person. The
+    /// views are the pooled consensus, each source that contributes on its own, and random subsets
+    /// of the sites.
     ///
-    /// This is the test the previous implementation failed most spectacularly — the same person came
-    /// out WHG 72.6% from the consensus and WHG 7.4% from their own 28× BAM — so it is the one worth
-    /// being able to re-run on demand. Rows are diagnostics, never persisted or published; the
-    /// `reported` flag records whether the shipping estimator would have accepted that fit.
+    /// A 30× WGS and a consumer chip genotype by completely different means. So an answer that
+    /// holds across the two is the strongest evidence that the estimate follows the donor, and not
+    /// the assay.
     ///
-    /// Every row reports its dispersion even when the applicability gate rejects it, so a rejection
-    /// can be read as a magnitude rather than taken on faith.
+    /// This is the test that the earlier implementation failed worst. The same person came out at
+    /// WHG 72.6% from the consensus, and WHG 7.4% from their own 28× BAM. So it is the one to be
+    /// able to run again on demand. A row is a diagnostic, and the app never stores or publishes
+    /// it. The `reported` flag records whether the released estimator would have accepted that fit.
+    ///
+    /// Every row reports its dispersion, even when the applicability gate rejects it. A rejection
+    /// then has a magnitude, and nobody must take it on trust.
     pub async fn ancient_ancestry_stability(&self, biosample_guid: SampleGuid) -> Result<Vec<AncientFitRow>, AppError> {
-        // Build the consensus on demand — this is a diagnostic, and requiring the caller to have
-        // clicked through the GUI first would make it useless from the CLI.
+        // Build the consensus on demand. This is a diagnostic. If the caller had to click through
+        // the GUI first, the CLI could not use it.
         let profile = match self.cached_autosomal_profile(biosample_guid).await? {
             Some(p) => p,
             None => self.build_autosomal_profile(biosample_guid).await?,
@@ -3278,8 +3295,8 @@ impl App {
         let path = ancestry_freq_ancient_path(build);
         let bytes = read_verified_asset(build, &path)?.ok_or_else(|| AppError::AncestryPanelMissing(path.clone()))?;
         let panel = AncestryPanel::from_bytes(&bytes)?;
-        // The super-pop panel too: deep ancestry is scoped by the modern estimate, so each view has
-        // to be scored by both models or the diagnostic would not be reproducing the shipped policy.
+        // The super-pop panel too. The modern estimate sets the scope of deep ancestry. So both
+        // models must score each view, or the diagnostic would not follow the released policy.
         let super_path = ancestry_panel_path(build);
         let super_bytes = read_verified_asset(build, &super_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(super_path.clone()))?;
@@ -3304,7 +3321,7 @@ impl App {
                         sites: r.snps_with_genotype,
                         dispersion: r.fit_distance.unwrap_or(f64::NAN),
                         european: ancestry_analysis::west_eurasian_share(&modern),
-                        // The shipping estimator's own verdict — not a re-derivation of it.
+                        // The verdict of the released estimator itself, and not a copy of it.
                         reported: ancestry_analysis::estimate_ancient_admixture(
                             genotypes,
                             &panel,
@@ -3324,12 +3341,15 @@ impl App {
             let consensus = consensus_genotypes(&profile);
             fit("consensus (pooled)".to_string(), &consensus);
 
-            // Sites a chip actually called — the intersection target for the refit below. The
-            // stability failure has WGS reporting ~80% Steppe where the chips report ~58%; this asks
-            // whether the split is *which sites* each technology reaches (WGS scores ~19.7k, a chip
-            // ~5–8k) or the calls themselves. If a WGS source restricted to chip-covered sites moves
-            // toward the chip answer, the extra WGS-only sites carry the bias; if it stays put, the
-            // WGS dosages do.
+            // The sites that a chip called, which is the intersection target for the refit below.
+            //
+            // In the stability failure, WGS gives about 80% Steppe where the chips give about 58%.
+            // This asks whether the split comes from *which sites* each technology reaches, or from
+            // the calls themselves. WGS scores about 19.7k sites, and a chip 5–8k.
+            //
+            // Take a WGS source and hold it to the chip-covered sites. If it moves toward the chip
+            // answer, the extra WGS-only sites carry the bias. If it stays where it was, the WGS
+            // dosages carry it.
             let chip_sites: std::collections::HashSet<String> = profile
                 .variants
                 .iter()
@@ -3341,10 +3361,10 @@ impl App {
                 .map(|v| v.name.clone())
                 .collect();
 
-            // Diagnostic dump (NAVIGATOR_ANCIENT_DUMP=<path>): per consensus site, whether a chip
-            // covers it, the pooled dosage, and the three source frequencies. Lets us see directly
-            // what makes the non-chip sites favour Steppe once every intrinsic site property
-            // (MAF/strand/polarity/ts-tv) has been ruled out.
+            // Diagnostic dump (NAVIGATOR_ANCIENT_DUMP=<path>). For each consensus site it gives
+            // whether a chip covers it, the pooled dosage, and the three source frequencies. That
+            // shows directly what makes the non-chip sites favour Steppe, once the code has ruled
+            // out every property of the site itself: MAF, strand, polarity, and ts-tv.
             if let Ok(dump_path) = std::env::var("NAVIGATOR_ANCIENT_DUMP") {
                 let want = std::env::var("NAVIGATOR_ANCIENT_ALN").unwrap_or_else(|_| "#9".into());
                 let freq: std::collections::HashMap<(&str, i64), &Vec<f32>> = panel
@@ -3376,10 +3396,12 @@ impl App {
                 let _ = std::fs::write(&dump_path, out);
             }
 
-            // Strand-ambiguous SNPs (A/T, C/G): ref and alt are Watson–Crick complements, so which
-            // allele the panel counted as "alt" can't be recovered from the alleles alone. When a
-            // panel built from one dataset is genotyped against reads oriented by another, these are
-            // the sites that silently invert — the classic merge bias, and one chips routinely drop.
+            // Strand-ambiguous SNPs (A/T, C/G). Ref and alt are Watson–Crick complements here, so
+            // the alleles alone do not say which one the panel counted as "alt".
+            //
+            // Take a panel from one dataset, and genotype it against reads that another dataset
+            // oriented. These are the sites that invert, with no warning. That is the classic merge
+            // bias, and a chip usually drops these sites.
             let is_ambiguous = |v: &navigator_domain::consensus::DiploidVariant| -> bool {
                 matches!(
                     (v.reference.as_str(), v.alternate.as_str()),
@@ -3418,10 +3440,10 @@ impl App {
             };
 
             // Each source alone: take that source's own observed dosage at each site. For a WGS
-            // source, also refit it three ways to localize the stability bias:
-            //   ∩chip   — sites the chips cover (does WGS match the chip answer there?)
-            //   ∁chip   — the WGS-only complement (do those sites carry the bias?)
-            //   ¬ambig  — all sites minus strand-ambiguous A/T,C/G (does dropping them fix it?)
+            // source, also refit it three ways, to find where the stability bias sits.
+            //   ∩chip   the sites the chips cover. Does WGS match the chip answer there?
+            //   ∁chip   the WGS-only complement. Do those sites carry the bias?
+            //   ¬ambig  all sites, less the strand-ambiguous A/T and C/G. Does that fix it?
             for label in &source_labels {
                 let is_chip = profile.variants.iter().any(|v| {
                     v.sources
@@ -3445,8 +3467,8 @@ impl App {
                 }
             }
 
-            // Density: deterministic thinning of the pooled consensus. A well-conditioned fit barely
-            // moves when half the evidence is removed; an over-fit one lurches.
+            // Density: thin the pooled consensus, deterministically. A well-conditioned fit hardly
+            // moves when half the evidence goes. An over-fit one jumps.
             for (keep, label) in [(2usize, "consensus ÷2 sites"), (4, "consensus ÷4 sites")] {
                 let thinned: Vec<SiteGenotype> = consensus.iter().step_by(keep).cloned().collect();
                 fit(label.to_string(), &thinned);
@@ -3457,25 +3479,29 @@ impl App {
         .map_err(AppError::from)
     }
 
-    /// The persisted ancestry estimate for an alignment, if one has been computed.
+    /// The stored ancestry estimate for an alignment, if the app has computed one.
     pub async fn ancestry_for_alignment(&self, alignment_id: i64) -> Result<Option<AncestryResult>, AppError> {
         Ok(ancestry_result::get_for_alignment(self.store.pool(), alignment_id).await?)
     }
 
-    /// The persisted **fine-population** admixture estimate for an alignment, if one was computed
-    /// (the `ancestry_freq_global` asset was present at estimation time). Drives the super→fine
-    /// hierarchy rows; the super-pop donut keeps using the primary ([`ancestry_for_alignment`]).
+    /// The stored **fine-population** admixture estimate for an alignment, if the app computed one.
+    /// That needs the `ancestry_freq_global` asset to be present at estimate time. It feeds the
+    /// super→fine hierarchy rows. The super-pop donut continues to use the primary estimate
+    /// ([`ancestry_for_alignment`]).
     pub async fn fine_ancestry_for_alignment(&self, alignment_id: i64) -> Result<Option<AncestryResult>, AppError> {
         Ok(ancestry_result::get_for_alignment_method(self.store.pool(), alignment_id, "FINE_ADMIXTURE").await?)
     }
 
-    /// Reference population centroids on (PC1, PC2) for the alignment's build — the backdrop
-    /// for the PCA scatter. `(population_code, pc1, pc2)`; empty if no PCA loadings are present.
-    /// Reference population centroids in the **consensus** PC frame for the PCA scatter. The donor's
-    /// projected coordinate (`AncestryResult::pca_coordinates`) is always computed against the CHM13
-    /// PCA asset (the canonical consensus frame — see [`estimate_ancestry_from_consensus`]), so the
-    /// backdrop centroids must come from that same asset regardless of which source is selected.
-    /// Returns an empty vec when the asset is not installed (the caller shows "reference not built").
+    /// Reference population centroids on (PC1, PC2) for the alignment's build. They are the
+    /// backdrop for the PCA scatter, as `(population_code, pc1, pc2)`. The list is empty when no
+    /// PCA loadings are present.
+    ///
+    /// Reference population centroids in the **consensus** PC frame, for the PCA scatter. The code
+    /// always computes the donor's projected coordinate (`AncestryResult::pca_coordinates`) against
+    /// the CHM13 PCA asset, which is the canonical consensus frame. See
+    /// [`estimate_ancestry_from_consensus`]. So the backdrop centroids must come from that same
+    /// asset, whichever source the user selects. It returns an empty vec when the asset is not
+    /// installed, and the caller then shows "reference not built".
     pub async fn ancestry_pca_reference(&self) -> Result<Vec<(String, f64, f64)>, AppError> {
         let build = ReferenceBuild::Chm13v2;
         let Ok(bytes) = std::fs::read(ancestry_pca_path(build)) else {
@@ -3497,9 +3523,10 @@ impl App {
             .collect())
     }
 
-    /// The cached chromosome painting for a subject, if one was painted from the **current** autosomal
-    /// consensus (signature = the consensus's `last_reconciled_at`). `None` if absent or stale (the
-    /// consensus was rebuilt since). Cheap — a cache read, no genotyping or HMM.
+    /// The cached chromosome painting for a subject, if the app painted it from the **current**
+    /// autosomal consensus. The signature is the consensus's `last_reconciled_at`. It gives `None`
+    /// when the cache has none, or when the entry is stale because a rebuild of the consensus came
+    /// after it. It is low-cost: a cache read, with no genotyping and no HMM.
     pub async fn cached_painting(&self, biosample_guid: SampleGuid) -> Result<Option<PaintingResult>, AppError> {
         let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
             return Ok(None);
@@ -3513,17 +3540,22 @@ impl App {
         Ok(Some(parse_painting_json(&p.payload)?))
     }
 
-    /// Paint each chromosome with local ancestry from the subject's **consensus** — no BAM walk. The
-    /// explicit compute/refresh path: it always re-runs and refreshes the cache, keyed to the
-    /// consensus's `last_reconciled_at`, so a painter code change takes effect without wiping the
-    /// consensus. The cheap cache-read path is [`Self::cached_painting`] (used on subject load).
+    /// Paint each chromosome with local ancestry from the subject's **consensus**, with no BAM
+    /// walk.
     ///
-    /// **Parent-split**: when the phased-haplotype reference asset is present, the consensus is
-    /// statistically phased (Li & Stephens) and each side painted independently → two genuine
-    /// parental sides. If a parent is found in the workspace (a `ParentChild` IBD relationship), the
-    /// side carrying that parent's transmitted alleles is anchored and the sides are labelled
-    /// Mother/Father; otherwise Side A/Side B. Without the asset it falls back to the unphased diploid
-    /// painter (two arbitrary sorted copies).
+    /// This is the explicit compute path. It always runs again, and refreshes the cache, keyed to
+    /// the consensus's `last_reconciled_at`. So a change to the painter code takes effect, and
+    /// nobody must delete the consensus. [`Self::cached_painting`] is the low-cost cache read, and
+    /// the app uses it when it loads a subject.
+    ///
+    /// **Parent-split**: when the phased-haplotype reference asset is present, the code phases the
+    /// consensus statistically (Li & Stephens) and paints each side on its own. That gives two
+    /// genuine parental sides.
+    ///
+    /// The workspace can hold a parent, through a `ParentChild` IBD relationship. The side that
+    /// carries that parent's transmitted alleles then takes an anchor, and the labels become Mother
+    /// and Father. If not, they stay Side A and Side B. Without the asset, the code falls back to
+    /// the unphased diploid painter, which gives two sorted copies.
     pub async fn paint_local_ancestry_from_consensus(
         &self,
         biosample_guid: SampleGuid,
@@ -3542,14 +3574,16 @@ impl App {
         let build = ReferenceBuild::Chm13v2;
         let reference_version = "chm13v2.0".to_string();
 
-        // Super-pop AIM panel (required — the emission frequencies for both painters).
+        // The super-pop AIM panel. It is necessary, and gives the emission frequencies for both
+        // painters.
         self.ensure_ancestry_asset(build, &ancestry_panel_path(build)).await?;
         let panel_path = ancestry_panel_path(build);
         let panel_bytes = read_verified_asset(build, &panel_path)?
             .ok_or_else(|| AppError::AncestryPanelMissing(panel_path.clone()))?;
         let panel = AncestryPanel::from_bytes(&panel_bytes)?;
 
-        // Phased-haplotype reference (optional) — its presence switches on the parent-split path.
+        // The phased-haplotype reference is optional. When it is present, the parent-split path
+        // switches on.
         let haps_path = ancestry_haps_path(build);
         let _ = self.ensure_ancestry_asset(build, &haps_path).await; // best-effort auto-download
         let hap_ref = read_verified_asset(build, &haps_path)
@@ -3569,13 +3603,15 @@ impl App {
             Some((g, sex, name)) => (Some(g), Some((sex, name))),
             None => (None, None),
         };
-        // Copying-LAI knobs from settings (read here, on the async side, and moved into the blocking
-        // closure) so live Settings edits recalibrate the painter on the next paint.
+        // The copying-LAI knobs come from the settings. The code reads them here, on the async
+        // side, and moves them into the closure that blocks. So an edit in Settings recalibrates
+        // the painter on the next paint.
         let lai_params = copying_lai_params();
 
         let (segments, phased, anchor_side) = tokio::task::spawn_blocking(move || {
-            // Genome-wide super-pop composition — the prior anchoring both painters (and the copying
-            // LAI's global-composition gate that suppresses spurious continents).
+            // The genome-wide super-pop composition. It is the earlier estimate that anchors both
+            // painters. The copying-LAI global-composition gate also uses it, to suppress a
+            // continent that is not there.
             let composition = ancestry_analysis::estimate_admixture(&genotypes, &panel, &reference_version);
             let prior: Vec<(String, f64)> = composition
                 .components
@@ -3594,10 +3630,11 @@ impl App {
                     let pairs: Vec<(&str, i32)> = lengths.iter().map(|(k, v)| (k.as_str(), *v)).collect();
                     let gmap = load_genetic_map(build, &pairs);
 
-                    // Statistically phase, then paint each side by haplotype copying against the
-                    // reference (RFMix-style) — resolves fine sub-populations from haplotype structure,
-                    // superseding the frequency-emission painter + AF fine step. The `prior` gates the
-                    // reference to the continents the sample actually has.
+                    // Phase statistically, then paint each side by haplotype copying against the
+                    // reference, in the RFMix style. That resolves fine sub-populations from the
+                    // haplotype structure, and replaces the frequency-emission painter and the AF
+                    // fine step. The `prior` holds the reference to the continents that the sample
+                    // has.
                     let phaser = ReferencePhaser::new(&hap, &gmap, PhaseParams::default());
                     let phased_g = phaser.phase(&genotypes);
                     let segs = navigator_analysis::lai::paint_copying_lai(&phased_g, &hap, &gmap, &prior, &lai_params);
@@ -3627,7 +3664,8 @@ impl App {
             phased,
         };
 
-        // Cache keyed to the consensus signature so it is reused until the consensus is rebuilt.
+        // The cache keys on the consensus signature. So the app reuses the entry until a rebuild
+        // of the consensus.
         sig_cache::PAINTING
             .upsert(
                 self.store.pool(),
@@ -3643,24 +3681,29 @@ impl App {
     /// Find a workspace subject that is this subject's parent, to anchor the painted sides, and load
     /// its consensus genotypes. Returns `(genotypes, recorded-sex, display-name)`, or `None`.
     ///
-    /// Scalable by construction — it must **not** scan the whole workspace (which can hold tens of
-    /// thousands of subjects). Candidates are restricted to the child's **home project** (families /
-    /// trios are imported together) and hard-capped; a workspace with no small family context simply
-    /// gets no auto-anchoring (the sides stay Side A/B). Each candidate is screened by a cheap
-    /// **Mendelian test** — a true parent shares ≥1 allele at every site, so opposite-homozygous
-    /// sites are ~0 — which is O(sites) and needs no IBD segment detection or genetic map. The best
-    /// (lowest opposite-homozygosity) candidate below the threshold is returned; the phased-side
-    /// assignment itself is done later by transmission consistency.
+    /// It scales by construction. It must **not** scan the whole workspace, which can hold tens of
+    /// thousands of subjects. So the candidates come from the child's **home project**, and a hard
+    /// cap bounds them. An import brings a family or a trio in together. A workspace with no small
+    /// family context gets no automatic anchor, and the sides stay Side A and Side B.
+    ///
+    /// A low-cost **Mendelian test** screens each candidate. A true parent shares one allele or
+    /// more at every site, so the count of opposite-homozygous sites is near 0. That test is
+    /// O(sites), and it needs no IBD segment detection and no genetic map.
+    ///
+    /// It returns the best candidate below the threshold, which is the one with the lowest
+    /// opposite-homozygosity. Transmission consistency then assigns the phased side later.
     async fn find_parent_for_anchor(
         &self,
         child: SampleGuid,
         child_genotypes: &[SiteGenotype],
     ) -> Option<(Vec<SiteGenotype>, Option<String>, String)> {
-        // Auto-anchoring is for small family/trio projects; larger sets are skipped (a research
-        // corpus should not trigger a many-way scan, and parent detection there is not meaningful).
+        // The automatic anchor is for a small family or trio project. The code skips a larger set.
+        // A research corpus must not start a many-way scan, and parent detection there means
+        // little.
         const MAX_CANDIDATES: usize = 32;
-        // Opposite-homozygous fraction below which a pair is treated as parent-child (Mendel forbids
-        // opposite homozygotes for a true parent-child pair; the slack absorbs genotyping error).
+        // The opposite-homozygous fraction below which a pair counts as parent-child. Mendel
+        // forbids opposite homozygotes in a true parent-child pair, and the slack here absorbs a
+        // genotyping error.
         const MAX_OPP_HOM_FRAC: f64 = 0.01;
         const MIN_SHARED_SITES: u32 = 500;
 
@@ -3712,9 +3755,10 @@ impl App {
         Some(consensus_genotypes(&profile))
     }
 
-    /// The cached ROH result for a subject, if one was computed from the **current** autosomal
-    /// consensus (signature = the consensus's `last_reconciled_at`). `None` if absent or stale (the
-    /// consensus was rebuilt since). Cheap — a cache read, no genotyping or HMM.
+    /// The cached ROH result for a subject, if the app computed it from the **current** autosomal
+    /// consensus. The signature is the consensus's `last_reconciled_at`. It gives `None` when the
+    /// cache has none, or when the entry is stale because a rebuild of the consensus came after it.
+    /// It is low-cost: a cache read, with no genotyping and no HMM.
     pub async fn cached_roh(&self, biosample_guid: SampleGuid) -> Result<Option<RohResult>, AppError> {
         let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
             return Ok(None);
@@ -3729,10 +3773,12 @@ impl App {
         }
     }
 
-    /// Detect runs of homozygosity from the subject's **consensus** — no BAM walk. Returns the cached
-    /// result when it matches the current consensus signature; otherwise runs the 2-state autozygosity
-    /// HMM over the consensus genotypes and caches it keyed to the consensus's `last_reconciled_at`.
-    /// The genome-wide F_ROH and length-class breakdown are the endogamy / consanguinity signal.
+    /// Detect runs of homozygosity from the subject's **consensus**, with no BAM walk.
+    ///
+    /// It returns the cached result when that matches the current consensus signature. If not, it
+    /// runs the 2-state autozygosity HMM over the consensus genotypes, and caches the result keyed
+    /// to the consensus's `last_reconciled_at`. The genome-wide F_ROH and the length-class
+    /// breakdown are the endogamy and consanguinity signal.
     pub async fn compute_roh_from_consensus(&self, biosample_guid: SampleGuid) -> Result<RohResult, AppError> {
         let row = consensus_profile::get(self.store.pool(), biosample_guid, "Auto")
             .await?
@@ -3741,7 +3787,7 @@ impl App {
             })?;
         let sig = row.last_reconciled_at.clone();
 
-        // Cache hit (same consensus signature) → return without recomputing.
+        // A cache hit, with the same consensus signature. Return, and compute nothing.
         if let Some(r) = sig_cache::ROH.get(self.store.pool(), biosample_guid).await? {
             if r.sig == sig {
                 return Ok(serde_json::from_str(&r.payload)?);
@@ -3751,7 +3797,8 @@ impl App {
         let profile: DiploidProfile = serde_json::from_str(&row.payload)?;
         let genotypes = consensus_genotypes(&profile);
         let result = tokio::task::spawn_blocking(move || {
-            // Per-contig max position → genetic-map lengths (CHM13 consensus space, uniform fallback).
+            // The maximum position in each contig gives the genetic-map lengths, in CHM13
+            // consensus space, with a uniform fallback.
             let mut lengths: std::collections::BTreeMap<String, i32> = std::collections::BTreeMap::new();
             for g in &genotypes {
                 let e = lengths.entry(g.contig.clone()).or_insert(1);
@@ -3763,7 +3810,8 @@ impl App {
         })
         .await?;
 
-        // Cache keyed to the consensus signature so it is reused until the consensus is rebuilt.
+        // The cache keys on the consensus signature. The app reuses the entry until a rebuild of
+        // the consensus.
         sig_cache::ROH
             .upsert(
                 self.store.pool(),
@@ -3776,12 +3824,13 @@ impl App {
         Ok(result)
     }
 
-    /// The subject's archaic percentile within their inferred super-population, plus that cohort's
-    /// label. `None` when the distribution asset is absent or the subject's ancestry is unknown.
+    /// The subject's archaic percentile inside their inferred super-population, plus that cohort's
+    /// label. The value is `None` when the distribution asset is absent, or when nobody knows the
+    /// subject's ancestry.
     ///
-    /// The cohort is keyed to the subject's **super-population**, not their fine population (design
-    /// §9 Q3): a fine-grained cohort would be more specific, but it would also let an ancestry error
-    /// move the archaic headline, and a wrong percentile is worse than a coarse one.
+    /// The cohort keys on the subject's **super-population**, and not on their fine population
+    /// (design §9 Q3). A fine-grained cohort would be more specific. But it would also let an error
+    /// in the ancestry move the archaic figure, and a wrong percentile is worse than a coarse one.
     async fn archaic_percentile(
         &self,
         biosample_guid: SampleGuid,
@@ -3797,8 +3846,9 @@ impl App {
         };
         let dist = ArchaicCountDistribution::from_bytes(&bytes)?;
 
-        // The subject's dominant super-population, from the cached consensus ancestry. No estimate →
-        // no cohort → no percentile, rather than defaulting to one and quietly mis-ranking them.
+        // The subject's dominant super-population, from the cached consensus ancestry. With no
+        // estimate there is no cohort, and so no percentile. Do not fall back to a default
+        // cohort, which would give the subject a wrong rank with no warning.
         let Ok(ancestry) = self.estimate_ancestry_from_consensus(biosample_guid).await else {
             return Ok(None);
         };
@@ -3819,8 +3869,9 @@ impl App {
 
     /// The subject's alignment that already carries genome-wide de-novo diploid calls, if any.
     ///
-    /// Probes chr1 as the marker: the whole-genome pass writes one artifact per autosome, so a
-    /// cached chr1 means that alignment has been called. Cheap enough at a handful of alignments.
+    /// It probes chr1 as the marker. The whole-genome pass writes one artifact for each autosome,
+    /// so a cached chr1 means that a call ran on that alignment. The cost is small at a few
+    /// alignments.
     async fn alignment_with_diploid_calls(&self, biosample_guid: SampleGuid) -> Result<Option<i64>, AppError> {
         for a in alignment::list_for_biosample(self.store.pool(), biosample_guid).await? {
             if a.bam_path.is_none() {
@@ -3843,12 +3894,12 @@ impl App {
         Ok(None)
     }
 
-    /// The cached Tier B archaic segment result for a subject, if current for the alignment and
-    /// caller version it was produced from.
+    /// The cached Tier B archaic segment result for a subject. It must still match the alignment
+    /// and the caller version that produced it.
     ///
-    /// Gated by [`crate::ARCHAIC_SEGMENTS_ENABLED`] on the **read** path as well as the compute
-    /// path: rows persisted before the gate went in are still in the workspace, and a read-only
-    /// gate is the difference between withholding a result and merely declining to recompute it.
+    /// [`crate::ARCHAIC_SEGMENTS_ENABLED`] gates the **read** path and the compute path both. The
+    /// workspace still holds rows from before the gate went in. A gate on the read path withholds
+    /// such a result. A gate on the compute path alone would only stop a new computation.
     pub async fn cached_archaic_segments(
         &self,
         biosample_guid: SampleGuid,
@@ -3875,21 +3926,23 @@ impl App {
 
     /// Call archaic **segments** (Tier B) from the subject's genome-wide de-novo diploid calls.
     ///
-    /// **Uses already-cached calls and refuses otherwise.** Genome-wide diploid calling is an
-    /// hours-long whole-genome pass; kicking one off from a UI click would look like a hang. The
-    /// contract mirrors "build the autosomal consensus first" — the caller runs `navigator call`
-    /// (or the analysis flow) and this is then a fast read over the cache.
+    /// **It uses calls that the cache already holds, and refuses in all other cases.** Genome-wide
+    /// diploid calling is a whole-genome pass that takes hours. To start one from a UI click would
+    /// look like a hang.
     ///
-    /// CHM13 only, because the Tier B assets are CHM13 and segment coordinates have no per-build
-    /// loci to re-key through.
+    /// The contract mirrors "build the autosomal consensus first". The caller runs `navigator call`,
+    /// or the analysis flow, and this is then a fast read over the cache.
+    ///
+    /// CHM13 only, because the Tier B assets are CHM13, and a segment coordinate has no loci in
+    /// another build to re-key through.
     pub async fn call_archaic_segments_for_subject(
         &self,
         biosample_guid: SampleGuid,
     ) -> Result<ArchaicSegmentResult, AppError> {
-        // Withheld: the caller reproduces the cohort mean and nothing about the individual. An
-        // error rather than an empty result, because every caller of this asked for a computation —
-        // silently returning zero segments would read as "you have no archaic ancestry", which is
-        // a far worse claim than "we are not reporting this".
+        // Withheld: the caller reproduces the cohort mean, and says nothing about the individual.
+        // Give an error, and not an empty result. Every caller of this asked for a computation.
+        // A quiet return of zero segments would read as "you have no archaic ancestry". That is a
+        // much worse claim than "we do not report this".
         if !crate::ARCHAIC_SEGMENTS_ENABLED {
             return Err(AppError::Import(
                 "archaic segment calling is disabled: validated against hmmix's per-individual \
@@ -3898,10 +3951,10 @@ impl App {
                     .into(),
             ));
         }
-        // Prefer an alignment that already HAS genome-wide diploid calls over the
-        // highest-coverage one. Those calls are an hours-long per-alignment pass, so a subject with
-        // several CHM13 alignments (this one has four) would otherwise be told to re-run work they
-        // have already done, just on a different alignment.
+        // Prefer an alignment that already HAS genome-wide diploid calls over the one with the
+        // highest coverage. Those calls take hours for each alignment. Take a subject with more
+        // than one CHM13 alignment, and this one has four. Without this rule they would have to run
+        // work again that they had already done, only on a different alignment.
         let aln = match self.alignment_with_diploid_calls(biosample_guid).await? {
             Some(a) => a,
             None => self.best_callable_alignment(biosample_guid).await?.ok_or_else(|| {
@@ -3917,8 +3970,8 @@ impl App {
                 "archaic segments currently require a CHM13 alignment (the Tier B assets are CHM13-only)".into(),
             ));
         }
-        // Computed from the contigs actually cached, so a later genome-wide pass invalidates a
-        // partial result instead of inheriting it.
+        // Computed from the contigs in the cache, so a later genome-wide pass invalidates a
+        // partial result, and does not take it over.
         let sig = archaic_segment_sig(aln, &crate::called_diploid_contigs(&self.store, aln).await?);
         if let Some(row) = sig_cache::ARCHAIC_SEGMENTS
             .get(self.store.pool(), biosample_guid)
@@ -3929,8 +3982,8 @@ impl App {
             }
         }
 
-        // Gather whatever de-novo diploid calls are already cached, per autosome. Never computed
-        // here — see the doc comment.
+        // Gather the de-novo diploid calls that the cache holds, for each autosome. This code
+        // never computes them. See the doc comment.
         let mut calls: Vec<SiteGenotype> = Vec::new();
         let mut contigs_present = 0usize;
         for c in 1..=22u8 {
@@ -3965,12 +4018,13 @@ impl App {
         };
         let classify = ArchaicClassify::from_bytes(&load(crate::archaic_classify_path(rb))?)?;
         let callable = ArchaicCallable::from_bytes(&load(crate::archaic_callable_path(rb))?)?;
-        // Tier A's panel carries the per-archaic-genome calls the concordance filter needs — the
-        // single largest quality lever measured (precision 54 % -> 90 %).
+        // Tier A's panel carries the calls of each archaic genome, which the concordance filter
+        // needs. That filter is the largest measured gain in quality: precision 54 % to 90 %.
         let panel = ArchaicMarkerPanel::from_bytes(&load(crate::archaic_markers_path(rb))?)?;
         let (_, reference) = self.alignment_bam_reference(aln).await?;
 
-        // Genetic map over the contigs actually present, so transitions are recombination-scaled.
+        // The genetic map over the contigs that are present, so recombination scales the
+        // transitions.
         let mut lengths: std::collections::BTreeMap<String, i32> = std::collections::BTreeMap::new();
         for g in &calls {
             let e = lengths.entry(g.contig.clone()).or_insert(1);
@@ -3993,8 +4047,9 @@ impl App {
             }
             let mut observations = std::collections::BTreeMap::new();
             for (contig, pos_map) in &by_contig {
-                // One contig's reference at a time: whether a diagnostic site is informative depends
-                // on the reference base there, and holding all of CHM13 would cost 3.1 GB.
+                // One contig's reference at a time. Whether a diagnostic site tells us anything
+                // depends on the reference base there, and all of CHM13 would cost 3.1 GB of
+                // memory.
                 let seq = navigator_analysis::reader::read_contig_sequence(&reference, contig)?;
                 let obs = am::observations_for_contig(
                     contig,
@@ -4035,16 +4090,20 @@ impl App {
 
     /// Genotype the archaic marker panel directly from one alignment.
     ///
-    /// The consensus only carries the 1240k/IBD loci, so this is what gives a WGS subject the full
-    /// panel rather than the ~2.6 % that happens to intersect 1240k. Results are cached per
-    /// alignment under a kind salted with the panel's manifest hash, so recalibrating the panel
-    /// invalidates stale genotypes instead of silently mixing site sets.
+    /// The consensus carries the 1240k/IBD loci alone. So this is what gives a WGS subject the
+    /// full panel, and not the 2.6 % or so that happens to intersect 1240k.
     ///
-    /// Works on **any build the panel carries loci for**: CHM13 natively, and GRCh37/38 via the
-    /// panel's per-build coordinates (offline lift, oriented at build time — no runtime liftover).
-    /// A dosage measured on a non-CHM13 build is re-keyed to the CHM13 alleles before it is
-    /// returned, because that build's ref/alt may be swapped or strand-flipped relative to CHM13
-    /// and feeding the raw dosage through would invert those sites silently.
+    /// The cache holds a result for each alignment, under a kind that the panel's manifest hash
+    /// salts. So a new calibration of the panel invalidates a stale genotype, and no code mixes two
+    /// site sets together.
+    ///
+    /// It works on **any build that the panel has loci for**: CHM13 natively, and GRCh37 and GRCh38
+    /// through the panel's coordinates for each build. Those come from an offline lift, oriented at
+    /// build time, with no liftover at run time.
+    ///
+    /// A dosage measured on a build other than CHM13 is re-keyed to the CHM13 alleles before it
+    /// goes back. Such a build can swap its ref and alt against CHM13, or flip them to the other
+    /// strand. The raw dosage would then invert those sites, with no warning.
     async fn genotype_archaic_for_alignment(
         &self,
         alignment_id: i64,
@@ -4089,7 +4148,8 @@ impl App {
             })
             .await??
         } else if panel.sites.iter().any(|s| s.locus(&build).is_some()) {
-            // Match the panel's per-build contig names to the file's naming (`chr1` vs `1`).
+            // Match the panel's contig names for that build to the names in the file, `chr1`
+            // against `1`.
             let (bam_h, ref_h) = (bam.clone(), reference.clone());
             let file_contigs =
                 tokio::task::spawn_blocking(move || navigator_analysis::reader::contig_names(&bam_h, ref_h.as_deref()))
@@ -4173,10 +4233,10 @@ impl App {
         Ok(genotypes)
     }
 
-    /// Count archaic markers from **one specific alignment**, bypassing both the cache and the
-    /// best-callable pick. Used for cross-build validation: the same person's GRCh38 and CHM13
-    /// alignments should agree, which is the check that the per-build loci and the dosage re-keying
-    /// are correct rather than merely plausible.
+    /// Count archaic markers from **one specific alignment**. It goes around the cache, and around
+    /// the best-callable pick. It is for a check across builds: the same person's GRCh38 and CHM13
+    /// alignments must agree. That check shows that the loci of each build, and the re-key of the
+    /// dosage, are correct, and not only plausible.
     pub async fn archaic_for_alignment(
         &self,
         _biosample_guid: SampleGuid,
@@ -4196,8 +4256,9 @@ impl App {
         )
     }
 
-    /// The cached archaic (Tier A) marker count for a subject, if one was computed from the
-    /// **current** autosomal consensus. `None` if absent or stale. Cheap — a cache read.
+    /// The cached archaic (Tier A) marker count for a subject, if the app computed it from the
+    /// **current** autosomal consensus. It gives `None` when the cache has none, or when the entry
+    /// is stale. It is low-cost: a cache read.
     pub async fn cached_archaic(&self, biosample_guid: SampleGuid) -> Result<Option<ArchaicMarkerResult>, AppError> {
         let Some(row) = consensus_profile::get(self.store.pool(), biosample_guid, "Auto").await? else {
             return Ok(None);
@@ -4214,17 +4275,19 @@ impl App {
         }
     }
 
-    /// Count the subject's archaic (Neanderthal / Denisovan) marker copies from the **consensus** —
-    /// no BAM walk. Returns the cached result when it matches the current consensus signature.
+    /// Count the subject's archaic (Neanderthal / Denisovan) marker copies from the **consensus**,
+    /// with no BAM walk. It returns the cached result when that matches the current consensus
+    /// signature.
     ///
-    /// The headline is a count over what was actually assayed (copies carried of copies possible),
-    /// so chip and WGS input both yield an honest figure without comparing across data types.
+    /// The reported figure is a count over the sites that the test covered: the copies carried, of
+    /// the copies possible. So a chip and a WGS both give an honest figure, and neither one
+    /// compares across data types.
     ///
-    /// The **percentile is deliberately left unset for sparse input**. A consumer chip covers only a
-    /// few percent of the panel, and those sites are its common tail, so ranking such a count against
-    /// the WGS-scored reference cohort would produce a confidently wrong number (design §10). Until
-    /// per-site frequencies land in the distribution asset, the percentile is only filled when the
-    /// subject's call rate is comparable to the cohort's.
+    /// The **percentile stays unset for sparse input, on purpose**. A consumer chip covers a few
+    /// percent of the panel, and those sites are its common tail. To rank such a count against the
+    /// WGS-scored reference cohort would give a confident but wrong number (design §10). The code
+    /// fills the percentile only when the subject's call rate is near the cohort's. That holds
+    /// until the distribution asset carries a frequency for each site.
     pub async fn estimate_archaic_from_consensus(
         &self,
         biosample_guid: SampleGuid,
@@ -4234,10 +4297,10 @@ impl App {
             .ok_or_else(|| {
                 AppError::Import("build the autosomal consensus first (Autosomal tab) before the archaic report".into())
             })?;
-        // Load the panel BEFORE the cache check: the cache signature is salted with the panel's
-        // hash as well as the consensus signature, because rebuilding the panel changes the site
-        // list and the per-class split, and keying on the consensus alone would serve a stale count
-        // computed against a different panel.
+        // Load the panel BEFORE the cache check. The panel's hash salts the cache signature, and
+        // so does the consensus signature. A new build of the panel changes the site list and the
+        // split by class. A key on the consensus alone would then serve a stale count, computed
+        // against a different panel.
         let build = ReferenceBuild::Chm13v2;
         self.ensure_ancestry_asset(build, &crate::archaic_markers_path(build))
             .await?;
@@ -4254,16 +4317,18 @@ impl App {
         }
         let panel = ArchaicMarkerPanel::from_bytes(&bytes)?;
 
-        // Start from the consensus — it covers chips and every non-alignment source, but only where
-        // the archaic panel intersects the 1240k/IBD loci the consensus is built over (~2.6% of the
-        // panel). Design §5 assumed the consensus spanned the genome; it does not.
+        // Start from the consensus. It covers chips and every source that is not an alignment.
+        //
+        // But it reaches only the sites where the archaic panel intersects the 1240k/IBD loci of
+        // the consensus. That is about 2.6% of the panel. Design §5 assumed that the consensus
+        // spanned the genome. It does not.
         let profile: DiploidProfile = serde_json::from_str(&row.payload)?;
         let mut genotypes = consensus_genotypes(&profile);
 
-        // Then genotype the panel DIRECTLY from the subject's best-callable alignment, which is the
-        // only way a WGS subject reaches the other 97%. Best-effort: a subject with no callable
-        // alignment (chip-only) keeps the consensus-derived coverage and simply reports a lower
-        // call rate, which the "X of Y" headline states honestly.
+        // Then genotype the panel DIRECTLY from the subject's best-callable alignment. That is the
+        // only way a WGS subject reaches the other 97%. It is best-effort. A subject with no
+        // callable alignment, such as a chip-only subject, keeps the coverage from the consensus
+        // and reports a lower call rate. The "X of Y" figure states that honestly.
         if let Some(aln) = self.best_callable_alignment(biosample_guid).await? {
             match self.genotype_archaic_for_alignment(aln, &panel).await {
                 Ok(direct) if !direct.is_empty() => {
@@ -4283,10 +4348,11 @@ impl App {
             tokio::task::spawn_blocking(move || navigator_analysis::archaic::count_archaic_markers(&genotypes, &panel))
                 .await?;
 
-        // Percentile — valid at ANY coverage now, because the cohort is scored over exactly the
-        // sites this subject called rather than over the whole panel. A chip reaching ~3% of the
-        // panel is compared against what the cohort would score on those same 3%, so the call-rate
-        // artefact that used to pin every chip user near the 0th percentile is gone (design §10).
+        // The percentile is now valid at ANY coverage. The code scores the cohort over exactly the
+        // sites that this subject called, and not over the whole panel. Take a chip that reaches
+        // about 3% of the panel. The comparison is against what the cohort would score on those
+        // same 3%. So the call-rate artefact that used to hold every chip user near the 0th
+        // percentile is gone (design §10).
         if let Some((pct, cohort)) = self
             .archaic_percentile(biosample_guid, &result, &panel_fingerprint)
             .await?
@@ -4307,9 +4373,10 @@ impl App {
         Ok(result)
     }
 
-    /// An alignment's content SHA-256, computed once at import. Read from the record if present,
-    /// else computed now (hashing the file) and stored — so batch-imported alignments are hashed
-    /// lazily on first analysis, then cached on the row.
+    /// An alignment's content SHA-256, computed once at import. The code reads it from the record
+    /// when that holds one. If not, it reads the file, computes the hash now, and stores it. So an
+    /// alignment from a batch import gets its hash at the first analysis, and the row then holds
+    /// it.
     async fn alignment_content_hash(&self, alignment_id: i64) -> Result<String, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let bam = aln.bam_path.clone();
@@ -4322,8 +4389,9 @@ impl App {
                 h
             }
         };
-        // Register the file by its content hash (gap §5-p2): stable identity across moves, and the
-        // dedup/accessibility registry. Idempotent — a moved file just updates its path here.
+        // Register the file by its content hash (gap §5-p2). That gives it a stable identity
+        // across a move, and it is the registry for dedup and accessibility. The call is
+        // idempotent: a file that moved only updates its path here.
         if let Some(path) = bam {
             let size = std::fs::metadata(&path).ok().map(|m| m.len() as i64);
             let now = Utc::now().to_rfc3339();
@@ -4337,13 +4405,14 @@ impl App {
         Ok(hash)
     }
 
-    /// All tracked source files (content-hash identity) — for the Data Sources view.
+    /// Every tracked source file, with its content-hash identity, for the Data Sources view.
     pub async fn list_source_files(&self) -> Result<Vec<SourceFile>, AppError> {
         Ok(source_file::list(self.store.pool()).await?)
     }
 
-    /// Re-check each tracked file's path on disk and update its accessibility flag. Returns how many
-    /// are now missing (moved/deleted) — surfaced as a "file missing" marker in the UI.
+    /// Check each tracked file's path on disk again, and update its accessibility flag. It returns
+    /// how many are now absent, because a move or a delete. The UI shows those with a "file
+    /// missing" marker.
     pub async fn verify_source_files(&self) -> Result<usize, AppError> {
         let now = Utc::now().to_rfc3339();
         let mut missing = 0;
@@ -4363,10 +4432,12 @@ impl App {
         Ok(missing)
     }
 
-    /// The active Y tree's content hash (first 16 hex), the `yt:` half of a placement fingerprint.
-    /// Standalone — [`y_score_fingerprint`](Self::y_score_fingerprint) can only be computed for a
-    /// subject that owns an alignment to hash, which excludes VCF-only subjects and anyone whose
-    /// source file has moved.
+    /// The active Y tree's content hash (the first 16 hex characters), which is the `yt:` half of a
+    /// placement fingerprint.
+    ///
+    /// It stands alone. [`y_score_fingerprint`](Self::y_score_fingerprint) works only for a subject
+    /// that owns an alignment to hash. That leaves out a VCF-only subject, and anyone whose source
+    /// file has moved.
     pub async fn current_y_tree_hash(&self) -> Result<String, AppError> {
         let json = match y_tree_provider() {
             YTreeProvider::DecodingUs => self.fetch_decodingus_y_tree().await?,
@@ -4375,24 +4446,26 @@ impl App {
         Ok(sha256_str(&json)[..16].to_string())
     }
 
-    /// The active mtDNA tree's content hash (first 16 hex) — the `mt:` half.
+    /// The active mtDNA tree's content hash (the first 16 hex characters), the `mt:` half.
     pub async fn current_mt_tree_hash(&self) -> Result<String, AppError> {
         let json = self.fetch_ftdna_mt_tree().await?;
         Ok(sha256_str(&json)[..16].to_string())
     }
 
-    /// Subjects whose Y or mtDNA calls were placed against **a different haplotree** than the one
-    /// now active, and so are due a re-placement.
+    /// Subjects whose Y or mtDNA calls sit on **a different haplotree** from the one now active.
+    /// They are due a second placement.
     ///
-    /// This is the selector, not the sweep: `rebuild-signatures` already re-places a set of
-    /// subjects, and `assign_*_haplogroup_walk` already no-ops when a subject's fingerprint still
-    /// matches — so feeding this list to that sweep is cheap on anything already current.
+    /// This is the selector, and not the sweep. `rebuild-signatures` already places a set of
+    /// subjects again, and `assign_*_haplogroup_walk` already does nothing when a subject's
+    /// fingerprint still matches. So this list costs little when it goes to that sweep and
+    /// everything in it is current.
     ///
-    /// `include_unknown` adds the subjects whose calls predate the fingerprint field, which is a
-    /// provenance backfill rather than a response to a tree change — see the store function.
+    /// `include_unknown` adds the subjects whose calls come from before the fingerprint field
+    /// existed. That is a provenance backfill, and not an answer to a change of tree. See the store
+    /// function.
     ///
-    /// A tree that can not be fetched yields no subjects for that DNA type rather than an error: the
-    /// point of the sweep is to act on a *known* new tree, and "the network is down" is not one.
+    /// A tree that the app can not fetch gives no subjects for that DNA type, and no error. The
+    /// sweep acts on a *known* new tree. "The network is down" is not one.
     pub async fn subjects_placed_against_another_tree(
         &self,
         include_unknown: bool,
@@ -4424,20 +4497,21 @@ impl App {
         Ok(out)
     }
 
-    /// Subjects whose **genome-level consensus label names a branch the current Y tree does not
-    /// carry** — the other half of tree staleness, and the one that actually bites.
+    /// Subjects whose **genome-level consensus label names a branch that the current Y tree does
+    /// not carry**. This is the other half of tree staleness, and the half that does the damage.
     ///
-    /// A consensus is *derived* from the per-source calls and persisted separately, with no tree
-    /// stamp of its own. So it can rot while every call beneath it is current: `GMWOF5428705` holds
-    /// a call placed against today's tree (`E-C116698`) under a consensus of `E-FT400514:n0` last
-    /// reconciled four weeks earlier. A sweep keyed on call fingerprints alone can not see that.
+    /// The code *derives* a consensus from the calls of each source, and stores it on its own, with
+    /// no tree stamp. So it can go stale while every call below it is current. `GMWOF5428705` holds
+    /// a call placed against today's tree (`E-C116698`), under a consensus of `E-FT400514:n0` that
+    /// the app last reconciled four weeks before. A sweep keyed on call fingerprints alone can not
+    /// see that.
     ///
-    /// Testing the label against the tree's node names catches it directly and needs no schema
-    /// change: a label absent from the tree is stale by definition, whatever the cause — and it is
-    /// exactly the set the block tree drops into `unplaced`.
+    /// A test of the label against the tree's node names catches it directly, and needs no change
+    /// of schema. A label that the tree does not have is stale by definition, whatever the cause.
+    /// It is exactly the set that the block tree puts into `unplaced`.
     pub async fn subjects_labelled_off_tree(&self) -> Result<Vec<SampleGuid>, AppError> {
-        // Node *names* are build-independent, so any build key yields the same index — `hs1` is the
-        // DecodingUs tree's native space and needs no liftover.
+        // A node *name* is the same in every build, so any build key gives the same index. `hs1`
+        // is the DecodingUs tree's native space, and it needs no liftover.
         let tree = match y_tree_provider() {
             YTreeProvider::DecodingUs => {
                 let json = self.fetch_decodingus_y_tree().await?;
@@ -4461,9 +4535,10 @@ impl App {
         Ok(out)
     }
 
-    /// Fingerprint of the inputs to a Y-haplogroup score: the alignment's content hash + the
-    /// active Y-tree's content hash. Unchanged inputs → a re-score is unnecessary. Errors (e.g.
-    /// the tree is unreachable and uncached) disable caching for this run rather than failing.
+    /// Fingerprint of the inputs to a Y-haplogroup score: the alignment's content hash, plus the
+    /// active Y-tree's content hash. When the inputs do not change, a second score is unnecessary.
+    /// An error turns the cache off for this run, and does not stop the run. Such an error happens
+    /// when the tree is unreachable and the cache has none.
     async fn y_score_fingerprint(&self, alignment_id: i64) -> Result<String, AppError> {
         let file_hash = self.alignment_content_hash(alignment_id).await?;
         let tree_json = match y_tree_provider() {
@@ -4474,16 +4549,23 @@ impl App {
         Ok(format!("f:{}|yt:{}", &file_hash[..16], &tree_hash[..16]))
     }
 
-    /// Assign a Y haplogroup to an alignment: place the sample against the configured Y tree
-    /// (DecodingUs by default — our tree, native CHM13 coords, no liftover — falling back to
-    /// FTDNA if the AppView is unreachable), call the sample's base at each tree position on
-    /// chrY, and rank by Kulczynski. Requires a recorded BAM/CRAM path. Skips re-scoring when
-    /// the alignment file and tree are unchanged since the last run (see [`Self::y_score_fingerprint`]).
-    /// Whether a subject should be scored for Y-DNA. Females have no Y chromosome, so Y placement,
-    /// consensus, and the Y variant profile only produce an empty/degenerate call from mismapped
-    /// chrY reads — skip them. Sex comes from `biosample.sex` (user-provided, or written back by the
-    /// sex walker, which runs before the Y step). Male / Unknown / unrecorded → scored (`true`), so a
-    /// low-confidence or missing inference, or an XXY subject, is never silently dropped.
+    /// Assign a Y haplogroup to an alignment. Place the sample against the configured Y tree, call
+    /// the sample's base at each tree position on chrY, and rank by Kulczynski.
+    ///
+    /// The default tree is DecodingUs, which is our own, in native CHM13 coordinates, with no
+    /// liftover. It falls back to FTDNA when the AppView is unreachable. It needs a recorded
+    /// BAM/CRAM path. It skips the score step when the alignment file and the tree have not changed
+    /// since the last run (see [`Self::y_score_fingerprint`]).
+    ///
+    /// Whether the app must score a subject for Y-DNA.
+    ///
+    /// A female has no Y chromosome. Y placement, the consensus, and the Y variant profile would
+    /// then give an empty or degenerate call, from mismapped chrY reads, so skip her. The sex comes
+    /// from `biosample.sex`, which the user gives, or which the sex walker writes back. That walker
+    /// runs before the Y step.
+    ///
+    /// Male, Unknown, and a subject with no record all score (`true`). So the app never drops a
+    /// low-confidence inference, a missing one, or an XXY subject, with no word.
     pub(crate) async fn subject_has_y_dna(&self, biosample_guid: SampleGuid) -> Result<bool, AppError> {
         let sex = biosample::get(self.store.pool(), biosample_guid)
             .await?
@@ -4494,7 +4576,7 @@ impl App {
     pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let bio = self.biosample_of_alignment(alignment_id).await.ok();
 
-        // Females have no Y chromosome — do not genotype chrY or record a Y call for them.
+        // A female has no Y chromosome. Do not genotype chrY, and record no Y call, for her.
         if let Some(guid) = bio {
             if !self.subject_has_y_dna(guid).await? {
                 return Ok(HaploAssignment {
@@ -4505,9 +4587,10 @@ impl App {
             }
         }
 
-        // A trusted external caller (GATK4 GVCF) already placed this alignment via the sidecar fast
-        // path and the user prefers it: return that call instead of re-walking the CRAM. On damaged
-        // ancient DNA the walk would place a different, wrong terminal and clobber the external one.
+        // A trusted external caller (GATK4 GVCF) already placed this alignment, through the
+        // sidecar fast path, and the user prefers it. Return that call, and do not walk the CRAM
+        // again. On damaged ancient DNA the walk would place a different, wrong terminal, and
+        // overwrite the external one.
         if let Some(guid) = bio {
             if let Some(call) = self.preferred_external_call(guid, DnaType::Y, alignment_id).await? {
                 return Ok(assignment_from_call(&call));
@@ -4517,19 +4600,21 @@ impl App {
         self.assign_y_haplogroup_walk(alignment_id, bio).await
     }
 
-    /// The internal-caller Y placement: genotype chrY against the configured tree and record the call
-    /// under the walk key (`aln:{id}`, `NavigatorWalk` provenance), skipping the re-score when the
-    /// alignment + tree fingerprint is unchanged. Split out of [`assign_y_haplogroup`] so
-    /// [`compare_callers`] can force the internal walk even when an external call is preferred.
+    /// The internal-caller Y placement. Genotype chrY against the configured tree, and record the
+    /// call under the walk key (`aln:{id}`, with `NavigatorWalk` provenance). It skips the score
+    /// step when the fingerprint of the alignment and the tree has not changed.
+    ///
+    /// This is split out of [`assign_y_haplogroup`], so that [`compare_callers`] can force the
+    /// internal walk even when an external call is the preferred one.
     pub(crate) async fn assign_y_haplogroup_walk(
         &self,
         alignment_id: i64,
         bio: Option<SampleGuid>,
     ) -> Result<HaploAssignment, AppError> {
         let source_key = format!("aln:{alignment_id}");
-        // Input fingerprint = alignment content hash + active Y-tree content hash. If it matches the
-        // recorded call's stamp, neither the file nor the tree changed → return the recorded call
-        // without re-scoring (the expensive BAM genotyping).
+        // The input fingerprint is the alignment content hash plus the active Y-tree content hash.
+        // When it matches the stamp on the recorded call, neither the file nor the tree changed. So
+        // return the recorded call, and do not run the costly BAM genotype step again.
         let fingerprint = self.y_score_fingerprint(alignment_id).await.ok();
         if let (Some(bio), Some(fp)) = (bio, fingerprint.as_deref()) {
             if haplogroup_call::stored_fingerprint(self.store.pool(), bio, DnaType::Y, &source_key)
@@ -4559,17 +4644,18 @@ impl App {
         Ok(assignment)
     }
 
-    /// Freshly place an alignment against the configured Y tree, returning the **full** assignment
-    /// **including per-branch SNP evidence** (the cached [`assign_y_haplogroup`] path returns only
-    /// the terminal). Expensive (genotypes chrY tree sites in the BAM) — used by the Y-variant
-    /// profile, which the user builds explicitly.
+    /// Place an alignment against the configured Y tree afresh, and return the **full** assignment,
+    /// **with the SNP evidence of each branch**. The cached [`assign_y_haplogroup`] path returns the
+    /// terminal alone. This costs a lot, because it genotypes the chrY tree sites in the BAM. The
+    /// Y-variant profile uses it, and the user builds that profile explicitly.
     async fn y_assignment_full(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         match y_tree_provider() {
             YTreeProvider::DecodingUs => match self.assign_y_decodingus(alignment_id).await {
                 Ok(a) => Ok(a),
-                // A gone alignment file is not a tree problem, and the fallback reads the same
-                // absent file — so it can only fail again, after another tree download, having
-                // logged that the DecodingUs tree was unavailable when it was not. Raise it.
+                // An alignment file that is gone is not a tree problem. The fallback reads the
+                // same absent file, so it can only fail again, after a second tree download. It
+                // would also log that the DecodingUs tree was unavailable, when it was not. Raise
+                // the error here.
                 Err(e) if e.is_missing_alignment_file() => Err(e),
                 Err(e) => {
                     // AppView unreachable / build unsupported / parse failure → FTDNA fallback.
@@ -4587,20 +4673,24 @@ impl App {
         }
     }
 
-    /// Place against the DecodingUs Y tree from our AppView, using the alignment's **native**
-    /// build coordinates (`hs1` for CHM13, `GRCh38`, `GRCh37`) — queried directly, **no
-    /// liftover**. This is the intended architecture (the AppView owns multi-build coordinates;
-    /// Navigator stays liftover-free). Today the AppView's `hs1` coords cover the decoding-us
-    /// backbone but not the FTDNA-grafted tips, so deep CHM13 placement is limited until the
-    /// AppView enriches `hs1` for every variant (lift GRCh38→hs1 at ingest or on the fly).
+    /// Place against the DecodingUs Y tree from our AppView, in the alignment's **native** build
+    /// coordinates: `hs1` for CHM13, `GRCh38`, or `GRCh37`. The query goes directly to those
+    /// coordinates, with **no liftover**. This is the architecture we want: the AppView owns the
+    /// coordinates of every build, and Navigator holds no liftover.
+    ///
+    /// At present the AppView's `hs1` coordinates cover the decoding-us backbone, but not the tips
+    /// that come from FTDNA. So a deep CHM13 placement has a limit. That limit holds until the
+    /// AppView gives every variant an `hs1` coordinate, by a lift from GRCh38 to hs1, at ingest
+    /// time or on demand.
     async fn assign_y_decodingus(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let (tree, calls) = self.y_decodingus_tree_calls(alignment_id).await?;
         Ok(assemble_assignment(&tree, &calls))
     }
 
-    /// The (DecodingUs tree at the alignment's **native** build, full tree-locus base calls) for one
-    /// alignment — the genotype [`assign_y_decodingus`] scores. Factored so the consensus pool can
-    /// re-key it by SNP name and merge it with other sources.
+    /// A pair for one alignment: the DecodingUs tree at the alignment's **native** build, and the
+    /// full base calls at the tree loci. That is the genotype which [`assign_y_decodingus`] scores.
+    /// It is a separate function, so that the consensus pool can re-key it by SNP name and merge it
+    /// with other sources.
     pub(crate) async fn y_decodingus_tree_calls(
         &self,
         alignment_id: i64,
@@ -4612,9 +4702,11 @@ impl App {
                 aln.reference_build
             ))
         })?;
-        // Before the tree fetch, not after: a gone alignment file can not be genotyped against any
-        // tree, so downloading one first is pure waste — and its io error surfacing from *below* the
-        // fetch is what let `y_assignment_full` mistake it for the tree being unavailable.
+        // Do this before the tree fetch, and not after. No tree can genotype an alignment file
+        // that is gone, so a download first is pure waste.
+        //
+        // There is a second reason. When the io error came from *below* the fetch,
+        // `y_assignment_full` read it as an unavailable tree.
         Self::alignment_file(&aln)?;
         let tree_json = self.fetch_decodingus_y_tree().await?;
         let tree = navigator_analysis::haplo::parse_decodingus_json(&tree_json, build_key).map_err(AppError::Import)?;
@@ -4623,14 +4715,20 @@ impl App {
         Ok((tree, calls))
     }
 
-    /// Assign a Y haplogroup from the subject's imported **BISDNA / Y-SNP-panel** calls — no
-    /// alignment required. Builds a derived-allele call map from the subject's `Chip`-sourced
-    /// variant sets (the panel's positive calls, each `position → derived base`) and scores it
-    /// against the Y tree on `build` (the subject's alignment build, else `"hs1"`). Uses the
-    /// DecodingUs tree at the native build (FTDNA fallback only on GRCh38, where positions
-    /// match), and the chip-robust terminal selection ([`assemble_assignment_robust`]). The
-    /// call is recorded as a reconciliation source. Only derived (positive) calls drive the
-    /// Kulczynski ranking, so the stored positives-only variant set is enough.
+    /// Assign a Y haplogroup from the subject's imported **BISDNA / Y-SNP-panel** calls. It needs
+    /// no alignment.
+    ///
+    /// It builds a derived-allele call map from the subject's `Chip`-sourced variant sets. Those
+    /// hold the panel's positive calls, each one a `position → derived base`. It then scores that
+    /// map against the Y tree on `build`, which is the subject's alignment build, or `"hs1"` when
+    /// there is none.
+    ///
+    /// It uses the DecodingUs tree at the native build. FTDNA is a fallback on GRCh38 alone, where
+    /// the positions match. Terminal selection uses the chip-robust
+    /// [`assemble_assignment_robust`]. The store records the call as a reconciliation source.
+    ///
+    /// Only a derived, positive call drives the Kulczynski rank. So the stored variant set, which
+    /// holds the positives alone, is enough.
     pub async fn assign_y_bisdna(
         &self,
         biosample_guid: SampleGuid,
@@ -4639,8 +4737,9 @@ impl App {
         // Derived-allele calls from the subject's chip-sourced variant sets (BISDNA positives).
         let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
 
-        // Placement build: explicit override, else the build stored on a chip set at import,
-        // else (pre-migration sets with no stored build) re-derive from the subject's alignment.
+        // The placement build. An explicit override wins. If there is none, take the build that
+        // the import stored on a chip set. A set from before the migration has no stored build, and
+        // the code then derives one from the subject's alignment.
         let build = match build {
             Some(b) => b.to_string(),
             None => match sets
@@ -4689,12 +4788,14 @@ impl App {
         Ok(assignment)
     }
 
-    /// Autosomal variant sites of a set as `(bare-contig, position, a1, a2)` reference-forward
-    /// allele pairs — the input to the whole-genome IBD-panel resolve. Only chr1–chr22 (the panel
-    /// is autosomal). The genotype string is turned back into an allele pair: `1/1` → `(alt, alt)`;
-    /// het (`0/1`, `1/.`, or an absent genotype — one listed alt means at least one copy) →
-    /// `(ref, alt)`; tri-allelic `1/2` and haploid `1` (Y/mt, never autosomal) are dropped as
-    /// ambiguous for a diploid dosage.
+    /// The autosomal variant sites of a set, as `(bare-contig, position, a1, a2)` allele pairs on
+    /// the reference forward strand. They are the input to the whole-genome IBD-panel resolve. Only
+    /// chr1 to chr22 count, because the panel is autosomal.
+    ///
+    /// The code turns the genotype string back into an allele pair. `1/1` gives `(alt, alt)`. A het
+    /// gives `(ref, alt)`, and a het is `0/1`, `1/.`, or an absent genotype, because one listed alt
+    /// means one copy or more. It drops a tri-allelic `1/2`, and a haploid `1`, which is Y or mt
+    /// and never autosomal. Both are ambiguous for a diploid dosage.
     fn vset_autosomal_calls(set: &VariantSet) -> Vec<(String, i64, char, char)> {
         set.calls
             .iter()
@@ -4719,10 +4820,13 @@ impl App {
             .collect()
     }
 
-    /// Resolve a **genome-wide** variant set to canonical CHM13 IBD-panel dosages (unlisted panel
-    /// sites ⇒ hom-reference — see [`IbdPanel::resolve_whole_genome`]). Needs the IBD panel asset.
-    /// Returns an empty vec for a set with no autosomal calls (e.g. a Y-only VCF). Not cached — the
-    /// resolve is cheap and, like the chip path, recomputed when the autosomal consensus is rebuilt.
+    /// Resolve a **genome-wide** variant set to canonical CHM13 IBD-panel dosages. A panel site
+    /// that the set does not list counts as hom-reference, see
+    /// [`IbdPanel::resolve_whole_genome`]. It needs the IBD panel asset. It returns an empty vec
+    /// for a set with no autosomal calls, such as a Y-only VCF.
+    ///
+    /// The cache does not hold the result. The resolve is low-cost, and it runs again when a
+    /// rebuild of the autosomal consensus happens, the same as the chip path.
     pub(crate) async fn variant_set_panel_dosages(&self, set: &VariantSet) -> Result<Vec<SiteGenotype>, AppError> {
         let calls = Self::vset_autosomal_calls(set);
         if calls.is_empty() {
@@ -4734,8 +4838,8 @@ impl App {
         Ok(dosages)
     }
 
-    /// chrY genotype calls (`position → uppercase ALT base`) from a variant set — the shared
-    /// extractor behind the chip / vendor-VCF Y placements.
+    /// chrY genotype calls (`position → uppercase ALT base`) from a variant set. This is the
+    /// shared extractor behind the chip and vendor-VCF Y placements.
     fn vset_chr_y_calls(set: &VariantSet) -> HashMap<i64, char> {
         set.calls
             .iter()
@@ -4744,18 +4848,22 @@ impl App {
             .collect()
     }
 
-    /// Tree-position genotypes for a variant set — the VCF counterpart of [`Self::base_calls`].
+    /// Tree-position genotypes for a variant set. This is the VCF counterpart of
+    /// [`Self::base_calls`].
     ///
-    /// [`Self::vset_chr_y_calls`] can only report the stored rows, which are the donor's *derived*
-    /// calls: the workspace never recorded where he is confidently ancestral, so placement can not
-    /// separate "ancestral" from "not covered" and every backbone node scores as no-call. Re-reading
-    /// the source VCF at the tree's positions recovers the hom-ref rows it already contains, which is
-    /// what the CRAM path gets for free by genotyping every target.
+    /// [`Self::vset_chr_y_calls`] can report the stored rows alone, and those are the donor's
+    /// *derived* calls. The workspace never recorded where he is confidently ancestral. So a
+    /// placement can not separate "ancestral" from "not covered", and every backbone node scores as
+    /// a no-call.
     ///
-    /// Cached in `variant_set_genotype` under the same site-set hash the alignment path uses, so a
-    /// changed tree misses rather than serving genotypes for sites that moved. Falls back to the
-    /// stored derived calls whenever the source is unavailable (never recorded, file since moved, or
-    /// unreadable) — strictly no worse than the previous behaviour.
+    /// A second read of the source VCF, at the tree's positions, recovers the hom-ref rows that it
+    /// already holds. The CRAM path gets those for free, because it genotypes every target.
+    ///
+    /// The cache holds the result in `variant_set_genotype`, under the same site-set hash that the
+    /// alignment path uses. So a changed tree misses the cache, and the code serves no genotype
+    /// for a site that moved. It falls back to the stored derived calls whenever the
+    /// source is unavailable: never recorded, moved since, or unreadable. That is no worse than the
+    /// earlier behaviour.
     pub(crate) async fn vset_base_calls(
         &self,
         set: &VariantSet,
@@ -4794,14 +4902,19 @@ impl App {
         calls
     }
 
-    /// Place the subject's vendor **Y-NGS VCF** variant sets — FTDNA Big Y / Full Genomes Y Elite /
-    /// YSEQ / Nebula / Dante, i.e. anything imported as a non-[`Chip`](SourceType::Chip)
-    /// [`VariantSet`] carrying chrY calls — and record a per-source donor call for each. These are
-    /// direct Y-SNP genotype calls (the gold-standard placement input), placed against the configured
-    /// tree on each set's stored build (FTDNA Big Y is GRCh38, the FTDNA tree's native build → no
-    /// liftover). Best-effort per set: one that errors or lacks chrY calls is skipped. Returns the
-    /// number of sets placed. Called on import (so a Big Y VCF places without a manual Refresh) and
-    /// re-runnable. The vendor-VCF counterpart to [`assign_y_bisdna`](Self::assign_y_bisdna).
+    /// Place the subject's vendor **Y-NGS VCF** variant sets, and record one donor call for each
+    /// source. Those sets are FTDNA Big Y, Full Genomes Y Elite, YSEQ, Nebula, and Dante. In
+    /// general they are any [`VariantSet`] from an import that has chrY calls and that is not a
+    /// [`Chip`](SourceType::Chip).
+    ///
+    /// These are direct Y-SNP genotype calls, which are the best placement input. Each one places
+    /// against the configured tree, on the build that the set stores. FTDNA Big Y is GRCh38, which
+    /// is the FTDNA tree's native build, so it needs no liftover.
+    ///
+    /// It is best-effort for each set, and skips one that errors or that has no chrY calls. It
+    /// returns the count of sets it placed. The import calls it, so a Big Y VCF places with no
+    /// manual Refresh, and it is safe to run again. It is the vendor-VCF counterpart to
+    /// [`assign_y_bisdna`](Self::assign_y_bisdna).
     pub async fn assign_y_vendor_vcfs(&self, biosample_guid: SampleGuid) -> Result<usize, AppError> {
         let sets = variant_set::list_for_biosample(self.store.pool(), biosample_guid).await?;
         let mut tree_cache: HashMap<String, navigator_analysis::haplo::HaploTree> = HashMap::new();
@@ -4827,10 +4940,12 @@ impl App {
                 continue;
             }
             let assignment = Self::place_chip_panel(&tree_cache[&build], calls);
-            // A set with no tree-defining SNP matched carries no Y signal — e.g. an off-haplotree
-            // FTDNA "Private Variants" report (novel loci only), or an autosomal/mt VCF that slipped
-            // through. Recording its placeholder placement would conflict with a real per-source
-            // call and collapse the donor consensus to root, so skip it.
+            // A set that matched no SNP of a tree node carries no Y signal. One example is an
+            // FTDNA "Private Variants" report, which holds novel loci alone and sits off the
+            // haplotree. Another is an autosomal or mt VCF that got through.
+            //
+            // A record of its placeholder placement would conflict with a real call from another
+            // source, and would pull the donor consensus back to the root. So skip it.
             if assignment.ranked.first().map_or(true, |t| t.matched == 0) {
                 continue;
             }
@@ -4847,15 +4962,16 @@ impl App {
         Ok(placed)
     }
 
-    /// Fetch + parse the Y haplotree for a chip placement on `build`. DecodingUs is native multi-build
-    /// (no liftover); the FTDNA tree is GRCh38-only, so it is a fallback only when the calls are GRCh38.
-    /// Shared by the combined [`assign_y_bisdna`](Self::assign_y_bisdna) placement and the per-panel
-    /// Y-profile sources, so the tree is fetched once.
+    /// Fetch and parse the Y haplotree for a chip placement on `build`. DecodingUs is native on
+    /// every build, and needs no liftover. The FTDNA tree is GRCh38 only, so it is a fallback when
+    /// the calls are GRCh38, and at no other time. The combined
+    /// [`assign_y_bisdna`](Self::assign_y_bisdna) placement shares it with the Y-profile source of
+    /// each panel, so one fetch serves them all.
     pub(crate) async fn chip_y_tree(&self, build: &str) -> Result<navigator_analysis::haplo::HaploTree, AppError> {
-        // Honor the configured Y-tree provider (the alignment placement path does too). With the
-        // FTDNA provider, place against the FTDNA tree directly — no DecodingUs call. The default
-        // (DecodingUs) keeps the prior behavior, with an FTDNA fallback for a GRCh38 chip when the
-        // DecodingUs tree is unavailable.
+        // Obey the configured Y-tree provider, as the alignment placement path does. With the
+        // FTDNA provider, place against the FTDNA tree directly, and make no DecodingUs call. The
+        // default is DecodingUs, which keeps the earlier behaviour. There a GRCh38 chip falls back
+        // to FTDNA when the DecodingUs tree is unavailable.
         if matches!(y_tree_provider(), YTreeProvider::Ftdna) {
             let json = self.fetch_ftdna_y_tree().await?;
             let mut tree = navigator_analysis::haplo::parse_ftdna_json(&json).map_err(AppError::Import)?;
@@ -4876,8 +4992,8 @@ impl App {
         }
     }
 
-    /// Place one chip/BISDNA panel's chrY calls on `tree` (strand-reconciled), without persisting —
-    /// for assembling the per-panel sources of the Y-variant profile.
+    /// Place one chip or BISDNA panel's chrY calls on `tree`, strand-reconciled, and store nothing.
+    /// It builds the source of each panel for the Y-variant profile.
     fn place_chip_panel(tree: &navigator_analysis::haplo::HaploTree, calls: HashMap<i64, char>) -> HaploAssignment {
         let calls = strand_reconcile_to_tree(tree, calls);
         assemble_assignment_robust(tree, &calls)
@@ -4941,21 +5057,26 @@ impl App {
         Ok(assemble_assignment(&tree, &calls))
     }
 
-    /// Like [`assign_haplogroup_from_alignment`], but also returns the per-SNP evidence along
-    /// the called terminal's lineage (each defining mutation's Derived/Ancestral/NoCall state).
-    /// For exact comparisons (e.g. GRCh38 vs a lifted CHM13 call).
-    /// Full Y-haplogroup placement **report** for an alignment (gap §8): the ranked candidate
-    /// haplogroups (with score / matched-vs-expected) + the defining-SNP evidence along the reported
-    /// lineage (each SNP's derived / ancestral / no-call state). A fresh placement against the
-    /// configured provider tree — heavier than the cached terminal label, so it is button-driven.
+    /// Like [`assign_haplogroup_from_alignment`], but it also returns the evidence at each SNP
+    /// along the lineage of the called terminal. That is the Derived, Ancestral, or NoCall state of
+    /// each mutation that defines a node. It is for an exact comparison, such as GRCh38 against a
+    /// lifted CHM13 call.
+    ///
+    /// Full Y-haplogroup placement **report** for an alignment (gap §8). It holds the ranked
+    /// candidate haplogroups, each with a score and a matched-against-expected count. It also holds
+    /// the SNP evidence along the reported lineage, with the derived, ancestral, or no-call state
+    /// of each SNP.
+    ///
+    /// It is a fresh placement against the configured provider tree. That costs more than the
+    /// cached terminal label, so a button starts it.
     pub async fn y_haplogroup_report(
         &self,
         alignment_id: i64,
     ) -> Result<(HaploAssignment, Vec<SnpEvidence>), AppError> {
-        // Route through the provider-correct placement (DecodingUs native multi-build, FTDNA
-        // fallback with polarity normalization) — not a raw `parse_ftdna_json` of whatever tree the
-        // provider returns, which fails on the DecodingUs schema. The assignment already carries the
-        // root→terminal lineage evidence.
+        // Go through the placement that matches the provider. DecodingUs is native on every build,
+        // and FTDNA is the fallback, with its polarity normalized. Do not call `parse_ftdna_json`
+        // on whatever tree the provider returns, because that fails on the DecodingUs schema. The
+        // assignment already carries the root→terminal lineage evidence.
         let assignment = self.y_assignment_full(alignment_id).await?;
         let lineage = assignment.lineage.clone();
         Ok((assignment, lineage))
@@ -4976,8 +5097,8 @@ impl App {
         Ok((assignment, lineage, calls))
     }
 
-    /// Parse the tree, build the per-position base calls (lifting onto the alignment's build
-    /// when needed), and return both. Shared by the assignment + detail entry points.
+    /// Parse the tree, build the base call at each position, and return both. It lifts onto the
+    /// alignment's build when it must. The assignment and the detail entry points share it.
     pub(crate) async fn tree_base_calls(
         &self,
         alignment_id: i64,
@@ -4985,10 +5106,13 @@ impl App {
         tree_json: &str,
     ) -> Result<(navigator_analysis::haplo::HaploTree, HashMap<i64, char>), AppError> {
         let mut tree = navigator_analysis::haplo::parse_ftdna_json(tree_json).map_err(AppError::Import)?;
-        // Harden the FTDNA tree: it records the GRCh38 *reference* base as "ancestral", so at the
-        // sites where the reference carries the derived allele its polarity is inverted (the
-        // CT-M168 amber artifact). Normalize against the DecodingUs tree's true polarity (best
-        // effort — offline FTDNA mode keeps the raw FTDNA polarity). Y only (no mt polarity source).
+        // Harden the FTDNA tree. It records the GRCh38 *reference* base as "ancestral". Take a
+        // site where the reference carries the derived allele: there the tree inverts the polarity.
+        // That is the CT-M168 amber artifact.
+        //
+        // Normalize against the DecodingUs tree's true polarity. It is best-effort: an offline
+        // FTDNA mode keeps the raw FTDNA polarity. This is for Y only, because there is no mt
+        // polarity source.
         if contig.eq_ignore_ascii_case("chrY") {
             if let Some(pol) = self.decodingus_y_polarity().await {
                 let flipped = navigator_analysis::haplo::normalize_polarity(&mut tree, &pol);
@@ -5011,10 +5135,11 @@ impl App {
         navigator_analysis::haplo::decodingus_polarity_map(&json).ok()
     }
 
-    /// Resolve a canonical contig name (`chrY`, `chrM`) to the name actually present in the
-    /// alignment header, tolerating naming conventions: the `chr` prefix (GRCh37/hg19 drop it)
-    /// and the `M`/`MT` mitochondrial spelling. Returns `None` when no equivalent contig is in
-    /// the header (the caller then queries the requested name and surfaces the original error).
+    /// Resolve a canonical contig name (`chrY`, `chrM`) to the name that the alignment header
+    /// holds. It accepts the usual conventions: the `chr` prefix, which GRCh37 and hg19 drop, and
+    /// the `M` or `MT` form for the mitochondrion. It returns `None` when the header has no
+    /// equivalent contig. The caller then queries the name it asked for, and shows the original
+    /// error.
     async fn resolve_header_contig(
         &self,
         bam: &Path,
@@ -5037,29 +5162,40 @@ impl App {
             .into_iter()
             .find(|cand| names.iter().any(|n| n.eq_ignore_ascii_case(cand)))
             .and_then(|cand| {
-                // Return the header's exact casing/spelling so the region query matches.
+                // Return the exact form from the header, so the region query matches.
                 names.iter().find(|n| n.eq_ignore_ascii_case(&cand)).cloned()
             }))
     }
 
-    /// Base-call an alignment at a parsed tree's positions on `contig`. `tree_source_build` is
-    /// the build the tree's positions are in: when it differs from the alignment build the
-    /// positions are lifted (chrY chain), queried there, and mapped back; `None` (e.g. a
-    /// DecodingUs tree already in the alignment's build, or mt/rCRS-direct) queries directly.
+    /// Base-call an alignment at a parsed tree's positions on `contig`.
     ///
-    /// The result (tree-position → base) is cached as a versioned analysis artifact keyed by the
-    /// queried **site set** (a hash of the tree's positions) + contig + lift source, and
-    /// invalidated by the alignment's `source_sig` (BAM/CRAM mtime:size). This is the BAM-walk
-    /// chokepoint for *every* genotyping path (Y/mt placement, the variant profile, genome
-    /// consensus), so a profile **rebuild** reuses the cached genotypes instead of re-walking the
-    /// reads — only a changed file or a changed tree site set forces a fresh walk.
-    /// Tree-locus base calls for one alignment for the **genome-consensus placement**, preferring the
-    /// alignment's external sidecar GVCF (no CRAM decode) when the "prefer external caller" policy is
-    /// on and the GVCF is present; otherwise the cached CRAM walk ([`base_calls`]). A drop-in for the
-    /// per-alignment genotype in `place_{y,mt}_consensus`, so a preferred-external (e.g. ancient-DNA)
-    /// subject's damaged CRAM is not re-walked and can not dilute the pooled placement (Phase 2 of
-    /// `documents/design/external-caller-precedence.md` §4.5). `tree_source_build` matches what `base_calls`
-    /// receives — `None` for a native-build tree (DecodingUs Y, rCRS mt), the tree's build for a lift.
+    /// `tree_source_build` names the build that the tree's positions are in. When that is not the
+    /// alignment build, the code lifts the positions through the chrY chain, queries them there,
+    /// and maps them back. `None` queries directly, as for a DecodingUs tree that is already in the
+    /// alignment's build, or for a direct mt or rCRS query.
+    ///
+    /// The cache holds the result (tree-position → base) as a versioned analysis artifact. Its key
+    /// is the queried **site set**, which is a hash of the tree's positions, plus the contig and
+    /// the lift source. The alignment's `source_sig`, its BAM/CRAM mtime and size, invalidates it.
+    ///
+    /// This is the one place where *every* genotype path walks the BAM: Y and mt placement, the
+    /// variant profile, and the genome consensus. So a **rebuild** of a profile reuses the cached
+    /// genotypes, and does not read the reads again. Only a changed file, or a changed tree site
+    /// set, forces a fresh walk.
+    ///
+    /// Tree-locus base calls for one alignment, for the **genome-consensus placement**.
+    ///
+    /// It prefers the alignment's external sidecar GVCF, which needs no CRAM decode, when the
+    /// "prefer external caller" policy is on and the GVCF is present. If not, it takes the cached
+    /// CRAM walk ([`base_calls`]).
+    ///
+    /// It replaces the alignment genotype step in `place_{y,mt}_consensus`. Take a
+    /// preferred-external subject, such as an ancient-DNA one. The code then does not walk that
+    /// subject's damaged CRAM, and the CRAM can not dilute the pooled placement. See Phase 2 of
+    /// `documents/design/external-caller-precedence.md` §4.5.
+    ///
+    /// `tree_source_build` matches what `base_calls` receives: `None` for a tree in the native
+    /// build (DecodingUs Y, rCRS mt), and the tree's build for a lift.
     pub(crate) async fn consensus_base_calls(
         &self,
         aln: &Alignment,
@@ -5109,15 +5245,16 @@ impl App {
         }
 
         let aln = self.alignment_or_err(alignment_id).await?;
-        // Copy off a slow/removable volume to local disk first — the per-locus genotyping read is a
-        // network round-trip per record otherwise (see App::localize).
+        // Copy off a slow or removable volume to a local disk first. Without that, the genotype
+        // read at each locus is one network round trip for each record (see App::localize).
         let bam = self.localize(&Self::alignment_file(&aln)?).await;
         let bam = bam.path().to_path_buf();
-        // Resolve the reference even when none was stored at import. A CRAM can't be decoded
-        // without it, so resolve (download on a miss) via the gateway from the alignment's build —
-        // e.g. the already-cached `chm13v2.0.fa` for a CHM13 CRAM. A BAM needs no reference to
-        // read reads, so only adopt a *cached* FASTA (never force a multi-GB download just to
-        // supply the chrM liftover map).
+        // Resolve the reference even when the import stored none. The code can not decode a CRAM
+        // without it. So resolve it through the gateway, from the alignment's build, and download
+        // it on a miss. An example is the cached `chm13v2.0.fa` for a CHM13 CRAM.
+        //
+        // A BAM needs no reference to read its reads. So for a BAM take a *cached* FASTA only.
+        // Never force a multi-GB download to supply the chrM liftover map.
         let is_cram = bam.extension().is_some_and(|e| e.eq_ignore_ascii_case("cram"));
         let reference = match aln.reference_path {
             Some(p) => Some(PathBuf::from(p)),
@@ -5139,10 +5276,13 @@ impl App {
             )
             .await?;
 
-        // Indel loci (multi-base ancestral/derived) on the tree — genotyped separately on the native
-        // chrY path (VCF left-anchored; needs the reference to normalize + know deleted bases). Their
-        // resolved sentinel overlays the (meaningless) base call at the anchor. Liftover of indel
-        // coordinates is not handled, so only the native path (no lift) contributes them.
+        // The indel loci on the tree, which have a multi-base ancestral and derived allele. The
+        // native chrY path genotypes them on its own. Each one carries a left anchor, as in a VCF.
+        // The code needs the reference to normalize them, and to know the deleted bases.
+        //
+        // The resolved sentinel goes over the base call at the anchor, which means nothing. The
+        // code does not lift an indel coordinate, so the native path, with no lift, is the only one
+        // that supplies them.
         let indel_targets: Vec<(i64, String, String)> = if contig.eq_ignore_ascii_case("chrY") {
             tree.nodes
                 .values()
@@ -5157,10 +5297,10 @@ impl App {
         let calls = match lifted {
             Some(lifted) => self.build_calls_from_lifted(&bam, reference.as_deref(), lifted).await?,
             None => {
-                // Match the requested contig to the header's naming convention: GRCh37/hg19
-                // (still the medical-space default) use bare `Y`/`MT`; CHM13/GRCh38 use
-                // `chrY`/`chrM`. Without this a `chrY` query against a `Y`-named header errors
-                // out and the placement falls back to a worse tree.
+                // Match the requested contig to the convention of the header. GRCh37 and hg19,
+                // which are still the default in medicine, use a bare `Y` or `MT`. CHM13 and
+                // GRCh38 use `chrY` and `chrM`. Without this, a `chrY` query against a header that
+                // names it `Y` gives an error, and the placement falls back to a worse tree.
                 let resolved = self
                     .resolve_header_contig(&bam, reference.as_deref(), contig)
                     .await?
@@ -5191,10 +5331,14 @@ impl App {
         Ok(calls)
     }
 
-    /// Lift the haplotree's positions onto the alignment's build, or `None` to query the tree
-    /// positions directly. **chrY**: uses the (auto-downloaded) GRCh38→build liftover chain.
-    /// **chrM**: a self-generated rCRS↔`chrM` map — bundled rCRS aligned to *this* reference's
-    /// `chrM` (CHM13 builds only; GRCh38/rCRS `chrM` is already rCRS → direct).
+    /// Lift the haplotree's positions onto the alignment's build. `None` means: query the tree
+    /// positions directly.
+    ///
+    /// **chrY** uses the GRCh38→build liftover chain, which the app downloads on demand.
+    ///
+    /// **chrM** uses an rCRS↔`chrM` map that the app builds itself, from an alignment of the
+    /// bundled rCRS to *this* reference's `chrM`. That is for a CHM13 build only. On GRCh38 the
+    /// `chrM` is already rCRS, so the query is direct.
     pub(crate) async fn lifted_targets(
         &self,
         reference_build: &str,
@@ -5209,10 +5353,10 @@ impl App {
 
         // chrY: downloaded nuclear chain (when the tree build differs from the alignment).
         if let Some(src) = tree_source_build {
-            // `src` must name a reference build. A tree *provider* ("decodingus"/"ftdna") would
-            // fall through the `differ` test to the `return Ok(None)` below, silently disabling
-            // liftover — for chrM that skips the rCRS↔chrM map and miscalls every marker. Refuse
-            // it here rather than answer with wrong coordinates.
+            // `src` must name a reference build. A tree *provider*, "decodingus" or "ftdna", would
+            // fall through the `differ` test to the `return Ok(None)` below. That turns the
+            // liftover off with no warning. For chrM it skips the rCRS↔chrM map, and every marker
+            // is then wrong. Refuse it here, and do not answer with wrong coordinates.
             let Some(src_build) = canonical_build(src) else {
                 return Err(AppError::Import(format!(
                     "lifted_targets: tree_source_build {src:?} is not a reference build \
@@ -5237,7 +5381,8 @@ impl App {
         if contig.eq_ignore_ascii_case("chrM") && canonical_build(reference_build) == Some(ReferenceBuild::Chm13v2) {
             let Some(reference) = reference else { return Ok(None) };
             let reference = reference.to_path_buf();
-            // Align bundled rCRS to this reference's chrM (cheap, ~16.5 kb) → (rcrs, chrM) pairs.
+            // Align the bundled rCRS to this reference's chrM, which is small at about 16.5 kb.
+            // That gives (rcrs, chrM) pairs.
             let map = tokio::task::spawn_blocking(move || {
                 navigator_analysis::reader::read_contig_sequence(&reference, "chrM").map(|chrm| {
                     let chrm = String::from_utf8_lossy(&chrm).into_owned();
@@ -5277,8 +5422,9 @@ impl App {
         reference: Option<&Path>,
         lifted: Vec<LiftedPos>,
     ) -> Result<HashMap<i64, char>, AppError> {
-        // Group lifted positions by their target contig + a back-map (lifted → tree position,
-        // plus whether the lift was to the minus strand → the base needs complementing).
+        // Group the lifted positions by their target contig, and build a back-map from the lifted
+        // position to the tree position. The map also records a lift to the minus strand, where the
+        // code must take the complement of the base.
         let mut by_contig: HashMap<String, HashSet<i64>> = HashMap::new();
         let mut back: HashMap<(String, i64), (i64, bool)> = HashMap::new();
         for lp in lifted {
@@ -5286,7 +5432,7 @@ impl App {
             back.insert((lp.contig, lp.pos), (lp.tree_pos, lp.reverse));
         }
 
-        // Only query contigs the alignment actually has (drop off-target lifts).
+        // Query only the contigs that the alignment has, and drop an off-target lift.
         let header_contigs: HashSet<String> = {
             let bam = bam.to_path_buf();
             let reference = reference.map(|p| p.to_path_buf());
@@ -5298,8 +5444,8 @@ impl App {
 
         let mut calls: HashMap<i64, char> = HashMap::new();
         for (qcontig, set) in by_contig {
-            // Tolerate naming conventions between the lift target and the header (e.g. a `chrY`
-            // lift against a GRCh37 `Y`-named header): query the header's actual spelling.
+            // Accept a difference of convention between the lift target and the header, such as a
+            // `chrY` lift against a GRCh37 header that names it `Y`. Query the form in the header.
             let bare = navigator_analysis::contig::bare(&qcontig);
             let Some(query_contig) = header_contigs
                 .iter()
@@ -5330,9 +5476,9 @@ impl App {
     }
 }
 
-/// Interpret an [`navigator_domain::consensus::ObservedProfile`] against a polarity map into the
-/// app's display [`ConsensusProfile`] (carrying provenance + terminal). The single place observations
-/// become the interpreted view.
+/// Interpret an [`navigator_domain::consensus::ObservedProfile`] against a polarity map, into the
+/// app's display [`ConsensusProfile`], which holds the provenance and the terminal. This is the one
+/// place where an observation becomes the interpreted view.
 fn interpret_observed(
     observed: navigator_domain::consensus::ObservedProfile,
     polarity: &std::collections::BTreeMap<String, (String, String)>,
@@ -5354,10 +5500,10 @@ fn interpret_observed(
     }
 }
 
-/// Normalize a legacy baked [`ConsensusProfile`] payload into an
-/// [`navigator_domain::consensus::ObservedProfile`], preserving each source's stored observed base (a
-/// base-less legacy source becomes a no-call on interpret until the next rebuild). Load-time
-/// backward-compat only.
+/// Normalize a legacy [`ConsensusProfile`] payload into an
+/// [`navigator_domain::consensus::ObservedProfile`]. It keeps the observed base that each source
+/// stored. A legacy source with no base becomes a no-call at interpret time, until the next
+/// rebuild. This is for compatibility at load time, and nothing else.
 fn observed_from_legacy(legacy: ConsensusProfile) -> navigator_domain::consensus::ObservedProfile {
     use navigator_domain::consensus::{ObservedProfile, ObservedSource, ObservedVariant, SourceSummary};
     ObservedProfile {
@@ -5417,7 +5563,7 @@ mod lifted_targets_tests {
 
         let fa = dir.join("rotated-chrM.fa");
         std::fs::write(&fa, format!(">chrM\n{chrm}\n")).unwrap();
-        // name, length, offset-of-first-base, bases-per-line, bytes-per-line
+        // name, length, offset of the first base, bases in a line, bytes in a line
         std::fs::write(fa.with_extension("fa.fai"), format!("chrM\t{n}\t6\t{n}\t{}\n", n + 1)).unwrap();
         fa
     }
@@ -5460,9 +5606,9 @@ mod lifted_targets_tests {
         assert!(lifted.iter().any(|l| l.tree_pos == 263 && l.pos > 16_000));
     }
 
-    /// The bug this guards: `mt_tree_rcrs` returns a tree *provider*, not a build. Passing it as
-    /// `tree_source_build` used to fall through to `Ok(None)`, silently skipping the chrM map above
-    /// and miscalling every marker. It must be refused instead.
+    /// The bug that this guards against: `mt_tree_rcrs` returns a tree *provider*, and not a
+    /// build. As a `tree_source_build` it used to fall through to `Ok(None)`. That skipped the chrM
+    /// map above with no warning, and made every marker wrong. The code must refuse it instead.
     #[tokio::test]
     async fn a_tree_provider_is_refused_as_a_reference_build() {
         let app = App::new(Store::open_in_memory().await.unwrap());
@@ -5482,8 +5628,8 @@ mod lifted_targets_tests {
         }
     }
 
-    /// A real build that matches the alignment's build needs no lift — still `Ok(None)`, not an
-    /// error. Pins that the new guard did not narrow the chrY path.
+    /// A real build that matches the alignment's build needs no lift. It stays `Ok(None)`, and is
+    /// not an error. This pins that the new guard did not narrow the chrY path.
     #[tokio::test]
     async fn a_matching_reference_build_still_means_no_lift() {
         let app = App::new(Store::open_in_memory().await.unwrap());
@@ -5496,16 +5642,18 @@ mod lifted_targets_tests {
     }
 }
 
-/// Whether `label` names a branch, as opposed to the variant string a placement falls back to when
-/// the node it landed on carried no usable name.
+/// Whether `label` names a branch. The other case is the variant string that a placement falls
+/// back to, when the node it landed on carried no usable name.
 ///
-/// Branch names are alphanumeric with hyphens and dots — `R-DU17762`, `A0-T`, `E-FT400514:n0`. The
-/// fallback renders the defining variant instead: `chrY:5216846A>C [Node721]`,
-/// `CP086569.2:27785335 G->A`. Keys on `>`, which every `ref>alt` rendering contains and no
-/// haplogroup name does — a colon alone would misjudge `E-FT400514:n0`, which is a real label.
+/// A branch name is alphanumeric, with hyphens and dots: `R-DU17762`, `A0-T`, `E-FT400514:n0`. The
+/// fallback shows the variant of the node instead: `chrY:5216846A>C [Node721]`, or
+/// `CP086569.2:27785335 G->A`.
 ///
-/// Both examples are real rows from this workspace, on an external call and a navigator-walk call
-/// respectively, so the fallback is not confined to one code path.
+/// The test keys on `>`. Every `ref>alt` form holds one, and no haplogroup name does. A colon alone
+/// would misjudge `E-FT400514:n0`, which is a real label.
+///
+/// Both examples are real rows from this workspace. One is on an external call, and the other on a
+/// navigator-walk call. So the fallback is not limited to one code path.
 fn names_a_branch(label: &str) -> bool {
     !label.contains('>')
 }
@@ -5624,12 +5772,14 @@ mod painting_anchor_tests {
 
     #[test]
     fn anchors_to_the_side_carrying_the_transmitted_allele() {
-        // Parent is hom-alt everywhere → transmits the alt allele; the side carrying alt is theirs.
+        // The parent is hom-alt everywhere, so they transmit the alt allele. The side that holds
+        // alt is theirs.
         let parent: Vec<SiteGenotype> = (0..60).map(|i| parent_geno(1 + i as i64 * 1000, 2)).collect();
         assert_eq!(anchor_side_to_parent(&child_het(60, 0), &parent), Some(0));
         assert_eq!(anchor_side_to_parent(&child_het(60, 1), &parent), Some(1));
 
-        // Parent hom-ref everywhere → transmits ref; the side carrying ref (the OTHER side) is theirs.
+        // The parent is hom-ref everywhere, so they transmit ref. The side that holds ref, which
+        // is the OTHER side, is theirs.
         let parent_ref: Vec<SiteGenotype> = (0..60).map(|i| parent_geno(1 + i as i64 * 1000, 0)).collect();
         assert_eq!(anchor_side_to_parent(&child_het(60, 0), &parent_ref), Some(1));
     }

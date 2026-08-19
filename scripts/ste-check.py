@@ -113,6 +113,8 @@ NOT_PARTICIPLE = {
     "often", "when", "then", "even", "open", "green", "seven", "ten", "children", "women", "men",
     "garden", "token", "golden", "sudden", "hidden", "wooden", "kitchen", "screen", "between",
     "need", "indeed", "speed", "seed", "feed", "exceed", "red", "bed", "led", "ahead", "instead",
+    # The -own branch of the participle pattern also matches these plain words.
+    "down", "town", "brown", "crown", "gown", "clown", "frown", "own",
 }
 ING = re.compile(r"\b(\w{3,}ing)\b", re.I)
 ING_OK = {
@@ -133,7 +135,7 @@ ING_OK = {
 # A sentence can end inside emphasis ("**...ancestries.**"), so step over any trailing
 # `*` or `_` before the space. Without this the rule reads two sentences as one and
 # reports a length violation that is not there.
-SENT_SPLIT = re.compile(r"(?<=[.!?:;])[*_]*\s+(?=[*_]*[A-Z`\[(])")
+SENT_SPLIT = re.compile(r"(?<=[.!?:;])[*_]*\s+(?=[*_\"']*[A-Z`\[(])")
 
 
 def sentences(text):
