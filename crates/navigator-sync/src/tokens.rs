@@ -1,12 +1,12 @@
 //! Authenticated session + keychain token storage.
 //!
-//! A [`Session`] (access/refresh tokens, the DPoP key, DID, PDS) is stored as JSON under
-//! `(service, account)` so it survives restarts and never touches the H2/SQLite workspace.
-//! The DPoP key is persisted because DPoP-bound tokens are only usable with the same key
-//! that minted them.
+//! A [`Session`] holds the access and refresh tokens, the DPoP key, the DID, and the PDS. The
+//! store keeps it as JSON under `(service, account)`. So it survives a restart, and it never
+//! touches the SQLite workspace. The store also keeps the DPoP key, because a DPoP-bound token
+//! works only with the key that minted it.
 //!
-//! Storage goes through [`crate::secret_store`], which is in-memory unless the production
-//! binary opted into the OS keychain — so tests never reach the real one.
+//! Storage goes through [`crate::secret_store`]. That store is in memory, unless the production
+//! binary asked for the OS keychain. So a test never reaches the real one.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,17 +22,17 @@ pub struct Session {
     pub pds: String,
     pub access_token: String,
     pub refresh_token: String,
-    /// The DPoP key (base64, via `EcKey::to_base64`) that bound these tokens.
+    /// The DPoP key that bound these tokens, in base64, from `EcKey::to_base64`.
     pub dpop_key_b64: String,
     pub scope: String,
-    /// The `client_id` presented at login — replayed verbatim on token refresh (a public
-    /// client must send the same identifier).
+    /// The `client_id` from the login. A token refresh sends it again, verbatim, because a public
+    /// client must send the same identifier.
     pub client_id: String,
 }
 
-/// Keychain account name under which the active-account DID is remembered, so the app
-/// can reload the right [`Session`] on the next launch. Not itself an account DID, so it
-/// can't collide with one.
+/// The keychain account name that holds the DID of the active account. The app reads it to load
+/// the correct [`Session`] at the next launch. It is not an account DID itself, so it can never
+/// have the same name as one.
 const ACTIVE_MARKER: &str = "__active__";
 
 /// Stores [`Session`]s in the keychain, keyed by account (typically the DID).
@@ -53,7 +53,7 @@ impl TokenStore {
         secret_store::set(&self.service, ACTIVE_MARKER, did)
     }
 
-    /// The active account's DID, or `None` if no one is signed in.
+    /// The DID of the active account. It is `None` when nobody has signed in.
     pub fn active(&self) -> Result<Option<String>, SyncError> {
         secret_store::get(&self.service, ACTIVE_MARKER)
     }
@@ -120,8 +120,8 @@ mod tests {
         assert!(store.load("did:plc:abc123").unwrap().is_none());
     }
 
-    /// The active marker is a separate account name, so it can't be clobbered by — or clobber —
-    /// a session stored under a DID.
+    /// The active marker uses its own account name. So a session that the store keeps under a DID
+    /// can not overwrite it, and it can not overwrite such a session.
     #[test]
     fn active_marker_is_independent_of_the_stored_session() {
         let store = TokenStore::new("navigator-sync-active-marker-test");

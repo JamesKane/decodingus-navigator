@@ -1,14 +1,15 @@
-//! Encrypted edge-to-edge exchange (IBD Phase 2 / AppView design **D1**). The AppView brokers
-//! discovery + consent and relays *opaque* ciphertext — it never holds a decryption key. Two
-//! consenting edges:
-//!   1. publish a static X25519 **identity key** (IK), signed by their Ed25519 device key;
-//!   2. per session, generate an ephemeral X25519 key (EK) and exchange the public halves;
-//!   3. derive a shared session key via **X3DH-lite** (triple ECDH → HKDF-SHA-256);
-//!   4. seal payloads with **AES-256-GCM** and relay the ciphertext via the AppView.
+//! Encrypted edge-to-edge exchange (IBD Phase 2, AppView design **D1**).
 //!
-//! The broker contract (endpoints + signed-message formats) is fixed by the AppView; the
-//! **envelope + key-derivation** here are an edge-only convention (the broker never parses them),
-//! versioned by `EXCHANGE_VERSION` so both edges agree.
+//! The AppView brokers the discovery and the consent, and relays *opaque* ciphertext. It never
+//! holds a decryption key. Two edges that both consent do four things:
+//!   1. publish a static X25519 **identity key** (IK), signed by their Ed25519 device key;
+//!   2. make an ephemeral X25519 key (EK) for each session, and exchange the public halves;
+//!   3. derive a shared session key with **X3DH-lite**, a triple ECDH into HKDF-SHA-256;
+//!   4. seal a payload with **AES-256-GCM**, and relay the ciphertext through the AppView.
+//!
+//! The AppView fixes the broker contract, which is the endpoints and the signed-message formats.
+//! The **envelope and the key derivation** here belong to the edges alone, and the broker never
+//! parses them. `EXCHANGE_VERSION` gives them a version, so both edges agree.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -48,8 +49,9 @@ fn decode_pub(b64: &str) -> Result<PublicKey, SyncError> {
     Ok(PublicKey::from(arr))
 }
 
-/// A persisted static X25519 **identity key** (IK) for an account. Generated once per install,
-/// stored in the OS keychain beside the device key, its public half published to the AppView.
+/// A stored static X25519 **identity key** (IK) for an account. Each installation makes one, once.
+/// The OS keychain holds it, beside the device key, and the app publishes its public half to the
+/// AppView.
 #[derive(Clone)]
 pub struct ExchangeKey {
     secret: StaticSecret,
@@ -94,7 +96,7 @@ impl ExchangeKey {
         secret_store::set(service, &Self::account(did), &STANDARD.encode(self.secret.to_bytes()))
     }
 
-    /// Load the identity key for `did`, generating + persisting one on first use.
+    /// Load the identity key for `did`. On the first use it makes one and stores it.
     pub fn load_or_generate(service: &str, did: &str) -> Result<Self, SyncError> {
         if let Some(k) = Self::load(service, did)? {
             return Ok(k);
@@ -104,13 +106,15 @@ impl ExchangeKey {
         Ok(k)
     }
 
-    /// The public half as STANDARD base64 of 32 raw bytes — the wire form the AppView stores.
+    /// The public half, as STANDARD base64 of 32 raw bytes. That is the wire form that the AppView
+    /// stores.
     pub fn public_b64(&self) -> String {
         STANDARD.encode(PublicKey::from(&self.secret).as_bytes())
     }
 }
 
-/// A per-session ephemeral X25519 key (X3DH-lite forward secrecy — discarded after the session).
+/// An ephemeral X25519 key for one session. It gives the forward secrecy of X3DH-lite, and the
+/// code discards it when the session ends.
 pub struct EphemeralKey {
     secret: StaticSecret,
 }
@@ -134,15 +138,16 @@ impl EphemeralKey {
     }
 }
 
-/// Whether this edge is party "A" in the canonical X3DH-lite ordering. Determined purely from the
-/// two DIDs (lexicographic) so both sides agree without learning who initiated.
+/// Whether this edge is party "A" in the canonical X3DH-lite order. The two DIDs decide it alone,
+/// in lexicographic order. So both sides agree, and neither one finds out who started.
 pub fn role_is_a(my_did: &str, partner_did: &str) -> bool {
     my_did < partner_did
 }
 
-/// Derive the 32-byte AES session key via X3DH-lite: the canonical secret is
-/// `DH(IK_A,EK_B) ‖ DH(EK_A,IK_B) ‖ DH(EK_A,EK_B)` → HKDF-SHA-256. `i_am_a` selects which of my
-/// keys play A vs B (see [`role_is_a`]); both edges compute the identical key.
+/// Derive the 32-byte AES session key with X3DH-lite. The canonical secret is
+/// `DH(IK_A,EK_B) ‖ DH(EK_A,IK_B) ‖ DH(EK_A,EK_B)`, through HKDF-SHA-256. `i_am_a` selects which
+/// of my keys take the A role and which take the B role, see [`role_is_a`]. Both edges compute the
+/// same key.
 pub fn derive_session_key(
     my_ik: &ExchangeKey,
     my_ek: &EphemeralKey,
@@ -179,8 +184,9 @@ pub fn derive_session_key(
     Ok(key)
 }
 
-/// An exchange envelope — the cleartext-framed payload that becomes the relay `blob`. A `Handshake`
-/// carries the sender's ephemeral public key; a `Data` carries an AES-256-GCM ciphertext.
+/// An exchange envelope: the payload, in a cleartext frame, that becomes the relay `blob`. A
+/// `Handshake` carries the sender's ephemeral public key. A `Data` carries an AES-256-GCM
+/// ciphertext.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Envelope {
@@ -191,7 +197,7 @@ pub enum Envelope {
 }
 
 impl Envelope {
-    /// The handshake envelope advertising `ek`'s public half.
+    /// The handshake envelope that gives out `ek`'s public half.
     pub fn handshake(ek: &EphemeralKey) -> Self {
         Envelope::Handshake {
             v: EXCHANGE_VERSION,
@@ -223,13 +229,13 @@ pub fn blob_sha256_b64(blob_b64: &str) -> Result<String, SyncError> {
     Ok(STANDARD.encode(Sha256::digest(&bytes)))
 }
 
-/// The AES-GCM additional-authenticated-data binding an envelope to its relay metadata (so a blob
-/// can't be replayed into another session or have its routing swapped).
+/// The AES-GCM additional authenticated data, which ties an envelope to its relay metadata.
+/// Nobody can then replay a blob into another session, or change where it goes.
 pub fn relay_aad(session_id: &str, from_did: &str, to_did: &str, seq: i32) -> String {
     format!("{session_id}\n{from_did}\n{to_did}\n{seq}")
 }
 
-/// Seal `plaintext` into a `Data` envelope under `session_key`, authenticating `aad`.
+/// Seal `plaintext` into a `Data` envelope under `session_key`, and authenticate `aad`.
 // `Nonce::from_slice` routes through generic-array's `from_slice`, which the resolved transitive
 // generic-array marks deprecated (a 0.14→1.x churn artifact, not a real deprecation for aes-gcm
 // 0.10). The call is correct; silence the lint locally.
@@ -254,8 +260,9 @@ pub fn seal(session_key: &[u8; 32], aad: &str, plaintext: &[u8]) -> Result<Envel
     })
 }
 
-/// Open a `Data` envelope under `session_key`, checking `aad`. Errors on a non-data envelope or an
-/// authentication failure (tampered ciphertext / wrong key / wrong aad).
+/// Open a `Data` envelope under `session_key`, and check `aad`. It gives an error for an envelope
+/// that is not data, and for a failed authentication. That failure means a changed ciphertext, a
+/// wrong key, or a wrong aad.
 #[allow(deprecated)] // see `seal` — generic-array `from_slice` churn lint
 pub fn open(session_key: &[u8; 32], aad: &str, env: &Envelope) -> Result<Vec<u8>, SyncError> {
     let Envelope::Data { iv, ct, .. } = env else {
@@ -279,8 +286,8 @@ pub fn open(session_key: &[u8; 32], aad: &str, env: &Envelope) -> Result<Vec<u8>
         .map_err(|_| SyncError::Crypto("aes-gcm open (auth failed)".into()))
 }
 
-/// Canonical signed-message builders — **byte-for-byte** mirrors of the AppView's
-/// `du_db::exchange::messages` (verified against the server source). The device key signs these.
+/// The canonical signed-message builders. They mirror the AppView's `du_db::exchange::messages`
+/// **exactly**, and a check against the server source proved that. The device key signs them.
 pub mod messages {
     /// `exchange-publickey\n{did}\n{x25519_pub_b64}\n{key_uri_or_empty}`
     pub fn publickey(did: &str, x25519_pub_b64: &str, key_uri: Option<&str>) -> String {
@@ -303,7 +310,8 @@ pub mod messages {
     pub fn consent(request_uri: &str, consenting_did: &str, given: bool) -> String {
         format!("exchange-consent\n{request_uri}\n{consenting_did}\n{given}")
     }
-    /// `exchange-poll\n{did}\n{ts}` (GET auth for incoming/pending/relay-pull).
+    /// `exchange-poll\n{did}\n{ts}`: the GET auth for these endpoints: the one that lists what
+    /// arrived, the one that lists what waits, and the relay pull.
     pub fn poll(did: &str, ts: i64) -> String {
         format!("exchange-poll\n{did}\n{ts}")
     }
@@ -323,13 +331,13 @@ mod tests {
 
     #[test]
     fn two_edges_derive_the_same_session_key() {
-        // Alice (A) and Bob (B): each has a static IK + a per-session EK.
+        // Alice (A) and Bob (B). Each one has a static IK, and an EK for the session.
         let (a_did, b_did) = ("did:plc:aaa", "did:plc:bbb");
         let a_ik = ExchangeKey::generate();
         let b_ik = ExchangeKey::generate();
         let a_ek = EphemeralKey::generate();
         let b_ek = EphemeralKey::generate();
-        // Roles are decided by DID order, identically on both sides.
+        // The DID order decides the roles, the same way on both sides.
         let a_is_a = role_is_a(a_did, b_did);
         let b_is_a = role_is_a(b_did, a_did);
         assert!(a_is_a && !b_is_a);
@@ -355,7 +363,8 @@ mod tests {
 
     #[test]
     fn full_handshake_then_encrypted_exchange() {
-        // End-to-end in-process: derive on both sides via exchanged handshakes, then A→B data.
+        // End to end, in one process. Derive on both sides from the handshakes that they
+        // exchanged, then send data from A to B.
         let (a_did, b_did) = ("did:plc:aaa", "did:plc:bbb");
         let (a_ik, b_ik) = (ExchangeKey::generate(), ExchangeKey::generate());
         let (a_ek, b_ek) = (EphemeralKey::generate(), EphemeralKey::generate());

@@ -1,12 +1,15 @@
-//! `AsyncSync` — the completed sync engine (plan §6/§7). Wraps PDS writes with the
-//! resilience the old `AsyncSyncService` only stubbed: **refresh-token rotation** on a
-//! rejected access token, **retry with exponential backoff** on transient failures
-//! (offline, timeout, 5xx), and an **offline indicator** the UI can surface. Validation
-//! errors (4xx) are returned immediately — retrying them would never succeed.
+//! `AsyncSync`: the completed sync engine (plan §6 and §7).
 //!
-//! Conflict policy: writes go through `createRecord` with a server-generated TID rkey, so
-//! two creates never collide (each gets its own key). Idempotent create/update/delete on a
-//! caller-chosen rkey is a later addition once records carry stable identities.
+//! It gives a PDS write the resilience that the old `AsyncSyncService` only sketched. There are
+//! three parts. **Refresh-token rotation**, when the server refuses an access token. **A second
+//! try with exponential backoff**, on a transient failure such as offline, a timeout, or a 5xx.
+//! And an **offline indicator** that the UI can show. It returns a validation error (4xx) at once,
+//! because a second try could never succeed.
+//!
+//! The conflict policy: a write goes through `createRecord` with a TID rkey that the server
+//! generates. So two creates never collide, and each one gets its own key. An idempotent create,
+//! update, or delete on an rkey that the caller chooses came later, once a record carried a stable
+//! identity.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,7 +23,7 @@ use crate::tokens::{Session, TokenStore};
 /// Retry/backoff schedule for transient failures.
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
-    /// How many times to retry after the first attempt fails transiently.
+    /// How many times to try again after the first try fails for a transient reason.
     pub max_retries: u32,
     /// Delay before the first retry; doubles each subsequent retry.
     pub base_delay: Duration,
@@ -42,13 +45,13 @@ impl RetryPolicy {
     }
 }
 
-/// A resilient PDS writer for one authenticated account. Holds the live [`Session`] in
-/// memory (refreshing and re-persisting it on expiry) and an offline flag shared with the
-/// app so the indicator survives across calls.
+/// A resilient PDS writer for one authenticated account. It holds the live [`Session`] in memory,
+/// refreshes it when it expires, and stores it again. It also holds an offline flag that it shares
+/// with the app, so the indicator survives from one call to the next.
 pub struct AsyncSync {
     http: reqwest::Client,
     tokens: TokenStore,
-    /// Account DID — the keychain key the rotated session is saved under.
+    /// The account DID. It is the keychain key that the rotated session goes under.
     did: String,
     session: Session,
     policy: RetryPolicy,
@@ -56,8 +59,8 @@ pub struct AsyncSync {
 }
 
 impl AsyncSync {
-    /// Build an engine for `session`, persisting any rotated session under its DID via
-    /// `tokens`. `online` is shared with the app for the offline indicator.
+    /// Build an engine for `session`. It stores a rotated session under its DID, through `tokens`.
+    /// It shares `online` with the app, for the offline indicator.
     pub fn new(
         http: reqwest::Client,
         tokens: TokenStore,
@@ -80,20 +83,21 @@ impl AsyncSync {
         self.online.load(Ordering::Relaxed)
     }
 
-    /// The current (possibly refreshed) session — so the caller can observe rotation.
+    /// The current session, which a refresh may have replaced. The caller reads it to see a
+    /// rotation.
     pub fn session(&self) -> &Session {
         &self.session
     }
 
-    /// Create a record, transparently refreshing on 401 (once) and retrying transient
-    /// failures with backoff. On success the offline flag is cleared.
+    /// Create a record. On a 401 it refreshes once, by itself. On a transient failure it tries
+    /// again, with a backoff. On success it clears the offline flag.
     pub async fn push_create(&mut self, collection: &str, record: serde_json::Value) -> Result<RecordRef, SyncError> {
         self.push_create_inner(collection, record, None).await
     }
 
-    /// Like [`push_create`](Self::push_create) but with an explicit record key — for
-    /// idempotent singleton-style records (e.g. the per-device signing key, keyed by its
-    /// own `did:key` so re-registration overwrites rather than duplicates).
+    /// Like [`push_create`](Self::push_create), but with an explicit record key. It is for an
+    /// idempotent record of which there is only one. An example is the signing key of a device,
+    /// keyed by its own `did:key`. A second registration then overwrites, and makes no duplicate.
     pub async fn push_create_rkey(
         &mut self,
         collection: &str,
@@ -103,8 +107,9 @@ impl AsyncSync {
         self.push_create_inner(collection, record, Some(rkey)).await
     }
 
-    /// Upsert a record at a known `rkey` (`putRecord`) — the idempotent re-publish path. Same
-    /// refresh-on-401 + transient backoff as [`push_create`](Self::push_create).
+    /// Upsert a record at a known `rkey`, with `putRecord`. This is the idempotent path for a
+    /// second publish. It refreshes on a 401 and backs off on a transient failure, the same as
+    /// [`push_create`](Self::push_create).
     pub async fn push_put(
         &mut self,
         collection: &str,
@@ -116,8 +121,9 @@ impl AsyncSync {
             .await
     }
 
-    /// Delete a record at `rkey` (`deleteRecord`) — the orphan-prune path. Same refresh-on-401 +
-    /// transient backoff discipline as [`push_put`](Self::push_put).
+    /// Delete a record at `rkey`, with `deleteRecord`. This is the path that prunes an orphan. It
+    /// keeps the same discipline as [`push_put`](Self::push_put): refresh on a 401, and back off on
+    /// a transient failure.
     pub async fn push_delete(&mut self, collection: &str, rkey: &str) -> Result<(), SyncError> {
         self.with_resilience(|c| async move { c.delete_record(collection, rkey).await })
             .await
@@ -145,13 +151,16 @@ impl AsyncSync {
             .await
     }
 
-    /// Run one PDS call under the engine's whole resilience discipline, retrying `op` against a
-    /// freshly built client until it succeeds or gives up. This is the *only* place the policy
-    /// lives — every public method above is a one-liner over it, so refresh-on-401, backoff, and
-    /// the offline flag can never drift apart between the create/put/delete/list paths.
+    /// Run one PDS call under the engine's whole resilience discipline. It calls `op` again,
+    /// against a client that it builds afresh, until the call succeeds or the engine stops.
     ///
-    /// `op` is re-invoked per attempt (hence `Fn`, and hence the callers cloning their record),
-    /// because a retry needs a client rebuilt from the possibly-rotated session.
+    /// This is the *only* place that holds the policy. Every public method above is one line over
+    /// it. So the refresh on a 401, the backoff, and the offline flag can never become different
+    /// between the create, put, delete, and list paths.
+    ///
+    /// The engine calls `op` again for each try, which is why it is an `Fn`, and why each caller
+    /// clones its record. A second try needs a client that the code builds from the session, and a
+    /// rotation may have replaced that session.
     async fn with_resilience<T, F, Fut>(&mut self, op: F) -> Result<T, SyncError>
     where
         F: Fn(PdsClient) -> Fut,
@@ -214,9 +223,9 @@ mod tests {
         assert!(!SyncError::Oauth("bad request".into()).is_transient());
     }
 
-    /// A session pointed at a dead endpoint: push_create retries the transient connect
-    /// failure up to the cap, flips the offline flag, and finally surfaces the error —
-    /// exercising the retry/backoff/offline path without a network or keychain.
+    /// A session that points at a dead endpoint. `push_create` tries the transient connect failure
+    /// again, up to the cap, sets the offline flag, and then gives the error. That drives the path
+    /// of the second try, the backoff, and the offline flag, with no network and no keychain.
     #[tokio::test]
     async fn push_create_retries_then_goes_offline() {
         use du_atproto::oauth::EcKey;

@@ -187,8 +187,8 @@ impl Write for PacedFile {
 ///   smaller value than it uses today.
 /// - **8 GB maximum.** A larger value gives almost no advantage. The step from 688 runs to 88 runs
 ///   is large, but the step from 88 runs to 44 runs is small. The costs stay. The stable sort takes
-///   half of the buffer again for scratch space. A larger record vector needs a second allocation.
-///   The first allocation stays in memory at the same time.
+///   half of the buffer again for scratch space. A larger record vector needs a second allocation,
+///   and the first stays in memory at the same time.
 /// - **Half of the free memory, maximum.** The rules above are for an idle machine. On a busy
 ///   machine, one more spilled run costs little, and a swap of the buffer costs much.
 ///

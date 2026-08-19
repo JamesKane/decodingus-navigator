@@ -1,4 +1,4 @@
-//! Sync-layer error (plan §6: one `thiserror` enum per layer).
+//! Sync-layer error (plan §6: one `thiserror` enum for each layer).
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
@@ -24,18 +24,19 @@ pub enum SyncError {
     #[error("device key error: {0}")]
     Crypto(String),
 
-    /// The access token was rejected (HTTP 401) — refresh and retry.
+    /// The server refused the access token (HTTP 401). Refresh it and try again.
     #[error("unauthorized (token expired or revoked)")]
     Unauthorized,
 
-    /// A 5xx from the PDS/auth server — transient, worth retrying.
+    /// A 5xx from the PDS or the auth server. It is transient, so a second try can work.
     #[error("server error {0}: {1}")]
     Server(u16, String),
 }
 
 impl SyncError {
-    /// Whether retrying the same request later might succeed: transport failures
-    /// (offline, timeout) and 5xx server errors. 4xx/validation/auth errors are not.
+    /// Whether a second try of the same request, later, can succeed. A transport failure, such as
+    /// offline or a timeout, and a 5xx server error, can. A 4xx, a validation error, and an auth
+    /// error can not.
     pub fn is_transient(&self) -> bool {
         match self {
             SyncError::Http(e) => e.is_connect() || e.is_timeout() || e.is_request(),
