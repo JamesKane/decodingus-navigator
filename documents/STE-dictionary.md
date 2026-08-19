@@ -124,3 +124,88 @@ Do not use a contraction. Write `do not`, not `don't`.
   documentation. They are outside the scope of this standard.
 - **The rationale itself.** STE controls *how* you write a reason. It does not tell you to delete
   the reason. A comment must still say why the code is as it is.
+
+## How to convert a file
+
+This is the method that converted `navigator-resource` and 31 of the 33 files of `navigator-app`.
+Follow it, and a file needs about three passes.
+
+### The two tools
+
+```bash
+python3 scripts/ste-check.py  crates/navigator-app/src/lib.rs   # the count, by rule
+python3 scripts/ste-blocks.py crates/navigator-app/src/lib.rs   # each block, whole
+```
+
+`ste-check.py` gives the score. `ste-blocks.py` gives the text to rewrite, with the rules that fired
+on each block. Both accept a file, a directory, or no argument, which reads each Rust file. A single
+file returns in about 0.03 seconds, so run the check after each edit.
+
+### The loop
+
+1. Run `ste-blocks.py` on the file and read the first 10 to 15 blocks.
+2. Rewrite them in one batch. Use a Python script with a list of `(old, new)` pairs and
+   `str.replace`. Do not edit by hand, and do not use a regular expression on prose. An exact string
+   pair either matches or reports a miss, and it can not damage a line that you did not read.
+3. Run `ste-check.py` on the file.
+4. Repeat until the count is 0.
+
+Write a small guard into the batch script, so a pair that no longer matches is loud:
+
+```python
+for a, b in subs:
+    if a not in s:
+        print("MISS", a[:55].replace("\n", " "))
+        continue
+    s = s.replace(a, b)
+```
+
+### Expect three passes, not one
+
+The count does not go to zero in one pass, and that is normal. A first pass on a file with 50
+violations usually leaves 15 to 25.
+
+The reason is mechanical: you replace one 40-word sentence with three explanatory sentences, and one
+of those three is 26 words. Rule 6 then fires on a line that did not exist before. The process
+converges, and each pass is smaller than the last.
+
+### What a rewrite must keep
+
+Keep every fact and every reason. The measured numbers, the dates, the sample ids, the failure that
+caused the code — each is the value of the comment. `blocktree.rs` in `navigator-app` is the worked
+example: almost every constant there is a limit that a measurement defends, and each defence
+survived the conversion.
+
+Lose the compression and the voice. That is the trade this standard makes, and it is intended.
+
+### Common false positives
+
+The checker is careful but not perfect. Three cases came up often:
+
+- **A domain term reads as an error.** `handle`, `panel`, `build`, and `genotyping array` are
+  Technical Names. Add the term to this file, and the checker reads it from here. Do not rewrite
+  the sentence around a term that is correct.
+- **An `-ing` Technical Name.** `mapping`, `sequencing`, `reasoning model`. Add it to the `-ing`
+  section above and to `ING_OK` in the checker.
+- **A word inside a longer word.** The passive-voice rule once matched `present` as `pre` + `sent`.
+  If a violation makes no sense, read the checker before you rewrite the prose.
+
+### Verify
+
+`cargo check -p <crate> --all-targets` after each batch of files. A doc comment can break the build:
+a `[link]` that no longer resolves, or a line that starts with `-` or `+`, which
+`clippy::doc_lazy_continuation` reads as a Markdown list.
+
+`cargo fmt --all` before each commit. The pre-commit hook enforces it.
+
+### Where the work stands
+
+Converted to zero: `navigator-resource`, `navigator-store/src/sig_cache.rs`, and 31 of the 33 files
+of `navigator-app`.
+
+Remaining in `navigator-app`: `src/lib.rs` (the type documentation at the top is converted, the
+`impl App` body is not) and `src/haplogroup.rs`.
+
+Not started: `navigator-analysis`, `navigator-ui`, `navigator-domain`, `navigator-align`,
+`navigator-panelbuild`, `navigator-store` beyond `sig_cache`, `navigator-refgenome`,
+`navigator-sync`. Run `python3 scripts/ste-check.py` for the current count.
