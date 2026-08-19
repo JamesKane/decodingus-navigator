@@ -148,20 +148,26 @@ impl App {
         Ok(runs)
     }
 
-    /// Batch-populate the read-profile fields backing the standardized test label
-    /// ([`du_domain::testprofile`]) on runs imported before those fields existed — for the CLI
-    /// `backfill-profiles` command. Idempotent; only fills what is missing.
+    /// Fill the read-profile fields of many runs at once. Those fields support the standard test
+    /// label in [`du_domain::testprofile`]. The CLI command `backfill-profiles` calls this method
+    /// for a run that the app imported before the fields existed. A second call is safe, and the
+    /// method fills only an empty field.
     ///
-    /// - **`total_bases`** — recovered for free from a cached `read_metrics` artifact on any of the
-    ///   run's alignments (`Σ read_length_histogram`), no file walk.
-    /// - **`read_type`** — inferred cheaply from `platform_name` / `test_type` (`SHORT`, `ONT_SIMPLEX`,
-    ///   or `HIFI`/`CLR` when the code already says so), falling back to the cached mean read length
-    ///   as evidence (a short mean ⇒ `SHORT`, which resolves sidecar-imported `UNKNOWN`-platform
-    ///   runs). When `rescan` is set, runs still missing it (long reads — HiFi vs CLR needs the read
-    ///   names) get a bounded [`library_stats`](Self::library_stats) scan of a primary alignment file.
+    /// - **`total_bases`** comes from a cached `read_metrics` artifact on any alignment of the run.
+    ///   The value is the sum of `read_length_histogram`, and the method walks no file.
+    /// - **`read_type`** comes from `platform_name` and `test_type` at a low cost. The values are
+    ///   `SHORT`, `ONT_SIMPLEX`, and `HIFI` or `CLR` when the code already holds one of them.
     ///
-    /// `project_id` restricts to a project's subjects (legacy home column, matching
-    /// `rebuild_signatures`). Returns per-field counts.
+    ///   If those fields give nothing, the method reads the cached mean read length. A short mean
+    ///   gives `SHORT`, and that rule resolves a run from a sidecar import with an `UNKNOWN`
+    ///   platform.
+    ///
+    ///   With `rescan`, a run that still has no value gets a limited
+    ///   [`library_stats`](Self::library_stats) scan of one alignment file. A long-read run needs
+    ///   that scan, because only the read names separate HiFi from CLR.
+    ///
+    /// `project_id` limits the work to the subjects of one project. The method reads the old home
+    /// column, as `rebuild_signatures` does. It returns a count for each field.
     pub async fn backfill_read_profiles(
         &self,
         project_id: Option<i64>,
@@ -179,8 +185,8 @@ impl App {
                 out.runs_examined += 1;
                 let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
 
-                // One representative cached read-metrics artifact for the run — reused for both the
-                // yield and the read-length evidence below (no re-read).
+                // One cached read-metrics artifact stands for the run. The code uses it for the
+                // yield and for the read-length value below, and it reads the artifact one time.
                 let mut metrics = None;
                 for a in &alns {
                     if let Some(m) = self.cached_read_metrics(a.id).await? {
@@ -199,9 +205,11 @@ impl App {
                     }
                 }
 
-                // read_type: cheap platform/test-type inference, then the cached mean read length as
-                // evidence (resolves sidecar-imported UNKNOWN-platform runs), then an optional file
-                // rescan for long reads that need the read names to tell HiFi from CLR.
+                // The `read_type` value. The code first reads the platform and the test type,
+                // which costs little. It then reads the cached mean read length, and that value
+                // resolves a run from a sidecar import with an UNKNOWN platform. It can then scan
+                // the file. A long-read run needs that scan, because only the read names separate
+                // HiFi from CLR.
                 if run.read_type.is_none() {
                     let inferred = infer_read_type_cheap(&run.platform_name, &run.test_type).or_else(|| {
                         metrics
@@ -228,16 +236,20 @@ impl App {
         Ok(out)
     }
 
-    /// Bounded library-stats scan of the first readable alignment file in `alns`, returning its
-    /// inferred `read_type` (HiFi vs CLR from the read names). `None` when no file is accessible or
-    /// nothing decodable was found.
+    /// A limited library-stats scan of the first alignment file in `alns` that the code can read.
+    /// The method returns the `read_type` value that it deduces, and the read names separate HiFi
+    /// from CLR.
+    ///
+    /// The method returns `None` when it can open no file, and when it finds nothing that it can
+    /// decode.
     async fn rescan_read_type(&self, alns: &[navigator_domain::workspace::Alignment]) -> Option<String> {
         for a in alns {
             if a.bam_path.is_none() {
                 continue;
             }
-            // Resolve the reference for decode (see alignment_reference_for_decode): required for a
-            // CRAM, None for a BAM. Best-effort — skip an alignment that can't be resolved.
+            // Find the reference for the decoder. See alignment_reference_for_decode. A CRAM file
+            // needs it, and a BAM file uses None. The step is optional, and the code skips an
+            // alignment with no reference.
             let Ok((path, reference)) = self.alignment_reference_for_decode(a.id).await else {
                 continue;
             };
@@ -253,8 +265,9 @@ impl App {
         None
     }
 
-    /// Cached coverage for several alignments at once (Data Sources alignment rows). `None` for any
-    /// alignment without a persisted coverage artifact. No genotyping/walking — pure cache reads.
+    /// The cached coverage of many alignments at once, for the alignment rows of the Data Sources
+    /// tab. The value is `None` for an alignment with no stored coverage artifact. The method reads
+    /// the cache only. It calls no caller and walks no file.
     pub async fn cached_coverage_bulk(
         &self,
         alignment_ids: &[i64],
@@ -266,14 +279,18 @@ impl App {
         Ok(out)
     }
 
-    /// Alignments for a sequence run.
-    /// The best alignment to drive a subject's analysis tabs (subject-centric default): the
-    /// highest mean-coverage alignment with a cached coverage result, else the first with a BAM,
-    /// else the first. Returns `(sequence_run_id, alignment_id)` so the UI can select the run then
-    /// the alignment without the user navigating Data Sources.
+    /// The alignments of a sequence run.
     ///
-    /// Where a realignment exists, its output is preferred over the source it was derived from —
-    /// as a tie-break only, after breadth and depth. See the ranking comment below.
+    /// The method returns the alignment that drives the analysis tabs of a subject. It takes the
+    /// alignment with the highest mean coverage that also has a cached coverage result. If there is
+    /// none, it takes the first alignment with a BAM file, and then the first alignment.
+    ///
+    /// The method returns `(sequence_run_id, alignment_id)`. The UI can then select the run and the
+    /// alignment, and the user does not open the Data Sources tab.
+    ///
+    /// When a realignment exists, the method takes its output before the source of that
+    /// realignment. This rule applies only when the breadth and the depth are equal. See the
+    /// comment on the order below.
     pub async fn default_alignment_for_subject(
         &self,
         biosample_guid: SampleGuid,
@@ -282,12 +299,17 @@ impl App {
         if alignments.is_empty() {
             return Ok(None);
         }
-        // Rank by (breadth, then depth, then file-present): a whole-genome test (WGS/HiFi) is the
-        // subject's representative test over a targeted Y/mt test **even when the targeted test is
-        // deeper**. A Y-only test's mean depth is a chrY-only number (coverage is scoped to the
-        // target contigs), so ranking on depth alone lets a deep Y Elite outscore a genome-wide
-        // WGS — and surfacing it as "your test" contradicts the autosomal ancestry the brief shows
-        // beside it. Depth and file presence only break ties within a breadth class.
+        // The order is the breadth, then the depth, then the presence of a file.
+        //
+        // A whole-genome test, such as WGS or HiFi, represents the subject before a targeted Y test
+        // or mt test. This rule applies **even when the targeted test has more depth**.
+        //
+        // The mean depth of a Y-only test covers chrY alone, because the coverage covers the target
+        // contigs only. So an order on the depth alone puts a deep Y Elite test above a WGS test.
+        // The app then names the Y test as "your test", and that name disagrees with the autosomal
+        // ancestry that the brief shows beside it.
+        //
+        // The depth and the presence of a file apply only inside one breadth class.
         let mut best: Option<(u8, f64, bool, bool, &Alignment)> = None;
         for a in &alignments {
             let target = match navigator_store::sequence_run::get(self.store.pool(), a.sequence_run_id).await? {
@@ -296,12 +318,16 @@ impl App {
             };
             let breadth = test_breadth_rank(target);
             let depth = self.cached_coverage(a.id).await?.map_or(0.0, |c| c.mean_coverage);
-            // Last, and only as a tie-break: a realigned alignment beats the source it was made
-            // from. Both describe the same library at the same breadth and near-identical depth,
-            // so without this the winner is whichever the list happened to yield first — and a
-            // default that changes between runs is worse than either choice. The realigned one is
-            // preferred because the user asked for it and it is on the newer reference; this is a
-            // *default*, not a restriction, and the source stays selectable.
+            // The last rule, and it applies only when the values above are equal. A realigned
+            // alignment goes before the source that made it.
+            //
+            // Both rows describe the same library, at the same breadth and at almost the same
+            // depth. Without this rule the first row in the list wins, and that row can change
+            // between two runs. A default that changes is worse than either choice.
+            //
+            // The realigned row goes first because the user asked for it, and because it is on the
+            // newer reference. This rule sets a *default*. It is not a limit, and the user can
+            // still select the source.
             let derived = a.is_derived();
             let key = (breadth, depth, a.bam_path.is_some(), derived);
             if best.as_ref().map_or(true, |(b, d, f, r, _)| key > (*b, *d, *f, *r)) {
@@ -311,13 +337,17 @@ impl App {
         Ok(best.map(|(_, _, _, _, a)| (a.sequence_run_id, a.id)))
     }
 
-    /// Donor-level ancestry: the modern super-population **`ADMIXTURE`** estimate — the consensus one
-    /// ([`CONSENSUS_SOURCE_ID`], pools all sources) when present, else the best-quality per-alignment
-    /// one (most genotyped SNPs) for back-compat with results predating the consensus path.
+    /// The ancestry of a donor. The value is the modern super-population **`ADMIXTURE`** estimate.
     ///
-    /// Must filter to `ADMIXTURE` specifically: the consensus source now also carries `FINE_ADMIXTURE`
-    /// and `ANCIENT_ADMIXTURE` rows, and picking the *first* consensus row would surface the deep
-    /// (ancient) breakdown here — a separate report — instead of the modern super-population one.
+    /// The method takes the consensus estimate, [`CONSENSUS_SOURCE_ID`], which pools each source.
+    /// If the store holds none, it takes the estimate of one alignment with the best quality, which
+    /// is the estimate with the most genotyped SNPs. That second path supports a result from before
+    /// the consensus feature.
+    ///
+    /// The method must filter on `ADMIXTURE`. The consensus source now also holds a
+    /// `FINE_ADMIXTURE` row and an `ANCIENT_ADMIXTURE` row. A read of the *first* consensus row
+    /// gives the deep, or ancient, breakdown, which is a separate report. This method must give the
+    /// modern super-population breakdown.
     pub async fn donor_ancestry(&self, biosample_guid: SampleGuid) -> Result<Option<(i64, AncestryResult)>, AppError> {
         let all = ancestry_result::for_biosample(self.store.pool(), biosample_guid).await?;
         if let Some(c) = all
@@ -332,9 +362,11 @@ impl App {
             .max_by_key(|(_, r)| r.snps_with_genotype))
     }
 
-    /// A specific persisted consensus ancestry estimate (keyed on the consensus pseudo-source +
-    /// `method`) — e.g. `"FINE_ADMIXTURE"` (detailed modern populations) or `"PCA_PROJECTION_GMM"`
-    /// (ancient components). Filtered per-subject (alignment_id 0 is not biosample-unique on its own).
+    /// One stored consensus ancestry estimate. The key is the consensus source with the `method`
+    /// value. Two examples are `"FINE_ADMIXTURE"`, which gives the detailed modern populations, and
+    /// `"PCA_PROJECTION_GMM"`, which gives the ancient components.
+    ///
+    /// The query also filters on the subject. An `alignment_id` of 0 does not name one biosample.
     pub async fn consensus_ancestry(
         &self,
         biosample_guid: SampleGuid,
@@ -347,9 +379,11 @@ impl App {
             .map(|(_, r)| r))
     }
 
-    /// Donor-level private-Y: the **union** of cached (self-masked) private-Y calls across all of
-    /// the subject's alignments, deduped by position (keeping the deepest observation). The
-    /// terminal is taken from the deepest-covered source bucket.
+    /// The private-Y calls of a donor. The value is the **union** of the cached private-Y calls of
+    /// each alignment of the subject, and the code applied the self-mask to those calls.
+    ///
+    /// The method removes a duplicate position and keeps the observation with the most depth. The
+    /// terminal comes from the source bucket with the most coverage.
     pub async fn donor_private_y(&self, biosample_guid: SampleGuid) -> Result<Option<PrivateBucket>, AppError> {
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         let mut by_pos: std::collections::HashMap<i64, PrivateVariant> = std::collections::HashMap::new();
@@ -383,16 +417,22 @@ impl App {
         }))
     }
 
-    /// [`donor_private_y`](Self::donor_private_y) for **many** subjects at once, in two queries
-    /// rather than two per subject: the alignments, then the artifact rows, then per-subject merging
-    /// in memory. Subjects with no cached private-Y are simply absent from the map — that is "never
-    /// computed", not "none found".
+    /// The work of [`donor_private_y`](Self::donor_private_y) for **many** subjects at once.
     ///
-    /// Deliberately **not** built on `AlignmentArtifacts`: that stats every alignment file up front
-    /// to check freshness, and private-Y is computed for only a small fraction of a typical cohort.
-    /// Statting the rest buys nothing and costs everything — on a collection living on an external
-    /// volume those stats dominated the whole block-tree build. Here only the alignments that
-    /// actually carry a `private_y` row are statted.
+    /// The method sends two queries in total, and not two for each subject. The first reads the
+    /// alignments, and the second reads the artifact rows. The method then joins the rows of each
+    /// subject in memory.
+    ///
+    /// The map holds no entry for a subject with no cached private-Y data. That state means "no
+    /// analysis ran". It does not mean "the analysis found nothing".
+    ///
+    /// This method does **not** use `AlignmentArtifacts`, by design. That type stats each alignment
+    /// file first, to check the age of the cache. The app calculates the private-Y data of only a
+    /// small part of a cohort.
+    ///
+    /// A stat call on each other file gives no result and costs much. On a collection that sits on
+    /// an external volume, those stat calls were most of the time of the block-tree build. This
+    /// method stats only the alignments with a `private_y` row.
     pub(crate) async fn private_y_for_biosamples(
         &self,
         guids: &[SampleGuid],
@@ -412,9 +452,11 @@ impl App {
             return Ok(HashMap::new());
         }
 
-        // VCF-derived buckets, for subjects whose Y data never came with an alignment — the large
-        // majority of a Y project. Read from the cache only, as the alignment path does: opening a
-        // tab must not start classifying thousands of call sets.
+        // The buckets from a VCF file. They cover a subject whose Y data arrived with no
+        // alignment, and such subjects are most of a Y project.
+        //
+        // The code reads the cache only, as the alignment path does. A user who opens a tab must
+        // not start a classification of thousands of call sets.
         let mut out: HashMap<SampleGuid, PrivateBucket> = HashMap::new();
         for guid in guids {
             let rows =
@@ -439,7 +481,7 @@ impl App {
             let mut any = false;
             for a in alignments {
                 let Some(row) = stored.get(&a.id) else { continue };
-                // Only now is a stat worth paying for.
+                // A stat call is worth its cost only at this point.
                 let current = a.bam_path.as_deref().and_then(|p| file_signature(Path::new(p)));
                 if !artifact_is_fresh(row.source_sig.as_deref(), current.as_deref()) {
                     continue;
@@ -495,8 +537,9 @@ impl App {
 
     /// Projects with their sample counts, for a dashboard/list view.
     pub async fn project_overview(&self) -> Result<Vec<ProjectOverview>, AppError> {
-        // One grouped count for the whole workspace rather than a COUNT per project — this runs on
-        // every projects-list load and on every CLI `--project` name lookup.
+        // One grouped count covers the full workspace. The code does not send a COUNT query for
+        // each project. This code runs at each load of the projects list, and at each `--project`
+        // name lookup in the CLI.
         let counts: HashMap<i64, i64> = biosample::member_counts(self.store.pool()).await?.into_iter().collect();
         Ok(project::list(self.store.pool())
             .await?
@@ -509,15 +552,18 @@ impl App {
             .collect())
     }
 
-    /// Per-sample report for a project: each biosample's alignment count, coverage roll-up
-    /// (the first alignment with cached coverage), and Y/mtDNA haplogroup consensus.
-    /// Composes existing per-subject queries (no new join) — coverage/haplogroup cells are
-    /// `None` until those analyses have run.
+    /// A report of each sample in a project. Each row holds the count of alignments of one
+    /// biosample, a coverage summary, and the Y and mtDNA haplogroup consensus. The coverage comes
+    /// from the first alignment with a cached coverage result.
+    ///
+    /// The method calls the queries for one subject that already exist, and it adds no join. A
+    /// coverage cell and a haplogroup cell hold `None` until those analyses run.
     pub async fn project_report(&self, project_id: i64) -> Result<Vec<ProjectSampleReport>, AppError> {
         let members = biosample::list_members_for_project(self.store.pool(), project_id).await?;
-        // Everything this report needs, in four queries rather than a per-cell round-trip: the
-        // members, their alignments, every artifact of those alignments, and the haplogroup
-        // reconciliation. Each cell below is then a lookup, not a query.
+        // Four queries read each value that this report needs. The code does not send one query
+        // for each cell. The queries read the members, their alignments, each artifact of those
+        // alignments, and the haplogroup reconciliation. Each cell below is then a lookup in
+        // memory.
         let guids: Vec<SampleGuid> = members.iter().map(|b| b.guid).collect();
         let mut by_subject: HashMap<SampleGuid, Vec<Alignment>> = HashMap::new();
         for (guid, aln) in alignment::list_for_biosamples(self.store.pool(), &guids).await? {
@@ -525,7 +571,8 @@ impl App {
         }
         let all_alignments: Vec<&Alignment> = by_subject.values().flatten().collect();
         let artifacts = AlignmentArtifacts::load(&self.store, &all_alignments).await?;
-        // Same precedence (per-run vote → placed label → manual override) as `haplogroup_consensus`.
+        // The order is the same as the order in `haplogroup_consensus`. It is the vote of each
+        // run, then the placed label, then a value that the user set.
         let terminals = self.haplogroup_terminals().await?;
 
         let mut out = Vec::new();
@@ -540,7 +587,8 @@ impl App {
                     break;
                 }
             }
-            // A lite (sidecar) coverage is flagged so the UI can badge it and offer a deep walk.
+            // The row marks a small coverage result from a sidecar. The UI can then show a badge
+            // and offer a full walk.
             let coverage_partial = match coverage_aln {
                 Some(id) => matches!(
                     artifacts.provenance(id, "coverage", coverage::COVERAGE_VERSION),
@@ -548,7 +596,8 @@ impl App {
                 ),
                 None => false,
             };
-            // Prefer the coverage-bearing alignment; else fall back to the first.
+            // Take the alignment with a coverage result. If there is none, take the first
+            // alignment.
             let primary_alignment_id = coverage_aln.or_else(|| alignments.first().map(|a| a.id));
             let (y_haplogroup, mt_haplogroup) = terminals.get(&biosample.guid).cloned().unwrap_or_default();
             // Sex + read-metrics from whichever alignment has them cached.
@@ -589,9 +638,11 @@ impl App {
                 median_insert_size: metrics.as_ref().map(|m| m.median_insert_size),
                 sv_count,
                 coverage_partial,
-                // Surface a persisted failure (corrupt/undecodable file) only when there is no
-                // coverage to show — a successful re-walk clears the marker anyway. Read without a
-                // freshness check, as `analysis_error` does: the marker stands until a success clears it.
+                // Show a stored failure only when the row has no coverage. Such a failure comes
+                // from a file that the decoder refuses. A good walk removes the mark.
+                //
+                // The code reads the mark and does not check its age, as `analysis_error` does. The
+                // mark stays until a good walk removes it.
                 decode_error: match (coverage.is_none(), primary_alignment_id) {
                     (true, Some(id)) => artifacts
                         .raw(id, ERROR_KIND, ERROR_VERSION)
@@ -605,14 +656,20 @@ impl App {
         Ok(out)
     }
 
-    /// Per-member Y-STR overview for a project (the FTDNA-style "Y-DNA Results Overview"): each
-    /// member that has at least one STR profile, with identity columns, terminal Y haplogroup, the
-    /// reached STR panel/tier, and the consensus marker values (uppercase marker → value). Members
-    /// with no STR data are omitted. Composes existing per-subject queries (no new join).
+    /// A Y-STR overview of each member of a project. The table has the shape of the FTDNA "Y-DNA
+    /// Results Overview".
+    ///
+    /// The result holds each member with one STR profile or more. A row holds the identity columns,
+    /// the terminal Y haplogroup, the STR panel that the test reached, and the consensus marker
+    /// values. Each marker name is in upper case.
+    ///
+    /// The result holds no member with no STR data. The method calls the queries for one subject
+    /// that already exist, and it adds no join.
     pub async fn project_str_overview(&self, project_id: i64) -> Result<Vec<ProjectStrMember>, AppError> {
         use navigator_domain::{strpanel, strprofile};
         let mut out = Vec::new();
-        // One bulk reconciliation for the whole workspace rather than two queries per member.
+        // One reconciliation covers the full workspace. The code does not send two queries for
+        // each member.
         let terminals = self.haplogroup_terminals().await?;
         for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
             let profiles = self.list_str_profiles(biosample.guid).await?;
@@ -654,12 +711,20 @@ impl App {
         Ok(out)
     }
 
-    /// Build the precomputed FTDNA-style Y-STR overview for a project: members grouped by their
-    /// **assigned** (consensus) Y haplogroup, ordered by tree topology (basal → derived, children
-    /// nested under their ancestor subgroups), with per-subgroup MIN/MAX/MODE and per-cell deviation
-    /// from the modal value precomputed. Members without a SNP haplogroup fall into an "Unassigned"
-    /// bucket at the base. All heavy work happens here (off the UI thread); the renderer just
-    /// iterates [`ProjectStrChart::rows`].
+    /// Build the Y-STR overview of a project, in the FTDNA form, with each value calculated in
+    /// advance.
+    ///
+    /// The method groups the members by their **assigned** Y haplogroup, which is the consensus
+    /// value. It then orders the groups by the shape of the tree, from the basal node to the
+    /// derived nodes. Each child group goes below its ancestor group.
+    ///
+    /// For each group, the method calculates the MIN, MAX, and MODE values. For each cell, it
+    /// calculates the difference from the modal value.
+    ///
+    /// A member with no SNP haplogroup goes into an "Unassigned" group at the base.
+    ///
+    /// Each large calculation happens here, away from the UI thread. The renderer only reads
+    /// [`ProjectStrChart::rows`].
     pub async fn project_str_chart(&self, project_id: i64) -> Result<ProjectStrChart, AppError> {
         use navigator_domain::{strchart, strpanel};
         use std::collections::{BTreeMap, HashMap, HashSet};
@@ -828,11 +893,18 @@ impl App {
         })
     }
 
-    /// Analyze every sample in a project: compute coverage and assign the Y haplogroup on each
-    /// sample's primary (first BAM-bearing) alignment, so the project report fills in. Coverage
-    /// already cached and Y already recorded are skipped (idempotent re-run). Best-effort: one
-    /// sample's failure is recorded and the rest continue. mtDNA is intentionally not assigned
-    /// here (provisional on CHM13 — see the reconciliation/liftover notes).
+    /// Analyze each sample in a project. The method calculates the coverage and assigns the Y
+    /// haplogroup on the primary alignment of each sample. That alignment is the first one with a
+    /// BAM file. The project report then holds a value in each cell.
+    ///
+    /// The method skips a coverage result that the cache holds, and a Y value that the store
+    /// already holds. So a second run is safe.
+    ///
+    /// A failure on one sample goes into the report, and the method continues with the other
+    /// samples.
+    ///
+    /// The method does not assign mtDNA, by design. That value is not final on CHM13. See the notes
+    /// on the reconciliation and the liftover.
     pub async fn analyze_project(
         &self,
         project_id: i64,
@@ -848,8 +920,8 @@ impl App {
             errors: Vec::new(),
         };
         for biosample in biosample::list_members_for_project(self.store.pool(), project_id).await? {
-            // Between samples as well as inside them: a cancel that lands while a sample's walk is
-            // finishing must not start the next one.
+            // The code checks for a stop between two samples, and also inside one sample. A stop
+            // that arrives at the end of the walk of one sample must not start the next sample.
             if cancel.is_cancelled() {
                 break;
             }
@@ -867,13 +939,21 @@ impl App {
         Ok(summary)
     }
 
-    /// Deep-analyze one biosample's primary (first BAM-bearing) alignment: coverage, Y
-    /// haplogroup, sex, and read metrics. **Not** structural variants — see the note at the end of
-    /// the body. Idempotent — a *full* coverage and a recorded Y/sex/metrics are skipped; a
-    /// `partial` (lite sidecar) coverage is upgraded by
-    /// the per-base walk, which overwrites it. Best-effort: a per-step failure is recorded in
-    /// `errors` (prefixed with the donor id) and the remaining steps still run. This is the
-    /// per-sample unit the project pass and the streaming deep-analyze job both drive.
+    /// Do the full analysis of the primary alignment of one biosample. That alignment is its first
+    /// alignment with a BAM file. The steps are the coverage, the Y haplogroup, the sex, and the
+    /// read metrics.
+    ///
+    /// The method does **not** call structural variants. See the note at the end of the body.
+    ///
+    /// A second run is safe. The method skips a *full* coverage result, and a Y value, a sex value,
+    /// and a metrics value that the store holds. It replaces a `partial` coverage result from a
+    /// sidecar, because the walk across each base gives a better result.
+    ///
+    /// A failure in one step goes into `errors`, with the donor id at the start of the message. The
+    /// other steps still run.
+    ///
+    /// This method is the unit of work for one sample. The project pass and the deep-analyze job
+    /// both call it.
     pub async fn analyze_biosample(
         &self,
         biosample: &Biosample,
@@ -881,12 +961,16 @@ impl App {
     ) -> Result<SampleAnalyzeOutcome, AppError> {
         let mut o = SampleAnalyzeOutcome::default();
         let alignments = alignment::list_for_biosample(self.store.pool(), biosample.guid).await?;
-        // Prefer an alignment whose file is actually still there. Selecting merely by "a path was
-        // recorded" meant a subject with two alignments — one whose vendor download has since been
-        // cleaned out, one intact — could pick the gone one, fail preflight, and be skipped whole,
-        // when the other would have analyzed fine. Falling back to any recorded path keeps the
-        // no-file-present case reporting a real preflight diagnosis rather than silently reading as
-        // "this subject has no alignment at all".
+        // Take an alignment whose file is still on disk.
+        //
+        // An earlier rule took any alignment with a recorded path. Take a subject with two
+        // alignments, where a user removed the vendor download of one and kept the other. That rule
+        // could take the absent one. The preflight then failed, and the code skipped the full
+        // subject. The other alignment would have given a good result.
+        //
+        // When no file is on disk, the code takes any recorded path. The preflight then gives a
+        // real diagnosis. Without that step, the report reads as "this subject has no alignment",
+        // which is not true.
         let Some(aln) = alignments
             .iter()
             .find(|a| Self::alignment_file(a).is_ok())
@@ -897,20 +981,22 @@ impl App {
         o.had_alignment = true;
         let label = &biosample.donor_identifier;
 
-        // Preflight before spending any I/O on the steps below. A batch is the worst place to
-        // discover a file problem the slow way: without this, an unreadable alignment produces one
-        // near-identical `io error on <the alignment>` per step — each after a walk that had to
-        // fail first — and none of them names the file actually at fault.
+        // Run the preflight before any I/O in the steps below. A batch is the worst place to find
+        // a file problem the slow way.
         //
-        // What it does *not* do is skip the sample on any failure. A broken index blocks only the
-        // region-query steps; the unified metrics walk falls back to a sequential pass and still
-        // produces coverage, read metrics and sex. Skipping on that would throw away results the
-        // user would otherwise get, so only a failure that blocks sequential reads short-circuits.
+        // Without the preflight, an alignment that the code can not read gives one
+        // `io error on <the alignment>` message for each step. Each message arrives after a walk
+        // that had to fail first, and no message names the file at fault.
         //
-        // Both sinks get the *first failure*, not the whole report: `o.errors` renders as one line
-        // per entry, and `record_analysis_error` truncates to 500 chars keeping the head — which
-        // for a full report is the path preamble and the checks that passed, so the diagnosis
-        // itself would be the part cut off. The full report stays available via `navigator doctor`.
+        // The preflight does *not* skip the sample on each failure. A broken index stops only the
+        // steps that query a region. The unified metrics walk then reads the file from start to end
+        // and still gives the coverage, the read metrics, and the sex. A skip would remove results
+        // that the user can get. So only a failure that stops a sequential read ends the work.
+        //
+        // Both destinations receive the *first failure* and not the full report. `o.errors` shows
+        // one line for each entry. `record_analysis_error` keeps the first 500 characters. For a
+        // full report, those characters are the path and the checks that passed, so the tool would
+        // cut the diagnosis itself. The command `navigator doctor` still gives the full report.
         match self.diagnose_alignment(aln.id).await {
             Ok(report) if report.failed() => {
                 let cause = report
@@ -926,16 +1012,21 @@ impl App {
                     return Ok(o);
                 }
             }
-            // A preflight that itself failed to run is not evidence about the alignment — fall
-            // through and let the real steps report whatever they hit.
+            // A preflight that did not run says nothing about the alignment. Continue, and let
+            // the real steps report the fault that they find.
             Ok(_) | Err(_) => {}
         }
 
-        // Coverage + read-metrics + sex in ONE pass (the unified walker) instead of three separate
-        // reads of the BAM/CRAM — a 3x I/O cut per subject, which dominates the batch on a slow /
-        // network volume (the single-subject Full Analysis already does this; the batch path did not).
-        // Walk only when something's missing: a full, correctly-scoped coverage (a stale whole-genome
-        // result for a targeted-Y test is recomputed) plus cached read-metrics and sex = all done.
+        // The unified walker gives the coverage, the read metrics, and the sex in ONE pass. It
+        // does not read the BAM file or the CRAM file three times. This change divides the I/O of
+        // each subject by three. That I/O is most of the time of a batch on a slow volume or a
+        // network volume. The Full Analysis of one subject already used this walker, and the batch
+        // path did not.
+        //
+        // The code walks the file only when a value is absent. The work is complete when the store
+        // holds a full coverage result with the correct scope, the read metrics, and the sex. A
+        // whole-genome coverage result for a targeted Y test has the wrong scope, and the code
+        // calculates it again.
         let coverage_full = matches!(
             self.analysis_provenance(aln.id, "coverage", coverage::COVERAGE_VERSION).await?,
             Some((_, ref c)) if c == "full"
@@ -959,13 +1050,18 @@ impl App {
                     o.coverage_done = true;
                     o.metrics_done = true;
                     o.sex_done = true;
-                    // A prior run may have left a failure marker (corrupt file since replaced); clear it.
+                    // An earlier run can leave a failure mark, from a bad file that the user then
+                    // replaced. Remove that mark.
                     self.clear_analysis_error(aln.id).await;
                 }
-                // A cancellation is the user's decision, not a property of the file: recording it
-                // would persist a "Failed" marker that survives the run and makes the sample look
-                // broken forever, and counting it as an error would inflate the batch summary. Stop
-                // the sample here instead — the remaining steps would only be cancelled too.
+                // A stop is the decision of the user. It says nothing about the file.
+                //
+                // A record of it writes a "Failed" mark that stays after the run, and the sample
+                // then looks broken for all time. A count of it as an error also makes the batch
+                // summary wrong.
+                //
+                // So the code stops the work on this sample here. The user would stop each
+                // remaining step also.
                 Err(e) if e.is_cancellation() => return Ok(o),
                 Err(e) => {
                     // Persist the failure so the report can show "Failed" instead of a silent blank
@@ -986,38 +1082,50 @@ impl App {
             }
         }
 
-        // Build the genome-consensus Y signature (deep placement + variant profile → descent report)
-        // here, so the Y-DNA descent report is populated by batch analysis rather than requiring an
-        // explicit "Build descent report" click (that button stays for an on-demand rebuild). Built
-        // once — skipped when a profile already exists — and best-effort. The chrY genotypes it needs
-        // were just cached by the Y assignment above, so this adds no extra read of the file.
+        // Build the genome-consensus Y signature here. That work is the deep placement and the
+        // variant profile, and it gives the descent report.
+        //
+        // So a batch analysis fills the Y-DNA descent report, and the user does not press "Build
+        // descent report". That button stays, and it rebuilds the report at any time.
+        //
+        // The code builds the report one time, and it skips a profile that already exists. The step
+        // is optional. The Y assignment above wrote the chrY genotypes to the cache a moment ago,
+        // so this step reads the file no more times.
         if o.y_done && self.cached_y_profile(biosample.guid).await?.is_none() {
             if let Err(e) = self.build_y_profile(biosample.guid).await {
                 o.errors.push(format!("{label} Y signature: {e}"));
             }
         }
 
-        // SV deliberately does NOT run here. It is experimental, nothing else consumes its output,
-        // and it is the one step that walks every read in the file for its own sake: measured at
-        // 2–5 h per whole-genome sample on this workspace's CRAMs, against ~1 h for everything
-        // above put together. In a 148-sample project that is the difference between a batch that
-        // finishes overnight and one that takes weeks. Run it deliberately instead — the "Call SV"
-        // button, or `analyze --sv` — via `plan_full_analysis(.., include_sv = true)`.
+        // The SV step does NOT run here, by design. It is experimental, and no other step reads
+        // its output. It is also the one step that reads each record in the file for its own
+        // result.
+        //
+        // A measurement on the CRAM files of this workspace gave 2 to 5 hours for one whole-genome
+        // sample. Each step above needs about 1 hour in total. In a project of 148 samples, that
+        // difference is a batch that completes in one night against a batch that needs weeks.
+        //
+        // The user starts this step: the "Call SV" button, or `analyze --sv`. Both call
+        // `plan_full_analysis(.., include_sv = true)`.
         Ok(o)
     }
 }
 
 // ---- Y-tree topology helpers for the project STR chart ordering --------------------------------
 
-/// Normalize a haplogroup / node name for matching: uppercase, and (since our consensus labels and
-/// the tree nodes both use the "R-CTS4466" convention) keep the full name. Tolerates a bare SNP by
-/// also being comparable to the suffix after the last '-' (callers index both forms).
+/// Change a haplogroup name or a node name into the form that the code compares. The function makes
+/// each letter upper case and keeps the full name. Our consensus labels and the tree nodes both use
+/// the "R-CTS4466" form.
+///
+/// The result also compares with the part after the last `-`. So the code accepts a plain SNP name,
+/// and a caller indexes both forms.
 fn norm_hg(name: &str) -> String {
     name.trim().to_ascii_uppercase()
 }
 
-/// Map every tree node name (and its bare-SNP suffix) to a node id, for resolving haplogroup labels.
-/// Full names win over suffix aliases on collision.
+/// A map from each tree node name to a node id. The map also holds the plain SNP part of each name.
+/// The code uses it to find the node of a haplogroup label. When two entries have the same key, the
+/// full name wins.
 fn tree_name_index(tree: &navigator_analysis::haplo::HaploTree) -> std::collections::HashMap<String, i64> {
     let mut idx = std::collections::HashMap::new();
     // Pass 1: suffix aliases (lower priority).
@@ -1044,8 +1152,9 @@ fn tree_parent_map(tree: &navigator_analysis::haplo::HaploTree) -> std::collecti
     parent
 }
 
-/// Pre-order DFS rank for every node (basal → derived; children follow their parent, siblings in
-/// stored order) so groups can be ordered to mirror the tree.
+/// The pre-order rank of each node, from a depth-first search. The order goes from the basal node
+/// to the derived nodes. Each child follows its parent, and the code keeps the stored order of the
+/// children. A caller then orders its groups in the same shape as the tree.
 fn tree_preorder(tree: &navigator_analysis::haplo::HaploTree) -> std::collections::HashMap<i64, usize> {
     let mut rank = std::collections::HashMap::new();
     let mut next = 0usize;
@@ -1074,9 +1183,11 @@ fn tree_preorder(tree: &navigator_analysis::haplo::HaploTree) -> std::collection
     rank
 }
 
-/// Infer a run's `read_type` without touching the alignment file — from the `test_type` code (which
-/// may already name the chemistry) then the platform. Returns `None` for generic-WGS PacBio, where
-/// HiFi vs CLR genuinely needs the read names (a file rescan).
+/// Find the `read_type` of a run and read no alignment file. The function reads the `test_type`
+/// value, which can already name the chemistry, and then the platform.
+///
+/// The function returns `None` for a PacBio run with a plain WGS test type. Only the read names
+/// separate HiFi from CLR, and a scan of the file gives them.
 fn infer_read_type_cheap(platform_name: &str, test_type: &str) -> Option<&'static str> {
     let tt = test_type.to_ascii_uppercase();
     if tt.contains("HIFI") {
@@ -1094,7 +1205,8 @@ fn infer_read_type_cheap(platform_name: &str, test_type: &str) -> Option<&'stati
     } else if p.contains("NANOPORE") || p == "ONT" {
         Some("ONT_SIMPLEX")
     } else {
-        // PacBio (or an unrecognized platform) — can't tell HiFi from CLR here.
+        // A PacBio platform, or a platform that the code does not know. The code can not separate
+        // HiFi from CLR here.
         None
     }
 }
@@ -1107,12 +1219,17 @@ fn read_type_from_mean_len(mean: f64) -> Option<&'static str> {
     (mean > 0.0 && mean <= 1000.0).then_some("SHORT")
 }
 
-/// How well a test represents a whole person, for picking a subject's default/representative
-/// alignment (see [`App::default_alignment_for_subject`]). Higher is broader: a whole-genome test
-/// carries paternal, maternal *and* autosomal ancestry; an autosomal/chip test carries the ancestry
-/// composition the brief leads with; a Y/mt/X test is a single-lineage close-up. `None` is an
-/// unrecognized test type — ranked above targeted (it may be a broad test whose label we did not
-/// recognize) but below anything we know is genome-wide.
+/// The rank of a test by the part of a person that it covers. The code uses this rank to select the
+/// default alignment of a subject. See [`App::default_alignment_for_subject`].
+///
+/// A higher value covers more. A whole-genome test carries the paternal ancestry, the maternal
+/// ancestry, *and* the autosomal ancestry. An autosomal test or a chip test carries the ancestry
+/// composition, which is the first section of the brief. A Y test, an mt test, or an X test covers
+/// one lineage only.
+///
+/// A `None` value is a test type that the code does not know. Its rank is above a targeted test,
+/// because the test can be a wide test with a label that the code does not hold. Its rank is below
+/// each test that the code knows to be genome-wide.
 fn test_breadth_rank(target: Option<navigator_domain::testtype::TargetType>) -> u8 {
     use navigator_domain::testtype::TargetType::*;
     match target {
@@ -1131,8 +1248,9 @@ mod breadth_tests {
 
     #[test]
     fn whole_genome_outranks_targeted_regardless_of_depth() {
-        // The reported quirk: a deep Y Elite must not outrank a genome-wide WGS/HiFi as the
-        // representative test, because a Y-only test can't produce the ancestry shown beside it.
+        // The fault that a user reported. A deep Y Elite test must not rank above a genome-wide
+        // WGS test or HiFi test. A Y-only test can not give the ancestry that the app shows beside
+        // it.
         let wgs = test_breadth_rank(target_of("WGS"));
         let hifi = test_breadth_rank(target_of("WGS_HIFI"));
         let y_elite = test_breadth_rank(target_of("Y_ELITE"));
@@ -1146,7 +1264,8 @@ mod breadth_tests {
 
     #[test]
     fn ancestry_bearing_and_unknown_tiers() {
-        // Chips / exomes carry the autosomal ancestry the brief leads with — above targeted, below WGS.
+        // A chip and an exome carry the autosomal ancestry, which is the first section of the
+        // brief. Their rank is above a targeted test and below a WGS test.
         assert!(test_breadth_rank(Some(TargetType::WholeGenome)) > test_breadth_rank(target_of("ARRAY_23ANDME_V5")));
         assert!(test_breadth_rank(target_of("ARRAY_23ANDME_V5")) > test_breadth_rank(target_of("Y_ELITE")));
         // An unrecognized test type ranks above targeted but below a known genome-wide test.
@@ -1171,7 +1290,7 @@ mod read_profile_tests {
         assert_eq!(infer_read_type_cheap("MGI", "WGS"), Some("SHORT"));
         // Nanopore by platform alone.
         assert_eq!(infer_read_type_cheap("NANOPORE", "WGS"), Some("ONT_SIMPLEX"));
-        // Generic-WGS PacBio — unresolved without a rescan.
+        // A PacBio platform with a plain WGS test type. The code needs a scan of the file.
         assert_eq!(infer_read_type_cheap("PACBIO", "WGS"), None);
     }
 
@@ -1181,16 +1300,19 @@ mod read_profile_tests {
         // Sidecar-imported short-read WGS (mean 62–150 bp) → SHORT.
         assert_eq!(read_type_from_mean_len(150.0), Some("SHORT"));
         assert_eq!(read_type_from_mean_len(62.5), Some("SHORT"));
-        // Long reads can't be split HiFi/CLR by length — unresolved.
+        // The length of a long read does not separate HiFi from CLR. The code needs a scan of the
+        // file.
         assert_eq!(read_type_from_mean_len(21_563.0), None);
         // No metrics.
         assert_eq!(read_type_from_mean_len(0.0), None);
     }
 }
 
-/// Fold `extra` into `into`, deduping by position and keeping the deeper observation — the same rule
-/// the per-subject alignment union uses. A donor with both a CRAM and a vendor VCF should end up with
-/// one private set, not two competing ones.
+/// Add `extra` to `into`. The function removes a duplicate position and keeps the observation with
+/// the most depth. The union of the alignments of one subject uses the same rule.
+///
+/// A donor with a CRAM file and a vendor VCF must have one private set. Two sets that disagree are
+/// not correct.
 fn merge_bucket(into: &mut PrivateBucket, extra: PrivateBucket) {
     if into.terminal.is_empty() {
         into.terminal = extra.terminal;

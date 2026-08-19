@@ -5,20 +5,31 @@ use super::*;
 impl App {
     // ---- unified import ----------------------------------------------------
 
-    /// Detect a file's type and route it to the right subject importer (STR / variants /
-    /// chip / mtDNA), using sensible defaults. Returns the detected type. Alignment files
-    /// are rejected here — they attach to a sequencing test, not directly to a subject.
-    /// Probe a BAM/CRAM header for the build/aligner/platform/test-type (best-effort).
+    /// Find the type of a file and send it to the correct importer for a subject. The importers
+    /// cover STR data, variants, a chip export, and mtDNA data. The method uses a default value
+    /// where it needs one, and it returns the type that it found.
+    ///
+    /// This method refuses an alignment file. Such a file belongs to a sequence test, and it does
+    /// not attach to a subject directly.
+    ///
+    /// The method also reads the header of a BAM file or a CRAM file. From that header it finds
+    /// the build, the aligner, the platform, and the test type. That step is optional.
     pub async fn probe_alignment(&self, path: PathBuf) -> Result<AlignmentProbe, AppError> {
         tokio::task::spawn_blocking(move || navigator_analysis::probe::probe_alignment(&path))
             .await?
             .map_err(AppError::from)
     }
 
-    /// Scan a bounded prefix of an alignment's reads to infer the instrument/library identity —
-    /// the `@RG SM/LB/PU` tags plus the most-frequent instrument/flowcell/platform from read names
-    /// (the crowd-source input for resolving the lab). Off-thread (blocking IO + CRAM decode);
-    /// `reference` is required for CRAM. Best-effort — callers tolerate an error.
+    /// Read a limited count of records from the start of an alignment, and find the identity of the
+    /// instrument and the library.
+    ///
+    /// That identity is the `@RG` tags `SM`, `LB`, and `PU`. It also holds the most frequent
+    /// instrument, flowcell, and platform in the read names. The AppView uses those values to find
+    /// the laboratory.
+    ///
+    /// The method runs on another thread, because it blocks on I/O and decodes a CRAM file. A CRAM
+    /// file also needs the `reference` value. The step is optional, and each caller continues after
+    /// an error.
     pub async fn library_stats(
         &self,
         path: PathBuf,
@@ -35,20 +46,30 @@ impl App {
         .map_err(AppError::from)
     }
 
-    /// Auto-import an alignment file by probing its header: create the sequencing run (test type,
-    /// platform, instrument) and the alignment (reference build + aligner) with no questions
-    /// asked. The reference FASTA is **not** required — it is resolved from the build on demand;
-    /// if already cached it is stored so every analysis step has it immediately.
+    /// Import an alignment file with no question to the user. The method reads the header of that
+    /// file.
+    ///
+    /// It then makes the sequence run, with the test type, the platform, and the instrument. It also
+    /// makes the alignment, with the reference build and the aligner.
+    ///
+    /// The method does **not** need the reference FASTA file. It finds that file from the build when
+    /// a step needs it. When the cache already holds the file, the method stores its path, and each
+    /// analysis step then has it at once.
     async fn import_alignment_file(
         &self,
         biosample_guid: SampleGuid,
         path: &Path,
         test_type_override: Option<&str>,
     ) -> Result<(), AppError> {
-        // Idempotent per subject: skip only if *this* subject already has the alignment. Dedup used
-        // to be global (any subject), which silently skipped importing a file into a new subject when
-        // another subject already had it — leaving an empty subject and a misleading "imported" toast
-        // (e.g. re-importing a file after deleting its old subject, when a sibling subject also has it).
+        // A second import is safe for one subject. The code skips the file only when *this*
+        // subject already holds the alignment.
+        //
+        // An earlier version compared across each subject. So the code skipped a file for a new
+        // subject when another subject already held it, and it gave no message. The new subject
+        // stayed empty, and the app showed an "imported" message that was not true.
+        //
+        // One case is a second import of a file after the user deleted its earlier subject, when
+        // another subject also holds that file.
         let path_str = path.to_string_lossy().into_owned();
         if alignment::list_for_biosample(self.store.pool(), biosample_guid)
             .await?
@@ -57,25 +78,31 @@ impl App {
         {
             return Ok(());
         }
-        // Best-effort: a probe failure falls back to filename/defaults rather than aborting.
+        // The step is optional. After a failed read of the header, the code uses the file name and
+        // its default values. It does not stop the import.
         let probe = self.probe_alignment(path.to_path_buf()).await.unwrap_or_default();
 
-        // Resolve the reference first — the read-name scan needs it to decode a CRAM.
+        // Find the reference first. The scan of the read names needs it to decode a CRAM file.
         let reference_build = probe
             .reference_build
             .clone()
             .unwrap_or_else(|| reference_build_for(path));
-        // Store the cached reference path if we have it; otherwise leave it unset (resolved on
-        // demand) — never block import on a download.
+        // Store the path of the reference when the cache holds that file. If not, leave the field
+        // empty, and the code finds the file when a step needs it. An import must never wait for a
+        // download.
         let reference_path = self
             .gateway
             .cached_reference(&reference_build)
             .map(|p| p.to_string_lossy().into_owned());
 
-        // Read-name scan → instrument/library identity (the lab crowd-source input). Best-effort:
-        // it fills the platform/model the header `@RG` left blank, and the instrument/flowcell that
-        // never live in the header. Skipped silently if the file can't be read (e.g. CRAM with no
-        // resolved reference yet).
+        // The scan of the read names gives the identity of the instrument and the library, and the
+        // AppView uses those values to find the laboratory.
+        //
+        // The step is optional. It fills the platform and the model when the `@RG` header holds
+        // neither. It also fills the instrument and the flowcell, which no header holds.
+        //
+        // The code skips this step when it can not read the file. One case is a CRAM file with no
+        // reference yet.
         let stats = self
             .library_stats(path.to_path_buf(), reference_path.as_deref().map(PathBuf::from))
             .await
@@ -97,13 +124,19 @@ impl App {
             .clone()
             .or_else(|| stats.as_ref().and_then(|s| s.instrument_model.clone()));
 
-        // Test type: refine the header/platform guess with coverage *shape* from the BAI index —
-        // a targeted-Y pile-up (autosomes empty) → Big Y / Y Elite / YSEQ; an mtDNA pile-up →
-        // mtFull. Best-effort and cheap (O(contigs), no read scan); CRAM / unindexed BAMs have no
-        // profile and keep the platform-based guess.
-        // An explicit override (e.g. a Big_Y-700/500 directory the caller recognized) wins over
-        // inference — CRAMs ship no `.bai`, so the coverage-shape detector below can't see the
-        // targeted-Y pile-up and would otherwise fall back to the platform default (WGS).
+        // The test type. The code reads the *shape* of the coverage from the BAI index, and that
+        // shape corrects the value from the header and the platform.
+        //
+        // Many reads on chrY, with no read on an autosome, mark a Big Y test, a Y Elite test, or a
+        // YSEQ test. Many reads on chrM mark an mtFull test.
+        //
+        // The step is optional and fast. It costs O(contigs) and reads no record. A CRAM file and a
+        // BAM file with no index hold no such profile, and they keep the value from the platform.
+        //
+        // A value from the caller wins over each value above. One example is a Big_Y-700 directory
+        // or a Big_Y-500 directory that the caller recognized. A CRAM file has no `.bai` file, so
+        // the detector below can not see the reads on chrY. Without the value from the caller, the
+        // code would use the default of the platform, which is WGS.
         let test_type = match test_type_override {
             Some(t) => t.to_string(),
             None => {
@@ -134,9 +167,11 @@ impl App {
             })
             .await?;
 
-        // Persist the inferred lab/instrument identity block (the crowd-source key). The lab
-        // (`sequencing_facility`) stays unset — set manually, or resolved from `instrument_id`
-        // once the AppView lookup ships (roadmap D8).
+        // Write the identity of the laboratory and the instrument that the code found. The AppView
+        // uses those values as its key.
+        //
+        // The `sequencing_facility` field stays empty. The user sets it, or the AppView lookup
+        // gives it from `instrument_id` after that feature ships. See roadmap D8.
         if let Some(s) = &stats {
             let _ = sequence_run::set_library_stats(
                 self.store.pool(),
@@ -149,10 +184,15 @@ impl App {
                 s.read_type.as_deref(),
             )
             .await;
-            // Resolve the lab from the instrument id via the AppView (best-effort, cached). The
-            // FTDNA Big Y generation comes from the header `@RG LB` label (already in `test_type`
-            // above) or, on older headers that omit it, from the callable-chrY footprint after
-            // analysis ([`Self::refine_big_y_generation`]) — not guessed from the lab here.
+            // Find the laboratory from the instrument id, through the AppView. The step is
+            // optional, and the result goes into the cache.
+            //
+            // The generation of an FTDNA Big Y test comes from the `@RG LB` label of the header,
+            // and the step above already put it in `test_type`. An older header holds no such
+            // label. For such a file, the callable area of chrY gives the generation after the
+            // analysis, in [`Self::refine_big_y_generation`].
+            //
+            // This code does not estimate the generation from the laboratory.
             if let Some(inst) = s.instrument_id.as_deref() {
                 if let Some(lab) = self.lookup_lab_by_instrument(inst).await {
                     let _ = sequence_run::set_facility(self.store.pool(), run.id, &lab).await;
@@ -160,10 +200,13 @@ impl App {
             }
         }
 
-        // Defer the content hash (the file's identity, used to invalidate cached analyses): a
-        // whole-file SHA-256 of a multi-GB alignment would block this import for minutes with no
-        // feedback. Like the batch path, leave it `None` — `alignment_content_hash` computes and
-        // caches it lazily on the first analysis that needs it.
+        // Do not calculate the content hash here. That hash is the identity of the file, and the
+        // app uses it to find an old cache entry.
+        //
+        // A SHA-256 hash of a full alignment of many GB stops this import for some minutes, and the
+        // user sees nothing. The batch path also leaves the field `None`. The function
+        // `alignment_content_hash` calculates the hash at the first analysis that needs it, and it
+        // writes the value to the cache.
         self.record_alignment(NewAlignment {
             sequence_run_id: run.id,
             reference_build,
@@ -172,8 +215,8 @@ impl App {
             bam_path: Some(path.to_string_lossy().into_owned()),
             reference_path,
             content_sha256: None,
-            // An imported alignment is an original — nothing derived it. Only realignment sets
-            // these, and it registers its own row.
+            // An imported alignment is an original alignment, and no other row made it. Only a
+            // realignment writes these fields, and it adds its own row.
             derived_from_alignment_id: None,
             derivation: None,
         })
@@ -185,9 +228,12 @@ impl App {
         self.add_data_with_test_type(biosample_guid, path, None).await
     }
 
-    /// Like [`add_data`], but forces the sequencing-run `test_type` for an alignment file instead
-    /// of inferring it (e.g. a bulk Big Y import where the directory layout names the test). The
-    /// override is ignored for non-alignment inputs (their type is intrinsic to the file).
+    /// The same work as [`add_data`], but the caller gives the `test_type` of the sequence run for
+    /// an alignment file. The code does not find that value itself. One case is a bulk Big Y import,
+    /// where the layout of the directories names the test.
+    ///
+    /// The method ignores that value for each other kind of file, because the file itself gives the
+    /// type.
     pub async fn add_data_with_test_type(
         &self,
         biosample_guid: SampleGuid,
@@ -199,9 +245,12 @@ impl App {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         let lower = name.to_ascii_lowercase();
-        // Binary/structured formats are detected by extension; only text needs a sniff. A VCF is
-        // sniffed too now — an all-sites (genotyped) VCF is a 1240K call set, a variant-only VCF is a
-        // plain variant set (see `filetype::looks_like_genotyped_callset_vcf`) — so `.vcf*` is NOT here.
+        // The extension of a file gives its type for each binary format and each structured
+        // format. Only a text file needs a look at its content.
+        //
+        // The code now also looks inside a VCF file. A VCF with each site is a 1240K call set. A VCF
+        // with the variants only is a plain variant set. See
+        // `filetype::looks_like_genotyped_callset_vcf`. So this list holds no `.vcf` pattern.
         let by_ext = lower.ends_with(".bam")
             || lower.ends_with(".cram")
             || lower.ends_with(".geno")
@@ -255,12 +304,21 @@ impl App {
         Ok(detected)
     }
 
-    /// Batch [`add_data`]: expand any directories among `paths` into their recognized data files,
-    /// then auto-detect + import each into the subject, collecting a [`BatchImportSummary`]. A
-    /// failed/unrecognized file is recorded (not propagated) so one bad file does not abort the
-    /// batch. `progress(done, total)` ticks per file. The unified multi-file / folder importer
-    /// behind the GUI's Add Data button + drag-and-drop. (Distinct from [`import_project_dir`],
-    /// which builds a *new* multi-subject project from a NAS layout; this adds to *this* subject.)
+    /// The batch form of [`add_data`].
+    ///
+    /// The method expands each directory in `paths` into the data files that it recognizes. It then
+    /// finds the type of each file and imports it into the subject. It collects the results in a
+    /// [`BatchImportSummary`] value.
+    ///
+    /// The summary records a file that failed, and a file that the code does not recognize. The
+    /// method does not return an error for such a file, so one bad file does not stop the batch.
+    ///
+    /// The method calls `progress(done, total)` after each file.
+    ///
+    /// The Add Data button of the GUI calls this method, and a drag-and-drop action also calls it.
+    ///
+    /// This method is not [`import_project_dir`]. That method makes a *new* project with many
+    /// subjects from a NAS layout. This method adds files to *this* subject.
     pub async fn add_data_batch(
         &self,
         biosample_guid: SampleGuid,
@@ -269,9 +327,12 @@ impl App {
     ) -> Result<BatchImportSummary, AppError> {
         let mut files = Vec::new();
         for p in &paths {
-            // Guard against a single picked folder that is really a *parent* of several per-sample
-            // folders (e.g. an FTDNA download root): recursing it would silently merge sibling
-            // samples into this one subject. Refuse with guidance rather than import the wrong data.
+            // Guard against one folder that the user picked and that is the *parent* of the
+            // folders of many samples. An FTDNA download root is one example.
+            //
+            // A read of each folder below it would add the samples of each folder to this one
+            // subject, with no message. The method refuses and gives the user a hint. It must not
+            // import the wrong data.
             if p.is_dir() {
                 let mut these = Vec::new();
                 collect_data_files(p, &mut these, 0);
@@ -308,18 +369,25 @@ impl App {
         Ok(summary)
     }
 
-    /// Ingest one staged **sample directory** onto an existing subject (the CLI `ingest` fast path
-    /// for the D2C bulk side-load). Scans `dir` into a single sample, records its alignment(s) onto
-    /// `biosample_guid` from the **header only** (no read decode / library scan), imports any variant
-    /// files, then — when `fast_path` and a haplogroup GVCF is present — runs [`Self::ingest_sidecars`]
-    /// to place Y + mt from the BGZF GVCFs and fill sex / read-metrics / lite-coverage from the text
-    /// sidecars, still **without decoding the CRAM**. Per-file [`Self::add_data`] can't do this: it
-    /// can't group `*.callable.bed` / `coverage.txt` / `stats.txt` to their alignment, and it would
-    /// route a `*.g.vcf.gz` through the plain-VCF importer instead of the GVCF haplogroup fast path.
+    /// Import one **sample directory** onto a subject that exists. The CLI `ingest` command uses
+    /// this fast path for the D2C bulk load.
     ///
-    /// A directory that holds no alignment, variant, or haplogroup GVCF falls back to a best-effort
-    /// per-file [`Self::add_data`] of its contents — so a plain folder of chip/STR/mtDNA exports
-    /// still imports as before.
+    /// The method reads `dir` as one sample. It records each alignment onto `biosample_guid` from
+    /// the **header only**. It decodes no read and scans no library. It then imports each variant
+    /// file.
+    ///
+    /// When the caller sets `fast_path` and the directory holds a haplogroup GVCF file, the method
+    /// calls [`Self::ingest_sidecars`]. That method places the Y haplogroup and the mt haplogroup
+    /// from the BGZF GVCF files. It also fills the sex, the read metrics, and a small coverage
+    /// result from the text sidecar files. It decodes **no CRAM file**.
+    ///
+    /// A call of [`Self::add_data`] for each file can not do this work. That method can not join a
+    /// `*.callable.bed` file, a `coverage.txt` file, or a `stats.txt` file to its alignment. It also
+    /// sends a `*.g.vcf.gz` file to the plain-VCF importer, and not to the GVCF fast path.
+    ///
+    /// A directory with no alignment, no variant file, and no haplogroup GVCF takes another path.
+    /// The method then calls [`Self::add_data`] for each file, and each call is optional. So a plain
+    /// folder of chip exports, STR exports, and mtDNA exports imports as it did before.
     pub async fn add_sample_dir(
         &self,
         biosample_guid: SampleGuid,
@@ -330,8 +398,9 @@ impl App {
         let sample = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan_sample(&scan_dir)).await?;
         let mut summary = SampleDirSummary::default();
 
-        // No primary sequencing data (no alignment, no variant, no haplogroup GVCF): treat the
-        // directory as a loose bundle of subject files and import each as add_data would.
+        // The directory holds no primary sequence data: no alignment, no variant file, and no
+        // haplogroup GVCF file. So the code reads it as a set of separate subject files, and it
+        // imports each file as add_data does.
         let has_primary = !sample.alignment_files.is_empty()
             || !sample.variant_files.is_empty()
             || sample.sidecars.has_haplogroup_gvcf();
@@ -367,8 +436,8 @@ impl App {
             }
         };
 
-        // Record each alignment from the header only — cheap, no read decode (the whole point of the
-        // fast path). Idempotent on the alignment's stored path.
+        // Record each alignment from the header only. That read is fast and decodes no record,
+        // which is the purpose of the fast path. A second call with the same stored path is safe.
         let existing = alignment::list_for_run(self.store.pool(), run.id).await?;
         for aln_path in &sample.alignment_files {
             let path_str = aln_path.to_string_lossy().into_owned();
@@ -401,13 +470,21 @@ impl App {
             summary.alignments_created += 1;
         }
 
-        // Import bundled variant files ONLY when there is no haplogroup GVCF. When a GVCF is present
-        // the fast path below is the authoritative Y/mt source, so a called `chrY.vcf.gz` sitting
-        // beside it (the GATK repo layout ships both) is redundant — importing it would fire a second
-        // Y placement and, because variant-set import is not content-idempotent, would duplicate the
-        // set on a resumable re-run. Non-GVCF tiers (e.g. the b38 aengine `variants.vcf.gz`) still
-        // import here: there the VCF *is* the Y source. GVCFs themselves are `.g.vcf.gz`, which `scan`
-        // also lists as variant files — the guard keeps them out of this loop too.
+        // Import the variant files of this directory ONLY when it holds no haplogroup GVCF file.
+        //
+        // With a GVCF file, the fast path below is the source of the Y value and the mt value. A
+        // called `chrY.vcf.gz` file beside it holds the same data, and the GATK layout ships both
+        // files.
+        //
+        // An import of that file starts a second Y placement. A second import of a variant set also
+        // adds a second copy, because that import does not compare the content. So a run that
+        // continues an earlier run would duplicate the set.
+        //
+        // A directory with no GVCF file still imports its variant files here. In the b38 aengine
+        // layout, for example, the `variants.vcf.gz` file *is* the Y source.
+        //
+        // A GVCF file has the name `*.g.vcf.gz`, and `scan` also lists it as a variant file. This
+        // guard keeps it out of this loop.
         if !sample.sidecars.has_haplogroup_gvcf() {
             for vcf in &sample.variant_files {
                 let name = vcf
@@ -429,9 +506,10 @@ impl App {
             }
         }
 
-        // Fast path: place Y + mt from the GVCFs and fill sex / read-metrics / lite-coverage from the
-        // text sidecars onto the build-matching alignment — no CRAM walk. Best-effort (mirrors the
-        // project-import chooser at import_project_sample).
+        // The fast path. It places the Y haplogroup and the mt haplogroup from the GVCF files. It
+        // fills the sex, the read metrics, and a small coverage result from the text sidecar files,
+        // onto the alignment with the same build. It walks no CRAM file. The step is optional, and
+        // the chooser in import_project_sample works in the same way.
         if fast_path && sample.sidecars.has_haplogroup_gvcf() {
             let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
             let chosen = sample
@@ -460,10 +538,14 @@ impl App {
             }
         }
 
-        // Progressive consensus (docs §7.17): fold whatever autosomal dosages are now available into
-        // the subject's consensus. Cheap — chips/WGS-VCFs resolve without a decode, and a freshly-
-        // imported WGS alignment (dosages not yet cached) is simply skipped until the panel batch mode
-        // genotypes it. Best-effort: a consensus hiccup must not fail the import.
+        // The progressive consensus, in docs §7.17. The code adds each autosomal dosage that the
+        // store now holds to the consensus of the subject.
+        //
+        // The step is fast. A chip and a WGS VCF resolve with no decode. A WGS alignment from a
+        // recent import has no dosage in the cache. The code skips such an alignment until the
+        // batch mode of the panel genotypes it.
+        //
+        // The step is optional. A fault in the consensus must not fail the import.
         if let Err(e) = self.refresh_autosomal_consensus(biosample_guid).await {
             summary.errors.push(format!("consensus refresh: {e}"));
         }
@@ -471,14 +553,22 @@ impl App {
         Ok(summary)
     }
 
-    /// Batch-import a NAS project directory: scan `{dir}/{sample}/…` and create the Project
-    /// plus its Biosample → SequenceRun → Alignment rows. The reference is resolved per
-    /// alignment: pass `Some(fasta)` to use a specific FASTA (validated with its `.fai`) for
-    /// every alignment, or `None` to let the gateway resolve each file's inferred build from
-    /// the cache. If a needed build is not cached, returns [`AppError::ReferenceNeeded`]
-    /// **before any DB writes** so the UI can prompt + download, then retry. Idempotent: an
-    /// existing project (by name), biosample (by donor id), or alignment (by path) is reused.
-    /// Coverage is NOT computed here — run it per alignment or via the project report.
+    /// Import a NAS project directory as a batch. The method reads `{dir}/{sample}/…` and makes
+    /// the project with its Biosample, SequenceRun, and Alignment rows.
+    ///
+    /// The method finds the reference of each alignment. With `Some(fasta)`, it uses that one FASTA
+    /// file for each alignment, and it checks the `.fai` file. With `None`, the gateway finds the
+    /// build of each file in the cache.
+    ///
+    /// When the cache holds no file for a build that the import needs, the method returns
+    /// [`AppError::ReferenceNeeded`] **before it writes to the database**. The UI can then ask the
+    /// user, download the file, and call the method again.
+    ///
+    /// A second call is safe. The method uses a project with the same name, a biosample with the
+    /// same donor id, and an alignment with the same path.
+    ///
+    /// The method does NOT calculate the coverage. Run that step for one alignment, or from the
+    /// project report.
     pub async fn import_project_dir(
         &self,
         dir: &Path,
@@ -490,12 +580,19 @@ impl App {
             .await
     }
 
-    /// Re-run the sidecar fast path for every alignment of a subject whose source directory still
-    /// carries the pipeline GVCFs — restoring external (GATK4) Y/mt calls that an older build's
-    /// internal walk had overwritten before provenance existed. Cheap: reads the small GVCFs, never
-    /// the CRAM. The external calls land on their own `:ext` keys (they can not clobber, and with the
-    /// "prefer external caller" policy they win the consensus). Returns `(y_placed, mt_placed)`.
-    /// This is the operational fix for a workspace imported before external-caller precedence.
+    /// Run the sidecar fast path again, for each alignment of a subject whose source directory
+    /// still holds the GVCF files of the pipeline.
+    ///
+    /// The method returns the external Y calls and mt calls from GATK4. An older build ran its
+    /// internal walk and replaced those calls, before the app recorded a provenance.
+    ///
+    /// The method is fast. It reads the small GVCF files and never the CRAM file.
+    ///
+    /// Each external call goes to its own `:ext` key. So it can replace no other call, and the
+    /// "prefer external caller" policy makes it win the consensus.
+    ///
+    /// The method returns `(y_placed, mt_placed)`. It is the correction for a workspace that a user
+    /// imported before the app had external-caller precedence.
     pub async fn reingest_external_for_biosample(
         &self,
         biosample_guid: SampleGuid,
@@ -521,10 +618,14 @@ impl App {
         Ok((y_placed, mt_placed))
     }
 
-    /// [`Self::import_project_dir`] with a per-sample progress callback `progress(done, total,
-    /// sample_id)`, invoked before each sample so a large NAS import (thousands of samples) can
-    /// stream a status bar instead of appearing frozen. `done` is the 0-based index about to
-    /// process; the first call fires only after the (potentially slow) header-probe pre-flight.
+    /// The work of [`Self::import_project_dir`], with a progress callback for each sample. The
+    /// method calls `progress(done, total, sample_id)` before each sample.
+    ///
+    /// So a large NAS import of some thousands of samples can move a status bar. Without it, the app
+    /// looks stopped.
+    ///
+    /// The `done` value is the 0-based index of the next sample. The first call comes after the
+    /// header probe of the preflight, and that step can be slow.
     pub async fn import_project_dir_with_progress(
         &self,
         dir: &Path,
@@ -533,7 +634,8 @@ impl App {
         fast_path: bool,
         mut progress: impl FnMut(usize, usize, &str),
     ) -> Result<ProjectImportSummary, AppError> {
-        // An explicit FASTA must exist and be indexed; it applies to every alignment.
+        // A FASTA file from the caller must exist and must have an index. It applies to each
+        // alignment.
         if let Some(path) = &reference {
             if !path.exists() {
                 return Err(AppError::Import(format!(
@@ -553,10 +655,12 @@ impl App {
         let scan_dir = dir.to_path_buf();
         let discovered = tokio::task::spawn_blocking(move || navigator_analysis::scan::scan(&scan_dir)).await??;
 
-        // Detect each alignment's reference build from its **header** (only the header, so it is
-        // cheap and needs no reference FASTA). The filename is an unreliable signal — most NAS
-        // project layouts do not put the build in the name — so probe first, fall back to the
-        // filename, and record how each build was decided for the import diagnostics.
+        // Find the reference build of each alignment from its **header**. The code reads the
+        // header only, so this step is fast and needs no reference FASTA file.
+        //
+        // The file name is not a reliable source, because most NAS layouts do not put the build in
+        // that name. So the code reads the header first and uses the file name second. It also
+        // records the source of each build, for the import report.
         let all_paths: Vec<PathBuf> = discovered
             .samples
             .iter()
@@ -573,17 +677,22 @@ impl App {
         })
         .await?;
 
-        // Resolve each *distinct* detected build to a reference path. A build the gateway can't
-        // canonicalize falls back to the CHM13v2.0 default rather than aborting the whole batch;
-        // a known build that is not cached is surfaced as a recoverable download need. `effective_of`
-        // maps a detected build to the one actually stored on the alignment (after any fallback).
+        // Find a reference path for each *distinct* build that the code detected.
+        //
+        // A build that the gateway does not recognize takes the CHM13v2.0 default, so the batch
+        // continues. A known build with no file in the cache becomes a download that the UI can
+        // start.
+        //
+        // The `effective_of` map takes a build that the code detected and gives the build that the
+        // alignment row holds, after each default above.
         let explicit = reference.as_ref().map(|p| p.to_string_lossy().into_owned());
         let mut resolved: HashMap<String, String> = HashMap::new(); // effective build -> FASTA path
         let mut effective_of: HashMap<String, String> = HashMap::new(); // detected build -> effective build
         let mut needs: Vec<BuildNeed> = Vec::new();
         let mut reference_notes: Vec<String> = Vec::new();
 
-        // Alignment count + a representative detection source, per distinct detected build.
+        // The count of alignments, and one example of the detection source, for each distinct
+        // build.
         let mut per_build: BTreeMap<String, (usize, &'static str)> = BTreeMap::new();
         for (build, source) in detected.values() {
             let e = per_build.entry(build.clone()).or_insert((0, *source));
@@ -592,9 +701,10 @@ impl App {
 
         for (detected_build, (count, source)) in &per_build {
             let count = *count;
-            // Effective build: keep the detected one when the gateway recognizes it (or an explicit
-            // FASTA overrides everything); otherwise fall back to the default so unlabeled files
-            // still import instead of killing the batch.
+            // The build that the row holds. Keep the build that the code detected when the gateway
+            // recognizes it. A FASTA file from the caller replaces each such value. If neither
+            // applies, use the default build. A file with no label then still imports, and the
+            // batch continues.
             let (effective, defaulted) =
                 if explicit.is_some() || !matches!(self.gateway.reference_status(detected_build), RefStatus::Unknown) {
                     (detected_build.clone(), false)
@@ -603,9 +713,12 @@ impl App {
                 };
             effective_of.insert(detected_build.clone(), effective.clone());
 
-            // Resolve the effective build to a FASTA once (explicit > already-resolved > cache >
-            // gateway status). A download need is collected; an unresolvable build is recorded
-            // without a FASTA (resolved on demand at analysis time) rather than aborting.
+            // Find one FASTA file for that build. The order is the file from the caller, a file
+            // that the code already found, the cache, and then the status of the gateway.
+            //
+            // The method collects each download that the import needs. It records a build with no
+            // file and no FASTA path, and the analysis finds that file later. It does not stop the
+            // import.
             let path: Option<String> = if let Some(ref p) = explicit {
                 Some(p.clone())
             } else if let Some(p) = resolved.get(&effective) {
@@ -680,9 +793,10 @@ impl App {
             fast_path: FastPathSummary::default(),
         };
 
-        // Import each sample independently: a single sample's failure (unreadable file, DB hiccup)
-        // is logged + tallied into `sample_errors` and the batch continues with the rest, rather
-        // than one bad sample aborting the whole import.
+        // Import each sample on its own. A failure in one sample goes into the log and into the
+        // `sample_errors` count, and the batch continues with the other samples. The causes are a
+        // file that the code can not read, and a fault in the database. One bad sample must not
+        // stop the full import.
         let total = discovered.samples.len();
         for (i, sample) in discovered.samples.iter().enumerate() {
             progress(i, total, &sample.sample_id);
@@ -708,10 +822,13 @@ impl App {
         Ok(summary)
     }
 
-    /// Import one sample's subject, run, alignments, and fast-path sidecars. Extracted so a failure
-    /// here bubbles up as this sample's error (caught by [`Self::import_project_dir`]) instead of
-    /// aborting the whole batch. `detected`/`effective_of`/`resolved` are the pre-flight reference
-    /// maps from the caller; `summary` is updated in place with what this sample contributed.
+    /// Import the subject, the run, the alignments, and the fast-path sidecar files of one sample.
+    ///
+    /// This method is separate, so a failure here becomes the error of this sample.
+    /// [`Self::import_project_dir`] catches that error, and the batch continues.
+    ///
+    /// The `detected`, `effective_of`, and `resolved` maps come from the preflight of the caller.
+    /// The method writes what this sample added to `summary`.
     #[allow(clippy::too_many_arguments)]
     async fn import_project_sample(
         &self,
@@ -723,10 +840,14 @@ impl App {
         resolved: &HashMap<String, String>,
         summary: &mut ProjectImportSummary,
     ) -> Result<(), AppError> {
-        // Biosample: reuse an existing subject with this donor identifier **anywhere in the
-        // workspace** — a person is one subject across projects. Scoping the lookup to the target
-        // project duplicated everyone when the same folder was re-imported under a different
-        // project name (a person then existed once per project). Create only when truly new.
+        // The biosample. Use a subject with this donor identifier from **any place in the
+        // workspace**. One person is one subject in each project.
+        //
+        // An earlier version looked in the target project only. So a second import of the same
+        // folder, under another project name, made a second subject for each person. A person then
+        // had one subject in each project.
+        //
+        // Make a subject only when the workspace holds none.
         let biosample = match biosample::find_by_donor(self.store.pool(), &sample.sample_id).await? {
             Some(b) => b,
             None => {
@@ -740,8 +861,9 @@ impl App {
                 .await?
             }
         };
-        // Ensure the subject is a member of this project (idempotent on the (guid, project) PK).
-        // A reused subject whose *home* project is another one still joins this project's roster.
+        // Make sure that the subject is a member of this project. A second call is safe, because
+        // the primary key is the pair (guid, project). A subject whose *home* project is another
+        // project also joins the list of this project.
         biosample_project::add(
             self.store.pool(),
             biosample.guid,
@@ -792,8 +914,8 @@ impl App {
                 variant_caller: None,
                 bam_path: Some(path_str),
                 reference_path,
-                // Batch import: hash lazily on first analysis (do not stall a bulk NAS import
-                // hashing every multi-GB file up front).
+                // This is a batch import. Calculate the hash at the first analysis. A bulk NAS
+                // import must not stop while it hashes each file of many GB.
                 content_sha256: None,
                 // An imported alignment is an original; see above.
                 derived_from_alignment_id: None,
@@ -803,9 +925,14 @@ impl App {
             summary.alignments_created += 1;
         }
 
-        // Fast path: ingest the pipeline sidecars onto the build-matching alignment —
-        // places Y + mt from the GVCFs and fills sex/metrics/lite-coverage from the text
-        // sidecars, no CRAM walk. Best-effort; a failure is tallied and import continues.
+        // The fast path. It reads the pipeline sidecar files onto the alignment with the same
+        // build.
+        //
+        // It places the Y haplogroup and the mt haplogroup from the GVCF files. It also fills the
+        // sex, the metrics, and a small coverage result from the text sidecar files. It walks no
+        // CRAM file.
+        //
+        // The step is optional. A failure goes into a count, and the import continues.
         if fast_path && sample.sidecars.has_haplogroup_gvcf() {
             let alns = alignment::list_for_run(self.store.pool(), run.id).await?;
             let chosen = sample
@@ -840,8 +967,9 @@ impl App {
         self.gateway.reference_status(build)
     }
 
-    /// Resolve a reference build to a cached, indexed `.fa`, downloading on a miss.
-    /// `progress(received, total)` is invoked as bytes arrive.
+    /// Find the indexed `.fa` file of a reference build in the cache. The method downloads that
+    /// file when the cache holds none. It calls `progress(received, total)` as each part of the file
+    /// arrives.
     pub async fn resolve_reference(
         &self,
         build: &str,
@@ -850,8 +978,9 @@ impl App {
         Ok(self.gateway.resolve_reference(build, progress).await?)
     }
 
-    /// Resolve (and cache) a liftover chain for a build pair, downloading on a miss. The
-    /// cached `.chain` is then available for the haplogroup/liftover path.
+    /// Find the liftover chain of a build pair, and write it to the cache. The method downloads
+    /// that file when the cache holds none. The haplogroup path and the liftover path then read the
+    /// `.chain` file from the cache.
     pub async fn resolve_chain(
         &self,
         from: &str,
@@ -861,19 +990,26 @@ impl App {
         Ok(self.gateway.resolve_chain(from, to, progress).await?)
     }
 
-    /// Re-hash a cached reference against its integrity sidecar (gap §7) — detects on-disk
-    /// corruption of the cached `.fa`. Runs on a blocking thread (re-reads the whole FASTA), so it is
-    /// an explicit, user-triggered check (Settings), not the hot path.
+    /// Calculate the hash of a reference in the cache again, and compare it with the sidecar file
+    /// that holds the correct value. See gap §7. The method finds a `.fa` file that the disk
+    /// damaged.
+    ///
+    /// The method reads the full FASTA file, so it runs on its own thread. The user starts it from
+    /// the Settings screen, and no analysis calls it.
     pub async fn verify_reference(&self, build: &str) -> Result<navigator_refgenome::VerifyOutcome, AppError> {
         let gw = self.gateway.clone();
         let build = build.to_string();
         Ok(tokio::task::spawn_blocking(move || gw.verify_reference(&build)).await??)
     }
 
-    /// Lift a whole VCF from `source` build to `target` build (gap §7 — the GATK `LiftoverVcf`
-    /// replacement). Ensures the source→target chain and the target reference are resolved
-    /// (downloading on a miss, with progress), then runs the line-level lift on a blocking thread.
-    /// Returns lift/drop counts.
+    /// Move a full VCF file from the `source` build to the `target` build. See gap §7. This method
+    /// takes the place of the GATK `LiftoverVcf` tool.
+    ///
+    /// The method first finds the chain from the source to the target, and the reference of the
+    /// target. It downloads each file that the cache does not hold, and it reports the progress.
+    ///
+    /// It then moves each line on its own thread. It returns the count of the lines that it moved
+    /// and the count of the lines that it removed.
     pub async fn lift_vcf(
         &self,
         source: &str,
@@ -883,12 +1019,14 @@ impl App {
         opts: navigator_refgenome::VcfLiftOpts,
         progress: &mut (dyn FnMut(u64, Option<u64>) + Send),
     ) -> Result<navigator_refgenome::VcfLiftStats, AppError> {
-        // Resolve the inputs (chain + target FASTA), downloading on a miss.
+        // Find the two input files, which are the chain and the FASTA file of the target. Download
+        // each file that the cache does not hold.
         self.gateway.resolve_chain(source, target, progress).await?;
         let target_fa = self.gateway.resolve_reference(target, progress).await?;
         let lo = self.gateway.load_liftover(source, target)?;
 
-        // Target chrY PAR intervals (only needed when filtering them out).
+        // The PAR intervals of chrY on the target build. The code needs them only when it removes
+        // those intervals.
         let target_par: Vec<(i64, i64)> = if opts.filter_par {
             let regions = self.gateway.genome_regions(target, progress).await?;
             regions
@@ -918,31 +1056,37 @@ impl App {
         Ok(stats)
     }
 
-    /// See [`asset_action`] for the present/stale/absent decision this drives.
+    /// Make sure that the ancestry asset or IBD asset at `path` is present **and current**.
+    /// [`asset_action`] makes the decision that this method acts on.
     ///
-    /// Ensure a prebuilt ancestry/IBD asset at `path` is present **and current**, downloading it —
-    /// and the asset manifest it is verified against — from the published GitHub release. End users
-    /// get the panels this way instead of running the offline `panelbuild` tool.
+    /// The method downloads the asset, and the manifest that it checks the asset against, from the
+    /// published GitHub release. A user receives each panel in this way, and no user runs the
+    /// offline `panelbuild` tool.
     ///
-    /// Three cases, all manifest-driven:
+    /// There are three cases, and the manifest decides each one.
     ///
-    /// * **Absent** → download it, provided the manifest lists it (an unpublished optional asset
-    ///   simply stays absent and its feature degrades).
-    /// * **Manifest does not list it** → re-fetch the manifest once, then re-check. The cached
-    ///   manifest is otherwise never refreshed, so an install that predates an asset's publication
-    ///   would never learn the asset exists — which is exactly what happened to `ancestry_haps`.
-    /// * **Present but the wrong size** → the published asset was revised; replace it. Without this
-    ///   an install that already has an asset keeps the stale one forever, because a revision is
-    ///   invisible to a plain existence check. The stale file is moved aside, not deleted, and put
-    ///   back if the download fails — a stale asset beats no asset.
+    /// * The asset is **absent**. Download it when the manifest lists it. An optional asset that
+    ///   the team did not publish stays absent, and its feature gives less data.
+    /// * The **manifest does not list the asset**. Read the manifest again one time, then test
+    ///   again. The code refreshes a cached manifest at no other time. So an installation from
+    ///   before the publication of an asset would never learn that the asset exists. That fault
+    ///   occurred with `ancestry_haps`.
+    /// * The asset is **present with the wrong size**. The team published a new version, so replace
+    ///   the file. A test for the file alone can not see a new version. So without this test, an
+    ///   installation with the asset keeps the old file for all time.
     ///
-    /// An explicit `$NAVIGATOR_*` path override is never fetched over or repaired: that file is the
-    /// user's own. Best-effort throughout — network failures leave on-disk state alone.
+    ///   The code moves the old file to another name and does not delete it. It puts that file back
+    ///   when the download fails, because an old asset is better than no asset.
+    ///
+    /// The method never downloads over a path from a `$NAVIGATOR_*` variable, and it never repairs
+    /// such a file. That file belongs to the user. Each step is optional, and a network failure
+    /// changes nothing on the disk.
     pub(crate) async fn ensure_ancestry_asset(&self, build: ReferenceBuild, path: &Path) -> Result<(), AppError> {
         let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
             return Ok(());
         };
-        // Only auto-fetch to the default cache location — an explicit override is the user's own file.
+        // Download only to the default place in the cache. A path from a variable names a file of
+        // the user.
         let default = refgenome_cache::base_dir().join("ancestry").join(&name);
         if path != default {
             return Ok(());
@@ -951,9 +1095,12 @@ impl App {
         let manifest_name = format!("ancestry_manifest_{}.json", build.as_str());
         let manifest_path = default.with_file_name(&manifest_name);
 
-        // (1) The manifest: fetch when absent, and re-fetch when it does not list this asset (a
-        //     manifest cached before the asset was published). Keep the old copy in memory so a
-        //     failed refresh does not cost us the integrity data we already had.
+        // (1) The manifest. Download it when the cache holds none. Download it again when it does
+        //     not list this asset, because the cache can hold a manifest from before the team
+        //     published that asset.
+        //
+        //     Keep the old copy in memory. A failed download then does not remove the check values
+        //     that the app already has.
         let listed = |m: &Option<navigator_analysis::manifest::AssetManifest>| {
             m.as_ref().is_some_and(|m| m.assets.contains_key(&name))
         };
@@ -984,8 +1131,8 @@ impl App {
             return Ok(());
         };
 
-        // (2) What to do with what is on disk. Content is verified at read time by
-        //     `read_verified_asset`; hashing every asset here would cost seconds per paint.
+        // (2) The decision about the file on disk. `read_verified_asset` checks the content at
+        //     each read. A hash of each asset here costs some seconds at each paint.
         let on_disk = std::fs::metadata(&default).ok().map(|m| m.len());
         let action = asset_action(Some(&entry), on_disk);
         if action == AssetAction::Ready {
@@ -1035,7 +1182,8 @@ impl App {
                 Ok(())
             }
             Err(e) => {
-                // Put the old asset back: analysing against a superseded panel beats not analysing.
+                // Put the old asset back. An analysis against an old panel is better than no
+                // analysis.
                 if let Some(aside) = stale {
                     let _ = std::fs::rename(&aside, &default);
                     eprintln!("ancestry assets: {name} download failed ({e}) — kept the existing copy");
@@ -1046,9 +1194,12 @@ impl App {
         }
     }
 
-    /// Load the CHM13 IBD panel — downloading the prebuilt asset from the release on first use (no
-    /// `panelbuild` needed). The single entry point for the panel: replaces the five call sites that
-    /// each errored "build it with `panelbuild ibd-panel`" when the asset was absent.
+    /// Read the CHM13 IBD panel. At the first use, the method downloads the asset from the release,
+    /// and no user runs `panelbuild`.
+    ///
+    /// This method is the one entry point for that panel. It takes the place of five call sites.
+    /// Each of those sites gave the error "build it with `panelbuild ibd-panel`" when the asset was
+    /// absent.
     pub(crate) async fn load_ibd_panel(&self) -> Result<navigator_analysis::ibd_panel::IbdPanel, AppError> {
         let build = ReferenceBuild::Chm13v2;
         let path = ibd_panel_path(build);
@@ -1063,10 +1214,16 @@ impl App {
         Ok(navigator_analysis::ibd_panel::IbdPanel::from_bytes(&bytes)?)
     }
 
-    /// Resolve an imported chip's genotypes to canonical CHM13 **IBD-panel** dosages — the chip→IBD
-    /// path (no alignment, no runtime liftover: the multi-build panel pre-computes coordinates). The
-    /// output [`SiteGenotype`]s are over the same CHM13 sites a WGS caller would hit, so a chip and a
-    /// WGS sample compare uniformly. Errors if the IBD panel asset is not built yet.
+    /// Change the genotypes of an imported chip into dosages at the canonical CHM13 **IBD panel**
+    /// sites. This method is the path from a chip to the IBD data.
+    ///
+    /// It needs no alignment and does no liftover at run time, because the panel holds the
+    /// coordinates of each build.
+    ///
+    /// The [`SiteGenotype`] values that the method returns cover the same CHM13 sites that a WGS
+    /// caller reaches. So a chip sample and a WGS sample compare in the same way.
+    ///
+    /// The method fails when the IBD panel asset does not exist.
     pub async fn chip_ibd_dosages(&self, chip_profile_id: i64) -> Result<Vec<SiteGenotype>, AppError> {
         let chip = chip_profile::get(self.store.pool(), chip_profile_id)
             .await?
@@ -1085,14 +1242,24 @@ impl App {
         Ok(panel.resolve_chip(&from_build, &tuples))
     }
 
-    /// Import a trusted external caller's autosomal **1240K EIGENSTRAT call set**
-    /// (`.geno`/`.snp`/`.ind`) for a subject — the autosomal counterpart to the Y/mt GVCF sidecar
-    /// fast path. Resolves the target individual's genotypes to canonical CHM13 panel dosages (no
-    /// CRAM decode; `resolve_chip` self-orients against the CHM13 alleles), persists them as an
-    /// `external` source, and refreshes the autosomal consensus so modern/fine/deep ancestry and IBD
-    /// pick them up. `path` may point at any member of the triplet (siblings resolved by basename).
-    /// The `.snp` build is GRCh37 (AADR 1240K) unless `NAVIGATOR_CALLSET_BUILD` overrides it. Returns
-    /// the number of resolved panel sites.
+    /// Import the autosomal **1240K EIGENSTRAT call set** of a trusted external caller for a
+    /// subject. The files are `.geno`, `.snp`, and `.ind`. This method is the autosomal form of the
+    /// Y and mt sidecar fast path.
+    ///
+    /// The method changes the genotypes of the target individual into dosages at the canonical CHM13
+    /// panel sites. It decodes no CRAM file, and `resolve_chip` orients each call against the CHM13
+    /// alleles itself.
+    ///
+    /// It stores those dosages as an `external` source, and it builds the autosomal consensus again.
+    /// The modern ancestry, the fine ancestry, the deep ancestry, and the IBD steps then read them.
+    ///
+    /// The `path` value can name any of the three files, because the code finds the other two from
+    /// the base name.
+    ///
+    /// The build of the `.snp` file is GRCh37, which the AADR 1240K set uses. The
+    /// `NAVIGATOR_CALLSET_BUILD` variable replaces that value.
+    ///
+    /// The method returns the count of the panel sites that it resolved.
     pub async fn import_callset_from_file(&self, biosample_guid: SampleGuid, path: &Path) -> Result<usize, AppError> {
         // Resolve the triplet from any member by shared basename.
         let stem = path
@@ -1113,7 +1280,8 @@ impl App {
             }
         }
 
-        // AADR 1240K is GRCh37/hg19; allow a GRCh38-built call set via the env override.
+        // The AADR 1240K set uses GRCh37, which is also hg19. The variable lets a user import a
+        // call set on GRCh38.
         let build = std::env::var("NAVIGATOR_CALLSET_BUILD").unwrap_or_else(|_| "GRCh37".to_string());
         let (g, s, i, b) = (geno.clone(), snp.clone(), ind.clone(), build.clone());
         let callset =
@@ -1138,13 +1306,21 @@ impl App {
         .await
     }
 
-    /// Import a trusted external caller's autosomal genotypes for a subject from a **diploid VCF/gVCF**
-    /// — the VCF path of the autosomal fast path (Phases 4/5). Handles a GATK4 gVCF (variant records +
-    /// hom-ref ref blocks) **and** a genotyped all-sites VCF (e.g. `bcftools mpileup`/`call` over the
-    /// 1240K sites, where every site carries an explicit `GT`). Genotypes the panel loci directly with
-    /// **no CRAM decode**, re-keys to canonical CHM13 (`resolve_chip`), stores the dosages as an
-    /// `external` source, and refreshes the autosomal consensus. Build is auto-detected from the VCF
-    /// header (`NAVIGATOR_CALLSET_BUILD` overrides). Returns the number of resolved panel sites.
+    /// Import the autosomal genotypes of a trusted external caller for a subject, from a **diploid
+    /// VCF file or gVCF file**. This method is the VCF path of the autosomal fast path, in phases 4
+    /// and 5.
+    ///
+    /// The method reads a GATK4 gVCF file, which holds variant records and hom-ref blocks. It also
+    /// reads a VCF file with each site genotyped, such as the output of `bcftools mpileup` and
+    /// `bcftools call` across the 1240K sites. In that second file, each site holds a `GT` value.
+    ///
+    /// The method genotypes the panel loci directly and decodes **no CRAM file**. It then re-keys
+    /// each call to the canonical CHM13 sites with `resolve_chip`, stores the dosages as an
+    /// `external` source, and builds the autosomal consensus again.
+    ///
+    /// The code finds the build in the header of the VCF file, and the `NAVIGATOR_CALLSET_BUILD`
+    /// variable replaces that value. The method returns the count of the panel sites that it
+    /// resolved.
     pub async fn import_gvcf_callset_from_file(
         &self,
         biosample_guid: SampleGuid,
@@ -1154,8 +1330,9 @@ impl App {
 
         let panel = self.load_ibd_panel().await?;
 
-        // Panel loci in the gVCF's build, grouped + sorted per contig; keep each site's reference
-        // allele so a hom-ref block resolves to (ref, ref).
+        // The panel loci in the build of the gVCF file. The code groups them by contig and sorts
+        // each group. It keeps the reference allele of each site, so a hom-ref block gives the pair
+        // (ref, ref).
         let mut targets_by_contig: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
         let mut ref_allele: std::collections::HashMap<(String, i64), char> = std::collections::HashMap::new();
         for site in &panel.sites {
@@ -1238,7 +1415,8 @@ impl App {
             created_at: chrono::Utc::now().to_rfc3339(),
         };
         navigator_store::external_panel_dosage::upsert(self.store.pool(), &row).await?;
-        // Fold into the autosomal consensus immediately — cheap, no decode (best-effort).
+        // Add the dosages to the autosomal consensus at once. The step is fast, it decodes
+        // nothing, and it is optional.
         let _ = self.refresh_autosomal_consensus(biosample_guid).await;
         Ok(site_count)
     }
@@ -1259,11 +1437,16 @@ impl App {
         Ok(detect_ibd(&ga, &gb, ReferenceBuild::Chm13v2, config))
     }
 
-    /// IBD comparison between two **subjects** from their autosomal consensuses — each subject's
-    /// pooled best genotype per site (across all its WGS + chip sources), no per-source genotyping.
-    /// This is the subject-level IBD path (consensus-driven); both subjects must have a built
-    /// autosomal consensus. A near-complete genome-wide match is the cross-subject identity (dedup)
-    /// signal — read it off the returned [`MatchSummary`]'s relationship estimate.
+    /// Compare two **subjects** for IBD segments, from their autosomal consensus values.
+    ///
+    /// The consensus of a subject holds the best genotype at each site, from each of its WGS sources
+    /// and chip sources. The method genotypes no source again.
+    ///
+    /// This path works at the level of a subject, and the consensus drives it. Both subjects must
+    /// have an autosomal consensus.
+    ///
+    /// A match across almost the full genome shows that the two subjects are the same person. Read
+    /// that result from the relationship estimate of the [`MatchSummary`] value.
     pub async fn compare_ibd_consensus(
         &self,
         a: SampleGuid,
@@ -1283,9 +1466,11 @@ impl App {
         Ok(detect_ibd(&ga, &gb, ReferenceBuild::Chm13v2, config))
     }
 
-    /// Dosages over the canonical CHM13 IBD-panel sites for a comparison source. A chip resolves
-    /// directly ([`Self::chip_ibd_dosages`]); an alignment genotypes the panel's CHM13 sites from
-    /// its BAM (cached per alignment, ploidy-2 autosomal).
+    /// The dosages at the canonical CHM13 IBD-panel sites, for one comparison source.
+    ///
+    /// A chip resolves directly, in [`Self::chip_ibd_dosages`]. An alignment genotypes the CHM13
+    /// sites of the panel from its BAM file. The code caches that result for each alignment, and it
+    /// uses ploidy 2 on an autosome.
     pub async fn ibd_panel_dosages(&self, source: IbdSource) -> Result<Vec<SiteGenotype>, AppError> {
         match source {
             IbdSource::Chip(id) => self.chip_ibd_dosages(id).await,
@@ -1296,16 +1481,19 @@ impl App {
                 self.variant_set_panel_dosages(&set).await
             }
             IbdSource::Alignment(id) => {
-                // Salt the cache key with the panel asset's manifest hash, so regenerating the panel
-                // (e.g. the probe superset) auto-invalidates stale per-alignment genotypes instead of
-                // silently serving genotypes taken over an older site set.
+                // Add the manifest hash of the panel asset to the cache key. A new panel, such as
+                // one with more probes, then makes each stored genotype of an alignment invalid. So
+                // the app does not return a genotype from an older set of sites with no message.
                 let kind = ibd_panel_cache_kind();
                 if let Some(g) = self.load_analysis(id, &kind, caller::GENOTYPE_VERSION).await? {
                     return Ok(g);
                 }
-                // Resolve the reference for decode (see alignment_reference_for_decode): required for
-                // a CRAM, None for a BAM. Panel genotyping tallies SNP sites (ref/alt come from the
-                // panel), so a BAM consults no reference bases — do not force a download for it.
+                // Find the reference for the decoder. See alignment_reference_for_decode. A CRAM
+                // file needs it, and a BAM file uses None.
+                //
+                // The panel genotype step counts the reads at each SNP site, and the panel gives the
+                // reference allele and the alternate allele. So the code reads no reference base for
+                // a BAM file, and it must not start a download for one.
                 let build = self.alignment_or_err(id).await?.reference_build;
                 let (bam, reference) = self.alignment_reference_for_decode(id).await?;
                 let panel = self.load_ibd_panel().await?;
@@ -1315,8 +1503,9 @@ impl App {
                 );
 
                 let genotypes = if is_chm13 {
-                    // Native CHM13: genotype directly at the panel's canonical CHM13 loci — the dosage
-                    // is already CHM13-oriented, no re-keying.
+                    // A native CHM13 alignment. Genotype it directly at the canonical CHM13 loci
+                    // of the panel. Each dosage is then already in the CHM13 space, and the code
+                    // changes no key.
                     let sites: Vec<Site> = panel
                         .sites
                         .iter()
@@ -1341,10 +1530,15 @@ impl App {
                     })
                     .await??
                 } else if panel.sites.iter().any(|s| s.locus(&build).is_some()) {
-                    // GRCh37/GRCh38: the panel already carries this build's coordinates (offline
-                    // allele-aware liftover). Genotype at the build's loci, then re-key the dosages to
-                    // canonical CHM13 ([`IbdPanel::resolve_alignment`]) — no runtime liftover needed.
-                    // Match the panel's per-build contig names to the file's naming (`chr1` vs `1`).
+                    // A GRCh37 alignment or a GRCh38 alignment. The panel already holds the
+                    // coordinates of that build, from an offline liftover that read the alleles.
+                    //
+                    // Genotype the sample at the loci of that build. Then re-key each dosage to the
+                    // canonical CHM13 sites, in [`IbdPanel::resolve_alignment`]. The code does no
+                    // liftover at run time.
+                    //
+                    // Match the contig names of the panel for that build to the names in the file.
+                    // One file uses `chr1`, and another file uses `1`.
                     let (bam_h, ref_h) = (bam.clone(), reference.clone());
                     let file_contigs = tokio::task::spawn_blocking(move || {
                         navigator_analysis::reader::contig_names(&bam_h, ref_h.as_deref())
@@ -1384,8 +1578,9 @@ impl App {
                     .await??;
                     panel.resolve_alignment(&build, &raw)
                 } else {
-                    // A build the panel does not carry — nothing to genotype (degrade gracefully rather
-                    // than probe the wrong loci).
+                    // The panel holds no coordinates for this build, so there is nothing to
+                    // genotype. The code gives a smaller result. It must not read the wrong
+                    // loci.
                     Vec::new()
                 };
                 self.save_analysis(id, &kind, caller::GENOTYPE_VERSION, &genotypes)
@@ -1395,10 +1590,13 @@ impl App {
         }
     }
 
-    /// Cached IBD-panel dosages for an alignment, **without genotyping** — `Ok(None)` when they
-    /// have not been computed yet (so callers can reduce over what is available progressively rather
-    /// than triggering a whole-genome decode). [`Self::ibd_panel_dosages`] is the compute-and-cache
-    /// path; this is the read-only companion used by the progressive-consensus refresh.
+    /// The IBD-panel dosages of an alignment from the cache. The method genotypes **nothing**.
+    ///
+    /// It returns `Ok(None)` when no earlier run calculated those dosages. So a caller can work with
+    /// the data that the store holds, and it does not start a decode of the full genome.
+    ///
+    /// [`Self::ibd_panel_dosages`] calculates the dosages and writes them to the cache. This method
+    /// only reads them, and the progressive-consensus refresh calls it.
     pub async fn cached_alignment_panel_dosages(
         &self,
         alignment_id: i64,
@@ -1407,9 +1605,13 @@ impl App {
             .await
     }
 
-    /// Subject-level identity verification (gap §8) — "are these two subjects the same individual?"
-    /// (duplicate detection). Pooled autosomal consensus genotype concordance (no panel selection),
-    /// corroborated by Y-STR distance. Both subjects need a built autosomal consensus.
+    /// A test of identity at the level of a subject, in gap §8. It answers the question "are these
+    /// two subjects the same person?", and the app uses it to find a duplicate.
+    ///
+    /// The method compares the genotypes of the two pooled autosomal consensus values, and it
+    /// selects no panel. The distance between the Y-STR values supports that comparison.
+    ///
+    /// Both subjects need an autosomal consensus.
     pub async fn verify_identity_consensus(
         &self,
         a: SampleGuid,
@@ -1441,22 +1643,30 @@ impl App {
     }
 }
 
-/// What [`App::ensure_ancestry_asset`] must do for one asset, from the manifest entry (`None` when
-/// the manifest does not list it) and the on-disk size (`None` when the file is absent).
+/// The action that [`App::ensure_ancestry_asset`] must take for one asset.
 ///
-/// Size, not hash: a published asset is revised by rebuilding it, which changes its length, and the
-/// authoritative content check already happens at read time. Hashing a 133 MB panel on every call
-/// would cost seconds per paint to catch a case (same size, different bytes) that read-time
-/// verification catches anyway.
+/// The decision reads two values. The first is the manifest entry, which is `None` when the manifest
+/// does not list the asset. The second is the size of the file on disk, which is `None` when the
+/// file is absent.
+///
+/// The decision uses the size and not a hash. The team makes a new version of an asset when it
+/// builds that asset again, and the new file has a different length. The read step already checks
+/// the content, and that check has authority.
+///
+/// A hash of a panel of 133 MB at each call costs some seconds at each paint. It finds only one more
+/// case, where two files have the same size and different bytes, and the read step finds that case
+/// also.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AssetAction {
-    /// Present at the published size — use it.
+    /// The file is present, and its size equals the published size. Use it.
     Ready,
-    /// Absent — fetch it.
+    /// The file is absent. Download it.
     Download,
-    /// Present but superseded (or truncated) — move aside and fetch.
+    /// The file is present, but a newer version exists, or the file is not complete. Move it to
+    /// another name and download the new file.
     Replace,
-    /// Not published for this build — leave it absent and let the feature degrade.
+    /// The team published no file of this asset for this build. Leave it absent, and let its
+    /// feature give a smaller result.
     Skip,
 }
 

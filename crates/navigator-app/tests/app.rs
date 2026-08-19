@@ -13,9 +13,9 @@ async fn app() -> App {
     App::new(Store::open_in_memory().await.unwrap())
 }
 
-/// `App::new` reloads the active account, so every `app()` above would read the *production*
-/// keychain service if the OS backend were ever switched on in a test process. Only the shipped
-/// binary's `main` may switch it on; assert this test binary never did.
+/// `App::new` reads the active account again. So each `app()` call above reads the *production*
+/// keychain service if a test process turns the OS backend on. Only the `main` function of the
+/// shipped binary can turn it on. This test asserts that the test binary never did.
 #[test]
 fn tests_never_touch_the_os_keychain() {
     assert!(
@@ -24,9 +24,12 @@ fn tests_never_touch_the_os_keychain() {
     );
 }
 
-/// Serializes tests that mutate the process-global `NAVIGATOR_TREE_DIR`: one test's `remove_var`
-/// would otherwise yank the seeded tree dir out from under another running concurrently. Held for
-/// the whole test body; ignores poisoning so a panicking test does not wedge the rest.
+/// A lock for each test that changes `NAVIGATOR_TREE_DIR`, which belongs to the full process.
+///
+/// Without the lock, a `remove_var` call in one test removes the tree directory of another test at
+/// the same time. Each test holds the lock for its full body.
+///
+/// The lock ignores a poisoned state, so a test with a panic does not stop the other tests.
 static TREE_DIR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Reuse the analysis crate's committed fixtures (workspace-relative).
@@ -34,13 +37,16 @@ fn fixtures() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../navigator-analysis/tests/fixtures")
 }
 
-/// Serializes the `NAVIGATOR_REFGENOME_DIR` env write (read once in `App::new`) so
-/// parallel tests pointing the gateway cache at different temp dirs do not race.
+/// A lock for the write to `NAVIGATOR_REFGENOME_DIR`. `App::new` reads that variable one time. The
+/// lock stops a race between two tests that give the gateway cache two different temporary
+/// directories.
 static REF_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// An `App` whose reference-gateway cache is `cache`. The store is opened first (async), then
-/// the env write + `App::new` happen synchronously under the lock so the gateway captures the
-/// right base dir without racing other tests.
+/// An `App` value whose reference-gateway cache is `cache`.
+///
+/// The function opens the store first, and that call is asynchronous. It then writes the variable
+/// and calls `App::new` on one thread, under the lock. The gateway then reads the correct base
+/// directory, and no other test can change it at the same time.
 async fn app_with_ref_cache(cache: &std::path::Path) -> App {
     let store = Store::open_in_memory().await.unwrap();
     let _g = REF_ENV_LOCK.lock().unwrap();
@@ -84,7 +90,8 @@ async fn import_variants_from_csv_keeps_only_snps() {
     let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
 
     let path = std::env::temp_dir().join(format!("variants-{}.csv", subject.guid.0));
-    // header layout; one indel row that must be dropped (SNP-only)
+    // The header layout, and one indel row. The importer must remove that row, because it keeps
+    // only SNPs.
     std::fs::write(
         &path,
         "contig,position,ref,alt,rsid,genotype\nchr1,1000,A,G,rs1,0/1\nchr1,2000,A,AT,rs2,0/1\nchrM,73,G,A,.,1/1\n",
@@ -134,8 +141,9 @@ async fn import_vendor_big_y_vcf_is_tagged() {
     let app = app().await;
     let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
 
-    // A Big Y bundle: a generically-named variants.vcf with the FTDNA aengine signature + a
-    // sibling readme, in a per-sample directory (the parent dir disambiguates the label).
+    // A Big Y set of files. It holds a variants.vcf file with a general name, and that file
+    // carries the FTDNA aengine signature. A readme file is in the same directory, and that
+    // directory holds one sample. The name of the parent directory gives the label.
     let dir = std::env::temp_dir().join(format!("bigy-{}", subject.guid.0));
     std::fs::create_dir_all(&dir).unwrap();
     let vcf = dir.join("variants.vcf");
@@ -255,7 +263,7 @@ async fn import_mtdna_fasta_round_trips() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].sequence.len(), 16_569);
 
-    // a too-short sequence is rejected
+    // The importer refuses a sequence that is too short.
     let bad = std::env::temp_dir().join(format!("mtdna-bad-{}.fasta", subject.guid.0));
     std::fs::write(&bad, ">x\nACGT\n").unwrap();
     assert!(matches!(
@@ -314,9 +322,11 @@ async fn derive_mtdna_variants_detects_a_deletion() {
     let subject = app.add_biosample(None, "HG002", None, None).await.unwrap();
     let dir = std::env::temp_dir();
 
-    // rCRS: A-runs around a 9-base landmark at positions 301-309; the sample lacks it. The
-    // landmark is A-free so the flanking A-runs can't absorb any of it — the 9-base
-    // deletion is unambiguous.
+    // In rCRS, a run of A bases is on each side of a 9-base landmark at positions 301 to 309. The
+    // sample does not hold that landmark.
+    //
+    // The landmark holds no A base. So the two runs of A bases can take no part of it, and the
+    // 9-base deletion has one position only.
     let landmark = "CCCCCCCCC";
     let reference = format!("{}{}{}", "A".repeat(300), landmark, "A".repeat(16_569 - 309));
     let sample = "A".repeat(16_560);
@@ -371,10 +381,16 @@ async fn assign_mtdna_haplogroup_ranks_best() {
     let _ = std::fs::remove_file(&samp_path);
 }
 
-/// Real-data validation: assign mt + Y haplogroups from a GRCh38-aligned HG002 BAM
-/// (chrM = rCRS, chrY = GRCh38 — matching the FTDNA trees). Needs network (live FTDNA
-/// fetch). Run: `HG002_B38_BAM=/path/HG002.b38.bam cargo test -p navigator-app --test app \
-/// validate_hg002 -- --ignored --nocapture`.
+/// A check against real data. The test assigns the mt haplogroup and the Y haplogroup from an
+/// HG002 BAM file on GRCh38. The chrM contig is rCRS, and the chrY contig is GRCh38. Those contigs
+/// match the FTDNA trees.
+///
+/// The test needs the network, because it reads the FTDNA trees. To run it:
+///
+/// ```bash
+/// HG002_B38_BAM=/path/HG002.b38.bam \
+///   cargo test -p navigator-app --test app validate_hg002 -- --ignored --nocapture
+/// ```
 #[tokio::test]
 #[ignore = "requires HG002_B38_BAM (GRCh38) + network"]
 async fn validate_hg002_haplogroups() {
@@ -433,7 +449,8 @@ async fn validate_hg002_haplogroups() {
     for r in y.ranked.iter().skip(1).take(3) {
         eprintln!("  alt: {} ({:.3})", r.name, r.score);
     }
-    // Why descent stopped: child branches and their defining-SNP states.
+    // The reason that the descent stopped: the child branches, and the state of each SNP that
+    // defines them.
     use navigator_app::CallState;
     for b in &y.branches {
         eprintln!("  child {} — {}/{} derived:", b.name, b.derived, b.snps.len());
@@ -448,7 +465,8 @@ async fn validate_hg002_haplogroups() {
     }
     assert!(top.depth > 0 && top.matched > 0, "Y should resolve below root");
 
-    // Private bucket (de-novo chrY off the backbone) — gated separately (slow + needs ref).
+    // The private bucket, which holds the de-novo chrY calls that are not on the backbone. This
+    // step has its own gate, because it is slow and it needs the reference.
     if std::env::var("PRIVATE_Y").is_ok() {
         use navigator_app::PrivateClass;
         // Y_MASK_BED=path -> external mask; SELF_MASK set -> self-referential; else none.
@@ -495,13 +513,22 @@ async fn validate_hg002_haplogroups() {
     }
 }
 
-/// Real-data validation that liftover gives the right answer: a CHM13-aligned HiFi BAM of a
-/// donor whose GRCh38 terminals are known (Y: R-FGC29071, mt: U5a1b1g). Y is assigned by
-/// lifting the GRCh38 tree positions onto CHM13 via the cached chain (auto-downloaded);
-/// mtDNA is a direct chrM query (this BAM's chrM is 16,569 bp = rCRS). The calls should match
-/// the GRCh38 result. Needs network (FTDNA tree + the GRCh38→CHM13 chain). Run:
-///   GFX_CHM13_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.pbmm2.chm13v2.bam \
+/// A check against real data that the liftover gives the correct answer.
+///
+/// The input is a HiFi BAM file on CHM13, from a donor with known GRCh38 terminals. The Y terminal
+/// is R-FGC29071, and the mt terminal is U5a1b1g.
+///
+/// The test assigns the Y haplogroup with the cached chain, which the app downloads. That chain
+/// moves the GRCh38 tree positions onto CHM13. The mtDNA step queries chrM directly, because the
+/// chrM contig of this BAM file is 16,569 bp and equals rCRS.
+///
+/// The two calls must equal the GRCh38 result. The test needs the network for the FTDNA tree and
+/// for the GRCh38 to CHM13 chain. To run it:
+///
+/// ```bash
+/// GFX_CHM13_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.pbmm2.chm13v2.bam \
 ///   cargo test -p navigator-app --test app validate_gfx_chm13 -- --ignored --nocapture
+/// ```
 #[tokio::test]
 #[ignore = "requires GFX_CHM13_BAM (CHM13) + network (FTDNA tree + liftover chain)"]
 async fn validate_gfx_chm13_haplogroups() {
@@ -518,8 +545,9 @@ async fn validate_gfx_chm13_haplogroups() {
         .record_sequence_run(NewSequenceRun::new(b.guid, "PACBIO", "WGS"))
         .await
         .unwrap();
-    // mt now needs the CHM13 reference (to self-generate the rCRS↔chrM map): resolve it
-    // (downloads ~1 GB on first run, then cached), or take GFX_CHM13_REF if provided.
+    // The mt step now needs the CHM13 reference, because the code makes the map between rCRS and
+    // chrM itself. Find that reference, which downloads about 1 GB at the first run and then stays
+    // in the cache. Use GFX_CHM13_REF when the caller gives it.
     let reference = match std::env::var("GFX_CHM13_REF") {
         Ok(p) => p,
         Err(_) => app
@@ -545,8 +573,8 @@ async fn validate_gfx_chm13_haplogroups() {
         .unwrap()
         .id;
 
-    // mtDNA: now lifted via the self-generated rCRS↔CHM13-chrM map — expect the U5a1b1g lineage,
-    // matching the GRCh38 result.
+    // The mtDNA step now uses the map between rCRS and the CHM13 chrM contig, which the code makes
+    // itself. The result must be the U5a1b1g lineage, which equals the GRCh38 result.
     let mt = app
         .assign_mtdna_haplogroup_from_alignment(aln)
         .await
@@ -565,7 +593,8 @@ async fn validate_gfx_chm13_haplogroups() {
         top.lineage.join(" › ")
     );
 
-    // Y: lifted GRCh38 tree → CHM13 chrY — expect the R-FGC29071 clade.
+    // The Y step moves the GRCh38 tree onto the CHM13 chrY contig. The result must be the
+    // R-FGC29071 clade.
     let y = app.assign_y_haplogroup(aln).await.expect("Y assign");
     let top = &y.ranked[0];
     eprintln!(
@@ -603,16 +632,24 @@ async fn validate_gfx_chm13_haplogroups() {
     }
 }
 
-/// End-to-end DecodingUs Y-tree provider against a locally-running AppView, using the CHM13
-/// alignment's **native `hs1` coordinates** (no liftover). Verifies the integration places the
-/// GFX sample deep onto the decoding-us backbone (the K2b clade, en route to its known
-/// R-FGC29071 terminal). Reaching the R tips requires the AppView to enrich `hs1` coords for the
-/// FTDNA-grafted variants (today `hs1` covers the backbone only); until then deep CHM13 placement
-/// stops at the backbone. Gated on a reachable AppView. Run (AppView up on :9000, default URL):
-///   GFX_CHM13_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.pbmm2.chm13v2.bam \
+/// An end-to-end test of the DecodingUs Y-tree provider against an AppView on this machine. The
+/// test uses the **native `hs1` coordinates** of the CHM13 alignment and does no liftover.
+///
+/// The test checks that the code places the GFX sample deep on the decoding-us backbone. That place
+/// is the K2b clade, on the path to its known R-FGC29071 terminal.
+///
+/// A placement at the R tips needs `hs1` coordinates for the variants that FTDNA added to the tree.
+/// The AppView must supply them, and today its `hs1` data covers the backbone only. Until then, a
+/// deep CHM13 placement stops at the backbone.
+///
+/// The test runs only when it can reach an AppView. To run it, with an AppView on port 9000:
+///
+/// ```bash
+/// GFX_CHM13_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.pbmm2.chm13v2.bam \
 ///   GFX_CHM13_REF=/Users/jkane/Genomics/chm13v2.0/chm13v2.0.fa \
 ///   DECODINGUS_APPVIEW_URL=http://localhost:9000 \
 ///   cargo test -p navigator-app --test app validate_gfx_decodingus_y -- --ignored --nocapture
+/// ```
 #[tokio::test]
 #[ignore = "requires GFX_CHM13_BAM + a running DecodingUs AppView (DECODINGUS_APPVIEW_URL)"]
 async fn validate_gfx_decodingus_y() {
@@ -655,9 +692,11 @@ async fn validate_gfx_decodingus_y() {
         top.name, top.matched, top.expected, top.score
     );
     eprintln!("  lineage: {}", top.lineage.join(" › "));
-    // Native hs1 coords place GFX deep on the decoding-us backbone (K2b, toward R-FGC29071).
-    // Substantial match count + reaching the K backbone confirms the end-to-end provider works;
-    // the R tips need AppView hs1 enrichment (see fn docs).
+    // The native hs1 coordinates place GFX deep on the decoding-us backbone, at K2b, on the path
+    // to R-FGC29071.
+    // A large count of matches, together with a placement on the K backbone, shows that the full
+    // provider path works. The R tips need `hs1` data from the AppView. See the doc comment of this
+    // function.
     assert!(
         top.matched >= 50,
         "expected a substantial native-hs1 match count, got {}",
@@ -718,8 +757,9 @@ async fn gvcf_y_placement_smoke() {
         top.name, top.matched, top.expected, top.score
     );
     eprintln!("  lineage: {}", top.lineage.join(" › "));
-    // HG00096 is a 1000G GBR sample → deep R1b. Confirm the GVCF places it deep on the R
-    // backbone (not a shallow veto), with a substantial match count.
+    // HG00096 is a GBR sample from 1000G, and it belongs to a deep R1b clade. This test confirms
+    // that the GVCF path places it deep on the R backbone, with a large count of matches. The path
+    // must not stop near the root.
     assert!(
         top.matched >= 100,
         "expected a deep match count from the GVCF, got {}",
@@ -732,11 +772,17 @@ async fn gvcf_y_placement_smoke() {
     );
 }
 
-/// **The fast-path correctness gate.** Placing a sample's Y (and mt) from the precomputed
-/// pipeline GVCF must reach the same terminal as walking the CRAM — otherwise the fast path
-/// is silently wrong. Set the env to a sample dir that has BOTH the CRAM and the GVCFs
-/// (the ytree layout), with a running DecodingUs AppView (or a warm tree cache).
-///   GVCF_PARITY_CRAM, GVCF_PARITY_REF, GVCF_PARITY_Y_GVCF[, GVCF_PARITY_M_GVCF]
+/// **The correctness gate of the fast path.**
+///
+/// The fast path reads the GVCF file of the pipeline. It must place the Y haplogroup and the mt
+/// haplogroup at the same terminal as a walk of the CRAM file. If the two differ, the fast path
+/// gives a wrong answer and reports nothing.
+///
+/// Point the variables at a sample directory that holds BOTH the CRAM file and the GVCF files, in
+/// the ytree layout. The test also needs a DecodingUs AppView, or a tree in the cache.
+///
+/// The variables are `GVCF_PARITY_CRAM`, `GVCF_PARITY_REF`, `GVCF_PARITY_Y_GVCF`, and the optional
+/// `GVCF_PARITY_M_GVCF`.
 #[tokio::test]
 #[ignore = "requires a ytree sample dir (CRAM + GVCFs) + DecodingUs tree (AppView/cache)"]
 async fn gvcf_fast_path_matches_cram_walk() {
@@ -780,10 +826,13 @@ async fn gvcf_fast_path_matches_cram_walk() {
         "Y  GVCF: {} ({}/{})   CRAM: {} ({}/{})",
         ft.name, ft.matched, ft.expected, st.name, st.matched, st.expected
     );
-    // Same-lineage consistency, not exact-terminal equality: the GVCF path uses robust
-    // (proportional-top) selection and the CRAM path the strict guard, so they can stop at
-    // different depths on the *same* path. The gate is that neither places on a different
-    // branch — one lineage must contain the other's terminal.
+    // The test compares the lineage, and it does not compare the two terminals for equality.
+    //
+    // The GVCF path selects a node by a proportional rule, and the CRAM path uses the strict guard.
+    // So the two can stop at different depths on the *same* path.
+    //
+    // The test fails only when one path places the sample on a different branch. One lineage must
+    // hold the terminal of the other.
     assert!(
         ft.lineage.contains(&st.name) || st.lineage.contains(&ft.name),
         "GVCF and CRAM placed on different Y branches: {} vs {}",
@@ -956,7 +1005,7 @@ async fn haplogroup_consensus_combines_recorded_calls() {
     assert_eq!(c.run_count, 2);
     assert_eq!(c.warnings.len(), 1); // flags the deeper HiFi placement
 
-    // re-recording the same source key replaces (no duplicate)
+    // A second write of the same source key replaces the first row and adds no duplicate.
     let calls = app.haplogroup_calls(subject.guid, DnaType::Y).await.unwrap();
     assert_eq!(calls.len(), 2);
     // mt has nothing recorded
@@ -966,7 +1015,8 @@ async fn haplogroup_consensus_combines_recorded_calls() {
         .unwrap()
         .is_none());
 
-    // manual override replaces the computed consensus and is flagged + audited.
+    // A value from the user replaces the consensus that the code calculated. The row carries a
+    // mark, and the audit log holds an entry.
     app.set_manual_override(subject.guid, DnaType::Y, "R-FGC29071", Some("Sanger-confirmed"))
         .await
         .unwrap();
@@ -1067,8 +1117,9 @@ async fn add_data_detects_and_routes() {
     );
     assert_eq!(app.list_chip_profiles(subject.guid).await.unwrap().len(), 1);
 
-    // A BAM/CRAM auto-imports: it creates a sequencing run + alignment (header probed
-    // best-effort; here the bytes are not a real BAM so detection falls back to defaults).
+    // A BAM file or a CRAM file imports without a question. The code makes a sequence run and an
+    // alignment. It reads the header when it can. Here the bytes are not a real BAM file, so the
+    // code uses its default values.
     let bam = dir.join(format!("data-{}.bam", subject.guid.0));
     std::fs::write(&bam, b"\x1f\x8b").unwrap();
     assert_eq!(app.add_data(subject.guid, &bam).await.unwrap(), DetectedData::Alignment);
@@ -1076,10 +1127,10 @@ async fn add_data_detects_and_routes() {
     assert_eq!(runs.len(), 1);
     let alns = app.list_alignments(runs[0].id).await.unwrap();
     assert_eq!(alns.len(), 1);
-    // The content hash is deferred (not computed at import) so a multi-GB alignment imports
-    // instantly; it is filled in lazily on the first analysis that needs it.
+    // The code does not calculate the content hash at the import. So an alignment of many GB
+    // imports at once. The first analysis that needs the hash calculates it.
     assert_eq!(alns[0].content_sha256, None, "content hash is deferred at import");
-    // Idempotent: re-adding the same path does not duplicate the run/alignment.
+    // A second import of the same path is safe. It adds no second run and no second alignment.
     assert_eq!(app.add_data(subject.guid, &bam).await.unwrap(), DetectedData::Alignment);
     assert_eq!(app.list_sequence_runs(subject.guid).await.unwrap().len(), 1);
 
@@ -1265,8 +1316,9 @@ async fn run_coverage_persists_and_reads_back_from_cache() {
     assert_eq!(result.genome_territory, 50); // chrM fixture
     assert_eq!(result.callable_bases, 10);
 
-    // now cached for this version (integer fields exact; floats survive round-trip to
-    // ~1 ULP, so compare those about rather than with fragile float ==)
+    // The cache now holds the result for this version. An integer field is exact. A float field
+    // changes by about 1 ULP in the round trip, so the test compares a float with a tolerance and
+    // not with `==`.
     let cached = app.cached_coverage(aln).await.unwrap().unwrap();
     assert_eq!(cached.genome_territory, result.genome_territory);
     assert_eq!(cached.callable_bases, result.callable_bases);
@@ -1274,7 +1326,8 @@ async fn run_coverage_persists_and_reads_back_from_cache() {
     assert_eq!(cached.coverage_histogram, result.coverage_histogram);
     assert!((cached.mean_coverage - result.mean_coverage).abs() < 1e-9);
 
-    // re-running is idempotent (upsert in place; store-layer test covers row count)
+    // A second run is safe. The code replaces the row, and a test in the store layer counts the
+    // rows.
     let rerun = app
         .run_coverage(
             aln,
@@ -1339,7 +1392,8 @@ async fn publish_coverage_summary_requires_cached_coverage() {
     let app = app().await;
     let aln = diploid_alignment(&app).await; // has a BAM but no coverage run
 
-    // Bearer client is never reached — the missing-coverage check fails first.
+    // The code never reaches the Bearer client. The check for an absent coverage result fails
+    // first.
     let client = navigator_app::PdsClient::bearer(reqwest::Client::new(), "http://127.0.0.1:1", "did:plc:x", "tok");
     let err = app.publish_coverage_summary(&client, aln).await;
     assert!(
@@ -1351,8 +1405,9 @@ async fn publish_coverage_summary_requires_cached_coverage() {
     );
 }
 
-/// Full path: run coverage on the fixture → publish the summary (a real CoverageResult,
-/// floats encoded as strings) to a live PDS via a throwaway Bearer account.
+/// The full path. The test calculates the coverage of the fixture file and publishes the summary to
+/// a live PDS. The summary is a real `CoverageResult`, and each float is a string. The test signs in
+/// with a temporary Bearer account.
 #[tokio::test]
 #[ignore = "requires PDS_TEST_URL (local atproto PDS container)"]
 async fn publish_coverage_summary_to_live_pds() {
@@ -1484,8 +1539,9 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
     let app = app().await;
     let fx = fixtures();
 
-    // Build a temp project tree: <root>/HG00096/HG00096.chm13.cram(+.crai), reusing the
-    // committed CRAM fixture (the .crai is index-by-offset, so the rename is fine).
+    // Build a temporary project tree at <root>/HG00096/HG00096.chm13.cram, with its .crai file.
+    // The test copies the CRAM fixture of this repository. The .crai file holds offsets, so a new
+    // name for the CRAM file is correct.
     let root = std::env::temp_dir().join(format!("dun-import-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let sample = root.join("HG00096");
@@ -1519,7 +1575,8 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
     assert_eq!(again.alignments_skipped, 1);
     assert_eq!(app.project_overview().await.unwrap().len(), 1);
 
-    // Coverage recompute works on the imported CRAM (reference_path was stamped).
+    // A second coverage calculation works on the imported CRAM file, because the import wrote
+    // `reference_path`.
     let aln = app.list_all_alignments().await.unwrap();
     assert_eq!(aln.len(), 1);
     assert_eq!(aln[0].reference_build, "chm13v2.0");
@@ -1531,8 +1588,9 @@ async fn import_project_dir_creates_rows_is_idempotent_and_coverage_runs_on_cram
 
 #[tokio::test]
 async fn reimport_under_different_project_name_reuses_subject() {
-    // A person is one subject across projects: re-importing the same sample folder under a
-    // different project name must reuse the subject (join it to the new project), not duplicate it.
+    // One person is one subject in each project. A second import of the same sample directory,
+    // under another project name, must use that subject again. It adds the subject to the new
+    // project, and it makes no second subject.
     let app = app().await;
     let fx = fixtures();
     let reference = fx.join("ref.fa");
@@ -1577,8 +1635,9 @@ async fn reimport_under_different_project_name_reuses_subject() {
 
 #[tokio::test]
 async fn delete_project_detaches_members_and_keeps_subjects() {
-    // A project is a grouping — deleting a non-empty one must succeed by detaching its members,
-    // not refuse ("N subjects still belong to it"). The subjects themselves survive.
+    // A project is a group. A delete of a project with members must succeed. The code removes each
+    // membership. It must not refuse with the message "N subjects still belong to it". Each subject
+    // stays in the workspace.
     let app = app().await;
     let p = app
         .create_project(NewProject {
@@ -1638,7 +1697,8 @@ async fn project_report_rolls_up_coverage_and_csv_round_trips() {
 
     let aln = app.list_all_alignments().await.unwrap();
 
-    // A lite (sidecar) coverage is flagged `partial` in the report so the UI can badge it.
+    // A small coverage result from a sidecar carries the `partial` mark in the report. The UI can
+    // then show a badge.
     let lite = app.run_coverage_for_alignment(aln[0].id).await.unwrap();
     app.save_analysis_with_provenance(
         aln[0].id,
@@ -1686,7 +1746,8 @@ async fn import_without_reference_resolves_from_cache_else_reports_needed() {
     std::fs::copy(fx.join("coverage.cram"), sample.join("HG00096.chm13.cram")).unwrap();
     std::fs::copy(fx.join("coverage.cram.crai"), sample.join("HG00096.chm13.cram.crai")).unwrap();
 
-    // Empty cache → import (no explicit reference) reports the chm13v2.0 build is needed, no writes.
+    // With an empty cache and no reference from the caller, the import reports that it needs the
+    // chm13v2.0 build. It writes nothing.
     match app.import_project_dir(&root, None, "tester".into(), false).await {
         Err(AppError::ReferenceNeeded(needs)) => {
             assert_eq!(needs.len(), 1);
@@ -1786,14 +1847,18 @@ async fn assign_y_haplogroup_lifts_grch38_tree_onto_chm13_alignment() {
 }
 
 #[tokio::test]
-// Holds TREE_DIR_ENV_LOCK across awaits on purpose — it serializes tests that mutate the
-// process-global NAVIGATOR_TREE_DIR env var; the guard must outlive the async body.
+// This code holds TREE_DIR_ENV_LOCK across each await, by design. The lock orders the tests that
+// change the NAVIGATOR_TREE_DIR variable, which belongs to the full process. The guard must live
+// longer than the async body.
 #[allow(clippy::await_holding_lock)]
 async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
     let _env = TREE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Seed the Y-tree cache so assign_y is offline; a root-only tree (no loci) means no query
-    // targets and no chain — exercises the orchestration without network. Force the FTDNA provider
-    // so the seeded tree is used (the default DecodingUs provider would reach out to the AppView).
+    // Write a tree to the Y-tree cache, so `assign_y` needs no network. The tree holds the root
+    // only and no locus. So there is no query target and no chain, and the test covers the control
+    // flow with no network.
+    //
+    // The test also selects the FTDNA provider, so the code reads the tree in the cache. The
+    // default DecodingUs provider sends a request to the AppView.
     let trees = std::env::temp_dir().join(format!("dun-trees-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&trees);
     std::fs::create_dir_all(&trees).unwrap();
@@ -1834,7 +1899,8 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
         .unwrap();
     assert_eq!(s.samples, 1);
     assert_eq!(s.coverage_done, 1, "coverage computed on the CRAM");
-    // Y was attempted: recorded, or (here) errored on the chrM-only fixture lacking chrY.
+    // The code tried the Y step. It wrote a result, or it gave an error. Here it gives an error,
+    // because the fixture holds chrM only and has no chrY contig.
     assert_eq!(s.y_done + s.errors.iter().filter(|e| e.contains("Y:")).count(), 1);
 
     // The report now shows coverage filled for the sample.
@@ -1846,10 +1912,14 @@ async fn analyze_project_runs_coverage_and_attempts_y_per_sample() {
     let _ = std::fs::remove_dir_all(&trees);
 }
 
-/// The AppView instrument→lab lookup (D8): a seeded `sequencer-lab-instruments.json` cache stands
-/// in for the live endpoint (a fresh cache short-circuits the network). The returned lab name is
-/// normalized to the local labs catalog's canonical display name when it matches; unknown labs
-/// pass through; an unassociated instrument resolves to `None`.
+/// The lookup from an instrument to a laboratory on the AppView (D8).
+///
+/// A `sequencer-lab-instruments.json` file in the cache takes the place of the live endpoint,
+/// because a new cache entry stops the network call.
+///
+/// The code changes the laboratory name to the display name of the local labs catalog, when the two
+/// match. A name that the catalog does not hold passes through with no change. An instrument with
+/// no laboratory gives `None`.
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // see analyze_project_* — env-var serialization guard held across awaits
 async fn lookup_lab_by_instrument_resolves_and_normalizes_from_cache() {
@@ -1885,20 +1955,27 @@ async fn lookup_lab_by_instrument_resolves_and_normalizes_from_cache() {
     let _ = std::fs::remove_dir_all(&trees);
 }
 
-/// A 23andMe import stores the haploid Y/MT genotype rows as a `Chip` variant set and places
-/// BOTH a Y and an mtDNA haplogroup on import (best-effort), offline against seeded FTDNA trees.
-/// The file declares build 38 so Y placement uses the FTDNA fallback (no DecodingUs AppView).
+/// A 23andMe import writes the haploid Y rows and MT rows as a `Chip` variant set. It also places
+/// BOTH a Y haplogroup and an mtDNA haplogroup at the import, when it can.
+///
+/// The test runs offline against FTDNA trees in the cache. The file names build 38, so the Y
+/// placement uses the FTDNA path and needs no DecodingUs AppView.
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // see analyze_project_* — env-var serialization guard held across awaits
 async fn import_23andme_stores_calls_and_places_y_and_mt() {
     use navigator_app::DnaType;
     let _env = TREE_DIR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-    // Seed real (subset) FTDNA Y + mt trees so both placements run with NO network/integration —
-    // small connected subtrees of the FTDNA trees, committed under tests/fixtures: Y is
-    // R-L761 → R-L389 → R-P297 → R-M269 (GRCh38 coords); mt is H2a → H2a2 → H2a2a → H2a2a1 (rCRS).
-    // Force the FTDNA provider so Y placement uses the seeded tree, not the (mutable) DecodingUs
-    // instance — a hard assert on a terminal label can't depend on live curated data.
+    // Write real FTDNA Y and mt trees to the cache, so both placements run with NO network. Each
+    // tree is a small connected part of the full FTDNA tree, and this repository holds both under
+    // tests/fixtures.
+    //
+    // The Y tree is R-L761, R-L389, R-P297, R-M269, in GRCh38 coordinates. The mt tree is H2a,
+    // H2a2, H2a2a, H2a2a1, in rCRS coordinates.
+    //
+    // The test also selects the FTDNA provider, so the Y placement reads the tree in the cache. The
+    // DecodingUs instance changes over time, and a strict assert on a terminal label must not
+    // depend on curated data that changes.
     let trees = std::env::temp_dir().join(format!("dun-chip-trees-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&trees);
     std::fs::create_dir_all(&trees).unwrap();
@@ -1915,10 +1992,15 @@ async fn import_23andme_stores_calls_and_places_y_and_mt() {
     std::env::set_var("NAVIGATOR_TREE_DIR", &trees);
     std::env::set_var("NAVIGATOR_Y_TREE_PROVIDER", "ftdna");
 
-    // A synthetic 23andMe export (GRCh38): one autosomal row (ignored), the four informative Y rows
-    // derived along the R-M269 lineage (L761 G, L389 G, P297 C, M269 C), the four informative MT
-    // rows derived along the H2a2a1 lineage (4769/750/8860/263 → A), plus filler MT rows so the MT
-    // marker count clears the "real mt panel" threshold (≥20).
+    // A 23andMe export that this test makes, on GRCh38. It holds one autosomal row, and the code
+    // ignores that row.
+    //
+    // It holds four Y rows with a derived state on the R-M269 lineage: L761 G, L389 G, P297 C, and
+    // M269 C. It holds four MT rows with a derived state on the H2a2a1 lineage: positions 4769,
+    // 750, 8860, and 263, each with the base A.
+    //
+    // It also holds more MT rows, so the count of MT markers goes above the limit of 20 that marks
+    // a real mt panel.
     let mut file = String::from(
         "# This data file generated by 23andMe at human assembly build 38\n\
          rsid\tchromosome\tposition\tgenotype\n\
@@ -1949,7 +2031,8 @@ async fn import_23andme_stores_calls_and_places_y_and_mt() {
         .unwrap();
     assert_eq!(profile.provider, "23andMe");
 
-    // The haploid Y/MT rows are stored as a Chip variant set on the vendor build (GRCh38 here).
+    // The code stores the haploid Y rows and MT rows as a Chip variant set, on the build of the
+    // vendor. That build is GRCh38 here.
     let sets = app.list_variant_sets(b.guid).await.unwrap();
     assert_eq!(sets.len(), 1);
     assert_eq!(sets[0].source_type, navigator_app::SourceType::Chip);
@@ -1960,7 +2043,7 @@ async fn import_23andme_stores_calls_and_places_y_and_mt() {
         "4 Y + 20 MT haploid calls (autosomal row dropped)"
     );
 
-    // Both haplogroups are placed on import, against the seeded FTDNA subset trees.
+    // The code places both haplogroups at the import, against the FTDNA trees in the cache.
     let y = app
         .haplogroup_consensus(b.guid, DnaType::Y)
         .await
@@ -1980,13 +2063,22 @@ async fn import_23andme_stores_calls_and_places_y_and_mt() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Exact GRCh38-vs-CHM13 mtDNA comparison on the SAME donor (GFX0457637): the GRCh38 BAM
-/// queries chrM directly (rCRS), the CHM13 BAM lifts via the self-generated rCRS↔chrM map.
-/// Prints both terminals and the per-SNP lineage states, and diffs them position-by-position
-/// so any difference is attributable (NoCall = coverage/unmapped vs Ancestral = different base).
-///   GFX_B38_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.b38.bam \
+/// An exact mtDNA comparison between GRCh38 and CHM13, on the SAME donor, GFX0457637.
+///
+/// The GRCh38 BAM file gives a direct query of chrM, in rCRS coordinates. The CHM13 BAM file uses
+/// the map between rCRS and chrM that the code makes itself.
+///
+/// The test prints both terminals and the lineage state of each SNP. It then compares the two lists
+/// position by position, so a reader can name the cause of each difference. A `NoCall` state comes
+/// from absent coverage or an unmapped read. An `Ancestral` state comes from a different base.
+///
+/// To run it:
+///
+/// ```bash
+/// GFX_B38_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.b38.bam \
 ///   GFX_CHM13_BAM=/Users/jkane/Genomics/GFX0457637/GFX0457637.pbmm2.chm13v2.bam \
 ///   cargo test -p navigator-app --test app compare_mt_grch38_vs_chm13 -- --ignored --nocapture
+/// ```
 #[tokio::test]
 #[ignore = "requires GFX_B38_BAM + GFX_CHM13_BAM (+ network for the mt tree / CHM13 reference)"]
 async fn compare_mt_grch38_vs_chm13() {
@@ -2040,9 +2132,12 @@ async fn compare_mt_grch38_vs_chm13() {
         c.ranked[0].name, c.ranked[0].matched, c.ranked[0].expected
     );
 
-    // Compare the lineage element-wise (same tree + terminal → same ordered path). A position
-    // can RECUR with opposite polarity (e.g. C182T then a T182C reversal), so a position-keyed
-    // map would falsely diff the two occurrences against each other — match 1:1 by order.
+    // Compare the two lineages one element at a time. The same tree and the same terminal give the
+    // same ordered path.
+    //
+    // A position can occur again with the opposite polarity. One example is C182T, and then a
+    // reversal T182C. A map with the position as its key compares those two entries with each
+    // other, and that comparison is wrong. So the test matches the two lists by their order.
     let _ = (&g_calls, &c_calls);
     assert_eq!(
         g_lin.len(),
@@ -2138,8 +2233,9 @@ async fn gfx_sex_is_male() {
     assert_eq!(s.inferred_sex, navigator_app::InferredSex::Male);
 }
 
-/// Analysis-cache staleness: a cached artifact is reused while the source file is unchanged, and
-/// invalidated (recomputed) once the file's signature changes (BAM-mtime invalidation, §6).
+/// The age rule of the analysis cache. The app uses a cached artifact while the source file does
+/// not change. It calculates the result again after the signature of that file changes. The mtime of
+/// the BAM file gives that signature. See §6.
 #[tokio::test]
 async fn cached_artifact_invalidated_when_source_file_changes() {
     let app = app().await;
@@ -2164,7 +2260,7 @@ async fn cached_artifact_invalidated_when_source_file_changes() {
         .unwrap()
         .id;
 
-    // Save → load round-trips while the source is unchanged.
+    // A save and then a load give the same value, while the source file does not change.
     app.save_analysis(aln, "testkind", "v1", &vec![1u32, 2, 3])
         .await
         .unwrap();
@@ -2176,7 +2272,7 @@ async fn cached_artifact_invalidated_when_source_file_changes() {
     let stale: Option<Vec<u32>> = app.load_analysis(aln, "testkind", "v1").await.unwrap();
     assert_eq!(stale, None, "changed source invalidates the cached artifact");
 
-    // Recomputing re-stamps the new signature → served again.
+    // A second calculation writes the new signature, and the cache then gives the result again.
     app.save_analysis(aln, "testkind", "v1", &vec![9u32]).await.unwrap();
     let fresh: Option<Vec<u32>> = app.load_analysis(aln, "testkind", "v1").await.unwrap();
     assert_eq!(fresh, Some(vec![9]), "recomputed cache is fresh again");
@@ -2184,8 +2280,11 @@ async fn cached_artifact_invalidated_when_source_file_changes() {
     let _ = std::fs::remove_file(&bam);
 }
 
-/// FTDNA project import — the B5163↔GFX merge scenario plus a new subject and an orphan
-/// (ancestry without a roster row). Exercises plan → resolve fuzzy → commit end to end.
+/// The FTDNA project import. The test covers the merge of kit B5163 with subject GFX. It also
+/// covers a new subject, and an orphan row, which is ancestry data with no roster row.
+///
+/// The test runs the full sequence: the plan, then the decision on each candidate that the engine is
+/// not sure about, then the commit.
 #[tokio::test]
 async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
     use navigator_app::{DnaType, FtdnaImportOptions, FtdnaResolution, MatchKind};
@@ -2203,7 +2302,8 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
         .await
         .unwrap();
 
-    // The existing WGS Subject: GFX, already placed at R-FGC29071 — the same person as kit B5163.
+    // The WGS subject that already exists. It is GFX, at R-FGC29071, and it is the same person as
+    // kit B5163.
     let gfx = app
         .add_biosample(Some(project.id), "GFX0457637", None, None)
         .await
@@ -2288,7 +2388,8 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
         "no Y-STR profile attached on merge"
     );
 
-    // GFX gained the FTDNA kit identity, member labels, and MDKA — without a duplicate Subject.
+    // GFX now holds the FTDNA kit identity, the member labels, and the MDKA rows. The workspace
+    // holds no second subject.
     let ids = app.external_ids(gfx.guid).await.unwrap();
     assert_eq!(ids.len(), 1);
     assert_eq!(ids[0].external_id, "B5163");
@@ -2315,7 +2416,8 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
         .unwrap()
         .contains(&project.id));
 
-    // The exact-kit path now auto-merges on a re-plan (the kit# is attached).
+    // The exact-kit path now merges with no question at the next plan, because the subject holds
+    // the kit number.
     let replan = app
         .plan_ftdna_import(
             Some(project.id),
@@ -2334,8 +2436,9 @@ async fn ftdna_project_import_plans_and_commits_merge_new_and_orphan() {
     }
 }
 
-/// FTDNA import with no pre-selected project creates one (named from the caller) at commit — the
-/// fix for the "dead Import button". A cancelled dry-run (no commit) creates nothing.
+/// An FTDNA import with no project makes one at the commit, with the name that the caller gives.
+/// This behaviour corrects the fault that users called the "dead Import button". A plan with no
+/// commit makes nothing.
 #[tokio::test]
 async fn ftdna_import_into_new_project_creates_it_at_commit() {
     use navigator_app::{FtdnaImportOptions, MatchKind};
@@ -2344,7 +2447,8 @@ async fn ftdna_import_into_new_project_creates_it_at_commit() {
     let ftdna = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ftdna");
     let app = app().await;
 
-    // Plan into a NEW project (no project_id) — read-only, so nothing is created yet.
+    // Plan the import into a NEW project, with no `project_id`. This step only reads, so the code
+    // makes nothing.
     let plan = app
         .plan_ftdna_import(
             None,
@@ -2376,9 +2480,12 @@ async fn ftdna_import_into_new_project_creates_it_at_commit() {
     assert_eq!(overview[0].project.id, summary.project_id);
 }
 
-/// FTDNA matching via Y-STR genetic distance: an existing subject whose Y haplogroup is an ISOGG
-/// long-form label (no SNP terminal to compare) but which carries the same Y-STR profile still
-/// surfaces as a fuzzy candidate (the real KANE-0001 = GFX case).
+/// A match on the genetic distance of the Y-STR values.
+///
+/// A subject in the workspace can hold a long ISOGG label as its Y haplogroup. Such a label has no
+/// SNP terminal for the engine to compare. When that subject carries the same Y-STR profile, the
+/// engine must still offer it as a candidate. The real case is KANE-0001, which is the same person
+/// as GFX.
 #[tokio::test]
 async fn ftdna_matches_existing_subject_by_ystr_distance() {
     use navigator_app::{DnaType, FtdnaImportOptions, MatchKind};
@@ -2401,7 +2508,8 @@ async fn ftdna_matches_existing_subject_by_ystr_distance() {
         .await
         .unwrap();
 
-    // Give KANE-0001 B5163's Y-STR markers (from the overview fixture) via a tall CSV.
+    // Give the Y-STR markers of kit B5163 to KANE-0001. The values come from the overview fixture,
+    // in a tall CSV file.
     let ydna = std::fs::read_to_string(ftdna.join("YDNA_Results_Overview.csv")).unwrap();
     let per_kit = navigator_domain::ftdna::parse_ydna_overview(&ydna).unwrap();
     let (_, markers) = per_kit.iter().find(|(k, _)| k == "B5163").unwrap();
@@ -2455,9 +2563,12 @@ async fn ftdna_matches_existing_subject_by_ystr_distance() {
         other => panic!("expected B5163 NeedsConfirm via Y-STR, got {other:?}"),
     }
 
-    // Commit the merge into the (new) project. KANE-0001 has NO home project (`project_id` is NULL) —
-    // the merge adds an M:N membership row only. The project report must still surface it (regression
-    // for "matched samples do not appear in the Project report" — it reads membership ∪ home column).
+    // Commit the merge into the new project. KANE-0001 has NO home project, and its `project_id`
+    // column is NULL. So the merge adds one M:N membership row and nothing more.
+    //
+    // The project report must still show that subject. This test covers the fault "matched samples
+    // do not appear in the Project report". The report reads the union of the membership table and
+    // the home column.
     let mut res = std::collections::BTreeMap::new();
     res.insert("B5163".to_string(), navigator_app::FtdnaResolution::Merge(kane.guid));
     let summary = app.commit_ftdna_import(&plan, &res).await.unwrap();
@@ -2480,8 +2591,8 @@ async fn ftdna_matches_existing_subject_by_ystr_distance() {
     let _ = std::fs::remove_file(&tmp);
 }
 
-/// Deleting a sequencing run purges the haplogroup calls + consensus placement derived from its
-/// alignments, so a wrong haplogroup does not linger after the run is removed.
+/// A delete of a sequence run also removes the haplogroup calls and the consensus placement that
+/// came from its alignments. So a wrong haplogroup does not stay after the user removes the run.
 #[tokio::test]
 async fn deleting_run_purges_derived_haplogroup_and_consensus() {
     use navigator_app::DnaType;
@@ -2524,11 +2635,16 @@ async fn deleting_run_purges_derived_haplogroup_and_consensus() {
     assert!(app.haplogroup_calls(b.guid, DnaType::Y).await.unwrap().is_empty());
 }
 
-/// End-to-end `branch_report` over the mtDNA path (finding: nothing drove the query before this).
-/// Seeds a tiny FTDNA-schema mt tree offline and genotypes the committed `coverage.bam` fixture
-/// (all-`A` reads, callable chrM 1-10, ref `ACGT…`). Loci are placed so the report exercises all
-/// three states at once: pos 2 (ref C, reads A → derived), pos 1 (ref A, reads A → ancestral off
-/// this branch), pos 40 (no coverage → no-call).
+/// A full test of `branch_report` on the mtDNA path. Before this test, no code called that query.
+///
+/// The test writes a small mt tree in the FTDNA schema to the cache, and it runs offline. It then
+/// genotypes the `coverage.bam` fixture of this repository. Each read of that file holds the base
+/// `A`, the callable region of chrM is positions 1 to 10, and the reference is `ACGT…`.
+///
+/// The loci give each of the three states in one report. Position 2 has the reference base C and
+/// reads with A, which gives a derived state. Position 1 has the reference base A and reads with A,
+/// which gives an ancestral state below this branch. Position 40 has no coverage, which gives a
+/// no-call state.
 #[tokio::test]
 // Holds TREE_DIR_ENV_LOCK across awaits: it serializes the process-global NAVIGATOR_TREE_DIR write.
 #[allow(clippy::await_holding_lock)]
@@ -2603,9 +2719,12 @@ async fn branch_report_genotypes_the_mt_subtree_end_to_end() {
     assert_eq!(nc.state, CallState::NoCall);
     assert!(nc.note.contains("no call"), "no-call note, got {:?}", nc.note);
 
-    // An insertion (empty ancestral allele) at a no-coverage site is BOTH an indel and a no-call.
-    // The note must carry both tags — picking only the first would let "indel/MNV" mask the
-    // no-call, and the asymmetric SNV test would have mislabeled the empty allele as a clean SNV.
+    // An insertion has an empty ancestral allele. At a site with no coverage, such a variant is
+    // BOTH an indel and a no-call.
+    //
+    // The note must hold both tags. With the first tag only, the "indel/MNV" tag hides the no-call
+    // state. The asymmetric SNV test then reads the empty allele as a clean SNV, and that reading
+    // is wrong.
     let ins = row("41.1A");
     assert_eq!(ins.state, CallState::NoCall);
     assert!(
@@ -2694,10 +2813,16 @@ async fn mt_alignment_pick_skips_a_y_only_run() {
 
 #[tokio::test]
 async fn add_sample_dir_records_alignment_from_header_no_decode_and_is_idempotent() {
-    // The CLI `ingest` fast path for one staged sample directory: the CRAM alignment is recorded
-    // from the header/filename (no read decode) and text sidecars sit alongside. No haplogroup GVCF
-    // here, so the sidecar fast-path block is skipped (that path is covered by the fastpath tests);
-    // this pins the alignment recording, build detection, and idempotency of `add_sample_dir`.
+    // The fast path of the CLI `ingest` command, for one sample directory.
+    //
+    // The code writes the CRAM alignment from the header and the file name, and it decodes no read.
+    // The text sidecar files are in the same directory.
+    //
+    // This directory holds no haplogroup GVCF file, so the code skips the sidecar block. The
+    // fastpath tests cover that block.
+    //
+    // This test covers three things: the record of the alignment, the build that the code finds,
+    // and a second call of `add_sample_dir`.
     let app = app().await;
     let fx = fixtures();
 
@@ -2723,7 +2848,7 @@ async fn add_sample_dir_records_alignment_from_header_no_decode_and_is_idempoten
     assert_eq!(aln.len(), 1);
     assert_eq!(aln[0].reference_build, "chm13v2.0");
 
-    // Re-ingest the same directory: the alignment is reused, nothing new is created.
+    // A second import of the same directory uses the alignment again and makes nothing new.
     let again = app.add_sample_dir(subject.guid, &dir, false).await.unwrap();
     assert_eq!(again.alignments_created, 0);
     assert_eq!(again.alignments_skipped, 1);
@@ -2734,8 +2859,9 @@ async fn add_sample_dir_records_alignment_from_header_no_decode_and_is_idempoten
 
 #[tokio::test]
 async fn add_sample_dir_falls_back_to_per_file_for_a_loose_bundle() {
-    // A directory with no alignment/variant/GVCF is a loose bundle of subject files: each is
-    // imported as `add_data` would (here a 23andMe chip export → chip profile).
+    // A directory with no alignment, no variant file, and no GVCF file holds separate files of one
+    // subject. The code imports each file as `add_data` does. Here a 23andMe chip export gives a
+    // chip profile.
     let app = app().await;
 
     let dir = std::env::temp_dir().join(format!("dun-loosebundle-{}", std::process::id()));
@@ -2762,10 +2888,15 @@ async fn add_sample_dir_falls_back_to_per_file_for_a_loose_bundle() {
 
 #[tokio::test]
 async fn add_sample_dir_skips_called_vcf_when_gvcf_present() {
-    // GATK repo layout: a bare `chrY.g.vcf.gz` (the Y source → fast path) sits beside the called
-    // `chrY.vcf.gz`. With the GVCF present the called VCF must NOT be imported — it is redundant and
-    // (variant-set import not being content-idempotent) would duplicate on a resumable re-run. The
-    // GVCF is a stub here, so the placement itself is a best-effort no-op; this pins the routing.
+    // The GATK layout. A `chrY.g.vcf.gz` file, which is the Y source for the fast path, is beside
+    // the called `chrY.vcf.gz` file.
+    //
+    // With the GVCF file present, the code must NOT import the called VCF. That file holds the same
+    // data. A second import of a variant set adds a second copy, because that import does not
+    // compare the content. So a run that continues an earlier run would duplicate the set.
+    //
+    // The GVCF file here holds no real data, so the placement does nothing. This test covers the
+    // choice between the two files.
     let app = app().await;
     let fx = fixtures();
     let dir = std::env::temp_dir().join(format!("dun-gvcf-skip-{}", std::process::id()));
@@ -2793,9 +2924,13 @@ async fn add_sample_dir_skips_called_vcf_when_gvcf_present() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The full-analysis pipeline is planned in one place so the GUI worker and the `analyze` CLI can
-/// never drift again — they had, and the CLI's copy re-genotyped Y unconditionally, overwriting a
-/// trusted external call. These assert the plan's shape and its skip conditions.
+/// One function plans the full-analysis pipeline. So the GUI worker and the `analyze` command of
+/// the CLI can never become different again.
+///
+/// They did become different. The copy in the CLI genotyped the Y chromosome at each run, and it
+/// replaced a trusted external call.
+///
+/// These tests assert the shape of the plan and each condition that skips a step.
 mod full_analysis_plan {
     use super::*;
     use navigator_app::AnalysisStep;
@@ -2819,8 +2954,9 @@ mod full_analysis_plan {
         .id
     }
 
-    /// With no coverage yet the mitochondrial steps are assumed present (an unknown genome is not
-    /// silently narrowed), quality metrics always leads, and ancestry is opt-in.
+    /// With no coverage result, the plan holds the mitochondrial steps. The code must not remove a
+    /// step from an unknown genome. The quality metrics step is always first, and the user must
+    /// select the ancestry step.
     #[tokio::test]
     async fn plans_the_full_pipeline_for_an_unanalyzed_alignment() {
         let app = app().await;
@@ -2835,7 +2971,8 @@ mod full_analysis_plan {
         ] {
             assert!(steps.contains(&expected), "{expected:?} missing from {steps:?}");
         }
-        // Subject-level: the Y signature is planned so the descent report needs no extra click.
+        // A step for the subject. The plan holds the Y signature, so the descent report needs no
+        // second action from the user.
         assert!(
             steps.iter().any(|s| matches!(s, AnalysisStep::YSignature { .. })),
             "Y signature missing from {steps:?}"
@@ -2848,7 +2985,8 @@ mod full_analysis_plan {
             "ancestry must be opt-in: {steps:?}"
         );
 
-        // Opting in appends both ancestry steps, profile before estimate (the estimate reads it).
+        // The option adds both ancestry steps. The profile step comes before the estimate step,
+        // because the estimate reads the profile.
         let with = app.plan_full_analysis(id, true, false, None).await.unwrap();
         let profile_at = with
             .iter()
@@ -2862,15 +3000,16 @@ mod full_analysis_plan {
         assert_eq!(ancestry_at, with.len() - 1, "ancestry runs last (heaviest)");
     }
 
-    /// Coverage showing no chrM reads (a Big Y) drops both mitochondrial steps — scoring zero chrM
-    /// data would only record a meaningless RSRS root.
+    /// A coverage result with no chrM read comes from a Big Y test. The plan then holds neither
+    /// mitochondrial step. A placement with no chrM data writes the RSRS root, and that result has
+    /// no value.
     #[tokio::test]
     async fn drops_the_mitochondrial_steps_without_chrm_reads() {
         use navigator_analysis::coverage::{ContigCoverageStats, CoverageResult};
         let app = app().await;
         let id = alignment(&app).await;
 
-        // Coverage carrying a single chrM entry, with `num_reads` the only field under test.
+        // A coverage result with one chrM entry. This test reads the `num_reads` field only.
         let chrm_with = |num_reads: u64| CoverageResult {
             contig_coverage_stats: vec![ContigCoverageStats {
                 contig: "chrM".into(),
@@ -2901,15 +3040,20 @@ mod full_analysis_plan {
             !steps.iter().any(|s| matches!(s, AnalysisStep::MitoDenovo { .. })),
             "{steps:?}"
         );
-        // The rest of the pipeline is untouched.
+        // The plan does not change the other steps.
         assert!(steps.contains(&AnalysisStep::YHaplogroup));
     }
 
-    /// SV is opt-in, and this is the guard on that. It is experimental, nothing else consumes its
-    /// output, and it is the only step that walks every read in the file for its own sake — 2–5 h
-    /// per whole-genome sample, measured, against ~1 h for the whole rest of the pipeline. Folded
-    /// into a 148-sample batch that is the difference between overnight and weeks, which is exactly
-    /// what it cost before. It runs when a caller asks for it and not otherwise.
+    /// The user must select the SV step, and this test is the guard on that rule.
+    ///
+    /// The step is experimental, and no other step reads its output. It is also the one step that
+    /// reads each record in the file for its own result.
+    ///
+    /// A measurement gave 2 to 5 hours for one whole-genome sample, against about 1 hour for each
+    /// other step together. In a batch of 148 samples, that difference is one night against some
+    /// weeks, and the batch did cost that before.
+    ///
+    /// The step runs when a caller asks for it, and at no other time.
     #[tokio::test]
     async fn structural_variants_is_planned_only_when_asked_for() {
         let app = app().await;
@@ -2926,21 +3070,24 @@ mod full_analysis_plan {
             with.contains(&AnalysisStep::StructuralVariants),
             "SV must be planned when requested: {with:?}"
         );
-        // Opting in adds SV and changes nothing else.
+        // The option adds the SV step and changes no other step.
         let added: Vec<_> = with.iter().filter(|s| !without.contains(s)).collect();
         assert_eq!(added, vec![&AnalysisStep::StructuralVariants], "{with:?}");
     }
 }
 
-/// The workspace-chore survey is what the Dashboard's maintenance panel renders, and every number
-/// on it has to mean something specific. An empty workspace must report *nothing due* rather than
-/// nothing found — the distinction is the whole point of showing `due` against `total`.
+/// The maintenance panel of the Dashboard draws the survey of the workspace chores. Each number on
+/// that panel must be clear to the reader.
+///
+/// An empty workspace must report that *no work is due*. It must not report that the survey found
+/// nothing. That difference is the reason for the pair `due` and `total`.
 #[tokio::test]
 async fn maintenance_survey_reports_every_chore() {
     let app = app().await;
     let survey = app.maintenance_survey().await.expect("survey");
 
-    // Every chore is present, in a fixed order, so the panel can not silently lose one.
+    // The result holds each chore, in a fixed order. So the panel can not lose one with no
+    // message.
     let chores: Vec<_> = survey.iter().map(|s| s.chore).collect();
     assert_eq!(chores, navigator_app::Chore::ALL.to_vec());
 
@@ -2948,8 +3095,8 @@ async fn maintenance_survey_reports_every_chore() {
         assert!(s.due <= s.total || s.total == 0, "{:?}: due exceeds total", s.chore);
     }
 
-    // Nothing to publish, and no account to publish with — the chore reports *why* it can not run
-    // rather than offering a button that would fail.
+    // There is no record to publish, and there is no account for a publish. The chore reports the
+    // *reason* that it can not run. It does not offer a button that fails.
     let publish = survey
         .iter()
         .find(|s| s.chore == navigator_app::Chore::PublishOrigins)
@@ -2969,8 +3116,8 @@ async fn maintenance_survey_reports_every_chore() {
     );
 }
 
-/// A subject with no alignment and no variant set is not a failure — it is a subject with nothing
-/// to compute, and counting it as an error would bury the real ones.
+/// A subject with no alignment and no variant set is not a failure. It is a subject with no work
+/// to do. A count of it as an error hides the real errors.
 #[tokio::test]
 async fn refresh_private_y_on_a_bare_subject_is_not_a_failure() {
     let app = app().await;
@@ -2986,7 +3133,7 @@ async fn refresh_private_y_on_a_bare_subject_is_not_a_failure() {
 
 // ---- realignment provenance (stage D) --------------------------------------
 
-/// A biosample with one sequence run — the minimum context an alignment needs.
+/// A biosample with one sequence run. This is the smallest set of rows that an alignment needs.
 async fn subject_with_run(
     app: &App,
 ) -> (
@@ -3004,8 +3151,9 @@ async fn subject_with_run(
     (b, run)
 }
 
-/// A realigned alignment is a new row under the *same* library, pointing back at what it came
-/// from. Nothing about the source may change — that is what makes realignment safe to offer.
+/// A realigned alignment is a new row under the *same* library, and it names the alignment that it
+/// came from. The code must change nothing in the source row. That rule makes a realignment safe to
+/// offer.
 #[tokio::test]
 async fn registering_a_realignment_is_additive_and_records_its_source() {
     let app = app().await;
@@ -3050,15 +3198,15 @@ async fn registering_a_realignment_is_additive_and_records_its_source() {
         "the file was just written, so hashing it now is nearly free"
     );
 
-    // The source is untouched.
+    // The code did not change the source row.
     let source_now = app.alignment(source.id).await.unwrap().unwrap();
     assert_eq!(source_now, source, "realignment must not modify its source");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Realigning to the build a sample is already on costs hours and produces a duplicate. The rule
-/// lives in the app rather than the UI so the CLI is covered by it too.
+/// A realignment to the build that a sample already uses costs hours and gives a duplicate. The
+/// rule is in the app layer and not in the UI, so it also covers the CLI.
 #[tokio::test]
 async fn realigning_to_the_same_build_is_refused() {
     let app = app().await;
@@ -3086,7 +3234,8 @@ async fn realigning_to_the_same_build_is_refused() {
     assert!(format!("{err}").contains("already on"), "unhelpful message: {err}");
 }
 
-/// The UI asks this before offering "Realign", so a sample is not silently given a second copy.
+/// The UI calls this method before it offers the "Realign" action. So the app does not make a
+/// second copy of a sample with no message.
 #[tokio::test]
 async fn derived_alignments_are_discoverable_from_their_source() {
     let app = app().await;
@@ -3129,8 +3278,8 @@ async fn derived_alignments_are_discoverable_from_their_source() {
     );
 }
 
-/// Every row that predates the migration is an original, and must read back that way rather than
-/// as something with unknown provenance.
+/// Each row from before the migration is an original alignment. A read of such a row must give that
+/// answer. It must not give an unknown provenance.
 #[tokio::test]
 async fn existing_alignments_read_back_as_originals() {
     let app = app().await;
@@ -3150,10 +3299,11 @@ async fn existing_alignments_read_back_as_originals() {
     assert!(!read_back.is_derived());
 }
 
-/// When a realignment exists, the subject's default alignment is its output rather than the source
-/// it came from. Both describe the same library at the same breadth, so without a rule the winner
-/// is whichever the list happened to yield first — and a default that changes between runs is
-/// worse than either choice.
+/// When a realignment exists, the default alignment of the subject is its output. It is not the
+/// source of that realignment.
+///
+/// Both rows describe the same library at the same breadth. Without this rule, the first row in the
+/// list wins. A default that changes between two runs is worse than either choice.
 #[tokio::test]
 async fn a_realigned_alignment_becomes_the_subjects_default() {
     let app = app().await;
@@ -3167,7 +3317,7 @@ async fn a_realigned_alignment_becomes_the_subjects_default() {
         .await
         .unwrap();
 
-    // Before realigning, the source is the default.
+    // Before the realignment, the source is the default alignment.
     assert_eq!(
         app.default_alignment_for_subject(b.guid).await.unwrap(),
         Some((run.id, source.id))
@@ -3197,8 +3347,8 @@ async fn a_realigned_alignment_becomes_the_subjects_default() {
     );
 }
 
-/// A batch counts only what it would really act on, so the number shown before a job measured in
-/// days is the honest one rather than an upper bound.
+/// A batch counts only the alignments that it acts on. So the number before a job of some days is
+/// the true number and not a maximum.
 #[tokio::test]
 async fn a_project_batch_skips_what_it_would_refuse() {
     let app = app().await;
@@ -3239,7 +3389,7 @@ async fn a_project_batch_skips_what_it_would_refuse() {
     let queue = app.realignable_in_project(project.id, "chm13v2.0").await.unwrap();
     assert_eq!(queue, vec![eligible.id]);
 
-    // Once it has been realigned, a second batch has nothing left to do.
+    // After the realignment, a second batch has no work.
     app.record_alignment(NewAlignment {
         bam_path: Some("/tmp/c.cram".into()),
         derived_from_alignment_id: Some(eligible.id),

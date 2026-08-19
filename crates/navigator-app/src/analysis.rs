@@ -6,9 +6,10 @@ use navigator_analysis::{contig, CancelToken};
 impl App {
     // ---- analysis (compute + persist) --------------------------------------
 
-    /// Run the coverage + callable walker on an alignment's BAM and persist the result
-    /// as a versioned `coverage` artifact. The blocking noodles I/O runs on a blocking
-    /// thread so the async runtime is not stalled.
+    /// Run the coverage walker and the callable walker on the BAM file of an alignment. The method
+    /// writes the result as a `coverage` artifact with a version.
+    ///
+    /// The I/O of noodles blocks, so it runs on its own thread. The async runtime then continues.
     pub async fn run_coverage(
         &self,
         alignment_id: i64,
@@ -34,17 +35,20 @@ impl App {
             .await
     }
 
-    /// Run coverage using the alignment's own stored BAM/reference paths, then persist.
-    /// Errors if the alignment is unknown or has no paths recorded.
+    /// Calculate the coverage with the BAM path and the reference path of the alignment, and then
+    /// write the result. The method fails when the store holds no such alignment, and when that
+    /// alignment holds no path.
     pub async fn run_coverage_for_alignment(&self, alignment_id: i64) -> Result<CoverageResult, AppError> {
         self.run_coverage_for_alignment_with_progress(alignment_id, |_, _| {}, CancelToken::none())
             .await
     }
 
-    /// Like [`run_coverage_for_alignment`], reporting `progress(contigs_done, contigs_total)` as
-    /// the whole-genome pass walks each contig (the slow step — minutes on a real WGS BAM — so a
-    /// progress bar can advance instead of sitting frozen). The callback runs on the blocking
-    /// thread.
+    /// The same work as [`run_coverage_for_alignment`], with a progress report. The method calls
+    /// `progress(contigs_done, contigs_total)` as the whole-genome pass reads each contig.
+    ///
+    /// That pass is the slow step, and it needs some minutes on a real WGS BAM file. So a progress
+    /// bar can move, and the app does not look stopped. The callback runs on the thread that
+    /// blocks.
     pub async fn run_coverage_for_alignment_with_progress(
         &self,
         alignment_id: i64,
@@ -53,8 +57,9 @@ impl App {
     ) -> Result<CoverageResult, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let bam = Self::alignment_file(&aln)?;
-        // The reference is not asked for at import — resolve the alignment's build via the gateway
-        // (cached, else download) when no FASTA was stored.
+        // The import step does not ask the user for the reference. When the alignment holds no
+        // FASTA path, the gateway finds the build of that alignment. It reads the cache, and it
+        // downloads the file when the cache holds none.
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
             None => {
@@ -63,8 +68,9 @@ impl App {
                     .await?
             }
         };
-        // For a targeted test (Big Y, etc.) restrict the walk to the target chromosome(s) so the
-        // headline depth reflects the target rather than being diluted to ~0 by the empty genome.
+        // For a targeted test, such as Big Y, read only the target chromosomes. The depth that the
+        // app reports then describes the target. Across the full genome, most contigs hold no read,
+        // and they make that value almost zero.
         let allowlist = self.coverage_target_allowlist(alignment_id).await?;
         let mut params = CallableLociParams::default();
         let result = tokio::task::spawn_blocking(move || {
@@ -92,21 +98,29 @@ impl App {
         Ok(result)
     }
 
-    /// The coverage contig allowlist for a targeted test, or `None` (whole genome) for WGS/autosomal.
-    /// A Y-targeted test (FTDNA Big Y, Y Elite, …) walks chrY only — plus chrM so the "has mtDNA
-    /// reads" signal survives for the few Big Ys that retained mitochondrial reads (the UI hides the
-    /// mtDNA sections when chrM has none). An mtDNA-targeted test walks chrM only. Build-agnostic
-    /// (both `chr`-prefixed and bare contig names are listed).
+    /// The list of contigs that the coverage walk reads, for a targeted test. The method returns
+    /// `None` for a WGS test and an autosomal test, and the walk then reads the full genome.
+    ///
+    /// A Y test, such as FTDNA Big Y or Y Elite, reads chrY. It also reads chrM, so the signal "this
+    /// test holds mtDNA reads" survives. A few Big Y files hold mitochondrial reads, and the UI
+    /// hides the mtDNA sections when chrM holds none.
+    ///
+    /// An mtDNA test reads chrM only.
+    ///
+    /// The list does not depend on the build. It holds each contig name with the `chr` prefix and
+    /// each name without it.
     async fn coverage_target_allowlist(&self, alignment_id: i64) -> Result<Option<HashSet<String>>, AppError> {
         use navigator_domain::testtype::TargetType;
         let aln = self.alignment_or_err(alignment_id).await?;
         let Some(run) = sequence_run::get(self.store.pool(), aln.sequence_run_id).await? else {
             return Ok(None);
         };
-        // `target_of` (not bare `by_code`) so a stored human label like "Big Y" — which a bulk
-        // import / --test-type override writes instead of BIG_Y_500/700 — still scopes the walk to
-        // chrY+chrM. Otherwise coverage walks the whole genome, which on a targeted multi-reference
-        // CRAM is the ~1-hour batch-analysis stall.
+        // The code calls `target_of` and not `by_code`. So a label that a person wrote, such as
+        // "Big Y", still limits the walk to chrY and chrM. A bulk import writes such a label, and
+        // the `--test-type` option also writes one, in place of BIG_Y_500 or BIG_Y_700.
+        //
+        // Without this call, the walk reads the full genome. On a targeted CRAM file with many
+        // references, that walk is the stop of about one hour in a batch analysis.
         let contigs: &[&str] = match navigator_domain::testtype::target_of(&run.test_type) {
             Some(TargetType::YChromosome) => &["chrY", "Y", "chrM", "chrMT", "M", "MT"],
             Some(TargetType::MtDna) => &["chrM", "chrMT", "M", "MT"],
@@ -115,10 +129,14 @@ impl App {
         Ok(Some(contigs.iter().map(|s| s.to_string()).collect()))
     }
 
-    /// Whether a cached coverage result was computed at the right scope for the alignment's test.
-    /// A targeted test (Big Y, mtFull) must cover only its target contig(s); a whole-genome cached
-    /// result for it is stale — the headline depth was diluted across the empty genome — and must
-    /// be recomputed. Whole-genome tests (no allowlist) are always in scope.
+    /// Shows whether a cached coverage result covers the correct contigs for the test of this
+    /// alignment.
+    ///
+    /// A targeted test, such as Big Y or mtFull, must cover its target contigs only. A cached
+    /// whole-genome result for such a test is wrong, because the depth is small across the contigs
+    /// with no read. The app must calculate that result again.
+    ///
+    /// A whole-genome test has no list of contigs, and its result is always correct.
     pub(crate) async fn coverage_is_correctly_scoped(
         &self,
         alignment_id: i64,
@@ -130,9 +148,12 @@ impl App {
         }
     }
 
-    /// Cached coverage for analysis reuse: the stored result, but only when it was computed at the
-    /// right scope for the test (see [`Self::coverage_is_correctly_scoped`]). A stale whole-genome
-    /// result for a targeted test reads as a cache miss so the caller recomputes it correctly.
+    /// The cached coverage result, for a later analysis. The method returns the stored result only
+    /// when that result covers the correct contigs for the test. See
+    /// [`Self::coverage_is_correctly_scoped`].
+    ///
+    /// A whole-genome result for a targeted test is wrong. The method then returns nothing, and the
+    /// caller calculates the correct result.
     pub async fn cached_coverage_for_analysis(&self, alignment_id: i64) -> Result<Option<CoverageResult>, AppError> {
         match self.cached_coverage(alignment_id).await? {
             Some(cov) if self.coverage_is_correctly_scoped(alignment_id, &cov).await? => Ok(Some(cov)),
@@ -140,9 +161,11 @@ impl App {
         }
     }
 
-    /// Infer biological sex from the alignment's chrX:autosome read-density ratio, persisting
-    /// the result as a `sex` artifact. Cheap (BAI fast-path for BAM). `reference` is used only
-    /// for CRAM decode.
+    /// Find the biological sex from the ratio between the read density of chrX and the read density
+    /// of the autosomes. The method writes the result as a `sex` artifact.
+    ///
+    /// The step is fast, because a BAM file has a BAI index. The code uses `reference` only to
+    /// decode a CRAM file.
     pub async fn run_sex(&self, alignment_id: i64) -> Result<navigator_analysis::sex::SexInferenceResult, AppError> {
         let (bam, reference) = self.alignment_paths(alignment_id).await?;
         let result =
@@ -153,9 +176,11 @@ impl App {
         Ok(result)
     }
 
-    /// Write the inferred sex back to the biosample when the user did not provide one, so it
-    /// shows in the subjects table + header instead of "Unknown". No-op for Unknown sex or
-    /// when the biosample already carries a sex.
+    /// Write the sex that the code found to the biosample, when the user gave none. The subjects
+    /// table and the header then show that value in place of "Unknown".
+    ///
+    /// The method does nothing when the code found no sex, and when the biosample already holds
+    /// one.
     pub(crate) async fn write_back_inferred_sex(
         &self,
         alignment_id: i64,
@@ -200,11 +225,14 @@ impl App {
         Ok(result)
     }
 
-    /// Mirror an alignment's library-level read stats onto its owning sequence run (`total_reads`,
-    /// `mean_read_length`, `mean_insert_size`) so the Data Sources run card shows them without
-    /// re-walking. Best-effort: a missing alignment/run is ignored. When a run has several
-    /// alignments the last write wins — these are per-library properties, so any pass is
-    /// representative.
+    /// Copy the library-level read statistics of an alignment to its sequence run. Those values are
+    /// `total_reads`, `mean_read_length`, and `mean_insert_size`. The run card of the Data Sources
+    /// tab then shows them, and the app reads no file again.
+    ///
+    /// The step is optional, and the method ignores an absent alignment and an absent run.
+    ///
+    /// When a run holds more than one alignment, the last write wins. These values describe the
+    /// library, so each alignment gives the same answer.
     pub(crate) async fn write_back_read_stats(
         &self,
         alignment_id: i64,
@@ -242,51 +270,65 @@ impl App {
         self.load_analysis(alignment_id, "read_metrics", "1").await
     }
 
-    /// Scratch directory for alignments copied off a slow/removable volume (see [`localize`]).
-    /// Entries are owned by a [`LocalAlignment`] and removed when the last holder drops.
+    /// The scratch directory for an alignment that the code copied from a slow volume or a
+    /// removable volume. See [`localize`]. A [`LocalAlignment`] value owns each entry, and the code
+    /// removes that entry after the last holder drops it.
     pub(crate) fn align_cache_dir() -> std::path::PathBuf {
         navigator_refgenome::cache::base_dir().join("cache").join("aln")
     }
 
-    /// If `remote` lives on a slow/removable volume (a `/Volumes/…` mount), copy it — and its `.crai`
-    /// / `.bai` index — into the local cache and return the *local* path; otherwise return `remote`
-    /// unchanged. The analysis walkers do random-access record iteration (region seeks, per-read
-    /// decode), which is pathologically slow over a network/USB mount even though a plain sequential
-    /// **copy** of the same file is fast — so we pay one fast bulk copy up front and let every
-    /// subsequent pass read from local disk. The copy is reused across a subject's passes and cleared
-    /// per subject by [`clear_align_cache`]. A copy failure falls back to the remote path (slow, but
-    /// still works).
+    /// Copy `remote` to the local cache and return the *local* path, when that file sits on a slow
+    /// volume or a removable volume. Such a volume has a `/Volumes/…` mount point. The method also
+    /// copies the `.crai` index or the `.bai` index. For any other path, it returns `remote` with no
+    /// change.
+    ///
+    /// An analysis walker reads records at random positions. It seeks to a region, and it decodes
+    /// each read. That access is very slow over a network mount or a USB mount. A plain sequential
+    /// **copy** of the same file is fast.
+    ///
+    /// So the code pays for one fast copy first, and each later pass reads from the local disk. The
+    /// passes of one subject share that copy, and [`clear_align_cache`] removes it for each subject.
+    ///
+    /// A failed copy gives the remote path. The analysis is then slow, and it still works.
     pub(crate) async fn localize(&self, remote: &Path) -> LocalAlignment {
         if std::env::var_os("NAVIGATOR_NO_LOCALIZE").is_some() || !is_removable_volume(remote) {
             return LocalAlignment::borrowed(remote);
         }
         let local = Self::align_cache_dir().join(local_cache_name(remote));
 
-        // Serialize the cache-check-then-copy per destination. The worker `tokio::spawn`s every
-        // command, so a batch walk and a per-alignment command genuinely overlap on one alignment;
-        // without this both miss the cache and both copy, writing a second full 40 GB pull over the
-        // network for nothing, after which the loser of the rename reads from the remote anyway.
+        // Order the two steps, the cache test and the copy, for each destination. The worker calls
+        // `tokio::spawn` for each command. So a batch walk and a command for one alignment do
+        // overlap on the same alignment.
         //
-        // The gate is held across the copy, so it must not be taken re-entrantly — no `localize`
-        // may be called while another is outstanding *on the same path in the same task*. The three
-        // call sites are sequential today (`debug_y_calls` awaits `base_calls` to completion before
-        // localizing itself); keep it that way.
+        // Without this lock, both find no cache entry and both copy. The second copy reads another
+        // 40 GB over the network for no result. The task that loses the rename then reads the
+        // remote file.
+        //
+        // The code holds the lock across the copy. So it must not take that lock a second time. No
+        // call of `localize` can run while another call is open *on the same path in the same
+        // task*.
+        //
+        // The three call sites run in sequence today. `debug_y_calls` waits for `base_calls` to
+        // complete before it localizes its own file. Keep that order.
         let gate = copy_gate(&local);
         let _copying = gate.lock().await;
 
-        // Size the remote once: it decides both whether an existing copy can be trusted and whether
-        // the one we make arrived whole.
+        // Read the size of the remote file one time. That value answers two questions. It shows
+        // whether the code can trust a copy that exists, and it shows whether the new copy is
+        // complete.
         let remote_len = tokio::fs::metadata(remote).await.ok().map(|m| m.len());
 
-        // Another holder is already using this copy — share it and bump the count.
+        // Another holder already uses this copy. Share it, and add one to the count.
         if LocalAlignment::retain(&local, remote_len) {
             return LocalAlignment::owned(local);
         }
         let (remote_owned, local2) = (remote.to_path_buf(), local.clone());
         match tokio::task::spawn_blocking(move || copy_with_index(&remote_owned, &local2, remote_len)).await {
-            // Registering can still fail if the copy was removed in the gap (a concurrent holder
-            // finishing and dropping to zero). Returning an `owned` handle to a missing path would
-            // fail the walk with a confusing ENOENT and then "clean up" a file that is not there.
+            // This step can still fail, because another holder can remove the copy in the time
+            // between the two steps. That holder completes its work and drops the count to zero.
+            //
+            // An `owned` handle to an absent path fails the walk with an ENOENT error that no user
+            // can read. The code then also tries to remove a file that is not there.
             Ok(Ok(())) if LocalAlignment::retain(&local, remote_len) => LocalAlignment::owned(local),
             Ok(Ok(())) => {
                 eprintln!(
@@ -306,21 +348,32 @@ impl App {
         }
     }
 
-    /// Run the unified quality-metrics walker — coverage + callable, read-level QC metrics, and
-    /// sex inference in **one pass** over the alignment's BAM/CRAM (vs. the separate passes
-    /// `run_coverage` + `run_read_metrics` + `run_sex` cost: 2 reads for BAM, 3 for CRAM). All
-    /// three sub-results are persisted under their existing artifact keys (`coverage`/
-    /// `COVERAGE_VERSION`, `read_metrics`/`"1"`, `sex`/`"1"`), so `cached_coverage`/
-    /// `cached_read_metrics`/`cached_sex` and the SV step's reuse logic keep working unchanged.
+    /// Run the unified quality-metrics walker. It makes **one pass** over the BAM file or the CRAM
+    /// file of the alignment. That pass gives three results: the coverage with the callable regions,
+    /// the quality metrics of each read, and the sex.
+    ///
+    /// The separate calls `run_coverage`, `run_read_metrics`, and `run_sex` cost more. They read a
+    /// BAM file two times, and a CRAM file three times.
+    ///
+    /// The method writes each of the three results under its existing artifact key. Those keys are
+    /// `coverage` with `COVERAGE_VERSION`, `read_metrics` with `"1"`, and `sex` with `"1"`.
+    ///
+    /// So `cached_coverage`, `cached_read_metrics`, `cached_sex`, and the reuse rule of the SV step
+    /// each work with no change.
     pub async fn run_unified_metrics(&self, alignment_id: i64) -> Result<UnifiedMetricsResult, AppError> {
         self.run_unified_metrics_with_progress(alignment_id, |_, _| {}, CancelToken::none())
             .await
     }
 
-    /// Like [`run_unified_metrics`], reporting `progress(contigs_done, contigs_total)` as the
-    /// (slow) whole-genome coverage portion finalizes each contig. Uses the per-contig parallel
-    /// walker (falling back to a sequential pass for CRAM / unindexed BAM); the callback is
-    /// `Fn + Sync` because it is invoked concurrently from the fan-out's worker threads.
+    /// The same work as [`run_unified_metrics`], with a progress report. The method calls
+    /// `progress(contigs_done, contigs_total)` as the whole-genome coverage step completes each
+    /// contig. That step is the slow one.
+    ///
+    /// The method uses the parallel walker, which works on each contig at the same time. For a CRAM
+    /// file, and for a BAM file with no index, it reads the file from start to end instead.
+    ///
+    /// The callback is `Fn + Sync`, because the worker threads of the parallel walker call it at the
+    /// same time.
     pub async fn run_unified_metrics_with_progress(
         &self,
         alignment_id: i64,
@@ -329,13 +382,16 @@ impl App {
     ) -> Result<UnifiedMetricsResult, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let run_id = aln.sequence_run_id;
-        // Copy off a slow/removable volume to local disk first — the walker's random-access record
-        // iteration is far slower over a network/USB mount than a one-shot bulk copy.
-        // Held for the whole walk: dropping it removes the local copy.
+        // Copy the file from a slow volume or a removable volume to the local disk first. The
+        // walker reads records at random positions, and that access is much slower over a network
+        // mount or a USB mount than one bulk copy.
+        //
+        // The code holds this value for the full walk. A drop of it removes the local copy.
         let bam = self.localize(&Self::alignment_file(&aln)?).await;
         let bam = bam.path().to_path_buf();
-        // The walker requires a reference (CRAM decode + reference-N detection); resolve the
-        // build via the gateway when no FASTA was stored at import.
+        // The walker needs a reference. It decodes the CRAM file with that reference, and it finds
+        // each N base of the reference. When the import stored no FASTA path, the gateway finds the
+        // build.
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
             None => {
@@ -344,9 +400,12 @@ impl App {
                     .await?
             }
         };
-        // Restrict a targeted test (Big Y, mtFull) to its target contig(s), exactly like the
-        // standalone coverage walker — otherwise the headline depth is diluted across the empty
-        // genome (a Big Y reads as ~0.2× instead of ~50× on chrY). WGS keeps the whole-genome walk.
+        // Limit a targeted test, such as Big Y or mtFull, to its target contigs. The separate
+        // coverage walker uses the same rule.
+        //
+        // Across the full genome, most contigs hold no read, and they make the depth small. A Big Y
+        // test then reads as about 0.2x, and its true depth on chrY is about 50x. A WGS test keeps
+        // the whole-genome walk.
         let allowlist = self.coverage_target_allowlist(alignment_id).await?;
         let mut params = CallableLociParams::default();
         let result = tokio::task::spawn_blocking(move || {
@@ -376,11 +435,16 @@ impl App {
         self.save_analysis(alignment_id, "read_metrics", "1", &result.read_metrics)
             .await?;
         self.write_back_read_stats(alignment_id, &result.read_metrics).await?;
-        // Sex: a Y-targeted test (Big Y, Y Elite, …) sequences the donor's Y chromosome — he is male
-        // by definition. The chrX/autosome ratio the inference needs is not present in a chrY-scoped
-        // walk, and is unreliable even whole-genome (a Big Y's off-target chrX ≈ autosome ≈ 0.4×
-        // reads as *female*). So force Male for a Y-targeted test, overriding the inference + any
-        // prior auto-assignment; WGS / mt-targeted keep the walk's result.
+        // The sex. A Y test, such as Big Y or Y Elite, reads the Y chromosome of the donor. So that
+        // donor is male, by definition.
+        //
+        // A walk of chrY alone holds no ratio between chrX and the autosomes, and the code needs
+        // that ratio. The ratio is also wrong across the full genome. In a Big Y file, chrX and the
+        // autosomes each hold about 0.4x, and the code then reads the donor as *female*.
+        //
+        // So the code writes Male for a Y test. That value replaces the result of the ratio, and it
+        // replaces a value from an earlier run. A WGS test and an mt test keep the result of the
+        // walk.
         let y_targeted = matches!(
             sequence_run::get(self.store.pool(), run_id)
                 .await?
@@ -388,12 +452,18 @@ impl App {
                 .and_then(|r| navigator_domain::testtype::target_of(&r.test_type)),
             Some(navigator_domain::testtype::TargetType::YChromosome)
         );
-        // A Y-scoped alignment reads as male the same way a Y-targeted test does — chrY carries
-        // essentially all the reads while the autosomes hold only a few dozen mismapped ones (a
-        // Y-only extract, e.g. GRCh38 chrY reads realigned to hs1, or a Y-Elite/Big Y capture that
-        // came in mislabeled WGS). The ratio walk can then read it as *female*, which silently
-        // disables the whole Y pipeline (assign_y_haplogroup skips females before it ever fetches
-        // the tree). Detect it from the per-contig read counts and force male, exactly like a Y test.
+        // An alignment with reads on chrY only is male, as a Y test is. Its chrY contig holds
+        // almost each read, and its autosomes hold a few reads that the mapper placed wrongly.
+        //
+        // Two files have that shape. One is a chrY extract, such as GRCh38 chrY reads that the app
+        // realigned to hs1. The other is a Y Elite capture, or a Big Y capture, that arrived with a
+        // WGS label.
+        //
+        // The ratio can read such a file as *female*. That value stops the full Y pipeline with no
+        // message, because `assign_y_haplogroup` skips a female subject before it reads the tree.
+        //
+        // So the code finds this shape from the read count of each contig, and it writes Male, as it
+        // does for a Y test.
         let y_scoped = navigator_analysis::sex::is_y_scoped(
             result
                 .coverage
@@ -416,8 +486,9 @@ impl App {
         if let Some(sex) = &sex {
             self.save_analysis(alignment_id, "sex", "1", sex).await?;
             if male_by_scope {
-                // Definitive (Y test / Y-scoped ⇒ male): override any prior auto-inferred sex —
-                // including a stale false "Female" — rather than write-if-empty.
+                // This value is definite: a Y test, or an alignment with reads on chrY only, is
+                // male. So the code replaces a sex from an earlier run, and that set holds a wrong
+                // "Female" value. It does not only write into an empty field.
                 if let Ok(guid) = self.biosample_of_alignment(alignment_id).await {
                     biosample::set_sex(self.store.pool(), guid, "Male").await?;
                 }
@@ -436,15 +507,19 @@ impl App {
         alignment_id: i64,
         cancel: CancelToken,
     ) -> Result<navigator_analysis::sv::types::SvAnalysisResult, AppError> {
-        // Resume: a fresh cached SV result (source unchanged) is reused rather than recomputed.
+        // A new SV result in the cache, from a source file that did not change, is correct. The
+        // code uses that result and calculates nothing.
         if let Some(c) = self.cached_sv(alignment_id).await? {
             return Ok(c);
         }
         let aln = self.alignment_or_err(alignment_id).await?;
         let reference_build = aln.reference_build.clone();
-        // Resolve the reference for decode (see alignment_reference_for_decode): required for a CRAM,
-        // None for a BAM. SV never consults reference *bases* — but decoding a CRAM record does, so
-        // the walker needs it too, not just the header-lengths probe.
+        // Find the reference for the decoder. See alignment_reference_for_decode. A CRAM file needs
+        // it, and a BAM file uses None.
+        //
+        // The SV step reads no reference *base*. But a decode of a CRAM record does read one. So the
+        // walker also needs the reference, and not only the step that reads the contig lengths from
+        // the header.
         let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
 
         let cov = match self.cached_coverage(alignment_id).await? {
@@ -508,11 +583,16 @@ impl App {
         p.exists().then_some(p)
     }
 
-    /// Genotype short tandem repeats on `contig` from the alignment, via the enclosing-read caller
-    /// over the HipSTR reference tracts (haploid for chrY/chrM, diploid elsewhere). Persisted as a
-    /// `str:{contig}` artifact (so it is cached + source-invalidated like other analyses). Errors if
-    /// no STR reference is configured for the alignment's build (the tracts are build-specific —
-    /// CHM13/GRCh37 need their own reference or liftover, not yet wired).
+    /// Genotype the short tandem repeats on `contig` from the alignment. The caller reads each
+    /// record that covers a full tract, and it uses the HipSTR reference tracts. It calls chrY and
+    /// chrM as haploid, and each other contig as diploid.
+    ///
+    /// The method writes the result as a `str:{contig}` artifact. So the cache holds it, and a
+    /// change to the source file makes it invalid, as it does for another analysis.
+    ///
+    /// The method fails when no STR reference exists for the build of the alignment. The tracts
+    /// belong to one build. CHM13 and GRCh37 each need their own reference, or a liftover, and no
+    /// code does that work yet.
     pub async fn run_str_calls(
         &self,
         alignment_id: i64,
@@ -533,8 +613,11 @@ impl App {
         // Resolve the reference for decode (see alignment_reference_for_decode): required for a CRAM,
         // None for a BAM. STR region-genotyping reads the alignment; it does not consult reference bases.
         let (bam, reference) = self.alignment_reference_for_decode(alignment_id).await?;
-        // chrY / chrM are haploid (one allele); autosomes + chrX (in a female) are diploid. We
-        // genotype chrY/chrM haploid and everything else diploid — sex-aware chrX is a refinement.
+        // A cell holds one copy of chrY and one copy of chrM, so each has one allele. It holds two
+        // copies of each autosome, and a female cell holds two copies of chrX.
+        //
+        // So the code calls chrY and chrM as haploid, and each other contig as diploid. A rule for
+        // chrX that reads the sex is a later improvement.
         let ploidy: u8 = if contig::is_haploid(&contig) { 1 } else { 2 };
         let params = navigator_analysis::strcaller::StrCallerParams::default();
         let genos = tokio::task::spawn_blocking(move || {
@@ -553,16 +636,23 @@ impl App {
         Ok(genos)
     }
 
-    /// Compare the STR markers called from sequence (mapped to the FTDNA convention via the
-    /// corpus-calibrated [`navigator_analysis::strmarker`] table) against the subject's imported
-    /// vendor Y-STR profile — the By-Panel concordance view. One row per marker present in either
-    /// source: the called value + its calibration status, the imported value, and whether they agree.
-    /// `contig` is typically `chrY`. Reuses the cached `str:{contig}` calls.
+    /// Compare the STR markers from the sequence data with the vendor Y-STR profile that the user
+    /// imported. The By-Panel view shows this comparison.
+    ///
+    /// The [`navigator_analysis::strmarker`] table changes each called value to the FTDNA
+    /// convention. A corpus of real kits calibrated that table.
+    ///
+    /// The result holds one row for each marker in either source. A row holds the called value with
+    /// its calibration state, the imported value, and a flag that shows whether the two agree.
+    ///
+    /// The `contig` value is usually `chrY`. The method reads the `str:{contig}` calls from the
+    /// cache.
     pub async fn str_concordance(&self, alignment_id: i64, contig: String) -> Result<Vec<StrConcordanceRow>, AppError> {
         use navigator_analysis::strmarker::{called_markers_build, normalize_marker, MarkerStatus, StrBuild};
 
-        // The FTDNA convention offset is build-dependent for a few markers (the CHM13 liftover shifted
-        // some tract boundaries) — select the offsets for this alignment's build.
+        // For a few markers, the offset of the FTDNA convention changes with the build. The CHM13
+        // liftover moved the boundary of some tracts. So the code reads the offsets of the build of
+        // this alignment.
         let build = alignment::get(self.store.pool(), alignment_id)
             .await?
             .map(|a| StrBuild::from_build_str(&a.reference_build))
@@ -625,11 +715,18 @@ impl App {
         Ok(out)
     }
 
-    /// Pick the subject's best STR-capable alignment and run the Y-STR concordance on chrY — the
-    /// entry point the UI calls. "STR-capable" = an alignment whose reference build has a HipSTR
-    /// reference present ([`str_reference_path`](Self::str_reference_path)); highest mean coverage
-    /// wins. A CRAM needs no stored reference here — [`run_str_calls`](Self::run_str_calls) resolves
-    /// it for decode. Errors with guidance when none qualifies (no HipSTR reference / no alignment).
+    /// Select the best alignment of the subject for STR work, and compare the Y-STR markers on
+    /// chrY. The UI calls this method.
+    ///
+    /// An alignment can do STR work when a HipSTR reference exists for its build. See
+    /// [`str_reference_path`](Self::str_reference_path). Among those alignments, the one with the
+    /// highest mean coverage wins.
+    ///
+    /// A CRAM file needs no stored reference here, because
+    /// [`run_str_calls`](Self::run_str_calls) finds one for the decoder.
+    ///
+    /// The method fails with a hint when no alignment passes. The two causes are an absent HipSTR
+    /// reference and a subject with no alignment.
     pub async fn str_concordance_for_subject(
         &self,
         biosample_guid: SampleGuid,
@@ -640,7 +737,8 @@ impl App {
             if Self::str_reference_path(&a.reference_build).is_none() {
                 continue; // no HipSTR reference for this build
             }
-            // A CRAM with no stored reference is fine — run_str_calls resolves it via the gateway.
+            // A CRAM file with no stored reference is acceptable, because run_str_calls finds one
+            // through the gateway.
             let cov = self
                 .cached_coverage(a.id)
                 .await
@@ -705,9 +803,13 @@ impl App {
             .await
     }
 
-    /// Whole-contig **de-novo diploid** SNV calling (het 0/1 + hom-alt 1/1) on `contig`, cached per
-    /// alignment+contig. Reuses the alignment's BAM + reference (resolved from the build). Returns
-    /// [`SiteGenotype`]s in position order — feed to [`Self::diploid_vcf`].
+    /// Call the **de-novo diploid** SNVs across the full `contig`. The caller writes a heterozygous
+    /// call as 0/1 and a homozygous alternate call as 1/1. The cache key is the alignment with the
+    /// contig.
+    ///
+    /// The method reads the BAM file of the alignment and its reference, which the code finds from
+    /// the build. It returns the [`SiteGenotype`] values in the order of their positions. Give them
+    /// to [`Self::diploid_vcf`].
     pub async fn run_diploid_calls(
         &self,
         alignment_id: i64,
@@ -734,8 +836,9 @@ impl App {
         Ok(calls)
     }
 
-    /// A diploid VCF (VCFv4.2, `GT:AD:DP:GQ:PL`) of the de-novo diploid SNV calls for `contig`
-    /// (computing + caching them if needed). The sample column is `aln<id>`.
+    /// A diploid VCF file of the de-novo diploid SNV calls of `contig`. The file uses VCFv4.2, and
+    /// its format field is `GT:AD:DP:GQ:PL`. The method calculates those calls and writes them to
+    /// the cache when the cache holds none. The sample column is `aln<id>`.
     pub async fn diploid_vcf(
         &self,
         alignment_id: i64,
@@ -749,11 +852,16 @@ impl App {
         ))
     }
 
-    /// A **whole-genome** diploid VCF: de-novo SNV + indel calls over the diploid primary
-    /// chromosomes (1–22, X) of the alignment, per-contig cached. chrY and chrM are **excluded** —
-    /// they are haploid, so the diploid (het 0/1) model is wrong for them; their variants come from
-    /// the haploid caller and the Y/mt haplogroup + mtDNA-mutation features. Heavy (a real WGS
-    /// calling pass); the caller runs it off the UI thread (the export path).
+    /// A **whole-genome** diploid VCF file. It holds the de-novo SNV calls and indel calls across
+    /// the diploid primary chromosomes of the alignment, which are 1 to 22 and X. The cache holds
+    /// the result of each contig.
+    ///
+    /// The file holds **no** chrY data and **no** chrM data. A cell holds one copy of each, so the
+    /// diploid model, with its 0/1 calls, is wrong for them. Their variants come from the haploid
+    /// caller, and from the Y and mt haplogroup features with the mtDNA mutation list.
+    ///
+    /// This method is a full WGS calling pass, and it costs much. The caller runs it away from the
+    /// UI thread, on the export path.
     pub async fn diploid_vcf_genome(&self, alignment_id: i64, cancel: CancelToken) -> Result<String, AppError> {
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let contigs =
@@ -771,10 +879,15 @@ impl App {
         ))
     }
 
-    /// The subject's alignments on the **dominant reference build** (the build the most alignments
-    /// share, compared on the canonical build so `chm13v2`/`hs1` agree). The consensus diploid
-    /// genotype pools only same-build alignments — de-novo variant coordinates can't be merged
-    /// across builds by position without genome-wide liftover (out of scope). `None` if no alignments.
+    /// The alignments of the subject on the **most frequent reference build**. That build is the one
+    /// that the most alignments use, and the code compares the canonical build, so `chm13v2` and
+    /// `hs1` are the same build here.
+    ///
+    /// The consensus diploid genotype pools the alignments of one build only. The position of a
+    /// de-novo variant does not compare across two builds, and a join by position needs a liftover
+    /// of the full genome. That work is not in this feature.
+    ///
+    /// The method returns `None` when the subject has no alignment.
     pub(crate) async fn consensus_diploid_alignments(&self, biosample_guid: SampleGuid) -> Result<Vec<i64>, AppError> {
         let alns = alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
         if alns.is_empty() {
