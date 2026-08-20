@@ -1,18 +1,20 @@
-//! Archaic (Neanderthal / Denisovan) ancestry — panel types.
+//! Archaic ancestry, from Neanderthals and Denisovans. This module holds the panel types.
 //!
-//! Design: `documents/design/ArchaicAncestry_Design.md`. This module carries the **Tier A** asset
-//! types (the archaic-informative marker panel and the percentile reference); the counting routine
-//! and the Tier B segment HMM land on top of them in later milestones.
+//! The design is in `documents/design/ArchaicAncestry_Design.md`. This module carries the asset
+//! types of **Tier A**, which are the panel of archaic-informative markers and the percentile
+//! reference. The routine that counts, and the segment HMM of Tier B, go on top of them in later
+//! milestones.
 //!
-//! The panel is *computed by us* rather than ingested (design §3a): the Sankararaman 2014 list
-//! 23andMe used is not publicly downloadable, and every openly-licensed alternative is either the
-//! wrong build or per-individual probabilistic. We therefore derive sites from the EVA archaic
-//! VCFs, Ensembl-75 EPO ancestral alleles, and a 1kGP AFR outgroup, redistributing only the
-//! derived sites.
+//! This project *computes* the panel, and does not take it from elsewhere. See design §3a. The
+//! Sankararaman 2014 list that 23andMe used is not available to download. Every alternative with
+//! an open licence is either on the wrong build, or probabilistic for each individual. So the
+//! code makes the sites from the EVA archaic VCFs, the Ensembl-75 EPO ancestral alleles, and a
+//! 1kGP AFR outgroup. It distributes only the derived sites.
 //!
-//! A consequence worth remembering when validating: **the panel is ours, so its marker count is
-//! panel-relative and is not comparable to a vendor's count by equality** — compare the per-site
-//! rate on the intersection instead (design §10, M2 validation gate).
+//! Keep one consequence in mind during a check. **The panel belongs to this project, so its
+//! marker count is relative to the panel.** You can not compare it to the count of a vendor by
+//! equality. Compare the rate at each site on the intersection instead. See design §10, the M2
+//! gate.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,19 +26,20 @@ use crate::ibd_panel::Locus;
 /// [`ArchaicSite::calls`] array uses.
 pub const ARCHAIC_GENOMES: [&str; 4] = ["AltaiNeanderthal", "Vindija33.19", "Chagyrskaya8", "Denisova3"];
 
-/// Index into [`ARCHAIC_GENOMES`] / [`ArchaicSite::calls`] for the sole Denisovan genome. The other
-/// three are Neanderthals, which is what [`classify_diagnostic`] keys off.
+/// The index into [`ARCHAIC_GENOMES`] and [`ArchaicSite::calls`] of the one Denisovan genome. The
+/// other three are Neanderthals, and [`classify_diagnostic`] uses that fact.
 pub const DENISOVA: usize = 3;
 
-/// One archaic genome's state at a site, expressed **relative to the site's derived allele** rather
-/// than to ref/alt — so it survives the ref/alt swap that CHM13 orientation can apply.
+/// The state of one archaic genome at a site. It is **against the derived allele of the site**,
+/// and not against ref and alt. It stays correct through the exchange of ref and alt that the
+/// CHM13 orientation can apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArchaicCall {
     /// Homozygous for the ancestral allele.
     HomAncestral,
     /// One derived copy.
     Het,
-    /// Homozygous derived — the introgression donor state (design §4, step 2).
+    /// Homozygous derived. This is the state of the introgression donor. See design §4, step 2.
     HomDerived,
     /// Missing / filtered out by the genome's own quality mask.
     NoCall,
@@ -49,33 +52,37 @@ impl ArchaicCall {
     }
 }
 
-/// Which archaic lineage a site's derived allele points to.
+/// The archaic lineage that the derived allele of a site points to.
 ///
-/// The HMM in Tier B can not itself separate Neanderthal from Denisovan (they coalesce before either
-/// meets modern humans, design §3); this classification is what lets called segments be labelled
-/// downstream, so it is stored per site at build time.
+/// The HMM in Tier B can not separate Neanderthal from Denisovan on its own, because the two
+/// coalesce before either one meets modern humans. See design §3. This classification is what
+/// lets a later step put a label on a called segment, so the build stores it at each site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiagnosticClass {
     /// Derived in ≥1 Neanderthal, and Denisova positively **called ancestral**.
     Neanderthal,
     /// Derived in Denisova, and ≥1 Neanderthal positively **called ancestral**.
     Denisovan,
-    /// Not attributable to one lineage: derived in both, or the other lineage had no call so its
-    /// absence can not be established.
+    /// The code can not attribute this site to one lineage. Either both lineages are derived, or
+    /// the other lineage had no call, so nothing shows that it is absent.
     SharedArchaic,
 }
 
-/// Classify a site from its per-genome calls.
+/// Classify a site from the calls of each genome.
 ///
-/// Lineage-specificity requires **positive evidence of absence** in the other lineage — that lineage
-/// must be *called* homozygous-ancestral, not merely missing. Treating `NoCall` as absence is what
-/// an earlier version did, and it was the dominant error in Tier B attribution: a site where the
-/// Neanderthals happened to be masked out and Denisova was called read as Denisovan-*specific*,
-/// inflating Denisovan-diagnostic sites to 18,551 against 24,077 Neanderthal on chr21+22 and
-/// producing ~19 % Denisovan for a European, where design §7 expects about zero.
+/// A site belongs to one lineage only with **positive evidence that the allele is absent** in the
+/// other lineage. The code must *call* that other lineage homozygous-ancestral. A missing call is
+/// not enough.
 ///
-/// Sites that can not be attributed fall to [`DiagnosticClass::SharedArchaic`], which therefore means
-/// "archaic but not attributable" rather than strictly "derived in both".
+/// An earlier version read `NoCall` as absence, and that was the largest error in the Tier B
+/// attribution. A site where a mask had removed the Neanderthals, and where the caller did call
+/// Denisova, read as *specific* to Denisova. That raised the Denisovan-diagnostic sites to 18,551
+/// against 24,077 Neanderthal ones on chr21 and chr22. It gave about 19% Denisovan for a
+/// European, where design §7 expects about zero.
+///
+/// A site that the code can not attribute falls to [`DiagnosticClass::SharedArchaic`]. So that
+/// class means "archaic, but the code can not attribute it". It does not mean strictly "derived
+/// in both".
 pub fn classify_diagnostic(calls: &[ArchaicCall; 4]) -> DiagnosticClass {
     let nea_derived = calls
         .iter()
@@ -88,9 +95,10 @@ pub fn classify_diagnostic(calls: &[ArchaicCall; 4]) -> DiagnosticClass {
     let den_derived = calls[DENISOVA].carries_derived();
     let den_ancestral = calls[DENISOVA] == ArchaicCall::HomAncestral;
 
-    // Derived in BOTH lineages short-circuits to shared. Without this the Denisovan branch fires
-    // whenever some *other* Neanderthal is ancestral at a site both lineages carry — the four
-    // genomes disagree with each other constantly, so this is common, not a corner case.
+    // A site that is derived in BOTH lineages goes straight to shared. Without this test, the
+    // Denisovan branch fires whenever some *other* Neanderthal is ancestral at a site that both
+    // lineages carry. The four genomes disagree with each other all the time, so that is common
+    // and not a rare case.
     if nea_derived && den_derived {
         DiagnosticClass::SharedArchaic
     } else if nea_derived && den_ancestral {
@@ -104,11 +112,13 @@ pub fn classify_diagnostic(calls: &[ArchaicCall; 4]) -> DiagnosticClass {
 
 /// One archaic-informative marker.
 ///
-/// Coordinates are CHM13 and **oriented**: `reference_allele` is the actual CHM13 base at
-/// `position`. That orientation is not optional — the pipeline lifts GRCh37→CHM13 with `CrossMap
-/// bed`, which is not allele-aware, so roughly a third of sites arrive with ref/alt reversed
-/// relative to CHM13. Shipping them unoriented is the bug that cost the ancient-ancestry build a
-/// full rebuild (that design's §7.16).
+/// The coordinates are CHM13, and they are **oriented**: `reference_allele` is the true CHM13
+/// base at `position`.
+///
+/// That orientation is necessary. The pipeline lifts GRCh37 to CHM13 with `CrossMap bed`, which
+/// does not know about alleles. So about a third of the sites arrive with ref and alt the wrong
+/// way round against CHM13. To send them out without the orientation is the bug that cost the
+/// ancient-ancestry build a full rebuild. See §7.16 of that design.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArchaicSite {
     pub contig: String,
@@ -117,10 +127,11 @@ pub struct ArchaicSite {
     /// The actual base on the panel's build (post-orientation).
     pub reference_allele: char,
     pub alternate_allele: char,
-    /// The archaic-derived allele — always one of `reference_allele` / `alternate_allele`. Stored as
-    /// a base, not a ref/alt flag, so a later orientation pass can not silently invert its meaning.
+    /// The archaic-derived allele. It is always `reference_allele` or `alternate_allele`. The
+    /// field holds a base and not a ref-or-alt flag. A later orientation pass can then not turn
+    /// it around where nobody looks.
     pub archaic_derived_allele: char,
-    /// Per-genome state, indexed by [`ARCHAIC_GENOMES`].
+    /// The state of each genome, at the index that [`ARCHAIC_GENOMES`] gives.
     pub calls: [ArchaicCall; 4],
     pub diagnostic_class: DiagnosticClass,
     /// Derived-allele frequency in the African outgroup, kept for transparency and so the panel can
@@ -130,12 +141,14 @@ pub struct ArchaicSite {
     /// alleles, so there is no liftover and no strand risk on this build.
     #[serde(default)]
     pub grch37: Option<Locus>,
-    /// GRCh38 locus, when the site lifted cleanly and could be oriented against an hg38 reference.
+    /// The GRCh38 locus. It is present when the site lifted cleanly, and when the code could
+    /// orient it against an hg38 reference.
     #[serde(default)]
     pub grch38: Option<Locus>,
 }
 
-/// The complement of a base, for comparing alleles across builds that may differ in strand.
+/// The complement of a base. Use it to compare alleles across builds that can hold different
+/// strands.
 fn complement(b: char) -> char {
     match b.to_ascii_uppercase() {
         'A' => 'T',
@@ -147,7 +160,8 @@ fn complement(b: char) -> char {
 }
 
 impl ArchaicSite {
-    /// The locus for a build name, mirroring [`crate::ibd_panel::IbdPanelSite::locus`].
+    /// The locus for a build name. It has the same shape as
+    /// [`crate::ibd_panel::IbdPanelSite::locus`].
     pub fn locus(&self, build: &str) -> Option<&Locus> {
         let b = build.to_ascii_lowercase();
         if b.contains("38") || b == "hg38" {
@@ -162,10 +176,12 @@ impl ArchaicSite {
     /// Re-express a dosage measured against some build's `alt` allele as a dosage against this
     /// site's **CHM13** alternate allele.
     ///
-    /// Genotyping a GRCh37/38 alignment tallies that build's alleles, which may be ref/alt-swapped
-    /// or strand-flipped relative to CHM13. Feeding such a dosage into the count unchanged would
-    /// invert those sites silently — the same class of error the CHM13 orientation pass exists to
-    /// prevent. Returns `None` when the measured allele corresponds to neither CHM13 allele.
+    /// A genotype run on a GRCh37 or GRCh38 alignment counts the alleles of that build. Those
+    /// alleles can have ref and alt the other way round against CHM13, or sit on the other
+    /// strand. To put such a dosage into the count without a change would turn those sites
+    /// around, and nobody would see it. That is the same class of error that the CHM13
+    /// orientation pass prevents. Returns `None` when the measured allele matches neither CHM13
+    /// allele.
     pub fn rekey_dosage(&self, measured_alt: char, dosage: i32, ploidy: u8) -> Option<i32> {
         let m = measured_alt.to_ascii_uppercase();
         let (r, a) = (
@@ -183,19 +199,20 @@ impl ArchaicSite {
 
     /// Copies of the archaic-derived allele (0–2) in a diploid observation.
     ///
-    /// Takes the subject's two alleles as bases rather than a dosage, because dosage is defined
-    /// against ref/alt whereas the derived allele may be either one.
+    /// It takes the two alleles of the subject as bases, and not as a dosage. A dosage counts
+    /// against ref and alt, and the derived allele can be either one of those.
     pub fn derived_copies(&self, allele_a: char, allele_b: char) -> u8 {
         let d = self.archaic_derived_allele.to_ascii_uppercase();
         u8::from(allele_a.to_ascii_uppercase() == d) + u8::from(allele_b.to_ascii_uppercase() == d)
     }
 }
 
-/// The site-selection thresholds a panel was built with, carried in the asset itself.
+/// The site-selection thresholds that made a panel. The asset itself carries them.
 ///
-/// Recorded because these are the panel's scientific content: the site list *is* the product, every
-/// downstream number inherits it, and a count is meaningless without knowing which filter produced
-/// it. Design §10 fixes them by calibration (M1 checkpoint A), not by the illustrative values in §4.
+/// The asset records them because they are the scientific content of the panel. The site list
+/// *is* the product, and every number after it inherits that list. A count says nothing unless
+/// you know which filter made it. Design §10 sets these thresholds by calibration, at M1
+/// checkpoint A. It does not set them from the example values in §4.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ArchaicPanelThresholds {
     /// Maximum derived-allele frequency in the African outgroup (the introgression signature: rare
@@ -233,10 +250,10 @@ impl ArchaicMarkerPanel {
         self.sites.is_empty()
     }
 
-    /// The denominator a Tier-A count is reported against: two copies per site.
+    /// The denominator of a Tier-A count: two copies at each site.
     ///
-    /// 23andMe reports exactly this shape — the ground-truth report for the project's validation
-    /// sample reads "191 of 7,462", and 7,462 is 2 × 3,731 assayed sites (design §10).
+    /// 23andMe reports exactly this shape. The ground-truth report of the check sample of this
+    /// project reads "191 of 7,462", and 7,462 is 2 × 3,731 assayed sites. See design §10.
     pub fn possible_copies(&self) -> usize {
         self.sites.len() * 2
     }
@@ -244,21 +261,26 @@ impl ArchaicMarkerPanel {
 
 /// The Tier-A result: archaic-derived allele copies carried, over copies assayed.
 ///
-/// Deliberately a **count over what was actually called**, not a "percent Neanderthal" — the same
-/// shape a consumer report uses ("191 of 7,462" = copies of 2 × 3,731 assayed sites, design §1).
-/// Because the denominator is whatever subset of the panel the subject's data covered, chip and WGS
-/// each get an honest headline with no cross-data-type comparison involved.
+/// This is a **count over the sites that the caller called**, and that choice is deliberate. It
+/// is not a "percent Neanderthal". It is the same shape that a consumer report uses: "191 of
+/// 7,462" is the copies out of 2 × 3,731 assayed sites. See design §1.
 ///
-/// [`percentile`](Self::percentile) is the one field that *does* require comparability, so it is an
-/// `Option` the caller fills only when the subject's coverage is comparable to the reference cohort
-/// (design §10). A chip covers ~3–4 % of the panel and is biased toward its common tail, so ranking
-/// a chip count against a WGS-scored cohort is meaningless — it stays `None` there rather than
-/// rendering a number that looks authoritative and is not.
+/// The denominator is whatever subset of the panel the data of the subject covered. So a chip
+/// and a WGS run each get an honest headline, and no comparison between the two data types
+/// occurs.
+///
+/// [`percentile`](Self::percentile) is the one field that *does* need such a comparison, so it is
+/// an `Option`. The caller fills it only when the coverage of the subject is comparable to the
+/// reference cohort. See design §10.
+///
+/// A chip covers about 3 to 4% of the panel, and it leans toward the common tail of the panel. To
+/// rank a chip count against a cohort that a WGS run scored says nothing. The field stays `None`
+/// there, and the report does not show a number that looks authoritative and is not.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArchaicMarkerResult {
     /// Archaic-derived allele copies carried across called panel sites.
     pub total_copies: u32,
-    /// 2 × called sites — the denominator the count is reported against.
+    /// 2 × the count of called sites. This is the denominator of the report.
     pub possible_copies: u32,
     /// Panel sites with a usable genotype for this subject.
     pub called_sites: usize,
@@ -268,27 +290,29 @@ pub struct ArchaicMarkerResult {
     pub call_rate: f32,
     /// Copies at Neanderthal-diagnostic sites.
     pub neanderthal_copies: u32,
-    /// Copies at Denisovan-diagnostic sites. For a European this should be near the noise floor;
-    /// §7 forbids presenting a small value here as a positive Denisovan finding.
+    /// The copies at Denisovan-diagnostic sites. For a European this must lie near the noise
+    /// floor. §7 does not let the report show a small value here as Denisovan ancestry.
     pub denisovan_copies: u32,
-    /// Copies at sites derived in both lineages — archaic, but not attributable.
+    /// The copies at sites that are derived in both lineages. They are archaic, but the code can
+    /// not attribute them.
     pub shared_copies: u32,
     /// Percentile within `cohort`, when the comparison is valid (see the type docs).
     pub percentile: Option<f32>,
-    /// The cohort `percentile` was computed against (e.g. "EUR").
+    /// The cohort that `percentile` counts against, for example "EUR".
     pub cohort: Option<String>,
-    /// Indices (panel order) of the sites that were actually called for this subject.
+    /// The indices, in panel order, of the sites that the caller called for this subject.
     ///
-    /// Needed to score the reference cohort over the *same* sites — the whole basis of an honest
-    /// percentile for sparse input. Deliberately **not serialized**: it is ~300 k integers on a WGS
-    /// subject, and the cached result is stored as JSON.
+    /// The code needs these to score the reference cohort over the *same* sites. That is the
+    /// whole basis of an honest percentile when the input is sparse. The field is **not
+    /// serialized**, and that is deliberate. It holds about 300k integers on a WGS subject, and
+    /// the cache holds the result as JSON.
     #[serde(skip)]
     pub called_indices: Vec<u32>,
 }
 
 impl ArchaicMarkerResult {
-    /// Copies carried as a fraction of copies assayed — the rate that is comparable *within* one
-    /// data type. Returns 0.0 when nothing was called.
+    /// The copies that the subject carries, as a fraction of the copies assayed. You can compare
+    /// this rate *inside* one data type. Returns 0.0 when the caller called nothing.
     pub fn rate(&self) -> f32 {
         if self.possible_copies == 0 {
             0.0
@@ -300,11 +324,14 @@ impl ArchaicMarkerResult {
 
 /// Count a subject's archaic-derived allele copies across the panel.
 ///
-/// Pure dosage arithmetic over the consensus genotypes, so it works identically for chip and WGS
-/// input. The one subtlety: `SiteGenotype::dosage` counts the **alternate** allele, while the
-/// panel's derived allele may sit on either side, so the dosage is re-expressed against the derived
-/// *base*. Reading dosage directly as "archaic copies" would invert every site where CHM13
-/// orientation left the derived allele on REF — 3 % of the panel.
+/// This is dosage arithmetic over the consensus genotypes and nothing more, so it works the same
+/// way for chip input and for WGS input.
+///
+/// There is one thing to watch. `SiteGenotype::dosage` counts the **alternate** allele, and the
+/// derived allele of the panel can sit on either side. So the code expresses the dosage again,
+/// against the derived *base*. To read the dosage directly as "archaic copies" would turn around
+/// every site where the CHM13 orientation left the derived allele on REF. That is 3% of the
+/// panel.
 pub fn count_archaic_markers(genotypes: &[SiteGenotype], panel: &ArchaicMarkerPanel) -> ArchaicMarkerResult {
     let by_pos: std::collections::HashMap<(&str, i64), &SiteGenotype> =
         genotypes.iter().map(|g| ((g.contig.as_str(), g.position), g)).collect();
@@ -328,8 +355,8 @@ pub fn count_archaic_markers(genotypes: &[SiteGenotype], panel: &ArchaicMarkerPa
         } else if matches(&g.reference_allele) {
             (g.ploidy as i32 - g.dosage).max(0) as u32
         } else {
-            // The subject's alleles at this position disagree with the panel's — skip rather than
-            // guess, and do not count it toward the denominator either.
+            // The alleles of the subject at this position disagree with those of the panel.
+            // Skip the site, do not guess, and do not count it in the denominator.
             continue;
         };
         called += 1;
@@ -368,60 +395,67 @@ pub struct CohortCounts {
     pub population: String,
     /// Super-population the fine code rolls up to (e.g. "EUR").
     pub super_population: String,
-    /// Per-sample archaic-derived copy totals, ascending.
+    /// The total of archaic-derived copies for each sample, from the lowest up.
     pub counts: Vec<u32>,
 }
 
 /// The percentile reference asset.
 ///
-/// Stored **per population** rather than pre-reduced to super-populations. v1 renders the percentile
-/// against a super-population cohort (design §9 Q3 — keying it to the user's inferred fine ancestry
-/// would let an ancestry error silently move the archaic headline), but keeping fine-grained counts
-/// means a fine-pop percentile is a later re-keying rather than an asset rebuild.
+/// The asset stores the counts **for each population**, and does not reduce them to
+/// super-populations first. v1 shows the percentile against a super-population cohort. See design
+/// §9 Q3. A key on the fine ancestry of the user would let an error in that ancestry move the
+/// archaic headline where nobody sees it. The code infers that fine ancestry.
+///
+/// The fine-grained counts stay in the asset. A percentile for a fine population is then a change
+/// of key later, and not a rebuild of the asset.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArchaicCountDistribution {
     pub build: String,
-    /// The panel these counts were produced from — a percentile is only meaningful against the same
-    /// site list, so a mismatch must be detected rather than silently rendered.
+    /// The panel that made these counts. A percentile is correct only against the same site
+    /// list. So the code must find a mismatch, and it must not show a percentile that came from
+    /// the wrong list.
     pub panel_sites: usize,
     pub cohorts: Vec<CohortCounts>,
     /// Super-population codes indexing [`site_freqs`](Self::site_freqs) and
     /// [`variance_inflation`](Self::variance_inflation).
     #[serde(default)]
     pub populations: Vec<String>,
-    /// Per-population derived-allele frequency at each panel site, in **panel order**:
+    /// The derived-allele frequency of each population at each panel site, in **panel order**:
     /// `site_freqs[pop][site_index]`.
     ///
-    /// This is what lets a *sparse* subject get an honest percentile. Per-sample totals can only
-    /// rank someone scored on the whole panel; frequencies let the cohort's expected count and
-    /// variance be computed over exactly the sites a given subject called, whatever those are —
-    /// which is the only valid comparison when a chip covers ~3 % of the panel and those sites are
-    /// its common tail.
+    /// This is what lets a *sparse* subject get an honest percentile. A total for each sample can
+    /// rank only a person whom the code scored on the whole panel. Frequencies instead give the
+    /// expected count and the variance of the cohort over exactly the sites that a given subject
+    /// called, whatever those sites are. That is the only correct comparison when a chip covers
+    /// about 3% of the panel, and those sites are its common tail.
     #[serde(default)]
     pub site_freqs: Vec<Vec<f32>>,
-    /// Per-population variance inflation measured at a **ladder of site densities**:
-    /// `variance_inflation[pop] = [(density, inflation), …]`, densest first.
+    /// The variance inflation of each population, measured at a **ladder of site densities**:
+    /// `variance_inflation[pop] = [(density, inflation), …]`, with the densest first.
     ///
-    /// Archaic alleles travel in linked haplotype blocks, so sites are not independent and the
-    /// binomial sum understates the spread — but crucially the inflation is **not a constant**. It
-    /// was measured at 52.4× on the full panel and 5.3× on a 2.6 % subset of the same panel, because
-    /// a sparse subset samples fewer sites per linked block. Applying a single full-panel factor to
-    /// a chip would over-widen the deviation ~3× and squash every percentile toward 50.
+    /// Archaic alleles travel in linked haplotype blocks, so the sites are not independent, and
+    /// the binomial sum gives a spread that is too small. But the inflation is **not a constant**,
+    /// and that is the important part. A measurement gave 52.4x on the full panel, and 5.3x on a
+    /// 2.6% subset of the same panel. A sparse subset takes fewer sites from each linked block. To
+    /// apply one full-panel factor to a chip would make the deviation about 3x too wide, and it
+    /// would push every percentile toward 50.
     ///
-    /// No simple block model fits the two measurements (solving for a common block size gives a
-    /// negative size), so this is measured empirically at several densities and interpolated in log
-    /// space at runtime rather than modelled.
+    /// No simple block model agrees with the two measurements. A solution for one common block
+    /// size gives a negative size. So the code measures the inflation at some densities, and
+    /// interpolates between them in log space at run time. It does not model it.
     #[serde(default)]
     pub variance_inflation: Vec<Vec<(f32, f32)>>,
-    /// SHA-256 of the panel asset these frequencies were computed against. A percentile is only
-    /// rendered when this matches the loaded panel — site_freqs is indexed by panel position, so a
-    /// mismatched panel would silently score against the wrong sites.
+    /// The SHA-256 of the panel asset that these frequencies count against. The UI shows a
+    /// percentile only when this value matches the panel that the app loaded. An index into
+    /// site_freqs is a panel position. A panel that does not match would then score against the
+    /// wrong sites, and nobody would see it.
     #[serde(default)]
     pub panel_fingerprint: String,
 }
 
-/// Standard-normal CDF via the Abramowitz & Stegun 7.1.26 error-function approximation
-/// (|error| < 1.5e-7) — enough for a percentile rendered to whole numbers.
+/// The standard-normal CDF, through the error-function approximation of Abramowitz and Stegun
+/// 7.1.26, whose |error| is less than 1.5e-7. That is accurate enough for a percentile that the
+/// UI shows as a whole number.
 fn normal_cdf(z: f64) -> f64 {
     let sign = if z < 0.0 { -1.0 } else { 1.0 };
     let x = z.abs() / std::f64::consts::SQRT_2;
@@ -442,8 +476,9 @@ impl ArchaicCountDistribution {
         bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("archaic dist encode: {e}")))
     }
 
-    /// Percentile (0–100) of `count` within a super-population cohort, or `None` when that cohort is
-    /// absent. Reported as the fraction of reference samples scoring **strictly below** `count`.
+    /// The percentile (0 to 100) of `count` inside a super-population cohort, or `None` when the
+    /// asset does not hold that cohort. It is the fraction of the reference samples whose score is
+    /// **below** `count`, and not equal to it.
     pub fn percentile_in_super(&self, super_population: &str, count: u32) -> Option<f32> {
         let mut below = 0usize;
         let mut total = 0usize;
@@ -454,18 +489,21 @@ impl ArchaicCountDistribution {
         (total > 0).then(|| below as f32 * 100.0 / total as f32)
     }
 
-    /// Percentile of `observed_copies` for a subject who called exactly `called_sites` (indices into
-    /// the panel, in panel order), against `super_population`.
+    /// The percentile of `observed_copies`, against `super_population`, for a subject who called
+    /// exactly `called_sites`. Those are indices into the panel, in panel order.
     ///
-    /// Works at any coverage — a chip calling 3 % of the panel is compared against the cohort's
-    /// expected count *over those same sites*, so the call-rate artefact that would otherwise pin
-    /// every chip user near the 0th percentile disappears.
+    /// This works at any coverage. For a chip that calls 3% of the panel, the code compares
+    /// against the expected count of the cohort *over those same sites*. The artifact of the call
+    /// rate, which would otherwise hold every chip user near the 0th percentile, then goes away.
     ///
-    /// Modelled as a sum of independent per-site binomials under Hardy-Weinberg (mean `2f`, variance
-    /// `2f(1-f)`), normal-approximated — with thousands of sites the CLT is comfortable — then the
-    /// variance scaled by the measured LD inflation. Returns `None` when the asset predates the
-    /// frequency data, the panel fingerprint disagrees, the population is unknown, or too few sites
-    /// were called for the approximation to mean anything.
+    /// The model is a sum of independent binomials, one at each site, under Hardy-Weinberg. Each
+    /// has a mean of `2f` and a variance of `2f(1-f)`. The code takes the normal approximation of
+    /// that sum, which is safe with thousands of sites. It then scales the variance by the
+    /// measured LD inflation.
+    ///
+    /// Returns `None` in four cases. The asset is older than the frequency data. The fingerprint
+    /// of the panel disagrees. The code does not know the population. Or the caller called too
+    /// few sites for the approximation to say anything.
     pub fn percentile_for_called(
         &self,
         super_population: &str,
@@ -499,9 +537,10 @@ impl ArchaicCountDistribution {
 }
 
 impl ArchaicCountDistribution {
-    /// Variance inflation for a population at a given site density, log-interpolated between the
-    /// measured rungs and clamped to the ends (never extrapolated — an extrapolated inflation is
-    /// exactly the kind of confident-but-unfounded number this whole feature avoids).
+    /// The variance inflation of a population at a given site density. The code interpolates in
+    /// log space between the measured rungs, and it clamps the result to the two ends. It never
+    /// goes outside the measured range. A value from outside that range is exactly the kind of
+    /// number that looks sure and has no basis, which this whole feature avoids.
     fn inflation_at(&self, pop: usize, density: f32) -> f32 {
         let Some(ladder) = self.variance_inflation.get(pop) else {
             return 1.0;
@@ -533,7 +572,8 @@ impl ArchaicCountDistribution {
     }
 }
 
-/// Below this many called sites the normal approximation is not worth rendering as a percentile.
+/// Below this count of called sites, the normal approximation is not good enough to show as a
+/// percentile.
 pub const MIN_SITES_FOR_PERCENTILE: usize = 200;
 
 #[cfg(test)]
@@ -562,7 +602,7 @@ mod tests {
             classify_diagnostic(&calls(HomDerived, HomAncestral, HomAncestral, Het)),
             DiagnosticClass::SharedArchaic
         );
-        // A heterozygous Neanderthal still counts as carrying the derived allele.
+        // A heterozygous Neanderthal still counts, because it carries the derived allele.
         assert_eq!(
             classify_diagnostic(&calls(Het, NoCall, NoCall, HomAncestral)),
             DiagnosticClass::Neanderthal
@@ -673,9 +713,10 @@ mod tests {
 
     #[test]
     fn counting_re_expresses_dosage_against_the_derived_base() {
-        // Site 1: derived is the ALT, so dosage counts it directly.
-        // Site 2: derived is the REF, so the archaic copies are ploidy - dosage. Reading dosage
-        // straight through here would invert the site — the failure this test exists to catch.
+        // At site 1 the derived allele is the ALT, so the dosage counts it directly.
+        // At site 2 the derived allele is the REF, so the archaic copies are ploidy - dosage. To
+        // read the dosage straight through here would turn the site around. That is the failure
+        // that this test catches.
         let panel = ArchaicMarkerPanel {
             build: "chm13v2.0".into(),
             thresholds: ArchaicPanelThresholds {
@@ -725,7 +766,7 @@ mod tests {
         assert_eq!(s.locus("GRCh37").map(|l| l.position), Some(42));
         assert_eq!(s.locus("hg19").map(|l| l.position), Some(42));
         assert_eq!(s.locus("b37").map(|l| l.position), Some(42));
-        // Not populated / not a per-build lookup.
+        // The field is empty, and it is not a lookup by build.
         assert!(s.locus("GRCh38").is_none());
         assert!(s.locus("chm13v2.0").is_none());
     }
@@ -745,7 +786,8 @@ mod tests {
                 site(400, 'A', 'G', 'G', DiagnosticClass::Neanderthal),
             ],
         };
-        // Panel site 400 is absent from the genotypes entirely — the fourth way a site goes uncalled.
+        // Panel site 400 is not in the genotypes at all. That is the fourth way that a site gets
+        // no call.
         let genotypes = vec![
             gt("chr1", 100, "A", "G", 2),  // counted
             gt("chr1", 200, "A", "G", -1), // explicit no-call
@@ -757,7 +799,8 @@ mod tests {
         assert_eq!(r.total_copies, 2);
         assert_eq!(r.panel_sites, 4);
         assert!((r.call_rate - 0.25).abs() < 1e-6);
-        // Never fabricated by the counter — the caller fills it only when comparable.
+        // The counter never invents this value. The caller fills it in only when a comparison is
+        // correct.
         assert_eq!(r.percentile, None);
     }
 
@@ -785,15 +828,15 @@ mod tests {
             min_allele_count: 1,
             contigs: vec![PositionStream::encode("chr21", &[100, 200, 300, 400])],
         };
-        // 200 and 400 are shared with Africans -> stripped; the rest are private.
+        // Africans also carry 200 and 400, so the code removes those two. The rest are private.
         assert_eq!(
             og.retain_private("chr21", &[50, 200, 250, 400, 500]),
             vec![50, 250, 500]
         );
         // Exact-boundary behaviour: first and last outgroup entries.
         assert_eq!(og.retain_private("chr21", &[100, 400]), Vec::<i64>::new());
-        // A contig with no outgroup data yields NOTHING rather than everything — stripping nothing
-        // would declare the whole contig archaic.
+        // A contig with no outgroup data gives NOTHING, and not everything. To remove no site at
+        // all would call the whole contig archaic.
         assert_eq!(og.retain_private("chr7", &[1, 2, 3]), Vec::<i64>::new());
     }
 
@@ -817,9 +860,10 @@ mod tests {
 
     #[test]
     fn subset_percentile_compares_against_the_same_sites() {
-        // Two populations. At every site the "high" cohort carries the derived allele at 50% and the
-        // "low" cohort at 5%. A subject calling only 1000 sites is scored against the cohort's
-        // expectation OVER THOSE SITES, so sparse coverage no longer drags them to the bottom.
+        // Two populations. At every site the "high" cohort carries the derived allele at 50%, and
+        // the "low" cohort at 5%. The code scores a subject who calls only 1000 sites against the
+        // expectation of the cohort OVER THOSE SITES. Sparse coverage then no longer pulls that
+        // subject to the bottom.
         let n = 2000usize;
         let dist = ArchaicCountDistribution {
             build: "chm13v2.0".into(),
@@ -832,7 +876,8 @@ mod tests {
         };
         let called: Vec<u32> = (0..1000).collect();
 
-        // Expected copies over 1000 sites at f=0.5 is 1000; landing exactly there is the median.
+        // The expected copies over 1000 sites at f=0.5 is 1000. A subject at exactly that value
+        // sits at the median.
         let p = dist
             .percentile_for_called("HIGH", &called, 1000, "fp")
             .expect("percentile");
@@ -842,11 +887,12 @@ mod tests {
         assert!(dist.percentile_for_called("HIGH", &called, 1200, "fp").unwrap() > 95.0);
         assert!(dist.percentile_for_called("HIGH", &called, 800, "fp").unwrap() < 5.0);
 
-        // The SAME raw count is unremarkable for HIGH but extraordinary for LOW — which is the whole
-        // point of scoring against the right cohort rather than a single pooled distribution.
+        // The SAME raw count is usual for HIGH and very rare for LOW. That is the whole point of a
+        // score against the correct cohort, and not against one pooled distribution.
         assert!(dist.percentile_for_called("LOW", &called, 1000, "fp").unwrap() > 99.0);
 
-        // Guards: wrong panel, unknown population, too few sites -> no number rather than a wrong one.
+        // The guards are a wrong panel, a population that the code does not know, and too few
+        // sites. Each one gives no number at all, and not a wrong one.
         assert_eq!(dist.percentile_for_called("HIGH", &called, 1000, "other-panel"), None);
         assert_eq!(dist.percentile_for_called("NOPE", &called, 1000, "fp"), None);
         assert_eq!(dist.percentile_for_called("HIGH", &called[..10], 5, "fp"), None);
@@ -886,12 +932,14 @@ mod tests {
 
 // ─────────────────────────── Tier B assets (design §4, assets 2 and 3) ───────────────────────────
 
-/// Variable-length integer encoding for a sorted position stream: 7 bits per byte, high bit = more.
+/// A variable-length integer encoding for a stream of sorted positions. Each byte holds 7 bits,
+/// and the high bit says that more bytes follow.
 ///
-/// Both Tier B assets store **gaps between consecutive positions**, not the positions themselves.
-/// The African-outgroup track alone is ~67 M positions genome-wide; as raw `u32`s that is ~270 MB,
-/// which is too much to hold and too much to ship. Typical gaps are tens of bases, so a varint delta
-/// costs one byte for most sites.
+/// Both Tier B assets store the **gap between one position and the next**, and not the positions
+/// themselves. The African-outgroup track alone holds about 67M positions across the genome. As
+/// raw `u32` values that is about 270 MB, which is too much to hold in memory and too much to
+/// send to a user. A usual gap is tens of bases, so a varint delta costs one byte at most
+/// sites.
 fn push_varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
         out.push((v as u8) | 0x80);
@@ -900,7 +948,7 @@ fn push_varint(out: &mut Vec<u8>, mut v: u64) {
     out.push(v as u8);
 }
 
-/// Decode the varint starting at `i`, returning the value and the next index.
+/// Decode the varint that starts at `i`. Returns the value and the next index.
 fn read_varint(bytes: &[u8], mut i: usize) -> Option<(u64, usize)> {
     let (mut v, mut shift) = (0u64, 0u32);
     loop {
@@ -942,10 +990,11 @@ impl PositionStream {
         }
     }
 
-    /// Stream the positions back in ascending order.
+    /// Stream the positions back, from the lowest up.
     ///
-    /// An iterator rather than a `Vec` on purpose: the caller merge-joins it against the subject's
-    /// own (much smaller) sorted variants, so neither side is ever fully materialised.
+    /// This gives an iterator and not a `Vec`, and that is deliberate. The caller does a merge
+    /// join of it against the sorted variants of the subject, which are much fewer. Neither side
+    /// has to be in memory in full.
     pub fn iter(&self) -> impl Iterator<Item = i64> + '_ {
         let mut i = 0usize;
         let mut pos = 0i64;
@@ -958,15 +1007,17 @@ impl PositionStream {
     }
 }
 
-/// Asset 2 — positions **variable in the African outgroup**, used to strip shared variants before
-/// the segment HMM (design §5 step 1).
+/// Asset 2: the positions that are **variable in the African outgroup**. The code uses them to
+/// remove shared variants before the segment HMM. See design §5, step 1.
 ///
-/// Anything a modern African population also carries is not evidence of archaic introgression; what
-/// survives the strip is the "private" derived variation the HMM looks for a density excess in.
+/// A variant that a modern African population also carries is not evidence of archaic
+/// introgression. What stays after the removal is the "private" derived variation, and the HMM
+/// looks in that for an excess of density.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchaicOutgroup {
     pub build: String,
-    /// Minimum allele count in the outgroup for a site to be considered variable there.
+    /// The allele count that the outgroup needs at a site before the code calls that site
+    /// variable there.
     pub min_allele_count: u32,
     pub contigs: Vec<PositionStream>,
 }
@@ -984,14 +1035,15 @@ impl ArchaicOutgroup {
         self.contigs.iter().find(|c| c.contig == contig)
     }
 
-    /// Retain only those `sorted_positions` **absent** from the outgroup — the private set.
+    /// Keep only the `sorted_positions` that are **not** in the outgroup. That is the private
+    /// set.
     ///
-    /// A linear merge over both sorted streams, so cost is O(subject + outgroup) with no index and
-    /// no allocation proportional to the outgroup.
+    /// This is a linear merge over both sorted streams. It costs O(subject + outgroup), it needs
+    /// no index, and it allocates nothing that grows with the outgroup.
     pub fn retain_private(&self, contig: &str, sorted_positions: &[i64]) -> Vec<i64> {
         let Some(stream) = self.contig(contig) else {
-            // No outgroup data for this contig: stripping nothing would call the whole contig
-            // archaic, so refuse rather than guess.
+            // There is no outgroup data for this contig. To remove no site at all would call the
+            // whole contig archaic. So refuse, and do not guess.
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -1008,11 +1060,12 @@ impl ArchaicOutgroup {
     }
 }
 
-/// Asset 3 — genome-wide archaic diagnostic sites, for labelling a called segment Neanderthal vs
-/// Denisovan (design §5 step 3).
+/// Asset 3: the archaic diagnostic sites across the genome. They put a Neanderthal or Denisovan
+/// label on a called segment. See design §5, step 3.
 ///
-/// The HMM itself can not tell the lineages apart — they coalesce before either meets modern humans
-/// (§3) — so attribution is a downstream count of derived-allele matches against these sites.
+/// The HMM alone can not separate the two lineages, because they coalesce before either one meets
+/// modern humans. See §3. The attribution is instead a later count of derived-allele matches
+/// against these sites.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArchaicClassify {
     pub build: String,
@@ -1023,9 +1076,9 @@ pub struct ArchaicClassify {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClassifyContig {
     pub positions: PositionStream,
-    /// Derived base per site, same order as `positions`.
+    /// The derived base at each site, in the same order as `positions`.
     pub derived: Vec<u8>,
-    /// Diagnostic class per site: 0 = Neanderthal, 1 = Denisovan, 2 = shared archaic.
+    /// The diagnostic class at each site: 0 = Neanderthal, 1 = Denisovan, 2 = shared archaic.
     pub classes: Vec<u8>,
 }
 
@@ -1061,21 +1114,25 @@ impl ArchaicClassify {
     }
 }
 
-/// Callable-region track: **callable bases per fixed-width window**, per contig.
+/// The track of callable regions: the count of **callable bases in each fixed-width window**, for
+/// each contig.
 ///
-/// Stored as per-window counts rather than intervals because that is what the segment HMM actually
-/// needs and it is far smaller: the archaic masks are fragmented into hundreds of thousands of
-/// sub-kb intervals per chromosome, while a genome-wide 1 kb window grid is ~3.1 M `u16`s (~6 MB).
+/// The asset holds a count for each window, and not a list of intervals. That is what the segment
+/// HMM needs, and it is much smaller. The archaic masks break into hundreds of thousands of
+/// intervals below one kb on each chromosome. A grid of 1 kb windows across the genome is about
+/// 3.1M `u16` values, which is about 6 MB.
 ///
-/// This is not a nicety. Without it the HMM finds private-variant density excesses in repetitive
-/// regions — measured at 4,000–9,700 variants/Mb against 50–200/Mb for a real introgressed tract —
-/// and reports them as archaic. Those regions are exactly where the archaic genomes' own quality
-/// masks exclude data, so a region callable in all four archaic genomes is the region where a
-/// private-variant excess can be interpreted at all.
+/// This track is necessary. Without it, the HMM finds an excess of private-variant density in
+/// repetitive regions and reports those regions as archaic. A measurement gave 4,000 to 9,700
+/// variants/Mb there, against 50 to 200/Mb for a true introgressed tract.
+///
+/// Those regions are exactly where the quality masks of the archaic genomes remove the data. So
+/// a region that is callable in all four archaic genomes is the only region where an excess of
+/// private variants says anything at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchaicCallable {
     pub build: String,
-    /// Window width the counts are binned at.
+    /// The window width that the counts go into.
     pub window_bp: i64,
     pub contigs: Vec<CallableContig>,
 }
@@ -1085,7 +1142,7 @@ pub struct CallableContig {
     pub contig: String,
     /// Genomic start of window 0.
     pub start: i64,
-    /// Callable bases in each window (saturating at `window_bp`).
+    /// The count of callable bases in each window. It stops at `window_bp`.
     pub callable_bp: Vec<u16>,
 }
 
@@ -1102,9 +1159,10 @@ impl ArchaicCallable {
         self.contigs.iter().find(|c| c.contig == contig)
     }
 
-    /// Callable fraction (0.0–1.0) of the window containing `position`, or 0.0 when the contig or
-    /// window is absent — an unknown region is treated as **not** callable, so the HMM skips it
-    /// rather than interpreting density it can not trust.
+    /// The callable fraction (0.0 to 1.0) of the window that holds `position`. It is 0.0 when the
+    /// asset holds neither the contig nor the window. A region that the code does not know counts
+    /// as **not** callable. The HMM then skips it, and it does not read a density that it can not
+    /// trust.
     pub fn callable_fraction(&self, contig: &str, position: i64) -> f64 {
         let Some(c) = self.contig(contig) else { return 0.0 };
         if position < c.start {
@@ -1117,7 +1175,8 @@ impl ArchaicCallable {
         }
     }
 
-    /// Total callable megabases across all contigs — the honest denominator for "% of genome".
+    /// The total callable megabases over all of the contigs. It is the honest denominator of a
+    /// "% of genome" figure.
     pub fn callable_mb(&self) -> f64 {
         self.contigs
             .iter()
