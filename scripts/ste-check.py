@@ -132,7 +132,7 @@ ING_OK = {
     "binning", "masking", "trimming", "clipping", "calling", "sorting", "merging",
     "reading", "writing", "counting", "timing", "build", "backing", "copying", "loading",
     # Surnames in a citation. "Busing et al. 1999" is the jackknife paper, not a verb.
-    "busing",
+    "busing", "balding",
 }
 # A sentence can end inside emphasis ("**...ancestries.**"), so step over any trailing
 # `*` or `_` before the space. Without this the rule reads two sentences as one and
