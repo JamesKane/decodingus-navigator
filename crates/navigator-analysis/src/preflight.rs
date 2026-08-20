@@ -1,33 +1,37 @@
-//! Answering *why* an alignment can't be read, instead of guessing.
+//! This module says *why* the code can not read an alignment. It does not guess.
 //!
-//! The reader helpers all funnel their failures through [`AnalysisError::io`], which formats the
-//! path **the caller passed**, not the file that actually failed. That is fine for a hot loop but
-//! actively misleading at the edge: `open_indexed` hands it the CRAM, yet the open it performs
-//! also autoloads the sibling `.crai`, resolves the reference FASTA and that FASTA's `.fai`. So an
-//! unreadable index reports `io error on sample.cram`, and whoever reads that message goes looking
-//! at the CRAM. Worse, [`crate::reader::has_region_index`] is built on `Path::exists`, which
-//! answers `false` for *both* "no index here" and "the OS refused to tell me" — the two cases with
-//! completely different fixes.
+//! Every reader helper sends its failure through [`AnalysisError::io`], which prints the path
+//! **that the caller gave**, and not the file that failed. That is correct in a hot loop, but at
+//! the edge it points the user the wrong way. `open_indexed` gives it the CRAM. But the open that
+//! it does also loads the `.crai` beside that CRAM, resolves the reference FASTA, and resolves
+//! the `.fai` of that FASTA. So an index that the code can not read reports
+//! `io error on sample.cram`, and the person who reads that message looks at the CRAM.
 //!
-//! This module takes the opposite approach: probe each participating file **separately**, name it
-//! explicitly, and keep the raw `errno` rather than collapsing everything to a `bool`. The errno is
-//! the whole diagnosis on macOS, where the three failures look identical in a status bar but mean
-//! unrelated things:
+//! [`crate::reader::has_region_index`] is worse. It stands on `Path::exists`, which answers
+//! `false` for *both* "there is no index here" and "the OS refused to tell me". Those two cases
+//! need completely different fixes.
 //!
-//! | errno | name | meaning | fix |
+//! This module does the opposite. It probes each file that takes part **on its own**, it names
+//! that file, and it keeps the raw `errno`. It does not collapse everything into a `bool`. On
+//! macOS the errno is the whole diagnosis. The three failures look the same in a status bar, and
+//! they have nothing to do with each other:
+//!
+//! | errno | name | what it says | the fix |
 //! |---|---|---|---|
-//! | 2 | `ENOENT` | the file is not there | create/fetch it |
-//! | 13 | `EACCES` | Unix mode bits deny it | `chmod` / `chown` |
-//! | 1 | `EPERM` | **macOS privacy (TCC) denied it** | grant Full Disk Access, or move the file |
+//! | 2 | `ENOENT` | the file is not there | create it, or fetch it |
+//! | 13 | `EACCES` | the Unix mode bits deny it | `chmod` or `chown` |
+//! | 1 | `EPERM` | **macOS privacy (TCC) denied it** | grant Full Disk Access |
 //!
-//! `EPERM` is the one that motivated this module. It is not a Unix permission failure — those are
-//! `EACCES` — it is macOS refusing the process regardless of mode bits, which is why a `chmod 777`
-//! file in `~/Desktop` still fails. Reading a directory listing is enough to distinguish the cases,
-//! so [`diagnose`] does that too: an index that `stat` denies but that shows up in the parent
-//! directory is a privacy denial, full stop.
+//! `EPERM` is the reason that this module exists. It is not a Unix permission failure, because
+//! those give `EACCES`. It is macOS that refuses the process, whatever the mode bits say. That is
+//! why a file at `chmod 777` in `~/Desktop` still fails.
 //!
-//! Nothing here mutates, downloads, or decodes more than a header and one region query, so it is
-//! always safe to run — including on a file that is already failing.
+//! A read of a directory listing is enough to separate the cases, and [`diagnose`] does that too.
+//! Take an index that `stat` refuses, and that the listing of the parent directory shows. That is
+//! a privacy denial, and nothing else.
+//!
+//! Nothing here changes a file, downloads a file, or decodes more than a header and one region
+//! query. It is always safe to run, and that includes a file that already fails.
 
 use std::fmt;
 use std::fs::File;
@@ -37,9 +41,9 @@ use noodles::core::Region;
 
 use crate::reader::{self, detect_format, Format};
 
-/// How a single check came out. `Warn` is for a condition that degrades behaviour but has a
-/// working fallback (a missing index still reads sequentially); `Fail` is for one that stops the
-/// operation outright.
+/// The result of one check. `Warn` marks a condition that makes the behaviour worse, but that has
+/// a fallback which works. A missing index is one: the code still reads the file sequentially.
+/// `Fail` marks a condition that stops the operation completely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
@@ -58,8 +62,9 @@ impl Status {
     }
 }
 
-/// Which check this is. Callers branch on the identity, not the display string — a batch deciding
-/// whether to skip a sample must not depend on prose that can be reworded or translated.
+/// Which check this is. A caller branches on the identity, and not on the string that the UI
+/// shows. A batch that decides whether to skip a sample must not depend on prose. Somebody can
+/// change that prose, or translate it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckId {
@@ -89,26 +94,31 @@ impl CheckId {
         }
     }
 
-    /// Whether failing this check makes the file unreadable *entirely*, sequential passes included.
+    /// True when a failure of this check makes the file unreadable *completely*, and that includes
+    /// a sequential pass.
     ///
-    /// The distinction drives what a caller may skip. A broken index (or anything built on it)
-    /// blocks only region queries — read metrics, coverage and sex fall back to a sequential walk
-    /// and still succeed — so treating that as "this sample is unanalyzable" would throw away
-    /// results that do work.
+    /// This is what decides whether a caller may skip a sample. A broken index, and anything that
+    /// stands on it, blocks a region query and nothing else. Read metrics, coverage and sex fall
+    /// back to a sequential walk, and they still succeed. To read that as "nobody can analyze this
+    /// sample" would throw away results that do work.
     ///
-    /// Deliberately narrow: only opening the file and reading its header qualify, because they are
-    /// the minimum every sequential path performs. A reference problem is *not* listed even though
-    /// several steps need one — how much it matters depends on the format and the step, and since
-    /// reading a CRAM's header already requires the reference, a genuinely unusable reference fails
-    /// [`CheckId::ReadHeader`] anyway. Since skipping discards work that might have succeeded, it
-    /// should follow only from a failure that leaves nothing to try.
+    /// The list is narrow, and that is deliberate. Only the open of the file, and the read of its
+    /// header, count. Those are the minimum that every sequential path does.
+    ///
+    /// A problem with the reference is *not* on the list, although some steps need one. How much
+    /// it matters depends on the format and on the step. And a read of the header of a CRAM
+    /// already needs the reference, so a reference that is truly unusable fails
+    /// [`CheckId::ReadHeader`] in any case.
+    ///
+    /// To skip a sample throws away work that could have succeeded. So it must follow only from a
+    /// failure that leaves nothing to try.
     pub fn blocks_sequential_reads(self) -> bool {
         matches!(self, CheckId::AlignmentFile | CheckId::ReadHeader)
     }
 }
 
-/// One named check against one named file. `path` is the file *this* check actually touched — the
-/// point of the whole module — so a failure is never attributed to a file that was merely nearby.
+/// One named check against one named file. `path` is the file that *this* check touched, which is
+/// the point of the whole module. A failure never goes to a file that only sat nearby.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Check {
     pub id: CheckId,
@@ -138,7 +148,7 @@ impl Check {
     }
 }
 
-/// The outcome of diagnosing one alignment.
+/// The result of a diagnosis of one alignment.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Report {
     pub alignment: PathBuf,
@@ -147,23 +157,25 @@ pub struct Report {
 }
 
 impl Report {
-    /// Whether any check failed outright (warnings do not count — they have fallbacks).
+    /// True when a check failed completely. A warning does not count, because a warning has a
+    /// fallback.
     pub fn failed(&self) -> bool {
         self.checks.iter().any(|c| c.status == Status::Fail)
     }
 
-    /// The first failing check — the one whose fix unblocks the rest, since later checks depend on
-    /// earlier ones succeeding.
+    /// The first check that failed. A fix to that one clears the rest, because a later check needs
+    /// the earlier checks to pass.
     pub fn first_failure(&self) -> Option<&Check> {
         self.checks.iter().find(|c| c.status == Status::Fail)
     }
 
-    /// Whether the file can not be read *at all* — not even by a sequential pass.
+    /// True when nothing can read the file, and that includes a sequential pass.
     ///
-    /// This is the question a batch has to answer before deciding to skip a sample. A failure that
-    /// only blocks region queries (a missing or unreadable index) must not skip it: read metrics,
-    /// coverage and sex still complete via the sequential fallback, and discarding those because
-    /// the Y step can't run would lose results the user would otherwise get.
+    /// A batch must answer this question before it skips a sample. Take a failure that blocks a
+    /// region query alone, such as an index that is missing, or one that the code can not read.
+    /// That failure must not skip the sample. Read metrics, coverage and sex still finish through
+    /// the sequential fallback. To throw those away because the Y step can not run would lose
+    /// results that the user would otherwise get.
     pub fn blocks_sequential_reads(&self) -> bool {
         self.checks
             .iter()
@@ -176,8 +188,8 @@ impl Report {
 }
 
 impl fmt::Display for Report {
-    /// A pasteable plain-text report. This is the format a user drops into a bug report, so it
-    /// leads with the failing check rather than making the reader scan for it.
+    /// A plain-text report that a user can paste. This is the form that goes into a bug report,
+    /// so the check that failed comes first. The reader does not have to look for it.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "alignment: {}", self.alignment.display())?;
         match &self.reference {
@@ -207,15 +219,17 @@ impl fmt::Display for Report {
     }
 }
 
-/// Explain an I/O error in terms of what the user has to *do*, keyed on the raw errno. The
-/// distinction that matters is `EPERM` vs `EACCES`: they render almost identically in a status bar
-/// ("Operation not permitted" vs "Permission denied") and have nothing to do with each other.
+/// Explain an I/O error by what the user must *do*. The key is the raw errno. The difference that
+/// matters is `EPERM` against `EACCES`. A status bar shows the two almost the same way,
+/// "Operation not permitted" against "Permission denied", and they have nothing to do with each
+/// other.
 fn explain(path: &Path, e: &std::io::Error) -> (Status, String, Option<i32>) {
     let errno = e.raw_os_error();
-    // "Not found" is keyed on the portable `ErrorKind`, not a raw errno: Unix returns ENOENT (2),
-    // but Windows returns ERROR_FILE_NOT_FOUND (2) *or* ERROR_PATH_NOT_FOUND (3) depending on which
-    // component of the path is absent — both of which map to `NotFound`. The remaining branches stay
-    // errno-keyed because they draw a distinction (EPERM vs EACCES) that `ErrorKind` collapses.
+    // The key of "not found" is the portable `ErrorKind`, and not a raw errno. Unix returns
+    // ENOENT (2). Windows returns ERROR_FILE_NOT_FOUND (2) *or* ERROR_PATH_NOT_FOUND (3), and
+    // which one depends on the component of the path that is absent. Both of those map to
+    // `NotFound`. The other branches keep the errno as their key, because they draw a difference,
+    // EPERM against EACCES, that `ErrorKind` collapses.
     if e.kind() == std::io::ErrorKind::NotFound {
         return (Status::Fail, format!("not found: {}", path.display()), errno);
     }
@@ -237,11 +251,11 @@ fn explain(path: &Path, e: &std::io::Error) -> (Status, String, Option<i32>) {
     (Status::Fail, detail, errno)
 }
 
-/// What a single file looks like to this process: does it exist, and can we actually open it?
+/// What one file looks like to this process. Does it exist, and can the process open it?
 ///
-/// Both halves are necessary. `metadata` alone answers a different question than `open` on macOS —
-/// a privacy denial can let `stat` through and refuse the `open`, or refuse both — so the check
-/// that matters is the one the reader will actually perform, which is opening it.
+/// Both halves are necessary. On macOS, `metadata` answers a different question from `open`. A
+/// privacy denial can let `stat` through and refuse the `open`, or it can refuse both. So the
+/// check that matters is the one that the reader itself does, which is the open.
 fn probe_file(id: CheckId, path: &Path) -> Check {
     match File::open(path) {
         Ok(_) => {
@@ -250,9 +264,9 @@ fn probe_file(id: CheckId, path: &Path) -> Check {
         }
         Err(e) => {
             let (status, mut detail, errno) = explain(path, &e);
-            // A file the OS will not open but that is visible in its own directory listing is being
-            // withheld, not absent — worth saying, because "not found" would send the user looking
-            // for a file that is sitting right there.
+            // Take a file that the OS will not open, and that its own directory listing shows.
+            // The OS holds that file back, and the file is not absent. Say so, because "not
+            // found" would send the user to look for a file that is right there.
             if e.kind() == std::io::ErrorKind::NotFound && directory_lists(path) {
                 detail = format!(
                     "{detail}\n         (the parent directory lists this name, so it exists but \
@@ -282,8 +296,9 @@ fn directory_lists(path: &Path) -> bool {
     entries.flatten().any(|e| e.file_name() == file)
 }
 
-/// Every path that could serve as the coordinate index for `path`, in the order the readers accept
-/// them: the dotted `foo.cram.crai` spelling `samtools` writes, then the replaced `foo.crai`.
+/// Every path that can be the coordinate index of `path`, in the order that the readers accept
+/// them. First comes the `foo.cram.crai` form that `samtools` writes, and then `foo.crai`, where
+/// the extension replaces the old one.
 pub fn index_candidates(path: &Path) -> Vec<PathBuf> {
     match detect_format(path) {
         Format::Bam => vec![path.with_extension("bam.bai"), path.with_extension("bai")],
@@ -291,13 +306,13 @@ pub fn index_candidates(path: &Path) -> Vec<PathBuf> {
     }
 }
 
-/// Diagnose an alignment, in dependency order: the file itself, then its index, then the reference
-/// and the reference's own index, then the operations built on all of them (header read, indexed
-/// open, one region query).
+/// Diagnose an alignment, in the order of the dependencies. First the file itself, then its index,
+/// then the reference and the index of that reference. Last come the operations that stand on all
+/// of those: the read of the header, the indexed open, and one region query.
 ///
-/// The order is the point — each check presupposes the previous one, so [`Report::first_failure`]
-/// names the thing to fix rather than the last thing to fall over. Reads at most one header and one
-/// region's records; never writes, never downloads.
+/// The order is the point. Each check needs the check before it, so [`Report::first_failure`]
+/// names the thing to fix, and not the last thing to fall over. This function reads one header at
+/// most, and the records of one region. It never writes, and it never downloads.
 pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
     let mut report = Report {
         alignment: alignment.to_path_buf(),
@@ -321,10 +336,12 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
         return report;
     }
 
-    // The index. Its absence is a warning, not a failure: sequential walks (read metrics, coverage,
-    // sex) fall back and succeed, which is exactly why an alignment can look healthy in the UI
-    // right up until something needs a region query. An index that exists but will not open is a
-    // failure, and is the case `has_region_index` silently reports as "no index".
+    // The index. Its absence is a warning and not a failure. The three sequential walks, which
+    // are the read metrics, the coverage and the sex, fall back and succeed. That is exactly why an alignment
+    // can look healthy in the UI until something needs a region query.
+    //
+    // An index that exists but that will not open is a failure. That is the case where
+    // `has_region_index` reports "no index", and nobody sees the real cause.
     let candidates = index_candidates(alignment);
     let found = candidates.iter().find(|p| directory_lists(p));
     let has_index = found.is_some();
@@ -350,7 +367,8 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
             let index_ok = probe.status == Status::Ok;
             report.push(probe);
             if !index_ok {
-                // No point attempting the indexed open — it would fail and, worse, blame the CRAM.
+                // Do not try the indexed open. It would fail, and it would put the blame on the
+                // CRAM.
                 return report;
             }
         }
@@ -377,8 +395,9 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
         if !reference_ok {
             return report;
         }
-        // CRAM decode goes through an *indexed* FASTA reader, so a missing `.fai` fails the open
-        // just as hard as a missing FASTA — and reports the FASTA's path when it does.
+        // A CRAM decode goes through an FASTA reader that uses an *index*. So a missing `.fai`
+        // fails the open as hard as a missing FASTA does, and it reports the path of the FASTA
+        // when it fails.
         let fai = PathBuf::from(format!("{}.fai", r.display()));
         let probe = probe_file(CheckId::ReferenceIndex, &fai);
         let fai_ok = probe.status == Status::Ok;
@@ -388,7 +407,8 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
         }
     }
 
-    // Now the composite operations, in the order the analysis paths perform them.
+    // Now the operations that put those parts together, in the order that the analysis paths do
+    // them.
     match reader::read_header(alignment, reference) {
         Ok(h) => report.push(Check::ok(
             CheckId::ReadHeader,
@@ -416,10 +436,11 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
             v
         }
         Err(e) => {
-            // The whole point of this module: do not repeat the upstream message's mistake of
-            // blaming the alignment. If we already established there is no index, *that* is the
-            // finding — an `ENOENT` naming the CRAM here means the reader could not autoload a
-            // sibling index, not that the CRAM went missing between two reads of it.
+            // This is the whole point of the module. Do not repeat the mistake of the message
+            // above, which puts the blame on the alignment. If the code already showed that there
+            // is no index, *that* is the answer. An `ENOENT` that names the CRAM here means that
+            // the reader could not load an index beside it. It does not mean that the CRAM went
+            // away between two reads of it.
             let check = if has_index {
                 Check::new(
                     CheckId::OpenIndexed,
@@ -448,8 +469,9 @@ pub fn diagnose(alignment: &Path, reference: Option<&Path>) -> Report {
         }
     };
 
-    // One real region query. Everything above can pass on a file whose index is stale or truncated;
-    // this is the check that actually exercises a seek, which is what the Y/mtDNA/SV paths do.
+    // One real region query. Everything above can pass on a file whose index is stale or cut
+    // short. This is the check that does a seek, and a seek is what the Y, mtDNA and SV paths
+    // do.
     let Some(contig) = header
         .reference_sequences()
         .keys()
@@ -511,9 +533,9 @@ mod tests {
         assert_eq!(bam[1], PathBuf::from("/d/s.bai"));
     }
 
-    /// EPERM and EACCES are the two that a status bar makes look alike and that have unrelated
-    /// fixes, so the explanation must separate them — chmod advice on a TCC denial sends the user
-    /// down a dead end.
+    /// A status bar makes EPERM and EACCES look alike, and their fixes have nothing to do with
+    /// each other. So the explanation must separate them. Advice to run chmod, on a TCC denial,
+    /// sends the user nowhere.
     #[test]
     fn explains_tcc_denial_separately_from_unix_permissions() {
         let p = Path::new("/d/s.cram");
@@ -532,9 +554,10 @@ mod tests {
         }
     }
 
-    /// A readable file with no index must warn about the *index* and name both accepted spellings,
-    /// and must not let that warning masquerade as a problem with the alignment — the confusion
-    /// that made the original bug report unreadable.
+    /// Take a file that the code can read, and that has no index. The report must warn about the
+    /// *index*, and it must name both of the forms that the readers accept. It must not let that
+    /// warning look like a problem with the alignment. That confusion is what made the original
+    /// bug report impossible to read.
     #[test]
     fn missing_index_is_reported_against_the_index_not_the_alignment() {
         let dir = std::env::temp_dir().join("navigator-preflight-noindex");
@@ -563,10 +586,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The invariant the batch depends on. A file with no index still analyzes fine sequentially
-    /// (coverage, read metrics, sex), so the missing index — and the `open indexed` failure that
-    /// follows from it — must not read as "this sample is unanalyzable". Getting this backwards
-    /// would silently drop results for every un-indexed CRAM in a project.
+    /// The invariant that the batch depends on. A file with no index still analyzes correctly in
+    /// a sequential pass, for coverage, read metrics and sex. The missing index, and the
+    /// `open indexed` failure that follows it, must not read as "nobody can analyze this sample".
+    /// The wrong answer here would drop the results of every CRAM without an index in a project,
+    /// and nobody would see it happen.
     #[test]
     fn a_missing_index_does_not_block_sequential_reads() {
         let dir = std::env::temp_dir().join("navigator-preflight-blocking");
@@ -590,8 +614,9 @@ mod tests {
         assert!(!CheckId::CoordinateIndex.blocks_sequential_reads());
         assert!(!CheckId::OpenIndexed.blocks_sequential_reads());
         assert!(!CheckId::RegionQuery.blocks_sequential_reads());
-        // A reference problem does not skip the sample on its own — a BAM reads without one, and a
-        // CRAM that truly can not use it fails the header read, which does.
+        // A problem with the reference does not skip the sample on its own. A BAM reads without a
+        // reference. And a CRAM that truly can not use one fails the header read, and that check
+        // does skip the sample.
         assert!(!CheckId::ReferenceFasta.blocks_sequential_reads());
         assert!(!CheckId::ReferenceIndex.blocks_sequential_reads());
         assert!(CheckId::AlignmentFile.blocks_sequential_reads());
@@ -610,10 +635,11 @@ mod tests {
         let report = diagnose(Path::new("/nonexistent/sample.cram"), None);
         let first = report.first_failure().expect("missing file must fail");
         assert_eq!(first.id, CheckId::AlignmentFile);
-        // Assert not-found portably: Unix reports ENOENT (2); Windows reports 2 or 3 depending on
-        // which path component is absent, so key on the message rather than a Unix errno.
+        // Assert "not found" in a portable way. Unix reports ENOENT (2). Windows reports 2 or 3,
+        // and which one depends on the component of the path that is absent. So key on the
+        // message, and not on a Unix errno.
         assert!(first.detail.starts_with("not found"), "{}", first.detail);
-        // The reference check must not run — the report stops at the first real blocker.
+        // The check on the reference must not run. The report stops at the first real block.
         assert!(
             !report.checks.iter().any(|c| c.id == CheckId::ReferenceFasta),
             "{report}"

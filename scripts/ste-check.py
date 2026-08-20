@@ -174,7 +174,13 @@ def extract_rust(path):
         s = raw.strip()
         m = re.match(r"^(///|//!|//)\s?(.*)$", s)
         if m and not s.startswith("////"):
-            out.append((i, m.group(2)))
+            body = m.group(2)
+            # A Markdown table row is data, not prose. Its cells carry no terminal punctuation, so
+            # the sentence splitter reads a whole table as one long sentence and reports a length
+            # that is not there. `extract_md` already skips these in a .md file; do the same here.
+            if body.strip().startswith("|"):
+                continue
+            out.append((i, body))
     return out
 
 

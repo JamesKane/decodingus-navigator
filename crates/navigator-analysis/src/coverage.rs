@@ -1,20 +1,25 @@
-//! Coverage + callable-loci walker — the Rust port of the Scala
-//! `CoverageCallableWalker` (which itself replaces GATK `CollectWgsMetrics` +
-//! `CallableLoci` over htsjdk). Single pass over a coordinate-sorted BAM/CRAM builds,
-//! per main-assembly contig: a depth histogram, per-position callable state, and
-//! samtools-style coverage stats.
+//! The walker over the coverage and the callable loci. It is the Rust port of the Scala
+//! `CoverageCallableWalker`, which itself replaces GATK `CollectWgsMetrics` and `CallableLoci`
+//! over htsjdk. It makes one pass over a BAM or CRAM in coordinate order. It builds three things
+//! for each contig on the main assembly. Those are a depth histogram, the callable state at each
+//! position, and coverage statistics in the style of samtools.
 //!
-//! Parity target is the Scala walker, not samtools — notably mean base/mapping quality
-//! are averaged **per base observation** (Σ quality / Σ depth), where samtools averages
-//! per read. See the crate fixture tests for hand-computed expected values.
+//! The parity target is the Scala walker, and not samtools. The difference that matters is the
+//! mean base quality and the mean mapping quality. This walker takes the mean **over the base
+//! observations**, as Σ quality / Σ depth. samtools takes the mean over the reads. The fixture
+//! tests of this crate carry the expected values, computed by hand.
 //!
-//! Memory: a **sliding-window pileup** finalizes each position once the read frontier
-//! passes it, so peak memory is the span of currently-open reads — not the contig
-//! length. The only contig-sized allocation is the reference bases of the contig being
-//! walked (one at a time, for N detection); whole-genome HG002 peaks ~2 GB vs the
-//! ~84 GB a dense per-contig-arrays approach would need. Requires a coordinate-sorted
-//! BAM. (Streaming the reference in windows too is a further optimization.) BED-interval
-//! output and progress callbacks from the Scala walker are deferred.
+//! On memory: a **pileup in a window that slides** finalizes each position once the read frontier
+//! passes it. The peak memory is then the span of the reads that are open, and not the length of
+//! the contig.
+//!
+//! One allocation has the size of a contig. It holds the reference bases of the contig that the
+//! walker is on, one contig at a time, to find the N bases. Over the whole genome, HG002 peaks at
+//! about 2 GB. A method with dense arrays for each contig would need about 84 GB.
+//!
+//! This walker needs a BAM in coordinate order. To stream the reference in windows as well is a
+//! further improvement, and nobody has done it. The BED-interval output and the progress
+//! callbacks of the Scala walker wait for later work.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -30,14 +35,17 @@ use crate::error::AnalysisError;
 use crate::reader;
 use crate::readview::AlnRead;
 
-/// Algorithm version for the coverage artifact cache key; bump on any change that
-/// alters output (plan §6 cache versioning).
+/// The algorithm version, for the cache key of the coverage artifact. Raise it after any change
+/// that alters the output. See plan §6, on the version of a cache.
 ///
-/// `coverage-2`: the parallel walker now attributes records by reference id, fixing under-counted
-/// coverage on multi-reference-slice CRAMs (FTDNA Big Y). The bump invalidates every cached
-/// `coverage-1` result — which contig sort/slice layout it was computed from is unknown per file —
-/// so each alignment recomputes correctly on its next analysis (the re-run also overwrites the
-/// stale read-metrics/sex from the same fused walk).
+/// At `coverage-2`, the parallel walker attributes a record by its reference id. Before that, the
+/// coverage count was too low on a CRAM whose slices hold more than one reference, such as an
+/// FTDNA Big Y.
+///
+/// The new version makes every cached `coverage-1` result stale, and that is correct. Nobody knows
+/// which sort order and slice layout each of those files came from. Each alignment computes the
+/// correct value again at its next analysis. That run also overwrites the stale
+/// read-metrics and sex from the same fused walk.
 pub const COVERAGE_VERSION: &str = "coverage-2";
 
 /// Callable-loci parameters. Defaults match GATK `CallableLoci` (and the Scala walker).
@@ -64,8 +72,8 @@ impl Default for CallableLociParams {
     }
 }
 
-/// Per-position callable classification (GATK `CallableLoci` states). Hierarchical:
-/// the first failing condition wins.
+/// The callable class at one position. These are the states of GATK `CallableLoci`. They form a
+/// hierarchy, and the first condition that fails wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CallableState {
     RefN,
@@ -76,7 +84,7 @@ pub enum CallableState {
     Callable,
 }
 
-/// Per-contig callable-state base counts.
+/// The count of bases in each callable state, for each contig.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContigCallableMetrics {
     pub contig: String,
@@ -88,7 +96,8 @@ pub struct ContigCallableMetrics {
     pub poor_mapping_quality: u64,
 }
 
-/// Per-contig samtools-`coverage`-style stats (averaged per base observation; see module docs).
+/// The coverage statistics of each contig, in the style of samtools `coverage`. The mean is over
+/// the base observations. See the module documentation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContigCoverageStats {
     pub contig: String,
@@ -100,11 +109,14 @@ pub struct ContigCoverageStats {
     pub mean_depth: f64,
     pub mean_base_q: f64,
     pub mean_map_q: f64,
-    /// This contig's depth histogram (bin `d` = bases at depth `d`, clamped at index 255 — same
-    /// convention as the genome-wide [`CoverageResult::coverage_histogram`]). Empty for fast-path
-    /// (pipeline-sidecar) imports, which have no per-depth histogram. `#[serde(default)]` keeps
-    /// coverage blobs cached before this field was added loading (the histogram repopulates on the
-    /// next analysis) — so `COVERAGE_VERSION` does not need a bump.
+    /// The depth histogram of this contig. Bin `d` holds the count of bases at depth `d`, and the
+    /// index stops at 255. That is the same convention as the genome-wide
+    /// [`CoverageResult::coverage_histogram`].
+    ///
+    /// It is empty for an import on the fast path, from a pipeline sidecar, because such an import
+    /// has no histogram over the depths. `#[serde(default)]` lets a coverage blob that the cache
+    /// holds from before this field still load. The histogram fills again at the next analysis, so
+    /// `COVERAGE_VERSION` does not need a new value.
     #[serde(default)]
     pub histogram: Vec<u64>,
 }
@@ -124,7 +136,8 @@ pub struct CoverageResult {
     /// Fraction of observed bases excluded for low mapping quality (Picard PCT_EXC_MAPQ).
     #[serde(default)]
     pub pct_exc_mapq: f64,
-    /// Fraction of observed bases excluded for low base quality, MAPQ having passed (PCT_EXC_BASEQ).
+    /// The fraction of the observed bases that the walker removed for a low base quality, after
+    /// those bases passed the MAPQ filter. This is PCT_EXC_BASEQ.
     #[serde(default)]
     pub pct_exc_baseq: f64,
     /// Depth histogram, clamped at index 255.
@@ -145,7 +158,7 @@ pub struct CoverageResult {
 
 const HIST_LEN: usize = 256;
 
-/// Per-position accumulator within the sliding pileup window.
+/// The accumulator at one position, inside the pileup window that slides.
 #[derive(Clone, Default)]
 struct Col {
     depth: u32,
@@ -155,7 +168,7 @@ struct Col {
     low_mapq: u32,
     /// Bases excluded for low mapping quality (mutually exclusive with `exc_baseq`; MAPQ checked first).
     exc_mapq: u32,
-    /// Bases that passed MAPQ but were excluded for low base quality.
+    /// The count of bases that passed MAPQ, and that a low base quality then removed.
     exc_baseq: u32,
 }
 
@@ -183,16 +196,19 @@ impl Globals {
     }
 }
 
-/// Finished per-contig output (kept tiny; assembled into the result in header order).
+/// The finished output of one contig. It stays very small, and the code puts it into the result
+/// in header order.
 struct ContigOut {
     callable: ContigCallableMetrics,
     stats: ContigCoverageStats,
 }
 
-/// Reference-N mask for one contig: one bit per base (set = the reference base is N), so
-/// callable classification needs ~1/8 the memory of holding the raw reference bytes. That
-/// matters for the parallel walker, where each concurrent contig task would otherwise pin its
-/// full reference (chr1 ≈ 248 MB) for the whole pileup.
+/// The mask of the N bases in the reference of one contig. It holds one bit for each base, and a
+/// set bit means that the reference base is N. The callable class then needs about one eighth of
+/// the memory that the raw reference bytes need.
+///
+/// That matters for the parallel walker. Each contig task that runs at the same time would else
+/// hold its full reference for the whole pileup, and chr1 is about 248 MB.
 struct NMask {
     bits: Vec<u64>,
 }
@@ -215,8 +231,9 @@ impl NMask {
     }
 }
 
-/// Streaming state for the contig currently being walked. Memory is bounded by the
-/// sliding window (the span of currently-open reads), not the contig length.
+/// The streaming state of the contig that the walker is on. The window that slides bounds the
+/// memory, and that window is the span of the reads that are open. The length of the contig does
+/// not bound it.
 struct CurContig {
     name: String,
     length: usize,
@@ -225,23 +242,24 @@ struct CurContig {
     emit_cursor: usize, // 1-based position next to finalize; window front aligns here
     read_count: u64,
     cm: ContigCallableMetrics,
-    /// This contig's own depth histogram (kept alongside the global `Globals::hist` so the
-    /// per-contig histogram can be surfaced; both walker paths finalize through here).
+    /// The own depth histogram of this contig. It sits beside the global `Globals::hist`, so that
+    /// the UI can show the histogram of each contig. Both walker paths finish through here.
     hist: Vec<u64>,
     covered: u64,
     total_base_obs: u64,
     base_q_total: u64,
     map_q_total: u64,
     sum_depth: u128,
-    /// Count of bases dropped because they mapped *before* the finalize frontier — only possible
-    /// when the input is not strictly coordinate-sorted (see [`CurContig::add`]). Surfaced as a
-    /// warning in [`CurContig::finish`]; stays 0 for the standard sorted layout.
+    /// The count of bases that the walker dropped, because they mapped *before* the finalize
+    /// frontier. That can happen only when the input is not strictly in coordinate order. See
+    /// [`CurContig::add`]. [`CurContig::finish`] gives a warning about it. It stays 0 for the
+    /// standard sorted layout.
     dropped_unsorted: u64,
 }
 
 impl CurContig {
-    /// Builds from the contig's raw reference bytes, retaining only the compact N-mask (the
-    /// `ref_bases` buffer can be dropped by the caller right after).
+    /// Build from the raw reference bytes of the contig. This keeps the compact N-mask alone, so
+    /// the caller can drop the `ref_bases` buffer immediately after.
     fn new(name: String, length: usize, ref_bases: Vec<u8>) -> Self {
         let cm = ContigCallableMetrics {
             contig: name.clone(),
@@ -309,13 +327,17 @@ impl CurContig {
         }
     }
 
-    /// Add one covered base at 1-based `pos` to the window. The window only holds positions at or
-    /// after the finalize frontier, so a base *before* it (`pos < emit_cursor`) belongs to an
-    /// already-emitted column and is dropped rather than underflowing `pos - emit_cursor`. This can
-    /// only happen when the input is not strictly coordinate-sorted (some vendor CRAMs, e.g. FTDNA
-    /// Big Y): the streaming pileup fundamentally assumes sorted input, so the few out-of-order
-    /// bases are counted as dropped (surfaced in `finish`) instead of crashing the walk. For the
-    /// standard sorted layout `pos >= emit_cursor` always holds and this guard never fires.
+    /// Add one covered base at the 1-based `pos` to the window.
+    ///
+    /// The window holds only the positions at the finalize frontier or after it. A base *before*
+    /// the frontier, where `pos < emit_cursor`, belongs to a column that the walker already
+    /// emitted. The code drops that base, and it does not let `pos - emit_cursor` go below zero.
+    ///
+    /// This can happen only when the input is not strictly in coordinate order, which occurs on
+    /// some vendor CRAMs, such as an FTDNA Big Y. The streaming pileup assumes sorted input at its
+    /// root. So the few bases that are out of order count as dropped, which `finish` reports, and
+    /// the walk does not crash. On the standard sorted layout, `pos >= emit_cursor` always holds,
+    /// and this guard never fires.
     fn add(&mut self, pos: usize, base_q: u8, mapq: u8, params: &CallableLociParams) {
         if pos < self.emit_cursor {
             self.dropped_unsorted += 1;
@@ -329,7 +351,8 @@ impl CurContig {
         col.depth += 1;
         col.base_q_sum += base_q as u64;
         col.map_q_sum += mapq as u64;
-        // Mutually-exclusive exclusion attribution (MAPQ first, then base-Q), mirroring Picard.
+        // A base goes to one exclusion reason and no more than one: MAPQ first, then base-Q.
+        // Picard does the same.
         if mapq < params.min_mapping_quality {
             col.exc_mapq += 1;
         } else if base_q < params.min_base_quality {
@@ -389,10 +412,12 @@ impl CurContig {
     }
 }
 
-/// Single coordinate-ordered pass with a sliding pileup window: positions finalize once
-/// the read frontier passes them, so peak memory is the open-read span, not the contig
-/// length. Requires a coordinate-sorted BAM/CRAM (the standard genomics layout). The
-/// reference is needed both to detect reference-N positions and to decode CRAM.
+/// One pass in coordinate order, with a pileup window that slides. A position finalizes once the
+/// read frontier passes it. The peak memory is then the span of the open reads, and not the length
+/// of the contig.
+///
+/// This needs a BAM or CRAM in coordinate order, which is the standard layout in genomics. It
+/// needs the reference for two things: to find the N positions, and to decode a CRAM.
 pub fn collect_coverage_callable(
     bam_path: &Path,
     reference_path: &Path,
@@ -409,9 +434,12 @@ pub fn collect_coverage_callable(
     )
 }
 
-/// Like [`collect_coverage_callable`], reporting `progress(contigs_done, contigs_total)` as each
-/// tracked contig is finalized — so a whole-genome pass (minutes on a real WGS BAM) can drive a
-/// progress bar instead of looking stalled. Assumes a coordinate-sorted BAM (contigs in order).
+/// The same as [`collect_coverage_callable`], and it also reports
+/// `progress(contigs_done, contigs_total)` as it finishes each contig that it tracks.
+///
+/// A pass over the whole genome takes minutes on a real WGS BAM. It can then drive a progress bar,
+/// and it does not look stopped. This function needs a BAM in coordinate order, with the contigs
+/// in order.
 pub fn collect_coverage_callable_with_progress(
     bam_path: &Path,
     reference_path: &Path,
@@ -435,10 +463,11 @@ pub fn collect_coverage_callable_with_progress(
     state.finish(progress)
 }
 
-/// Streaming coverage + callable accumulator shared by the standalone walker and the fused
-/// [`crate::unified`] walker, so both produce byte-identical numbers from one source of
-/// truth. Feed it every record via [`CoverageState::accept`] (it applies coverage's own
-/// flag/contig filtering internally), then call [`CoverageState::finish`].
+/// The streaming accumulator for the coverage and the callable state. The separate walker and the
+/// fused [`crate::unified`] walker share it, so both give the same numbers, to the last digit,
+/// from one source of truth. Give it every record through [`CoverageState::accept`], which applies
+/// the flag filter and the contig filter of the coverage pass inside. Then call
+/// [`CoverageState::finish`].
 pub(crate) struct CoverageState {
     /// ref_id -> (name, length) for tracked (main-assembly, allowlisted) contigs; `None` elsewhere.
     tracked: Vec<Option<(String, usize)>>,
@@ -485,14 +514,16 @@ impl CoverageState {
         })
     }
 
-    /// Contigs this state will walk — the progress denominator.
+    /// The contigs that this state walks. It is the denominator of the progress.
     pub(crate) fn total_tracked(&self) -> usize {
         self.total_tracked
     }
 
-    /// Feed one record. Records that coverage does not care about (unmapped/secondary/
-    /// supplementary/duplicate/qc-fail, or off a tracked contig) are ignored, so the fused
-    /// walker can hand every record here unfiltered. Fires `progress` on contig finalization.
+    /// Give it one record. It ignores a record that the coverage pass does not want. There are
+    /// five of those: a record with no mapping, a secondary record, a supplementary record, a
+    /// duplicate, and a qc-fail. It also ignores a record on a contig that the walker does not
+    /// track. The fused walker can then give every record here, with no filter of its own. It
+    /// calls `progress` when a contig finishes.
     pub(crate) fn accept(
         &mut self,
         record: &impl AlnRead,
@@ -574,8 +605,9 @@ impl CoverageState {
                 }
                 self.g.hist[0] += length as u64;
                 self.g.n += length as u64;
-                // Per-contig histogram: every position at depth 0 (matches the parallel path,
-                // where an unseen contig finalizes all positions at depth 0 via CurContig::finish).
+                // The histogram of this contig: every position sits at depth 0. That matches the
+                // parallel path, where a contig that the walker never saw finalizes every position
+                // at depth 0, through CurContig::finish.
                 let mut hist = vec![0u64; HIST_LEN];
                 hist[0] = length as u64;
                 contig_callable.push(ContigCallableMetrics {
@@ -615,17 +647,18 @@ impl CoverageState {
     }
 }
 
-/// Coverage's read filter — skip unmapped / secondary / supplementary / duplicate / qc-fail.
-/// Shared by the sequential [`CoverageState`] and the per-contig [`ContigCoverageAccum`] so
-/// both pileups see the identical read set.
+/// The read filter of the coverage pass. It skips a read with no mapping, a secondary or
+/// supplementary read, a duplicate, and a qc-fail. The sequential [`CoverageState`] and the
+/// [`ContigCoverageAccum`] of one contig share it, so both pileups see the same set of reads.
 fn coverage_passes_filter(record: &impl AlnRead) -> bool {
     let f = record.flags();
     !(f.is_unmapped() || f.is_secondary() || f.is_supplementary() || f.is_duplicate() || f.is_qc_fail())
 }
 
-/// Feed one (already filter-passing) record into a contig's sliding-window pileup: advance
-/// the finalize frontier to the read's start, then add each reference-consuming base. Shared
-/// by the sequential and per-contig coverage paths so the per-base accounting is identical.
+/// Give one record, which already passed the filter, to the pileup window of a contig. It moves
+/// the finalize frontier to the start of the read, and then adds each base that the read takes
+/// from the reference. The sequential path and the path over one contig share it, so the tally at
+/// each base is the same in both.
 fn feed_into_contig(c: &mut CurContig, record: &impl AlnRead, params: &CallableLociParams, g: &mut Globals) {
     let start = match record.alignment_start() {
         Some(p) => p,
@@ -659,9 +692,11 @@ fn feed_into_contig(c: &mut CurContig, record: &impl AlnRead, params: &CallableL
     });
 }
 
-/// Assemble the genome-wide [`CoverageResult`] from merged histogram/territory/depth sums and
-/// per-contig outputs (already in header order). Single source of truth for the result tail,
-/// used by both the sequential `finish` and the parallel `merge_coverage_partials`.
+/// Build the genome-wide [`CoverageResult`]. It takes the merged sums of the histogram, the
+/// territory and the depth, and the output of each contig, which is already in header order.
+///
+/// It is the single source of truth for the tail of the result. The sequential `finish` and the
+/// parallel `merge_coverage_partials` both use it.
 #[allow(clippy::too_many_arguments)] // one accumulator per metric — a coverage roll-up, not a refactor target
 fn assemble_coverage_result(
     hist: Vec<u64>,
@@ -716,17 +751,19 @@ fn assemble_coverage_result(
     }
 }
 
-/// Per-contig coverage accumulator for the parallel walker — one contig's sliding-window
-/// pileup with a local copy of the genome-wide accumulators (summed across contigs at merge
-/// time). Built per contig in the rayon fan-out; feed it that contig's region-query records.
+/// The coverage accumulator of one contig, for the parallel walker. It holds the pileup window of
+/// that contig, and a local copy of the genome-wide accumulators. The merge adds those copies
+/// across the contigs. The rayon fan-out builds one for each contig. Give it the records from the
+/// region query of that contig.
 pub(crate) struct ContigCoverageAccum {
     c: CurContig,
     g: Globals,
     params: CallableLociParams,
 }
 
-/// One contig's finished coverage contribution: its per-contig output plus this contig's
-/// share of the genome-wide histogram / territory / depth sums.
+/// The finished coverage of one contig. It holds the output of that contig. It also holds the
+/// share that the contig adds to the genome-wide sums of the histogram, the territory and the
+/// depth.
 pub(crate) struct ContigCoveragePartial {
     ref_id: usize,
     callable: ContigCallableMetrics,
@@ -748,18 +785,22 @@ impl ContigCoverageAccum {
         }
     }
 
-    /// Feed one record; the coverage read filter is applied internally, so off-filter records
-    /// are ignored and the caller can pass every record from the contig's region query.
+    /// Give it one record. It applies the read filter of the coverage pass inside, so it ignores a
+    /// record that the filter rejects. The caller can then give it every record from the region
+    /// query of the contig.
     pub(crate) fn accept(&mut self, record: &impl AlnRead) {
         if coverage_passes_filter(record) {
             feed_into_contig(&mut self.c, record, &self.params, &mut self.g);
         }
     }
 
-    /// Finalize the contig (flushing its window + uncovered tail) into a partial tagged with
-    /// `ref_id` for header-order reassembly. A contig that saw no reads still finalizes every
-    /// position at depth 0 — counting ref-N and no-coverage exactly as the sequential walker's
-    /// zero-coverage branch does.
+    /// Finalize the contig into a partial result that carries `ref_id`, so that a later step can
+    /// put the partials back into header order. This sends out the window of the contig, and its
+    /// tail that no read covered.
+    ///
+    /// A contig that saw no read still finalizes every position at depth 0. It counts the ref-N
+    /// bases and the bases with no coverage exactly as the zero-coverage branch of the sequential
+    /// walker does.
     pub(crate) fn finish(mut self, ref_id: usize) -> ContigCoveragePartial {
         let out = self.c.finish(&self.params, &mut self.g);
         ContigCoveragePartial {
@@ -776,9 +817,10 @@ impl ContigCoverageAccum {
     }
 }
 
-/// Merge per-contig coverage partials into the genome-wide [`CoverageResult`]: sum the
-/// histogram/territory/depth accumulators and order the per-contig outputs by `ref_id` (header
-/// order), so the result is byte-identical to the sequential walker's.
+/// Merge the coverage partials of the contigs into the genome-wide [`CoverageResult`]. It adds up
+/// the accumulators of the histogram, the territory and the depth. It then puts the output of each
+/// contig into `ref_id` order, which is the header order. The result then matches that of the
+/// sequential walker, to the last digit.
 pub(crate) fn merge_coverage_partials(mut partials: Vec<ContigCoveragePartial>) -> CoverageResult {
     partials.sort_by_key(|p| p.ref_id);
     let mut hist = vec![0u64; HIST_LEN];
@@ -810,10 +852,13 @@ pub(crate) fn merge_coverage_partials(mut partials: Vec<ContigCoveragePartial>) 
     )
 }
 
-/// Mean read length and mean fragment (template) length, sampled from the first ~50k
-/// primary mapped reads. The molecule-length proxy for the self-referential callable
-/// run-length gate (long reads → long molecules → long callable runs). Fragment falls
-/// back to read length when templates are unpaired (e.g. long-read single-end).
+/// The mean read length and the mean fragment length, which is the template length. The code
+/// samples the first 50k primary mapped reads, or about that many.
+///
+/// This is the proxy for the molecule length, which the callable run-length gate needs, and that
+/// gate refers to itself. Long reads mean long molecules, and long molecules mean long callable
+/// runs. The fragment length falls back to the read length when the templates have no pair, as in
+/// single-end long-read data.
 pub fn estimate_molecule_lengths(bam_path: &Path, reference: Option<&Path>) -> Result<(f64, f64), AnalysisError> {
     let (header, mut reader) = reader::open_seq(bam_path, reference)?;
 
@@ -830,9 +875,10 @@ pub fn estimate_molecule_lengths(bam_path: &Path, reference: Option<&Path>) -> R
         }
         read_sum += len;
         n += 1;
-        // Fragment length only from properly-paired reads, with a sanity cap — chimeric or
-        // improper pairs carry enormous |TLEN| that would otherwise blow up the mean (and
-        // the run-length gate). Single-end / long reads have no proper pairs -> read-length.
+        // Take the fragment length from a read with a correct pair alone, and put an upper limit
+        // on it. A chimeric pair, or a pair that is not correct, carries a very large |TLEN|.
+        // That would move the mean far away, and the run-length gate with it. A single-end read
+        // and a long read have no correct pair, so those fall back to the read length.
         if f.is_properly_segmented() {
             let tlen = record.template_length().unsigned_abs() as u64;
             if tlen > 0 && tlen < 100_000 {
@@ -856,10 +902,13 @@ pub fn estimate_molecule_lengths(bam_path: &Path, reference: Option<&Path>) -> R
     Ok((read_len, frag_len))
 }
 
-/// CALLABLE intervals (BED 0-based half-open) on one `contig`, coalesced and kept only
-/// when the run is at least `min_run_len` bases. Reference-free: positions are classified
-/// by depth / QC / MAPQ via the GATK hierarchy (reference-N regions carry no reads and
-/// fall out as no-coverage). Memory is bounded by the open-read window; needs a BAM index.
+/// The CALLABLE intervals on one `contig`, in BED form, which is 0-based and half-open. The code
+/// joins the intervals that touch, and it keeps a run only when that run holds `min_run_len` bases
+/// or more.
+///
+/// It needs no reference. It classifies a position by the depth, the QC flags and the MAPQ,
+/// through the GATK hierarchy. A region of N bases in the reference carries no read, and it comes
+/// out as no-coverage. The window of open reads bounds the memory. This needs a BAM index.
 pub fn callable_intervals(
     bam_path: &Path,
     contig: &str,
@@ -965,8 +1014,9 @@ pub fn callable_intervals(
     Ok(intervals)
 }
 
-/// GATK `CallableLoci` hierarchy — first failing condition wins. Mirrors the Scala
-/// `determineCallableState`. `ref_is_n` is whether the reference base is N (non-callable).
+/// The hierarchy of GATK `CallableLoci`. The first condition that fails wins. It has the same
+/// shape as the Scala `determineCallableState`. `ref_is_n` is true when the reference base is N,
+/// and such a base is not callable.
 fn determine_state(
     ref_is_n: bool,
     depth: u32,
@@ -1001,9 +1051,9 @@ fn pct_at_least(hist: &[u64], total: u64, min_depth: usize) -> f64 {
     at_least as f64 / total as f64
 }
 
-/// Median absolute deviation of depth: the median of `|depth − median|` over the depth histogram.
-/// Depths are clamped at index 255 in the histogram, so deviations in that tail are lower bounds
-/// (negligible for typical WGS coverage).
+/// The median absolute deviation of the depth. It is the median of `|depth − median|` over the
+/// depth histogram. The histogram stops the depth at index 255, so a deviation in that tail is a
+/// lower bound. At a usual WGS coverage that makes no difference.
 fn mad_from_hist(hist: &[u64], total: u64, median: f64) -> f64 {
     if total == 0 {
         return 0.0;
@@ -1045,9 +1095,10 @@ mod tests {
 
     #[test]
     fn add_tolerates_a_base_before_the_finalize_frontier() {
-        // A non-coordinate-sorted input can present a base whose position is *behind* the window's
-        // finalize frontier. That must be dropped (and counted), not underflow `pos - emit_cursor`
-        // (the regression: coverage.rs panicked "attempt to subtract with overflow").
+        // An input that is not in coordinate order can give a base whose position is *behind* the
+        // finalize frontier of the window. The code must drop that base, and count it. It must not
+        // let `pos - emit_cursor` go below zero. That was the bug: coverage.rs panicked with
+        // `attempt to subtract with overflow`.
         let params = CallableLociParams::default();
         let mut g = Globals::new();
         let mut c = CurContig::new("chrT".into(), 100, vec![b'A'; 100]);
@@ -1061,7 +1112,8 @@ mod tests {
         c.add(60, 30, 60, &params);
         assert_eq!(c.dropped_unsorted, 1, "an in-order base is not dropped");
 
-        // Finishing completes without panicking and yields the contig's stats.
+        // The finish runs to its end, it does not panic, and it gives the statistics of the
+        // contig.
         let out = c.finish(&params, &mut g);
         assert_eq!(out.stats.end_pos, 100);
     }
@@ -1071,8 +1123,9 @@ mod tests {
         let bam = fixture("coverage.bam"); // chrM, 50 bp, well covered
         let params = CallableLociParams::default();
 
-        // No run-length gate: some callable bases, all within the 50 bp contig, intervals
-        // sorted and non-overlapping (BED 0-based half-open).
+        // With no run-length gate, there are some callable bases, and all of them lie inside the
+        // 50 bp contig. The intervals come in sorted order, and none of them overlaps another. The
+        // form is BED, which is 0-based and half-open.
         let ivs = callable_intervals(&bam, "chrM", &params, 1, None).unwrap();
         assert!(!ivs.is_empty(), "expected callable intervals on the fixture");
         let callable_bases: i64 = ivs.iter().map(|(s, e)| e - s).sum();
@@ -1112,8 +1165,9 @@ mod tests {
     fn per_contig_histograms_sum_to_genome_wide() {
         let params = CallableLociParams::default();
 
-        // chrM-only and a multi-contig (autosomes + chrX) fixture, so the sum invariant is
-        // exercised across more than one contig.
+        // One fixture holds chrM alone. The other holds more than one contig, which are the
+        // autosomes and chrX. The test thereby covers the sum invariant across more than one
+        // contig.
         for (bam_name, ref_name) in [("coverage.bam", "ref.fa"), ("sex.bam", "sexref.fa")] {
             let cov = collect_coverage_callable(&fixture(bam_name), &fixture(ref_name), &params, None).unwrap();
             assert!(
@@ -1139,8 +1193,8 @@ mod tests {
                 }
             }
 
-            // The strong invariant: per-contig histograms reconstruct the genome-wide histogram
-            // exactly (the genome-wide one is just their bin-wise sum).
+            // The strong invariant. The histograms of the contigs build the genome-wide histogram
+            // exactly. The genome-wide one is their sum, bin by bin.
             assert_eq!(
                 summed, cov.coverage_histogram,
                 "{bam_name}: per-contig histograms must sum bin-for-bin to the genome-wide histogram"

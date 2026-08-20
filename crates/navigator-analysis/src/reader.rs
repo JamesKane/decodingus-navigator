@@ -1,12 +1,14 @@
-//! Format-agnostic alignment reading. The walkers (coverage, caller, read-metrics) need
-//! to read records the same way whether the file is BAM or CRAM, but `noodles` exposes
-//! two different reader families: BAM yields borrowed `bam::Record`s, CRAM yields owned
-//! `sam::alignment::RecordBuf`s and needs the reference FASTA to decode. This module
-//! normalizes both to `RecordBuf` (one owned allocation per record — the same order CRAM
-//! pays anyway) so the hot per-base loops stay format-blind and allocation-free.
+//! A read of an alignment that does not depend on the format. The walkers, which are coverage,
+//! the caller and read-metrics, must read a record the same way from a BAM and from a CRAM.
 //!
-//! noodles is intentionally confined to this crate (see lib.rs); this is the single place
-//! that knows about CRAM's reference-sequence repository.
+//! But `noodles` gives two different families of reader. A BAM gives a borrowed `bam::Record`. A
+//! CRAM gives an owned `sam::alignment::RecordBuf`, and it needs the reference FASTA to decode.
+//! This module brings both to a `RecordBuf`. That is one owned allocation at each record, which is
+//! the same order of cost that a CRAM pays in any case. So the hot loops over the bases do not
+//! know the format, and they allocate nothing.
+//!
+//! noodles stays inside this crate, and that is deliberate. See lib.rs. This is the one place that
+//! knows about the repository of reference sequences of a CRAM.
 
 use std::fs::File;
 use std::num::NonZeroUsize;
@@ -17,12 +19,15 @@ use noodles::core::{Position, Region};
 use noodles::sam::alignment::RecordBuf;
 use noodles::{bam, bgzf, cram, fasta, sam};
 
-/// Worker threads for multithreaded bgzf decompression of BAM sequential reads. bgzf is a
-/// block-gzip stream, so block inflation parallelizes while record parsing stays sequential
-/// (output is byte-identical — only decompression is threaded). Defaults to the available
-/// parallelism minus one (the record-parsing consumer), capped at 6 — beyond a handful of
-/// inflate workers the single consumer thread is the limit. Override with
-/// `NAVIGATOR_BGZF_THREADS` (clamped to >= 1; set to 1 to disable threading).
+/// The count of worker threads that decompress bgzf, for a sequential read of a BAM.
+///
+/// bgzf is a stream of gzip blocks. So the inflation of those blocks runs in parallel, while the
+/// parse of the records stays sequential. The output does not change, to the last byte, because
+/// the threads only decompress.
+///
+/// The default is the available parallelism, less one for the consumer that parses the records,
+/// and up to 6. Above a few inflate workers, the one consumer thread is the limit.
+/// `NAVIGATOR_BGZF_THREADS` overrides it, clamped to 1 or more. Set it to 1 to use one thread.
 pub(crate) fn bgzf_worker_count() -> NonZeroUsize {
     if let Some(n) = std::env::var("NAVIGATOR_BGZF_THREADS")
         .ok()
@@ -38,13 +43,17 @@ use crate::cancel::CancelToken;
 use crate::error::AnalysisError;
 use crate::readview::{AlnRead, SeqRecord};
 
-/// Per-thread stack size (bytes) for any thread that decodes a BAM/**CRAM** record. noodles' CRAM
-/// decoder recurses proportionally to the data — notably the CRAM **3.1** codecs (range/arithmetic
-/// coder, fqzcomp, name tokenizer), which older 3.0 files never exercise — and can recurse deep
-/// enough to blow a default thread stack (2 MiB) or even rayon's pools. A stack overflow **aborts
-/// the process** (it is not a catchable panic), so a single deeply-encoded file would otherwise take
-/// down the whole app/batch. Give decode threads a generous stack. Override with
-/// `NAVIGATOR_DECODE_STACK_MB` (whole MiB; clamped to >= 8).
+/// The stack size of each thread, in bytes, for any thread that decodes a BAM or **CRAM** record.
+///
+/// The CRAM decoder of noodles recurses in proportion to the data. The CRAM **3.1** codecs are the
+/// ones that matter: the range and arithmetic coder, fqzcomp, and the name tokenizer. An older 3.0
+/// file never uses those. The decoder can recurse deep enough to overflow a default thread stack
+/// of 2 MiB, and even the pools of rayon.
+///
+/// A stack overflow **aborts the process**. It is not a panic that the code can catch. One file
+/// with a deep encoding would else take down the whole app or batch. So give a decode thread a
+/// large stack. `NAVIGATOR_DECODE_STACK_MB` overrides the size, in whole MiB, clamped to 8 or
+/// more.
 pub fn decode_stack_size() -> usize {
     let mb = std::env::var("NAVIGATOR_DECODE_STACK_MB")
         .ok()
@@ -54,9 +63,10 @@ pub fn decode_stack_size() -> usize {
     mb * 1024 * 1024
 }
 
-/// Build a rayon pool whose worker threads have a decode-safe stack ([`decode_stack_size`]).
-/// Use this for any parallel work that decodes CRAM/BAM records — the rayon default (2 MiB) and
-/// even a modest fixed bump are not enough for deeply-encoded CRAM 3.1 files.
+/// Build a rayon pool whose worker threads have a stack that is safe for a decode. See
+/// [`decode_stack_size`]. Use it for any parallel work that decodes a CRAM or BAM record. The
+/// rayon default of 2 MiB is not enough for a CRAM 3.1 file with a deep encoding, and neither is a
+/// small fixed increase.
 pub fn decode_pool(threads: usize) -> Result<rayon::ThreadPool, AnalysisError> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -98,9 +108,9 @@ fn require_reference<'a>(path: &Path, reference: Option<&'a Path>) -> Result<&'a
 
 // ---- sequential (whole-file) reading --------------------------------------
 
-/// A whole-file reader over BAM or CRAM. Hold it and call [`SeqReader::records`]. The BAM
-/// path uses a multithreaded bgzf reader so block decompression runs on a worker pool while
-/// records are parsed sequentially (see [`bgzf_worker_count`]).
+/// A reader over a whole BAM or CRAM file. Hold it, and call [`SeqReader::records`]. The BAM path
+/// uses a bgzf reader with more than one thread. So the block decompression runs on a worker pool,
+/// while the parse of the records stays sequential. See [`bgzf_worker_count`].
 pub enum SeqReader {
     Bam {
         inner: bam::io::Reader<bgzf::io::MultithreadedReader<File>>,
@@ -112,8 +122,8 @@ pub enum SeqReader {
     },
 }
 
-/// Open `path` for a sequential pass, returning the header and reader. `reference` is
-/// required for CRAM (ignored for BAM).
+/// Open `path` for a sequential pass. Returns the header and the reader. A CRAM needs
+/// `reference`, and a BAM ignores it.
 pub fn open_seq(path: &Path, reference: Option<&Path>) -> Result<(sam::Header, SeqReader), AnalysisError> {
     match detect_format(path) {
         Format::Bam => {
@@ -173,10 +183,13 @@ impl SeqReader {
         }
     }
 
-    /// Iterate every record as a [`SeqRecord`] — the **lazy** counterpart to [`SeqReader::records`].
-    /// The BAM path yields the zero-copy `bam::Record` (no owned `RecordBuf` decode/tag-parse, the
-    /// hot-path win); the CRAM path yields the decoded `RecordBuf` (no cheaper form). The walkers
-    /// consume `&impl AlnRead`, so `SeqRecord` drives them with no allocation on the BAM path.
+    /// Walk every record as a [`SeqRecord`]. This is the **lazy** counterpart to
+    /// [`SeqReader::records`].
+    ///
+    /// The BAM path gives the zero-copy `bam::Record`. It does no decode into an owned
+    /// `RecordBuf`, and it parses no tag, and that is the gain on the hot path. The CRAM path gives
+    /// the decoded `RecordBuf`, because there is no cheaper form. The walkers take an
+    /// `&impl AlnRead`, so a `SeqRecord` drives them with no allocation on the BAM path.
     pub fn records_lazy<'a>(
         &'a mut self,
         header: &'a sam::Header,
@@ -217,20 +230,23 @@ pub enum IdxReader {
     },
 }
 
-/// File offsets of the `.crai` containers that can hold records overlapping `interval` on `ref_id`.
+/// The file offsets of the `.crai` containers that can hold a record inside `interval` on
+/// `ref_id`.
 ///
-/// **This is the whole reason CRAM region queries are usable.** A CRAM container is the unit of
-/// decode — you can not decode part of one — so restricting *which containers get decoded* is the
-/// only place a region query can save work. noodles' own `Query` (and, before this, our `for_each`)
-/// selected containers by reference sequence alone and then discarded non-overlapping records
-/// *after* decoding them, which made every query cost a whole chromosome no matter how small the
-/// region: measured at 20.9 s for a 1 bp query on chr21 and 116 s on chr1, against 4–6 ms for the
-/// same query on a BAM. chr21 of a 30x WGS holds 1,140 containers and a point query needs exactly
-/// one of them.
+/// **This is the whole reason that a CRAM region query is usable.** A CRAM container is the unit
+/// of a decode, and you can not decode part of one. To limit *which containers the code decodes*
+/// is the only place where a region query can save work.
 ///
-/// A container whose `alignment_start` is absent is **kept**: that is a container this index can not
-/// place, and dropping it would silently lose records. Skipping is only ever done on positive
-/// evidence that the container lies outside the interval.
+/// The `Query` of noodles, and our own `for_each` before this code, chose the containers by
+/// reference sequence alone. They then threw away the records outside the region, *after* they
+/// decoded those records. So every query cost a whole chromosome, at any size of region.
+/// A measurement gave 20.9 s for a 1 bp query on chr21, and 116 s on chr1. The same query on a BAM
+/// takes 4 to 6 ms. chr21 of a 30x WGS holds 1,140 containers, and a point query needs exactly one
+/// of them.
+///
+/// The code **keeps** a container whose `alignment_start` is absent. This index can not place such
+/// a container, and to drop it would lose records where nobody sees it happen. The code skips a
+/// container only on positive evidence that the container lies outside the interval.
 fn cram_container_offsets(index: &cram::crai::Index, ref_id: usize, interval: Interval) -> Vec<u64> {
     index
         .iter()
@@ -248,8 +264,8 @@ fn cram_container_offsets(index: &cram::crai::Index, ref_id: usize, interval: In
         .collect()
 }
 
-/// Open `path` for indexed region queries (autoloads the `.bai`/`.crai`). `reference` is
-/// required for CRAM.
+/// Open `path` for a region query over its index. It loads the `.bai` or `.crai` itself. A CRAM
+/// needs `reference`.
 pub fn open_indexed(path: &Path, reference: Option<&Path>) -> Result<(sam::Header, IdxReader), AnalysisError> {
     match detect_format(path) {
         Format::Bam => {
@@ -285,7 +301,7 @@ pub fn open_indexed(path: &Path, reference: Option<&Path>) -> Result<(sam::Heade
 }
 
 impl IdxReader {
-    /// Iterate the records overlapping `region` as `RecordBuf`s.
+    /// Walk the records inside `region` as `RecordBuf` values.
     pub fn query<'a>(
         &'a mut self,
         header: &'a sam::Header,
@@ -300,11 +316,14 @@ impl IdxReader {
                     RecordBuf::try_from_alignment_record(header, &rec).map_err(|e| AnalysisError::io(&path, e))
                 })))
             }
-            // Hand-rolled rather than `inner.query(...)`: noodles' `Query` decodes every container
-            // of the contig and filters records afterwards, so a 1 bp query costs a whole
-            // chromosome (see [`cram_container_offsets`]). This decodes only the containers that
-            // can overlap, lazily — one container at a time, so a caller that stops early (a
-            // `.take(n)` probe, a cancelled walk) does not pay for the rest.
+            // This code does the work itself, and it does not call `inner.query(...)`. The
+            // `Query` of noodles decodes every container of the contig, and it filters the records
+            // after that. A 1 bp query then costs a whole chromosome. See
+            // [`cram_container_offsets`].
+            //
+            // This code decodes only the containers that can hold a record in the region, and it
+            // does that lazily, one container at a time. So a caller that stops early, such as a
+            // `.take(n)` probe or a walk that somebody cancelled, does not pay for the rest.
             IdxReader::Cram { inner, repo, path } => {
                 use std::io::{Seek, SeekFrom};
 
@@ -365,8 +384,9 @@ impl IdxReader {
                                 Err(e) => return Some(Err(e)),
                             };
                             for rec in &records {
-                                // Same per-record overlap test noodles applies post-decode — the
-                                // container filter is a coarse prefilter, not a replacement for it.
+                                // The same test at each record that noodles applies after its
+                                // decode. The container filter is a coarse first pass, and it does
+                                // not replace this test.
                                 if let (Some(Ok(start)), Some(Ok(end))) = (rec.alignment_start(), rec.alignment_end()) {
                                     if !interval.intersects((start..=end).into()) {
                                         continue;
@@ -387,9 +407,10 @@ impl IdxReader {
         }
     }
 
-    /// Iterate the unplaced unmapped records (the BAM tail) as `RecordBuf`s. BAM only —
-    /// CRAM's `.crai` exposes no unmapped query, so it returns an error (callers needing the
-    /// unmapped tail for CRAM should take a sequential pass instead).
+    /// Walk the unmapped records that have no place, which are the tail of a BAM, as `RecordBuf`
+    /// values. This works for a BAM alone. The `.crai` of a CRAM gives no query for the unmapped
+    /// records, so this returns an error there. A caller that needs the unmapped tail of a CRAM
+    /// must take a sequential pass.
     pub fn query_unmapped<'a>(
         &'a mut self,
         header: &'a sam::Header,
@@ -411,28 +432,32 @@ impl IdxReader {
     }
 }
 
-/// A per-record consumer the indexed reader drives over a region. The `accept` method is generic
-/// over [`AlnRead`], so it monomorphizes for each record type: the BAM path hands it the **lazy,
-/// zero-copy** `bam::Record` (no per-read owned `RecordBuf` allocation — the hot-path win) and the
-/// CRAM path hands it the decoded `RecordBuf`. A single sink serves both.
+/// A consumer of one record, which the indexed reader drives over a region.
+///
+/// The `accept` method is generic over [`AlnRead`], so the compiler makes one copy for each record
+/// type. The BAM path gives it the **lazy, zero-copy** `bam::Record`. There is no owned
+/// `RecordBuf` allocation at each read, and that is the gain on the hot path. The CRAM path gives
+/// it the decoded `RecordBuf`. One sink serves both.
 pub trait RecordSink {
     fn accept(&mut self, record: &impl AlnRead);
 }
 
-/// How often the record loops poll the cancel token. Tuned to be invisible in a profile while
-/// keeping the worst-case delay between a click and a stop well under a frame: at ~1M records/s
-/// this is a check every few milliseconds. The check itself is one relaxed atomic load.
+/// How often a record loop polls the cancel token. The value keeps the check out of a profile,
+/// and it keeps the worst delay between a click and a stop well below one frame. At about 1M
+/// records/s that is a check every few milliseconds. The check itself is one relaxed atomic
+/// load.
 const CANCEL_CHECK_RECORDS: u32 = 4096;
 
 impl IdxReader {
-    /// Drive `sink` over every record overlapping `region` (BAM: lazy record; CRAM: `RecordBuf`).
-    /// A record that fails to read aborts with an error. The allocation-free counterpart to
-    /// [`IdxReader::query`] (which copies each record into an owned `RecordBuf`).
+    /// Drive `sink` over every record inside `region`. A BAM gives a lazy record, and a CRAM gives
+    /// a `RecordBuf`. A record that the code can not read stops the walk with an error. This is the
+    /// counterpart of [`IdxReader::query`] that allocates nothing, where that one copies each
+    /// record into an owned `RecordBuf`.
     ///
-    /// `cancel` is polled every [`CANCEL_CHECK_RECORDS`] records, so a cancelled walk stops
-    /// mid-contig instead of at the next contig boundary — on chr1 that is the difference between
-    /// stopping in milliseconds and stopping in minutes. Pass [`CancelToken::none`] when there is
-    /// nothing to cancel.
+    /// The loop polls `cancel` every [`CANCEL_CHECK_RECORDS`] records. So a walk that somebody
+    /// cancelled stops in the middle of a contig, and not at the next contig boundary. On
+    /// chr1 that is the difference between a stop in milliseconds and a stop in minutes. Pass
+    /// [`CancelToken::none`] when there is nothing to cancel.
     pub fn for_each<S: RecordSink>(
         &mut self,
         header: &sam::Header,
@@ -455,11 +480,14 @@ impl IdxReader {
                 Ok(())
             }
             IdxReader::Cram { inner, repo, path } => {
-                // Decode the region's CRAM containers down to borrowed `cram::Record`s and drive the
-                // sink off them directly — skipping the per-read `RecordBuf` copy the high-level
-                // `query` iterator pays (~1.74× the per-read decode on a 30× WGS CRAM). This mirrors
-                // noodles' own `Query`: seek each `.crai` container whose reference matches, decode
-                // its slices, and keep the records overlapping the query interval.
+                // Decode the CRAM containers of the region down to borrowed `cram::Record`
+                // values, and drive the sink from those directly. That leaves out the `RecordBuf`
+                // copy at each read, which the high-level `query` iterator pays. On a 30x WGS CRAM
+                // that copy costs about 1.74 times the decode of one read.
+                //
+                // This has the same shape as the `Query` of noodles. Seek each `.crai` container
+                // whose reference matches, decode the slices of that container, and keep the
+                // records inside the query interval.
                 use std::io::{Seek, SeekFrom};
 
                 use noodles::sam::alignment::Record as _; // alignment_start/_end on cram::Record
@@ -483,17 +511,20 @@ impl IdxReader {
                     })?;
                 let interval = region.interval();
 
-                // Collect the file offsets of the containers that can overlap the query before
-                // borrowing `inner` mutably to seek/read (the `.crai` index borrow can't overlap the
-                // read borrow). Selecting on the interval — not just the contig — is what keeps this
-                // proportional to the region instead of the chromosome; see
+                // Collect the file offsets of the containers that can hold a record in the query.
+                // Do that before the code takes a mutable borrow of `inner` to seek and read. The
+                // borrow of the `.crai` index can not overlap the borrow for the read.
+                //
+                // The choice goes on the interval, and not on the contig alone. That is what keeps
+                // the cost proportional to the region, and not to the chromosome. See
                 // [`cram_container_offsets`].
                 let offsets = cram_container_offsets(inner.index(), ref_id, interval);
 
                 let mut container = cram::io::reader::Container::default();
                 for offset in offsets {
-                    // Per container rather than per record: a CRAM container is decoded as a unit,
-                    // so this is the finest granularity at which stopping actually saves work.
+                    // The check goes at each container, and not at each record. The code decodes a
+                    // CRAM container as a unit, so this is the smallest step at which a stop saves
+                    // work.
                     cancel.check()?;
                     inner.get_mut().seek(SeekFrom::Start(offset)).map_err(io_err)?;
                     if inner.read_container(&mut container).map_err(io_err)? == 0 {
@@ -550,9 +581,10 @@ impl IdxReader {
     }
 }
 
-/// Whether a sibling BAM index (`.bai`, as `foo.bam.bai` or `foo.bai`) exists for `path`.
-/// The per-contig parallel walker needs one for region queries; callers fall back to a
-/// sequential pass when this is false. CRAM is excluded (its `.crai` has no unmapped query).
+/// True when a BAM index sits beside `path`, as `foo.bam.bai` or as `foo.bai`. The parallel walker
+/// over the contigs needs one for its region queries. A caller falls back to a sequential pass
+/// when this is false. A CRAM is out, because its `.crai` gives no query for the unmapped
+/// records.
 pub fn has_bai_index(path: &Path) -> bool {
     if detect_format(path) != Format::Bam {
         return false;
@@ -570,24 +602,27 @@ pub fn has_crai_index(path: &Path) -> bool {
     path.with_extension("cram.crai").exists() || path.with_extension("crai").exists()
 }
 
-/// Whether the file has a coordinate index supporting **per-contig region queries** — a BAM `.bai`
-/// or a CRAM `.crai`. The prerequisite for the parallel per-contig walker (CRAM also can't
-/// region-query the unmapped tail; callers handle that separately).
+/// True when the file has a coordinate index that supports a **region query on one contig**. That
+/// is a `.bai` for a BAM, or a `.crai` for a CRAM. The parallel walker over the contigs needs this.
+/// A CRAM also has no region query for its unmapped tail, and a caller handles that on its own.
 pub fn has_region_index(path: &Path) -> bool {
     has_bai_index(path) || has_crai_index(path)
 }
 
 // ---- header-only ----------------------------------------------------------
 
-/// Read just the SAM header (e.g. to resolve a contig length). `reference` is required
-/// for CRAM.
+/// Read the SAM header alone, for example to find the length of a contig. A CRAM needs
+/// `reference`.
 pub fn read_header(path: &Path, reference: Option<&Path>) -> Result<sam::Header, AnalysisError> {
     open_seq(path, reference).map(|(header, _)| header)
 }
 
-/// The alignment's reference-sequence (contig) names, in header order. `reference` is required for
-/// a CRAM. Used to reconcile a panel/site contig against the file's naming convention — a GRCh37
-/// alignment may use bare `1` where a panel locus stores `chr1` (or vice versa).
+/// The names of the reference sequences of the alignment, which are the contigs, in header order.
+/// A CRAM needs `reference`.
+///
+/// Use it to reconcile the contig of a panel or a site against the names that the file uses. A
+/// GRCh37 alignment can use a bare `1` where a panel locus holds `chr1`, and the two can also be
+/// the other way round.
 pub fn contig_names(path: &Path, reference: Option<&Path>) -> Result<Vec<String>, AnalysisError> {
     let header = read_header(path, reference)?;
     Ok(header
@@ -653,9 +688,10 @@ mod tests {
         }
     }
 
-    /// The new slice-level CRAM `for_each` path (borrowed `cram::Record`) must yield records
-    /// field-identical to the high-level `query` path (owned `RecordBuf`) — guards the noodles
-    /// internal-API replication (crai seek + slice decode) against a change of version.
+    /// The new CRAM `for_each` path works at the level of a slice, with a borrowed `cram::Record`.
+    /// It must give records whose fields all match those from the high-level `query` path, which
+    /// gives an owned `RecordBuf`. This test guards our copy of the internal noodles API, which is
+    /// the crai seek and the slice decode, against a change of version.
     #[test]
     fn cram_for_each_matches_query_recordbuf() {
         struct CollectSink(Vec<Captured>);
@@ -688,15 +724,15 @@ mod tests {
         assert_eq!(sink.0, via_query, "cram::Record path must match RecordBuf path");
     }
 
-    /// [`cram_container_offsets`] decides which containers are decoded at all, so its boundary
-    /// behaviour *is* the correctness of every CRAM region query: a container wrongly skipped is
-    /// reads silently missing from a variant call, which no downstream test would attribute to the
-    /// reader. Checked at the edges, where an off-by-one actually lives.
+    /// [`cram_container_offsets`] decides which containers the code decodes at all. Its behaviour
+    /// at a boundary *is* the correctness of every CRAM region query. A container that it skips
+    /// wrongly means reads that a variant call never sees, and no later test would trace that back
+    /// to the reader. This test looks at the edges, where an off-by-one error lives.
     #[test]
     fn container_offsets_select_only_overlapping_containers() {
         let p = |n: usize| Position::new(n).unwrap();
-        // ref 0 containers spanning [1000,1099], [2000,2099], [3000,3099]; one on ref 1; and one
-        // the index can not place.
+        // Three containers on ref 0, which cover [1000,1099], [2000,2099] and [3000,3099]. One
+        // container on ref 1. And one that the index can not place.
         let idx: cram::crai::Index = vec![
             cram::crai::Record::new(Some(0), Some(p(1000)), 100, 10, 0, 0),
             cram::crai::Record::new(Some(0), Some(p(2000)), 100, 20, 0, 0),
@@ -706,15 +742,17 @@ mod tests {
         ];
         let sel = |a: usize, b: usize| cram_container_offsets(&idx, 0, (p(a)..=p(b)).into());
 
-        // A point inside one container decodes that container — not the contig. This single
+        // A point inside one container decodes that container, and not the contig. This one
         // assertion is the difference between 8 ms and 21 s on a real chr21.
         assert_eq!(sel(2050, 2050), vec![20, 50]);
-        // Boundaries: touching the first/last base of a container counts as overlap.
+        // The boundaries. A query that reaches the first base or the last base of a container
+        // counts as an overlap.
         assert_eq!(sel(2099, 2099), vec![20, 50], "last base of a container overlaps");
         assert_eq!(sel(2000, 2000), vec![20, 50], "first base of a container overlaps");
         assert_eq!(sel(2100, 2100), vec![50], "one past the end does not");
         assert_eq!(sel(1999, 1999), vec![50], "one before the start does not");
-        // A span crossing several containers takes exactly those it crosses.
+        // A span that crosses more than one container takes exactly the containers that it
+        // crosses.
         assert_eq!(sel(1050, 2050), vec![10, 20, 50]);
         // The other reference is never selected, even at identical coordinates.
         assert_eq!(cram_container_offsets(&idx, 1, (p(2050)..=p(2050)).into()), vec![40]);
@@ -725,9 +763,9 @@ mod tests {
         );
     }
 
-    /// Our hand-rolled `query` must return exactly what noodles' own `Query` returns. We replaced
-    /// it for speed, and a reimplementation that quietly drops records would look like a faster
-    /// caller rather than a broken one — the failure mode worth a test.
+    /// The `query` in this module must return exactly what the `Query` of noodles returns. We
+    /// wrote our own for speed. A version of it that drops records where nobody looks would seem
+    /// to be a faster caller, and not a broken one. That failure needs a test.
     #[test]
     fn cram_query_matches_noodles_query() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
