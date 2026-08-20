@@ -148,7 +148,7 @@ pub enum LineageKind {
 pub enum PackStatus {
     /// Refreshed from the CDN this session.
     Downloaded,
-    /// Served from the on-disk cache (a prior download).
+    /// Served from the on-disk cache (an earlier download).
     Cached,
     /// The bundled seed only (offline / CDN unavailable).
     Bundled,

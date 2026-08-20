@@ -655,7 +655,7 @@ mod tests {
 
     /// The new slice-level CRAM `for_each` path (borrowed `cram::Record`) must yield records
     /// field-identical to the high-level `query` path (owned `RecordBuf`) — guards the noodles
-    /// internal-API replication (crai seek + slice decode) against version drift.
+    /// internal-API replication (crai seek + slice decode) against a change of version.
     #[test]
     fn cram_for_each_matches_query_recordbuf() {
         struct CollectSink(Vec<Captured>);

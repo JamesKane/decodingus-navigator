@@ -822,7 +822,7 @@ impl PairReader {
     /// read is the same length.
     ///
     /// A file genuinely ending before the other is still an error rather than a truncation: R1/R2
-    /// that have drifted out of step would pair every later read with the wrong mate, which is far
+    /// that have lost their order would pair every later read with the wrong mate, which is far
     /// worse than refusing to run.
     fn next_batch(&mut self, chunk: i64) -> Result<Option<Vec<(BseqRecord, BseqRecord)>>, AlignError> {
         let mut batch = Vec::new();

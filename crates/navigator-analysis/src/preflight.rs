@@ -74,7 +74,8 @@ pub enum CheckId {
 }
 
 impl CheckId {
-    /// The human label. Single source of truth, so a check's name and its identity can not drift.
+    /// The human label. It is the single source of truth, so the name of a check and its
+    /// identity always agree.
     pub fn label(self) -> &'static str {
         match self {
             CheckId::Format => "format",

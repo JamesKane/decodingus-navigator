@@ -372,7 +372,7 @@ fn a_split_index_pairs_reads_exactly_as_a_whole_index_does() {
     }
 }
 
-/// R1/R2 that have drifted out of step would pair every later read with the wrong mate — a
+/// R1/R2 that have lost their order would pair every later read with the wrong mate — a
 /// corruption that produces confident, wrong alignments. It must refuse rather than truncate.
 #[test]
 fn mismatched_read_counts_are_refused() {

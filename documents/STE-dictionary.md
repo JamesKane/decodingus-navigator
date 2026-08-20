@@ -38,6 +38,17 @@ ploidy · position · read ·
 read metrics · reference · reference genome · region · segment · sequence · sequence run · sex ·
 signature · site · subject · variant · Y-STR
 
+### Statistics and population genetics
+
+Bayesian statistics gives these their meaning. `prior` is a noun here, and it is not the STE
+adverb that means *earlier*. `prior to` stays forbidden, and the checker still reports it.
+
+`drift` is genetic drift, which is a Technical Name. It is on the idiom list because of
+*version drift* and *drift out of step*. A Technical Name wins over the idiom list, so write
+those two meanings a different way.
+
+dispersion · drift · emission · likelihood · loading · posterior · prior · state
+
 ### File and data formats
 
 BAM · BED · CRAM · FASTA · gVCF · index · JSON · masterVar · sidecar · TSV · VCF

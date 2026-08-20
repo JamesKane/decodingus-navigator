@@ -131,6 +131,8 @@ ING_OK = {
     "operating", "genotyping", "reasoning", "pacing", "sampling", "scaling", "streaming", "spilling", "phasing",
     "binning", "masking", "trimming", "clipping", "calling", "sorting", "merging",
     "reading", "writing", "counting", "timing", "build", "backing", "copying", "loading",
+    # Surnames in a citation. "Busing et al. 1999" is the jackknife paper, not a verb.
+    "busing",
 }
 # A sentence can end inside emphasis ("**...ancestries.**"), so step over any trailing
 # `*` or `_` before the space. Without this the rule reads two sentences as one and
@@ -140,6 +142,19 @@ SENT_SPLIT = re.compile(r"(?<=[.!?:;])[*_]*\s+(?=[*_\"']*[A-Z`\[(])")
 
 def sentences(text):
     return [s.strip() for s in SENT_SPLIT.split(text) if s.strip()]
+
+
+def _adjectival_derived(sentence, match):
+    """True when "is derived" is the genetics adjective, not the passive of "to derive".
+
+    A sample "is derived at a site" the way it "is ancestral" there: the word names a state,
+    and no agent performs it. The passive of the verb almost always carries its agent, as in
+    "the path is derived from the source alignment", so the word "from" separates the two.
+    A blanket exemption would hide the real passives, of which this repo has about as many.
+    """
+    if match.group(1).lower() != "derived":
+        return False
+    return not re.match(r"\s+from\b", sentence[match.end():])
 
 
 def strip_code(text):
@@ -209,7 +224,7 @@ def analyse(items, kind):
             if n > 25:
                 v["STE6 sentence >25 words"].append((ln, f"{n}w: {s[:90]}"))
             pm = PASSIVE.search(s)
-            if pm and pm.group(1).lower() not in NOT_PARTICIPLE:
+            if pm and pm.group(1).lower() not in NOT_PARTICIPLE and not _adjectival_derived(s, pm):
                 v["STE3 passive voice"].append((ln, s[:90]))
             for w in ING.findall(s):
                 if w.lower() not in ING_OK:
@@ -221,6 +236,10 @@ def analyse(items, kind):
             if re.search(rf"\b{re.escape(bad)}\b", low):
                 v["STE1 non-approved word"].append((ln, f"{bad} -> {good or 'delete'}"))
         for idiom in IDIOMS:
+            # A Technical Name wins over the idiom list, as it does over NOT_APPROVED. "drift" is
+            # the genetics term in almost every use in this repo, not the metaphor.
+            if idiom.lower() in TECHNICAL:
+                continue
             if re.search(rf"\b{re.escape(idiom.lower())}\b", low):
                 v["STE8 idiom/metaphor/informal"].append((ln, idiom))
         # Judge the code-stripped text: a fenced shell block puts cargo's `--` argument separator

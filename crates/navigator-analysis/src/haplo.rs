@@ -1,25 +1,34 @@
-//! mtDNA/Y haplogroup assignment over an FTDNA haplotree using the **Kulczynski measure**
-//! (HaploGrep, Weissensteiner et al.): rank each haplogroup by the set similarity between
-//! its *expected* mutations (the union of branch-defining loci from root to the node) and
-//! the sample's *found* polymorphisms. Higher fidelity than a flat derived/ancestral count.
+//! mtDNA and Y haplogroup assignment over an FTDNA haplotree, with the **Kulczynski measure**
+//! (HaploGrep, Weissensteiner and others). It ranks each haplogroup by the set similarity
+//! between two sets. The first set is the *expected* mutations of that haplogroup. That is the
+//! union of the loci that define a branch, from the root down to the node. The second set is the
+//! *found* polymorphisms of the sample. This measure is more accurate than a flat count of
+//! derived and ancestral sites.
 //!
-//! `score = ½·(|F∩E| / |E| + |F∩E| / |F|)` per node, equal site weights (a published
-//! per-site weight table can be layered on later). Pure: callers supply the parsed tree
-//! and the sample's base calls; fetching the FTDNA JSON lives in the app layer.
+//! The score at each node is `score = ½·(|F∩E| / |E| + |F∩E| / |F|)`, and the site weights are
+//! equal. A published table of weights for each site can go on top of this later.
 //!
-//! **RSRS-anchored, reference-free.** Rather than diffing the sample against rCRS (which
-//! would hide rCRS's own backbone mutations — the classic rCRS-vs-RSRS problem), we read
-//! the sample's *actual base* at each tree position and compare it to the node's derived
-//! allele. The FTDNA tree is RSRS-rooted, so a base equal to a node's derived allele is a
-//! genuine carried mutation, backbone included — no reference subtraction needed. `found`
-//! is then the set of tree sites where the sample carries the derived allele. (Assumes the
-//! sample is on rCRS coordinates, i.e. ~16,569 bp; indels would shift later positions.)
+//! This module is pure. The caller gives the parsed tree and the base calls of the sample. The
+//! app layer gets the FTDNA JSON.
+//!
+//! **The RSRS is the anchor, and the code uses no reference.** It does not take the difference
+//! of the sample against rCRS, because that would hide the backbone mutations of rCRS itself.
+//! That is the classic rCRS-against-RSRS problem. It instead reads the *actual base* of the
+//! sample at each tree position, and compares it to the derived allele of the node.
+//!
+//! The FTDNA tree has RSRS at its root. A base that equals the derived allele of a node is a
+//! true mutation of the sample, and the backbone is part of that. The code needs no subtraction
+//! of a reference.
+//!
+//! `found` is then the set of tree sites where the sample carries the derived allele. This
+//! assumes that the sample is on rCRS coordinates, which is about 16,569 bp. An indel would move
+//! the positions after it.
 
 use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 
-/// A branch-defining locus: a position and its ancestral/derived alleles.
+/// A locus that defines a branch: a position and its ancestral and derived alleles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Locus {
     pub position: i64,
@@ -91,8 +100,9 @@ struct FtdnaTreeJson {
     all_nodes: HashMap<String, FtdnaNode>,
 }
 
-/// Parse an FTDNA haplotree JSON document into a [`HaploTree`]. Positions are abs-valued
-/// (the FTDNA data carries some negatives); variants without a position are dropped.
+/// Parse an FTDNA haplotree JSON document into a [`HaploTree`]. The code takes the absolute
+/// value of each position, because the FTDNA data carries some negative ones. It drops a variant
+/// that has no position.
 pub fn parse_ftdna_json(data: &str) -> Result<HaploTree, String> {
     let raw: FtdnaTreeJson = serde_json::from_str(data).map_err(|e| e.to_string())?;
     let nodes = raw
@@ -145,9 +155,10 @@ struct DuVariant {
     /// Coordinates keyed by build label (`"hs1"`, `"GRCh38"`, `"GRCh37"`).
     #[serde(default)]
     coordinates: HashMap<String, DuCoord>,
-    /// Variant-level **authoritative** phylogenetic polarity, build-independent. Present on every
-    /// variant; ~1.4% of variants carry a *swapped* per-build `coordinates.ancestral/derived` (a
-    /// clean role swap), so this — not the coordinate alleles — is the polarity to trust.
+    /// The **authoritative** phylogenetic polarity at the variant level. It does not depend on
+    /// the build, and every variant carries it. About 1.4% of the variants carry a *swapped*
+    /// `coordinates.ancestral/derived` in a build, which is a clean exchange of the two roles.
+    /// Trust this field, and not the coordinate alleles.
     #[serde(default)]
     link_ancestral: Option<String>,
     #[serde(default)]
@@ -191,11 +202,14 @@ struct DuTreeJson {
     roots: Vec<DuNode>,
 }
 
-/// Parse the DecodingUs AppView Y-tree (`/api/v1/y-tree/full`) into a [`HaploTree`], taking
-/// each variant's coordinate for `build_key` (`"hs1"` for CHM13, `"GRCh38"`, `"GRCh37"`).
-/// Because positions are read in the *alignment's own build*, no liftover is needed —
-/// variants without a coordinate on `build_key` are dropped (they can't be placed there).
-/// Node ids come from the AppView (unique); the nested `children` flatten into child-id lists.
+/// Parse the DecodingUs AppView Y-tree (`/api/v1/y-tree/full`) into a [`HaploTree`]. It takes the
+/// coordinate of each variant for `build_key`, which is `"hs1"` for CHM13, `"GRCh38"` or
+/// `"GRCh37"`.
+///
+/// The code reads the positions in the *build of the alignment itself*, so it needs no liftover.
+/// It drops a variant that has no coordinate on `build_key`, because it can not place that
+/// variant there. The node ids come from the AppView and are unique. The nested `children`
+/// flatten into lists of child ids.
 pub fn parse_decodingus_json(data: &str, build_key: &str) -> Result<HaploTree, String> {
     let raw: DuTreeJson = serde_json::from_str(data).map_err(|e| e.to_string())?;
     let mut nodes = HashMap::new();
@@ -211,8 +225,9 @@ fn flatten_du_node(n: &DuNode, is_root: bool, build_key: &str, out: &mut HashMap
         .iter()
         .filter_map(|v| {
             let c = v.coordinates.get(build_key)?;
-            // Position/contig come from the build coordinate; polarity from the authoritative
-            // `link_*` (the coordinate's own ancestral/derived is swapped on ~1.4% of variants).
+            // The position and the contig come from the build coordinate. The polarity comes
+            // from the authoritative `link_*`. The ancestral and derived alleles of the
+            // coordinate itself are in the wrong order on about 1.4% of the variants.
             let (ancestral, derived) = v.polarity(c);
             Some(Locus {
                 position: c.position.abs(),
@@ -238,20 +253,25 @@ fn flatten_du_node(n: &DuNode, is_root: bool, build_key: &str, out: &mut HashMap
     }
 }
 
-/// Build-independent **ancestral/derived polarity** per SNP **name** from the DecodingUs tree
-/// JSON: `name → (ancestral, derived)`. The DecodingUs tree carries true phylogenetic polarity,
-/// whereas FTDNA records the GRCh38 *reference* base as "ancestral" — so at sites where the
-/// reference carries the derived allele FTDNA's polarity is inverted. This map drives
-/// [`normalize_polarity`] to repair an FTDNA tree. Alleles are taken from any one build's
-/// coordinate (the mutation's alleles are the same across builds); names are universal.
+/// The **ancestral and derived polarity** of each SNP **name**, from the DecodingUs tree JSON,
+/// as `name → (ancestral, derived)`. It does not depend on the build.
+///
+/// The DecodingUs tree carries the true phylogenetic polarity. FTDNA instead records the GRCh38
+/// *reference* base as the "ancestral" one. At a site where the reference carries the derived
+/// allele, the FTDNA polarity is then the wrong way round. [`normalize_polarity`] uses this map
+/// to repair an FTDNA tree.
+///
+/// The code takes the alleles from the coordinate of any one build, because the alleles of a
+/// mutation are the same in every build. The names are universal.
 pub fn decodingus_polarity_map(data: &str) -> Result<HashMap<String, (String, String)>, String> {
     let raw: DuTreeJson = serde_json::from_str(data).map_err(|e| e.to_string())?;
     let mut out = HashMap::new();
-    // The variant-level `link_*` is the authoritative, build-independent polarity — use it directly.
-    // Only if it is somehow absent do we fall back to a **deterministic** build coordinate (hs1
-    // preferred, then sorted keys); iterating `coordinates.values()` (HashMap order) is
-    // non-deterministic and, where a build records swapped polarity, would pick a different
-    // orientation per run.
+    // The `link_*` at the variant level is the authoritative polarity, and it does not depend on
+    // the build. Use it directly. Fall back to a build coordinate only if `link_*` is absent.
+    // Choose that coordinate in a **deterministic** way: hs1 first, then the keys in sorted
+    // order. A walk over `coordinates.values()` follows the HashMap order, which is not
+    // deterministic. Where a build records a swapped polarity, such a walk would take a different
+    // orientation on each run.
     fn pick_polarity(v: &DuVariant) -> Option<(String, String)> {
         if let Some(p) = v.link_alleles() {
             return Some(p);
@@ -289,12 +309,16 @@ pub fn decodingus_polarity_map(data: &str) -> Result<HashMap<String, (String, St
     Ok(out)
 }
 
-/// Repair an FTDNA tree's polarity in place against a `reference` polarity map (from
-/// [`decodingus_polarity_map`]): for any locus whose alleles are the **same two nucleotides** as
-/// the reference but in swapped roles (FTDNA's reference-as-ancestral inversion), swap its
-/// ancestral/derived back to the reference orientation. Strand-differing loci (different
-/// nucleotides) are left untouched — the lift path already complements those. Returns how many
-/// loci were flipped.
+/// Repair the polarity of an FTDNA tree in place, against a `reference` polarity map from
+/// [`decodingus_polarity_map`].
+///
+/// Take any locus whose alleles are the **same two nucleotides** as those of the reference, but
+/// in the opposite roles. That is the FTDNA inversion that makes the reference the ancestral
+/// allele. Put the ancestral and derived alleles of that locus back into the orientation of the
+/// reference.
+///
+/// A locus on the other strand, which holds different nucleotides, does not change. The lift path
+/// already takes the complement of those. Returns the count of the loci that changed.
 pub fn normalize_polarity(tree: &mut HaploTree, reference: &HashMap<String, (String, String)>) -> usize {
     let mut flipped = 0;
     for node in tree.nodes.values_mut() {
@@ -319,13 +343,15 @@ pub fn normalize_polarity(tree: &mut HaploTree, reference: &HashMap<String, (Str
     flipped
 }
 
-/// Rank every haplogroup in `tree` by the Kulczynski measure, given the sample's base at
-/// each position (`calls`: 1-based position → uppercase base, from the full sequence).
-/// `found` is the set of tree sites where the sample carries the derived allele; expected
-/// is the root→node derived loci. Best-first (highest score; shallower wins ties — a child
-/// that adds no matched mutation should not outrank its parent).
+/// Rank every haplogroup in `tree` by the Kulczynski measure. `calls` gives the base of the
+/// sample at each position, as a 1-based position to an uppercase base, from the full sequence.
+///
+/// `found` is the set of tree sites where the sample carries the derived allele. The expected set
+/// is the derived loci from the root down to the node. The result comes back best first, which
+/// is the highest score. A node that is nearer to the root wins a tie, because a child that adds
+/// no matched mutation must not rank above its parent.
 pub fn score(tree: &HaploTree, calls: &HashMap<i64, char>) -> Vec<ScoredHaplogroup> {
-    // |F| — distinct tree sites whose derived allele the sample carries.
+    // |F|, the count of distinct tree sites whose derived allele the sample carries.
     let mut carried: HashSet<i64> = HashSet::new();
     for node in tree.nodes.values() {
         for locus in &node.loci {
@@ -377,35 +403,43 @@ fn complement_base(b: char) -> char {
     }
 }
 
-/// Whether a SNP's two alleles are strand-ambiguous (an `A↔T` or `C↔G` transversion): the
-/// complement of one allele equals the other, so the strand can't be inferred from the observed
-/// base. Complement-matching must be skipped for these.
+/// True when the two alleles of a SNP are ambiguous about the strand, which holds for an `A↔T`
+/// or a `C↔G` transversion. The complement of one allele equals the other, so the observed base
+/// does not tell you the strand. The code must not try a match on the complement for these.
 fn strand_ambiguous(a: char, d: char) -> bool {
     let mut pair = [a.to_ascii_uppercase(), d.to_ascii_uppercase()];
     pair.sort_unstable();
     pair == ['A', 'T'] || pair == ['C', 'G']
 }
 
-/// Does the sample carry this locus's derived allele? Accepts the strand-complement of the
-/// derived base (some tree variants record alleles on the opposite strand from the reference the
-/// alignment was called against — see [`locus_state`]), except for strand-ambiguous SNPs.
-/// Whether a locus is a single-base SNP a base-level genotype can evaluate — i.e. NOT an indel / MNP
-/// (a multi-character allele). An insertion (`G`→`GAGC…`) or deletion (`GAGC`→`G`) shares its anchor
-/// base between the two alleles, so a base-vs-allele compare can't tell them apart and reads every
-/// sample as derived. The DecodingUs Y tree carries ~12.7k such indel loci, all with a shared anchor;
-/// counting them by base turned indel-heavy nodes into homoplasy magnets that captured the placement.
-/// Indel loci are instead genotyped by [`crate::caller::call_indels_at`], which writes a resolved
-/// **sentinel** into the genotype map ([`INDEL_DERIVED`] / [`INDEL_ANCESTRAL`]); `locus_state` /
-/// `locus_carried` read that sentinel for a non-SNP locus.
+/// Does the sample carry the derived allele of this locus? The code accepts the strand
+/// complement of the derived base, except at a SNP that is ambiguous about the strand. Some tree
+/// variants record their alleles on the other strand from the reference that the caller used on
+/// the alignment. See [`locus_state`].
+///
+/// True when a locus is a single-base SNP that a genotype at the base level can read. That is,
+/// it is NOT an indel and NOT an MNP, which carry an allele of more than one character.
+///
+/// An insertion (`G`→`GAGC…`) or a deletion (`GAGC`→`G`) holds the same anchor base in both of
+/// its alleles. A comparison of a base against an allele can then not separate the two, and it
+/// reads every sample as derived. The DecodingUs Y tree carries about 12.7k such indel loci, and
+/// all of them share an anchor. To count them by base turned a node with many indels into a
+/// collector of homoplasy, and such a node then took the placement.
+///
+/// [`crate::caller::call_indels_at`] genotypes the indel loci instead. It writes a resolved
+/// **sentinel** into the genotype map, which is [`INDEL_DERIVED`] or [`INDEL_ANCESTRAL`].
+/// `locus_state` and `locus_carried` read that sentinel at a locus that is not a SNP.
 fn is_snp_locus(locus: &Locus) -> bool {
     locus.derived.chars().count() == 1 && locus.ancestral.chars().count() <= 1
 }
 
-/// Sentinel written at an indel locus's anchor position when the sample **carries** the derived
-/// insertion/deletion. Not a nucleotide, so it never collides with a SNP base-call (and a rare
-/// indel/SNP position collision degrades both to no-call, never a wrong call).
+/// The sentinel that goes at the anchor position of an indel locus when the sample **carries**
+/// the derived insertion or deletion. It is not a nucleotide, so it never collides with the base
+/// call of a SNP. If an indel and a SNP do share a position, which is rare, both fall to a
+/// no-call. Neither becomes a wrong call.
 pub const INDEL_DERIVED: char = '+';
-/// Sentinel written at an indel locus the sample does **not** carry (reference-spanning / ancestral).
+/// The sentinel that goes at an indel locus that the sample does **not** carry. Such a locus
+/// covers the reference, and it is ancestral.
 pub const INDEL_ANCESTRAL: char = '-';
 
 fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
@@ -426,21 +460,25 @@ fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
     !ambiguous && complement_base(b) == d
 }
 
-/// The sample's state at one defining SNP: carries the derived allele, carries the ancestral
-/// allele, or has no confident call. A locus with no derived allele (indel-only / marker-less)
-/// is `NoCall`.
+/// The state of the sample at one SNP that defines a branch. The sample carries the derived
+/// allele, or it carries the ancestral allele, or it has no confident call. A locus with no
+/// derived allele, which holds only an indel or no marker, gives `NoCall`.
 ///
-/// Some haplotree variants record their ancestral/derived alleles on the **opposite strand** from
-/// the reference the alignment was genotyped against (FTDNA/YBrowse report on the SNP's discovery
-/// strand). A clean read then shows the complement of both tree alleles — neither the literal
-/// ancestral nor derived — so we also accept a strand-complement match, mirroring the chip
-/// reconciliation. The exception is strand-ambiguous (`A↔T` / `C↔G`) SNPs, where the complement of
-/// one allele *is* the other and strand can't be inferred; those keep strict literal matching. A
-/// base that matches neither strand of either allele is a genuine third allele → `NoCall` (not a
-/// branch contradiction).
+/// Some haplotree variants record their ancestral and derived alleles on the **other strand**
+/// from the reference that the caller genotyped the alignment against. FTDNA and YBrowse report
+/// on the discovery strand of the SNP. A clean read then shows the complement of both tree
+/// alleles, and it matches neither the literal ancestral allele nor the literal derived one. The
+/// code also accepts a match on the strand complement, which is what the chip reconciliation
+/// does.
+///
+/// A SNP that is ambiguous about the strand (`A↔T` or `C↔G`) is the exception. There the
+/// complement of one allele *is* the other, and the data does not tell you the strand. Those
+/// keep a strict literal match. A base that matches neither strand of either allele is a true
+/// third allele, and it gives `NoCall`. It does not contradict the branch.
 fn locus_state(locus: &Locus, calls: &HashMap<i64, char>) -> CallState {
-    // Indel / MNP loci can't be read as a single base — they are genotyped separately and their
-    // resolved state arrives as a sentinel ([`INDEL_DERIVED`]/[`INDEL_ANCESTRAL`]) at the anchor.
+    // The code can not read an indel or an MNP locus as a single base. It genotypes those
+    // separately, and their resolved state comes in as a sentinel at the anchor, which is
+    // [`INDEL_DERIVED`] or [`INDEL_ANCESTRAL`].
     if !is_snp_locus(locus) {
         return match calls.get(&locus.position) {
             Some(&INDEL_DERIVED) => CallState::Derived,
@@ -494,9 +532,10 @@ fn dfs(
     // Add this node's loci to the path (skip positions already seen on the path).
     let mut added: Vec<(i64, bool)> = Vec::new();
     for locus in &node.loci {
-        // Indel/MNP loci participate only when the indel genotyper resolved them (a sentinel is
-        // present); an un-called indel must not inflate a node's expected/matched set. SNP loci
-        // count as before (a no-call SNP still contributes to `expected`).
+        // An indel or MNP locus counts only when the indel genotyper resolved it, which is when
+        // a sentinel is present. An indel with no call must not make the expected set or the
+        // matched set of a node larger. A SNP locus counts as before, and a SNP with no call
+        // still goes into `expected`.
         if !is_snp_locus(locus) {
             match calls.get(&locus.position) {
                 Some(&INDEL_DERIVED) | Some(&INDEL_ANCESTRAL) => {}
@@ -547,8 +586,8 @@ fn dfs(
     lineage.pop();
 }
 
-/// Every position that defines some branch → the name of a haplogroup that uses it (for
-/// annotating off-path private variants). Recurrent positions keep one name.
+/// A map from every position that defines a branch to the name of a haplogroup that uses it. It
+/// puts a note on a private variant that is off the path. A recurrent position keeps one name.
 pub fn tree_positions(tree: &HaploTree) -> HashMap<i64, String> {
     let mut m = HashMap::new();
     for n in tree.nodes.values() {
@@ -559,12 +598,17 @@ pub fn tree_positions(tree: &HaploTree) -> HashMap<i64, String> {
     m
 }
 
-/// Polarity map for the consensus interpreter: **SNP name → (ancestral, derived)** over every
-/// defining locus in the tree. This is the tree-of-record's per-SNP polarity, applied at read time by
-/// `navigator_domain::consensus::interpret` so a corrected tree flips states with no re-genotyping.
-/// Use for any parsed [`HaploTree`] (mtDNA rCRS, FTDNA) where a JSON polarity map is not available;
-/// for the DecodingUs Y JSON prefer [`decodingus_polarity_map`] (true phylogenetic polarity). Loci
-/// without a name or derived allele are skipped; a recurrent name keeps its first-seen polarity.
+/// The polarity map for the consensus interpreter: **SNP name → (ancestral, derived)**, over
+/// every locus in the tree that defines a branch. This is the polarity of each SNP in the tree of
+/// record. `navigator_domain::consensus::interpret` applies it when it reads the data, so a
+/// corrected tree changes the states and no sample needs a new genotype.
+///
+/// Use this for any parsed [`HaploTree`], such as the mtDNA rCRS tree or an FTDNA tree, where
+/// there is no JSON polarity map. For the DecodingUs Y JSON, use [`decodingus_polarity_map`]
+/// instead, which gives the true phylogenetic polarity.
+///
+/// The code skips a locus that has no name or no derived allele. A name that occurs more than
+/// once keeps the polarity of its first occurrence.
 pub fn polarity_from_tree(tree: &HaploTree) -> std::collections::BTreeMap<String, (String, String)> {
     let mut m: std::collections::BTreeMap<String, (String, String)> = std::collections::BTreeMap::new();
     for n in tree.nodes.values() {
@@ -590,7 +634,8 @@ fn build_parent_map(tree: &HaploTree) -> HashMap<i64, i64> {
     parent
 }
 
-/// The defining-SNP positions on the root→`node_id` path (the placement's backbone).
+/// The positions of the SNPs that define a branch, on the path from the root to `node_id`. They
+/// are the backbone of the placement.
 pub fn path_positions(tree: &HaploTree, node_id: i64) -> HashSet<i64> {
     let parent = build_parent_map(tree);
     let mut positions = HashSet::new();
@@ -607,7 +652,7 @@ pub fn path_positions(tree: &HaploTree, node_id: i64) -> HashSet<i64> {
     positions
 }
 
-/// The sample's state at a defining SNP.
+/// The state of the sample at a SNP that defines a branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallState {
     /// Carries the branch's derived allele.
@@ -618,7 +663,7 @@ pub enum CallState {
     NoCall,
 }
 
-/// One defining SNP of a branch, with the sample's state.
+/// One SNP that defines a branch, with the state of the sample.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnpEvidence {
     pub name: String,
@@ -631,21 +676,23 @@ pub struct SnpEvidence {
     pub base: Option<char>,
 }
 
-/// A child branch below the reported terminal, with the per-SNP evidence that explains why
-/// descent did or did not continue into it.
+/// A child branch below the terminal that the report names, with the evidence at each SNP. That
+/// evidence explains why the descent went into that branch, or why it did not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchEvidence {
     pub name: String,
     pub snps: Vec<SnpEvidence>,
-    /// How many of this branch's defining SNPs the sample carries (derived).
+    /// The count of the SNPs that define this branch, and that the sample carries as derived.
     pub derived: usize,
 }
 
-/// For the node `node_id` (typically the reported terminal), evaluate each child branch's
-/// defining SNPs against the sample `calls` — `Derived` / `Ancestral` / `NoCall` per SNP.
-/// This explains a stop: a child with all-`Ancestral` SNPs is an unsupported split; one
-/// with `NoCall` SNPs is unresolved for lack of coverage. Children without defining SNPs
-/// are omitted.
+/// For the node `node_id`, which is usually the terminal that the report names, examine the SNPs
+/// that define each child branch against the sample `calls`. Each SNP gets `Derived`,
+/// `Ancestral` or `NoCall`.
+///
+/// This explains why the descent stopped. A child whose SNPs are all `Ancestral` is a split that
+/// the data does not support. A child with `NoCall` SNPs has too little coverage to resolve. The
+/// result leaves out a child that has no SNP to define it.
 pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64) -> Vec<BranchEvidence> {
     let Some(node) = tree.nodes.get(&node_id) else {
         return Vec::new();
@@ -683,8 +730,10 @@ pub fn child_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64
     out
 }
 
-/// One node on the root→terminal path with its defining SNPs and the sample's per-SNP state — the
-/// grouped form of [`lineage_evidence`], used to draw a YFull-style per-node descent report.
+/// One node on the path from the root to the terminal. It holds the SNPs that define that node,
+/// and the state of the sample at each of those SNPs. It is the grouped form of
+/// [`lineage_evidence`], and it draws a descent report in the YFull style, one row for each
+/// node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeEvidence {
     pub name: String,
@@ -693,11 +742,14 @@ pub struct NodeEvidence {
     pub snps: Vec<SnpEvidence>,
 }
 
-/// Group the root→`terminal_id` path into per-node defining-SNP evidence (root→terminal order):
-/// walk the tree from the terminal up to the root, and for each node attach its loci with the
-/// sample's state taken from `state_by_name` (`NoCall` for an equivalent the sample did not call).
-/// Keyed by **SNP name** (build-independent: a name like `M269` is the same across coordinate
-/// systems), so a cached variant profile placed under any build can colour an FTDNA-tree path.
+/// Group the path from the root to `terminal_id` into the evidence at each node, in root to
+/// terminal order. The code walks the tree from the terminal up to the root. At each node it
+/// attaches the loci of that node, with the state of the sample from `state_by_name`. An
+/// equivalent that the sample did not call gets `NoCall`.
+///
+/// The key is the **SNP name**, which does not depend on the build. A name such as `M269` is the
+/// same in every coordinate system. A cached variant profile that the code placed under any build
+/// can colour a path in an FTDNA tree.
 pub fn descent_by_node(
     tree: &HaploTree,
     terminal_id: i64,
@@ -736,9 +788,10 @@ pub fn descent_by_node(
         .collect()
 }
 
-/// Per-SNP evidence along the lineage root→`terminal_id`: every defining SNP of every node on
-/// the path, with the sample's `Derived`/`Ancestral`/`NoCall` state. Used to compare exactly
-/// which defining mutations a sample carries (e.g. GRCh38 vs a lifted CHM13 call).
+/// The evidence at each SNP along the lineage from the root to `terminal_id`. It holds every SNP
+/// that defines a node on the path, with the `Derived`, `Ancestral` or `NoCall` state of the
+/// sample. Use it to compare which of those mutations a sample carries, for example a GRCh38
+/// call against a CHM13 call that came through a liftover.
 pub fn lineage_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, terminal_id: i64) -> Vec<SnpEvidence> {
     // child → parent, to walk the terminal back to the root.
     let parent = build_parent_map(tree);
@@ -770,22 +823,29 @@ pub fn lineage_evidence(tree: &HaploTree, calls: &HashMap<i64, char>, terminal_i
 
 // ---- path-supported parsimony guard ------------------------------------------
 //
-// The Kulczynski `score` ranks every node by *proportional* set-similarity, and on real
-// data that places the terminal well (validated: GFX0457637 → R-FGC29071). Its one weakness
-// is the distal-Y paralog artifact: a deep node reached only by *tunnelling through a branch
-// the sample contradicts* can still score highly off a few coincidental matches.
+// The Kulczynski `score` ranks every node by *proportional* set similarity. On real data that
+// places the terminal well, and a check on GFX0457637 gave R-FGC29071. It has one weakness: the
+// paralog artifact on the distal Y. A deep node can still score high on a few matches that are
+// only coincidence. That happens when the path reaches the node only by a tunnel *through a
+// branch that the sample contradicts*.
 //
-// Parsimony guards exactly that failure — it rejects any candidate whose root→node lineage
-// crosses a contradicted branch — without disturbing the proportional ranking that gets the
-// clean case right. (A descent-style "follow the most-derived subtree" router was tried and
-// derailed onto a bushier wrong fork on the 4× GFX sample: absolute derived count favours
-// long/bushy paths, where Kulczynski's proportion does not. The proportional rank + this
-// guard is the validated combination. The remaining paralog *false-positive* defence — when
-// the wrong branch carries spurious derived calls rather than honest ancestral ones — is the
-// haploid allele-balance filter, a separate Phase-1 item.) See PangenomeExpansion.md.
+// Parsimony guards that exact failure. It refuses any candidate whose lineage from the root to
+// the node crosses a branch that the sample contradicts. It does not change the proportional
+// rank, which gets the clean case right.
+//
+// An earlier try used a router in the descent style, which follows the most derived subtree. It
+// went onto a wrong fork with more branches on the 4x GFX sample. An absolute count of derived
+// sites prefers a long path with many branches, where the Kulczynski proportion does not. The
+// proportional rank plus this guard is the combination that the checks support.
+//
+// One paralog defence is still open: the *false-positive* case, where the wrong branch carries
+// derived calls that are not real, and not honest ancestral ones. The haploid allele-balance
+// filter covers that, and it is a separate Phase-1 item. See PangenomeExpansion.md.
 
-/// Per-node tally over evaluable defining SNPs (loci with a derived allele): how many the
-/// sample calls derived, ancestral (a contradiction), or has no confident base for.
+/// The tally at each node. It covers the SNPs that define a branch and that the code can
+/// examine, which are the loci with a derived allele. It counts three things: how many the sample
+/// calls derived, how many it calls ancestral, and how many it has no confident base for. An
+/// ancestral call is a contradiction.
 fn node_counts(node: &HaploNode, calls: &HashMap<i64, char>) -> (usize, usize, usize) {
     let (mut d, mut a, mut n) = (0usize, 0usize, 0usize);
     for l in &node.loci {
@@ -801,8 +861,8 @@ fn node_counts(node: &HaploNode, calls: &HashMap<i64, char>) -> (usize, usize, u
     (d, a, n)
 }
 
-/// Public view of a node's `(derived, ancestral, no-call)` defining-SNP tally against `calls` — for
-/// diagnostics / tracing a placement path.
+/// The public view of the `(derived, ancestral, no-call)` tally of a node against `calls`, over
+/// the SNPs that define the node. Use it for diagnostics, and to follow a placement path.
 pub fn node_call_counts(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64) -> (usize, usize, usize) {
     tree.nodes
         .get(&node_id)
@@ -810,15 +870,19 @@ pub fn node_call_counts(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i
         .unwrap_or((0, 0, 0))
 }
 
-/// Find a node by name for the branch-report tool: matches a **haplogroup name** (e.g. `R-FGC29071`)
-/// or any of the node's **defining-marker names** (e.g. `FGC29071`), case-insensitively. Returns the
-/// node id. A marker-name match wins over none; among several nodes the first in a stable id order is
-/// returned (defining markers are node-unique in practice, so this is deterministic in practice).
+/// Find a node by name, for the branch-report tool. It matches a **haplogroup name** such as
+/// `R-FGC29071`, or the name of any **marker that defines the node**, such as `FGC29071`. The
+/// case does not matter. It returns the node id.
+///
+/// A match on a marker name wins over no match at all. When more than one node matches, the
+/// function returns the first one in a stable order of the ids. In practice a marker that defines
+/// a node belongs to that node alone, so the result is deterministic.
 pub fn find_node(tree: &HaploTree, query: &str) -> Option<i64> {
     let q = query.trim().to_ascii_uppercase();
     let mut ids: Vec<i64> = tree.nodes.keys().copied().collect();
     ids.sort_unstable();
-    // Haplogroup-name match first, then marker-name match — both over the stable id order.
+    // Try a match on the haplogroup name first, then on the marker name. Both go over the
+    // stable order of the ids.
     ids.iter()
         .find(|&&id| tree.nodes.get(&id).is_some_and(|n| n.name.to_ascii_uppercase() == q))
         .or_else(|| {
@@ -831,9 +895,10 @@ pub fn find_node(tree: &HaploTree, query: &str) -> Option<i64> {
         .copied()
 }
 
-/// One row of a branch report: a defining marker of some node within a reported subtree, with the
-/// sample's state. `node`/`parent` are haplogroup names; `snp` carries the marker + observed base +
-/// derived/ancestral/no-call state (via [`locus_state`]).
+/// One row of a branch report. It holds a marker that defines a node in the subtree that the
+/// report covers, with the state of the sample. `node` and `parent` are haplogroup names. `snp`
+/// carries the marker, the observed base, and the derived, ancestral or no-call state, which
+/// [`locus_state`] gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchReportRow {
     pub node: String,
@@ -841,11 +906,16 @@ pub struct BranchReportRow {
     pub snp: SnpEvidence,
 }
 
-/// Every defining marker in the subtree rooted at `root_id`, in **pre-order** (a node's own markers
-/// before its descendants'), each scored against `calls`. Children are visited in a stable
-/// name-then-id order so the report is deterministic. `max_depth` bounds descent from the root
-/// (`None` = unbounded; `Some(0)` = the root node's markers only). This is the descendant-subtree
-/// counterpart to [`lineage_evidence`] (which walks root→node ancestors).
+/// Every marker that defines a node in the subtree below `root_id`, in **pre-order**. The own
+/// markers of a node come before the markers of its descendants. The code scores each marker
+/// against `calls`.
+///
+/// The walk goes over the children in a stable order, by name and then by id, so the report is
+/// deterministic. `max_depth` limits how far the walk goes down from the root. `None` sets no
+/// limit, and `Some(0)` gives the markers of the root node alone.
+///
+/// This function covers the subtree of the descendants. [`lineage_evidence`] is its counterpart,
+/// and it walks the ancestors from the root down to the node.
 pub fn subtree_report(
     tree: &HaploTree,
     calls: &HashMap<i64, char>,
@@ -881,7 +951,8 @@ pub fn subtree_report(
             None => true,
         };
         if descend {
-            // Push children in reverse stable order so they pop in ascending (pre-order) order.
+            // Push the children in the reverse of the stable order, so that they come off the
+            // stack in pre-order, from the lowest up.
             let mut kids = node.children.clone();
             kids.sort_by(|a, b| {
                 let na = tree.nodes.get(a).map(|n| n.name.as_str()).unwrap_or("");
@@ -896,36 +967,47 @@ pub fn subtree_report(
     out
 }
 
-/// A node is *contradicted* when the sample carries the ancestral allele at more of the
-/// node's defining SNPs than the derived allele — it confidently does **not** belong to this
-/// branch. A no-evidence node (all no-call, `d == a == 0`) is *not* contradicted: it is a
-/// pass-through, so low coverage never blocks a lineage. A stray ancestral at an otherwise
-/// well-supported node (`d >= a`) is tolerated for the same reason.
+/// A node is *contradicted* when the sample carries the ancestral allele at more of its SNPs
+/// than it carries the derived allele. The sample then clearly does **not** belong to this
+/// branch.
+///
+/// A node with no evidence, where every SNP is a no-call and `d == a == 0`, is *not*
+/// contradicted. The walk passes through it, so low coverage never blocks a lineage. One stray
+/// ancestral at a node that the data otherwise supports, where `d >= a`, is acceptable for the
+/// same reason.
 fn is_contradicted(node: &HaploNode, calls: &HashMap<i64, char>) -> bool {
     let (d, a, _) = node_counts(node, calls);
     a > d
 }
 
-/// Derived defining-SNPs that must appear *below* a contradicted ancestor (on the path toward the
-/// candidate) before that contradiction stops vetoing the lineage. A lone ancestral at a sparse
-/// intermediate node is usually a genotyping artifact — common on targeted-Y data (FTDNA Big Y),
-/// whose coverage gaps turn most intermediate SNPs into no-calls — and would otherwise veto an
-/// entire deep lineage that the terminal overwhelmingly supports (one stray ancestral at R-Z16250
-/// blocking R-CTS4466 with 10 derived / 0 ancestral). A real off-branch *tunnel* artifact, by
-/// contrast, carries only a coincidental hit or two below the contradicted branch-point, so it
-/// stays vetoed. The threshold sits above the coincidental noise and well below a genuine clade's
-/// derived count.
+/// The count of derived branch SNPs that must occur *below* a contradicted ancestor, on the
+/// path toward the candidate. Below that count, the contradiction keeps its veto on the
+/// lineage.
+///
+/// One ancestral call at a thin intermediate node is usually an artifact of the genotype. It is
+/// common on targeted-Y data such as FTDNA Big Y, whose coverage gaps turn most intermediate SNPs
+/// into no-calls. Without this threshold, such a call would veto a whole deep lineage that the
+/// terminal strongly supports. One stray ancestral at R-Z16250 blocked R-CTS4466, which had 10
+/// derived and 0 ancestral.
+///
+/// A true off-branch *tunnel* artifact is different. It carries only one or two coincidental hits
+/// below the contradicted branch point, so the veto stays. The threshold sits above the noise of
+/// coincidence, and well below the derived count of a true clade.
 const REDEEM_DERIVED: usize = 4;
 
-/// Is the root→`node_id` lineage free of any *unredeemed* contradicted branch? An off-path paralog
-/// artifact sits below a branch the sample is ancestral for, so it fails this guard; the genuine
-/// lineage (derived or merely no-call along its length) passes. Used to veto otherwise high-scoring
-/// tunnel artifacts from the [`score`] ranking.
+/// Is the lineage from the root to `node_id` free of every contradicted branch that nothing
+/// below it redeems?
 ///
-/// A contradicted ancestor only vetoes when it is not *redeemed* by derived support further down the
-/// path: a single stray ancestral at a sparse intermediate node (a Big Y miscall) is overridden
-/// when ≥[`REDEEM_DERIVED`] derived SNPs below it confirm the branch, while a coincidental tunnel —
-/// a contradicted branch-point with only a hit or two beneath it — stays vetoed.
+/// An off-path paralog artifact lies below a branch for which the sample is ancestral, so it
+/// fails this guard. The true lineage clears the guard, because along its length the sample is
+/// derived or has only a no-call. [`score`] uses this to veto a tunnel artifact that would
+/// otherwise rank high.
+///
+/// A contradicted ancestor vetoes only when derived support further down the path does not
+/// *redeem* it. Below it, [`REDEEM_DERIVED`] derived SNPs or more confirm the branch. They
+/// override one stray ancestral at a thin intermediate node, which is a Big Y miscall. A tunnel
+/// of coincidence keeps its veto, because it is a contradicted branch point with only one or two
+/// hits below it.
 pub fn path_admissible(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i64) -> bool {
     let parent = build_parent_map(tree);
     // Root→node path (root first), with each node's derived-call count.
@@ -943,13 +1025,18 @@ pub fn path_admissible(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i6
     for (i, id) in path.iter().enumerate() {
         let Some(node) = tree.nodes.get(id) else { continue };
         if is_contradicted(node, calls) {
-            // A **confident divergence** — the sample carries the ancestral allele here and *none* of
-            // the node's derived SNPs — is never redeemable: the sample left the lineage above this
-            // node, so anything below is a different branch (a sibling clade, or a homoplasy / indel
-            // block that happens to score). Redeeming it is what lets a big spurious-derived block on a
-            // parallel branch tunnel into an unreachable terminal. Only a *mixed block* (`d > 0`: the
-            // sample carries some of the node's derived SNPs, and the ancestral ones are an unresolved
-            // downstream split) can be redeemed by strong derived support below.
+            // Nothing can redeem a **confident divergence**, where the sample carries the
+            // ancestral allele here and *none* of the derived SNPs of the node. The sample left
+            // the lineage above this node, so everything below is a different branch. It is a
+            // clade beside this one, or a block of homoplasy or indels that happens to score.
+            //
+            // To redeem such a node lets a large block of false derived calls tunnel through
+            // to a terminal that the sample can not reach. That block lies on a parallel
+            // branch.
+            //
+            // Only a *mixed block* can take redemption from strong derived support below. A
+            // mixed block has `d > 0`. The sample carries some of the derived SNPs of the node,
+            // and the ancestral ones are a downstream split that the tree has not resolved.
             if derived[i] == 0 {
                 return false;
             }
@@ -963,22 +1050,25 @@ pub fn path_admissible(tree: &HaploTree, calls: &HashMap<i64, char>, node_id: i6
     true
 }
 
-/// Minimum derived defining-SNPs of a child the sample must carry for [`deepen_terminal`] to
-/// descend into it. Two independent shared-derived mutations confirm membership while staying
-/// robust to a lone recurrent/artefactual match.
+/// The count of derived SNPs of a child that the sample must carry before [`deepen_terminal`]
+/// goes down into that child. Two shared derived mutations that are independent confirm that the
+/// sample belongs there, and they stay robust against one recurrent or false match.
 const MIN_DERIVED_TO_DEEPEN: usize = 2;
 
-/// From the guard-selected `start`, descend further into any child the sample has *clearly
-/// entered* — carries at least [`MIN_DERIVED_TO_DEEPEN`] of its derived SNPs and is not
-/// contradicted (`ancestral ≤ derived`). Routes by derived count (ties → lower id).
+/// From the `start` that the guard chose, go further down into any child that the sample has
+/// *clearly entered*. Such a child meets two conditions: the sample carries at least
+/// [`MIN_DERIVED_TO_DEEPEN`] of its derived SNPs, and nothing contradicts it, which means
+/// `ancestral ≤ derived`. The route follows the derived count, and a tie goes to the lower id.
 ///
-/// This corrects under-calling at **unsplit tree nodes** — a common case in published trees
-/// (FTDNA especially): when a node's SNP block has not yet been divided into sub-branches, a
-/// sample on one sub-lineage is derived for the SNPs defining its own line and ancestral for
-/// the SNPs of the *other* (not-yet-split) sub-lineages. The node then looks "half ancestral",
-/// so its proportional [`score`] falls just below its parent's and the guard stops one node
-/// too shallow — even though the sample genuinely carries several of the node's mutations. The
-/// ancestral SNPs are an unresolved downstream split, not a contradiction.
+/// This corrects a low call at a **tree node that nobody has split yet**. Published trees hold
+/// many of those, and the FTDNA tree most of all. Take a node whose SNP block has no
+/// sub-branches yet. A sample on one sub-lineage is then derived for the SNPs of its own line.
+/// It is ancestral for the SNPs of the *other* sub-lineages, which the tree has not split.
+///
+/// The node then looks half ancestral. Its proportional [`score`] falls just below the score of
+/// its parent, and the guard stops one node too high. The sample truly carries some of the
+/// mutations of the node. Those ancestral SNPs are a downstream split that nobody has resolved,
+/// and they are not a contradiction.
 pub fn deepen_terminal(tree: &HaploTree, calls: &HashMap<i64, char>, start: i64) -> i64 {
     let mut current = start;
     while let Some(node) = tree.nodes.get(&current) {
@@ -1008,29 +1098,31 @@ pub fn deepen_terminal(tree: &HaploTree, calls: &HashMap<i64, char>, start: i64)
 
 // ---- induced subtree (the block-tree substrate) ------------------------------
 
-/// One node of an [`induced_subtree`], carrying the branch's equivalent defining SNPs — a *block*
-/// in the FTDNA "block tree" sense: every sample below this node carries all of `loci`, and nothing
-/// observed separates them.
+/// One node of an [`induced_subtree`]. It holds the equivalent SNPs that define the branch. It
+/// is a *block* in the sense of the FTDNA "block tree". Every sample below this node carries all
+/// of `loci`, and no observation separates them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InducedNode {
     pub id: i64,
     pub name: String,
     /// Parent **within the induced subtree** (`None` at an induced root).
     pub parent: Option<i64>,
-    /// Depth **within the induced subtree**, root = 0. This is the layout coordinate: the induced
-    /// root is the members' common ancestor, not the tree's, so full-tree depth would waste the
-    /// whole left margin on nodes nobody is placed under.
+    /// The depth **inside the induced subtree**, where the root is 0. This is the coordinate for
+    /// the layout. The induced root is the common ancestor of the members, and not the root of
+    /// the tree. A depth from the full tree would waste the whole left margin on nodes that hold
+    /// no sample.
     pub depth: usize,
-    /// The equivalent SNPs defining this branch (the node's own loci).
+    /// The equivalent SNPs that define this branch, which are the own loci of the node.
     pub loci: Vec<Locus>,
 }
 
-/// Haplogroup name → node id, over the whole tree. Callers placing *many* samples should build this
-/// once: the per-subject path ([`crate::haplo::descent_by_node`]'s caller) does a linear scan for its
-/// one terminal, which is fine for one subject and quadratic for a cohort.
+/// A map from a haplogroup name to a node id, over the whole tree. A caller that places *many*
+/// samples must build this once. The path for one subject, which is the caller of
+/// [`crate::haplo::descent_by_node`], does a linear scan for its one terminal. That is correct
+/// for one subject, and quadratic for a cohort.
 ///
-/// Names are assumed unique within a tree. On a duplicate the **lowest id** wins, so the result does
-/// not depend on `HashMap` iteration order.
+/// The code takes the names to be unique inside a tree. If two are the same, the **lowest id**
+/// wins, so the result does not depend on the iteration order of a `HashMap`.
 pub fn name_index(tree: &HaploTree) -> HashMap<&str, i64> {
     let mut idx: HashMap<&str, i64> = HashMap::with_capacity(tree.nodes.len());
     for n in tree.nodes.values() {
@@ -1041,20 +1133,24 @@ pub fn name_index(tree: &HaploTree) -> HashMap<&str, i64> {
     idx
 }
 
-/// The **induced subtree** spanning `terminals`: every node lying on a root→terminal path for at
-/// least one of them, emitted in pre-order (a parent always precedes its children).
+/// The **induced subtree** that covers `terminals`. It holds every node that lies on a path from
+/// the root to a terminal, for one terminal or more. It comes out in pre-order, so a parent
+/// always comes before its children.
 ///
-/// This is the skeleton of a cohort block tree — the union of the members' descent paths, which is
-/// exactly the set of branches that any of them share. Ids absent from `tree` are ignored, so a
-/// caller may pass terminals resolved against a different provider/build without pre-filtering.
+/// This is the skeleton of a cohort block tree. It is the union of the descent paths of the
+/// members, which is exactly the set of branches that any of them share. The code ignores an id
+/// that `tree` does not hold. A caller may give terminals that came from a different provider or
+/// build, and it does not have to remove them first.
 ///
-/// Sibling order is by `(name, id)` and roots likewise, so the emitted order is deterministic
-/// regardless of `HashMap` iteration order — layout and snapshot tests depend on that.
+/// The order of the nodes beside each other goes by `(name, id)`, and the order of the roots does
+/// the same. The output order is deterministic, and it does not depend on the iteration order of
+/// a `HashMap`. The layout tests and the snapshot tests need that.
 pub fn induced_subtree(tree: &HaploTree, terminals: &[i64]) -> Vec<InducedNode> {
     let parent = build_parent_map(tree);
 
-    // Every node on some root→terminal path. `seen` also breaks a malformed cycle: a node already
-    // kept means the rest of its path is kept too, so we can stop climbing.
+    // Every node on a path from the root to a terminal. `seen` also breaks a cycle in a tree that
+    // is not correct. A node that the set already holds means that the code also kept the rest of
+    // its path, so the walk up can stop there.
     let mut kept: HashSet<i64> = HashSet::new();
     for &t in terminals {
         if !tree.nodes.contains_key(&t) {
@@ -1072,9 +1168,10 @@ pub fn induced_subtree(tree: &HaploTree, terminals: &[i64]) -> Vec<InducedNode> 
         return Vec::new();
     }
 
-    // Induced roots: kept nodes whose parent is absent from the kept set. Normally exactly one (the
-    // members' common ancestor), but a tree with several roots — the DecodingUs document has a
-    // `roots` array — can yield several, and so can a cohort spanning them.
+    // The induced roots are the nodes that the code kept, and whose parent it did not keep.
+    // There is usually exactly one, which is the common ancestor of the members. But a tree with
+    // more than one root can give more than one, and the DecodingUs document does have a `roots`
+    // array. A cohort that reaches across those roots can do the same.
     let sort_key = |id: &i64| tree.nodes.get(id).map(|n| (n.name.clone(), n.id));
     let mut roots: Vec<i64> = kept
         .iter()
@@ -1085,7 +1182,7 @@ pub fn induced_subtree(tree: &HaploTree, terminals: &[i64]) -> Vec<InducedNode> 
 
     let mut out = Vec::with_capacity(kept.len());
     let mut stack: Vec<(i64, Option<i64>, usize)> = Vec::new();
-    // Reversed, so popping yields the sorted order.
+    // In the reverse order, so that the nodes come off the stack in the sorted order.
     stack.extend(roots.iter().rev().map(|&id| (id, None, 0)));
     while let Some((id, par, depth)) = stack.pop() {
         let Some(node) = tree.nodes.get(&id) else { continue };
@@ -1125,14 +1222,14 @@ mod tests {
         pairs.iter().copied().collect()
     }
 
-    /// A branching tree, for the induced-subtree/block cases:
+    /// A tree with more than one branch, for the induced-subtree and block cases:
     ///
     /// ```text
     /// root ──> R ──> R1 ──> R1a
     ///            └─> R2      └─> R1b
     /// ```
     ///
-    /// `R1` carries two equivalent SNPs — the block case.
+    /// `R1` carries two equivalent SNPs, which is the block case.
     const BRANCHY: &str = r#"{
       "allNodes": {
         "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
@@ -1182,7 +1279,7 @@ mod tests {
                 assert!(pos(parent_name) < pos(&n.name), "{} preceded its parent", n.name);
             }
         }
-        // Depth is measured from the induced root, not the full tree.
+        // The depth counts from the induced root, and not from the full tree.
         assert_eq!(nodes[0].depth, 0);
         assert_eq!(nodes[0].parent, None);
         assert_eq!(nodes.iter().find(|n| n.name == "R1a").unwrap().depth, 3);
@@ -1193,7 +1290,7 @@ mod tests {
         let t = parse_ftdna_json(BRANCHY).unwrap();
         let nodes = induced_subtree(&t, &[4]);
         let r1 = nodes.iter().find(|n| n.name == "R1").unwrap();
-        // R1's two SNPs are phylogenetically equivalent — that pair *is* the block.
+        // The two SNPs of R1 are equivalent in the phylogeny. That pair *is* the block.
         let mut markers: Vec<&str> = r1.loci.iter().map(|l| l.name.as_str()).collect();
         markers.sort_unstable();
         assert_eq!(markers, vec!["M173", "M306"]);
@@ -1206,7 +1303,7 @@ mod tests {
         let nodes = induced_subtree(&t, &[4, 999]);
         let names: Vec<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, vec!["root", "R", "R1", "R1a"]);
-        // ...and a cohort of nothing but unknowns yields nothing, rather than panicking.
+        // ...and a cohort of unknowns alone gives nothing. It does not panic.
         assert!(induced_subtree(&t, &[999]).is_empty());
         assert!(induced_subtree(&t, &[]).is_empty());
     }
@@ -1214,7 +1311,8 @@ mod tests {
     #[test]
     fn induced_subtree_is_deterministic_across_runs() {
         let t = parse_ftdna_json(BRANCHY).unwrap();
-        // HashMap iteration order varies per process; the emitted order must not.
+        // The iteration order of a HashMap changes from one process to the next. The output
+        // order must not.
         let first = induced_subtree(&t, &[4, 5, 6]);
         for _ in 0..8 {
             assert_eq!(induced_subtree(&t, &[6, 5, 4]), first);
@@ -1232,7 +1330,8 @@ mod tests {
     #[test]
     fn descent_by_node_buckets_path_with_state() {
         let t = parse_ftdna_json(TREE).unwrap();
-        // Sample is derived at H (A146G) and H2 (A263G); H2a's SNP (C750T) was never called.
+        // The sample carries the derived allele at H (A146G) and at H2 (A263G). Nobody called
+        // the SNP of H2a, which is C750T.
         let state: HashMap<String, CallState> = [
             ("A146G".to_string(), CallState::Derived),
             ("A263G".to_string(), CallState::Derived),
@@ -1241,7 +1340,7 @@ mod tests {
         .collect();
         let grouped = descent_by_node(&t, 4, &state); // terminal H2a
 
-        // root → H → H2 → H2a, root carries no defining loci.
+        // root → H → H2 → H2a. The root carries no locus that defines a branch.
         let names: Vec<&str> = grouped.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, vec!["root", "H", "H2", "H2a"]);
         assert!(grouped[0].snps.is_empty()); // root has no loci
@@ -1250,7 +1349,7 @@ mod tests {
         assert_eq!(grouped[1].snps[0].name, "A146G");
         assert_eq!(grouped[1].snps[0].state, CallState::Derived);
         assert_eq!(grouped[2].snps[0].state, CallState::Derived);
-        // H2a's defining SNP was never called → NoCall (drawn grey).
+        // Nobody called the SNP that defines H2a, so it gives NoCall, which the UI draws grey.
         assert_eq!(grouped[3].snps[0].state, CallState::NoCall);
     }
 
@@ -1337,10 +1436,12 @@ mod tests {
 
     #[test]
     fn decodingus_link_polarity_overrides_swapped_coordinate() {
-        // Real DecodingUs quirk: ~1.4% of variants carry a per-build `coordinates.ancestral/derived`
-        // that is the *swap* of the authoritative variant-level `link_ancestral/link_derived`. Both
-        // the tree parse and the polarity map must trust `link_*` — otherwise a backbone SNP the
-        // sample carries (derived) reads as ancestral (the huF98AFD "peppered ancestral" bug).
+        // This is a real property of the DecodingUs data. About 1.4% of the variants carry a
+        // `coordinates.ancestral/derived` in a build that is the *exchange* of the authoritative
+        // `link_ancestral/link_derived` at the variant level. Both the tree parse and the
+        // polarity map must trust `link_*`. If they do not, a backbone SNP that the sample
+        // carries as derived reads as ancestral. That was the huF98AFD bug, where the report was
+        // full of ancestral calls.
         let json = r#"{
           "roots": [
             {"id": 1, "name": "A0-T", "variants": [
@@ -1357,7 +1458,8 @@ mod tests {
         let locus = &t.nodes[&1].loci[0];
         assert_eq!(locus.position, 6964116);
         assert_eq!((locus.ancestral.as_str(), locus.derived.as_str()), ("G", "A"));
-        // A sample carrying the derived allele A now genotypes as Derived (was Ancestral pre-fix).
+        // A sample that carries the derived allele A now genotypes as Derived. Before the fix it
+        // gave Ancestral.
         let calls: HashMap<i64, char> = [(6964116, 'A')].into_iter().collect();
         assert_eq!(locus_state(locus, &calls), CallState::Derived);
         // The polarity map agrees.
@@ -1367,7 +1469,8 @@ mod tests {
 
     #[test]
     fn parse_decodingus_picks_target_build_and_flattens() {
-        // hs1: both M207 and M173 resolve; the GRCh38-only variant is dropped.
+        // In hs1, both M207 and M173 resolve. The code drops the variant that exists only in
+        // GRCh38.
         let t = parse_decodingus_json(DU_TREE, "hs1").unwrap();
         assert_eq!(t.nodes.len(), 2);
         assert!(t.nodes[&10].is_root && !t.nodes[&11].is_root);
@@ -1387,14 +1490,18 @@ mod tests {
 
     #[test]
     fn a_node_whose_every_variant_lacks_the_build_survives_with_no_snps() {
-        // The shape behind `1087`'s truncated descent. Most DecodingUs-discovered (`DU`-named) SNPs
-        // exist in CHM13 coordinates alone — only a few hundred were mapped back to the older
-        // references — so a terminal defined by one of them has *nothing* under GRCh38. Dropping the
-        // loci does not drop the node: it stays, named and on the path, with an empty `loci`, and
-        // `descent_by_node` faithfully reports it with no SNPs. A renderer that hides empty blocks
-        // (correctly — the root is genuinely empty) then shows the lineage stopping one branch
-        // short, while the terminal *name* remains right. So `DECODINGUS_NATIVE_BUILD`: parse in
-        // hs1 wherever the join is by SNP name.
+        // This is the shape behind the short descent of `1087`. Most of the SNPs that DecodingUs
+        // found, which carry a `DU` name, exist in CHM13 coordinates alone. Only a few hundred of
+        // them went back to the older references. A terminal that one of them defines has
+        // *nothing* under GRCh38.
+        //
+        // To drop the loci does not drop the node. The node stays, with its name and on the path,
+        // and its `loci` is empty. `descent_by_node` then reports it correctly, with no SNPs. But
+        // a renderer that hides an empty block, which is correct because the root is truly empty,
+        // shows the lineage one branch short. The *name* of the terminal stays right.
+        //
+        // `DECODINGUS_NATIVE_BUILD` answers this: parse in hs1 wherever the join goes by SNP
+        // name.
         let json = r#"{
           "roots": [
             {"id": 1, "name": "R-BY57568", "variants": [
@@ -1418,7 +1525,8 @@ mod tests {
         .into_iter()
         .collect();
 
-        // GRCh38: the terminal is on the path, named, and empty — the bug.
+        // In GRCh38 the terminal is on the path, it has its name, and it is empty. That is the
+        // bug.
         let g38 = parse_decodingus_json(json, "GRCh38").unwrap();
         assert!(g38.nodes.contains_key(&2), "the node itself is never dropped");
         assert!(g38.nodes[&2].loci.is_empty(), "its only locus has no GRCh38 coordinate");
@@ -1469,8 +1577,9 @@ mod tests {
 
     #[test]
     fn child_evidence_explains_an_unsupported_split() {
-        // H2 has a child H2a (derived T@750). Sample is ancestral (C) at 750 -> the split
-        // into H2a is not supported, shown per-SNP.
+        // H2 has a child H2a, whose derived allele is T at 750. The sample is ancestral, C, at
+        // 750. The data does not support the split into H2a, and the report shows that at each
+        // SNP.
         let t = parse_ftdna_json(TREE).unwrap();
         let ranked = score(&t, &calls(&[(146, 'G'), (263, 'G'), (750, 'C')]));
         assert_eq!(ranked[0].name, "H2"); // stops at H2 (750 ancestral)
@@ -1508,9 +1617,10 @@ mod tests {
 
     #[test]
     fn reference_polarity_comes_from_the_tree_not_the_reference() {
-        // The CHM13 trap: at a Y-SNP the tree calls ancestral=A, derived=G, and the analysis
-        // reference (CHM13 chrY = HG002, haplogroup J) carries the DERIVED base G. Polarity
-        // must come from comparing the SAMPLE's base to the tree — never from the reference.
+        // This is the CHM13 trap. At a Y-SNP the tree gives ancestral=A and derived=G. The
+        // analysis reference carries the DERIVED base G, because CHM13 chrY is HG002, which is a
+        // haplogroup-J Y. The polarity must come from a comparison of the base of the SAMPLE
+        // against the tree. It must never come from the reference.
         let locus = Locus {
             position: 146,
             ancestral: "A".into(),
@@ -1524,10 +1634,12 @@ mod tests {
         // Sample carries the DERIVED allele (G, == the reference here): Derived, from the tree.
         assert_eq!(locus_state(&locus, &calls(&[(146, 'G')])), CallState::Derived);
 
-        // End-to-end: a sample ANCESTRAL at the J-derived backbone site 146 does not carry H's
-        // defining mutation, so it must not be placed into H — even though the CHM13 reference
-        // base there is the derived G. A REF-as-ancestral assumption would flip 146 and wrongly
-        // descend; tree-driven, H is contradicted and the call stays at root.
+        // This is the end-to-end case. A sample that is ANCESTRAL at the J-derived backbone site
+        // 146 does not carry the mutation that defines H. The code must not place it into H.
+        // That holds even though the CHM13 reference base there is the derived G. An assumption
+        // that the REF base is the ancestral one would turn 146 around and descend wrongly. The
+        // tree controls the polarity, so the data contradicts H and the call stays at the
+        // root.
         let t = parse_ftdna_json(TREE).unwrap(); // root→H(146 A→G)→H2(263)→H2a(750)
         let c = calls(&[(146, 'A'), (263, 'G'), (750, 'T')]);
         assert!(
@@ -1539,10 +1651,11 @@ mod tests {
 
     #[test]
     fn opposite_strand_reads_match_via_the_complement() {
-        // A non-ambiguous SNP whose tree alleles are recorded on the opposite strand from the
-        // reference the alignment was genotyped against: ancestral=A, derived=C. A derived sample
-        // read on the reference strand shows G (complement of C); an ancestral one shows T
-        // (complement of A). Neither matches a tree allele literally — the strand-complement does.
+        // A SNP that is not ambiguous. Its tree alleles sit on the other strand from the
+        // reference that the caller genotyped the alignment against: ancestral=A, derived=C. A
+        // derived sample, read on the reference strand, shows G, which is the complement of C. An
+        // ancestral one shows T, the complement of A. Neither one matches a tree allele
+        // literally, but the strand complement does.
         let locus = Locus {
             position: 146,
             ancestral: "A".into(),
@@ -1554,8 +1667,9 @@ mod tests {
         assert!(locus_carried(&locus, &calls(&[(146, 'G')])));
         assert!(!locus_carried(&locus, &calls(&[(146, 'T')])));
 
-        // Strand-ambiguous SNP (C↔G): the complement of derived G is the ancestral C, so strand
-        // can't be inferred — keep strict literal matching and do not complement-flip.
+        // A SNP that is ambiguous about the strand (C↔G). The complement of the derived G is the
+        // ancestral C, so the data does not tell you the strand. Keep a strict literal match, and
+        // do not turn the base to its complement.
         let palindrome = Locus {
             position: 200,
             ancestral: "C".into(),
@@ -1570,8 +1684,9 @@ mod tests {
 
     #[test]
     fn normalize_polarity_flips_ftdna_reference_as_ancestral_inversion() {
-        // FTDNA records the GRCh38 reference base as "ancestral"; at PF1016 the reference carries
-        // the derived allele, so FTDNA lists T>C where the true polarity (DecodingUs) is C>T.
+        // FTDNA records the GRCh38 reference base as the "ancestral" one. At PF1016 the
+        // reference carries the derived allele. FTDNA lists T>C, where the true polarity, from
+        // DecodingUs, is C>T.
         let mut tree = HaploTree { nodes: HashMap::new() };
         tree.nodes.insert(
             1,
@@ -1586,14 +1701,15 @@ mod tests {
                         derived: "C".into(),
                         name: "PF1016".into(),
                     },
-                    // Already-aligned SNP — must be left untouched.
+                    // This SNP already agrees with the reference map. It must not change.
                     Locus {
                         position: 200,
                         ancestral: "A".into(),
                         derived: "G".into(),
                         name: "M168".into(),
                     },
-                    // Strand-different alleles (G>A vs C>T) — not a pure swap, left untouched.
+                    // The alleles sit on different strands: G>A against C>T. That is not a
+                    // clean exchange of the two roles, so it must not change.
                     Locus {
                         position: 300,
                         ancestral: "G".into(),
@@ -1633,7 +1749,8 @@ mod tests {
 
     #[test]
     fn guard_rejects_a_contradicted_terminal_but_admits_its_parent() {
-        // Ancestral (C) at 750 -> H2a is contradicted; the report falls back to H2.
+        // The sample is ancestral, C, at 750. That contradicts H2a, and the report falls back to
+        // H2.
         let t = parse_ftdna_json(TREE).unwrap();
         let c = calls(&[(146, 'G'), (263, 'G'), (750, 'C')]);
         assert!(!path_admissible(&t, &c, id_of(&t, "H2a")));
@@ -1643,17 +1760,18 @@ mod tests {
 
     #[test]
     fn no_calls_admit_the_whole_tree() {
-        // Empty calls: nothing is contradicted, so every lineage is admissible (the guard is
-        // a veto, not a selector — Kulczynski still picks root for lack of matches).
+        // With no calls at all, nothing contradicts a node, so every lineage passes the guard.
+        // The guard is a veto and not a selector. Kulczynski still takes the root, because it
+        // finds no match.
         let t = parse_ftdna_json(TREE).unwrap();
         let c = calls(&[]);
         assert!(path_admissible(&t, &c, id_of(&t, "H2a")));
         assert_eq!(guarded_terminal(&t, &c), "root");
     }
 
-    // root -> H(146) -> B(500, contradicted) -> Bdeep(900, coincidental derived).
-    // Kulczynski is lured to Bdeep (matches 146 + 900); the guard must veto it (tunnels
-    // through the contradicted B) and fall back to H.
+    // root -> H(146) -> B(500, contradicted) -> Bdeep(900, derived by coincidence).
+    // Kulczynski goes to Bdeep, because that node matches 146 and 900. The guard must veto it,
+    // because the path tunnels through the contradicted B, and fall back to H.
     const TUNNEL_TREE: &str = r#"{
       "allNodes": {
         "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
@@ -1671,7 +1789,7 @@ mod tests {
         let t = parse_ftdna_json(TUNNEL_TREE).unwrap();
         // Carries 146 (H) and a coincidental 900 (Bdeep) but is ANCESTRAL (C) at 500.
         let c = calls(&[(146, 'G'), (500, 'C'), (900, 'A')]);
-        // Kulczynski alone is lured deeper by the coincidental match...
+        // Kulczynski alone goes deeper, because of the match by coincidence...
         assert_eq!(score(&t, &c)[0].name, "Bdeep");
         // ...but Bdeep tunnels through the contradicted B, so the guard reports H.
         assert!(!path_admissible(&t, &c, id_of(&t, "Bdeep")));
@@ -1693,9 +1811,10 @@ mod tests {
     #[test]
     fn indel_locus_is_not_evaluable_from_a_raw_base() {
         let t = parse_ftdna_json(INDEL_TREE).unwrap();
-        // Derived at H(146); at the insertion position the sample carries the anchor base G — which a
-        // naive first-base compare reads as the insertion's derived allele. A *raw base* (not the indel
-        // sentinel) at an indel position must NOT place onto the indel-defined node.
+        // The sample carries the derived allele at H (146). At the insertion position it carries
+        // the anchor base G. A simple comparison of the first base reads that G as the derived
+        // allele of the insertion. A *raw base* at an indel position, which is not the indel
+        // sentinel, must NOT place the sample onto the node that the indel defines.
         let c = calls(&[(146, 'G'), (200, 'G')]);
         assert!(!locus_carried(&t.nodes[&3].loci[0], &c));
         assert_eq!(locus_state(&t.nodes[&3].loci[0], &c), CallState::NoCall);
@@ -1715,7 +1834,8 @@ mod tests {
         assert_eq!(node_call_counts(&t, &derived, 3), (1, 0, 0));
         assert_eq!(guarded_terminal(&t, &derived), "Ins");
 
-        // Resolved as ABSENT: the ancestral sentinel keeps the terminal at H (Ins is contradicted).
+        // The genotyper resolved the indel as ABSENT. The ancestral sentinel keeps the terminal
+        // at H, and the data contradicts Ins.
         let ancestral = calls(&[(146, 'G'), (200, INDEL_ANCESTRAL)]);
         assert!(!locus_carried(indel, &ancestral));
         assert_eq!(locus_state(indel, &ancestral), CallState::Ancestral);
@@ -1727,10 +1847,12 @@ mod tests {
         assert_eq!(guarded_terminal(&t, &uncalled), "H");
     }
 
-    // root -> H(146) -> B(500) -> Bdeep(five derived SNPs). The sample is ANCESTRAL at B (carries NONE
-    // of B's derived) yet coincidentally matches all five of Bdeep's SNPs — a big homoplasy / indel
-    // block on a diverged sibling. The redeem clause (>= REDEEM_DERIVED derived below) would tunnel to
-    // Bdeep; a *confident* divergence (d == 0) must never be redeemed.
+    // root -> H(146) -> B(500) -> Bdeep(five derived SNPs). The sample is ANCESTRAL at B, so it
+    // carries NONE of the derived alleles of B. But by coincidence it matches all five SNPs of
+    // Bdeep. That is a large block of homoplasy or indels on a clade beside this one, which
+    // diverged earlier. The redeem clause, which needs REDEEM_DERIVED derived alleles below or
+    // more, would tunnel to Bdeep. Nothing must ever redeem a *confident* divergence, where
+    // d == 0.
     const CONFIDENT_DIVERGENCE_TREE: &str = r#"{
       "allNodes": {
         "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
@@ -1751,8 +1873,9 @@ mod tests {
     #[test]
     fn guard_never_redeems_a_confident_divergence() {
         let t = parse_ftdna_json(CONFIDENT_DIVERGENCE_TREE).unwrap();
-        // Derived at H(146); ancestral at B(500) → carries none of B's derived (d == 0); but matches
-        // all five of Bdeep's SNPs (a homoplasy block → 5 derived below B, past REDEEM_DERIVED).
+        // Derived at H(146), and ancestral at B(500), so it carries none of the derived alleles
+        // of B and d == 0. But it matches all five SNPs of Bdeep. That homoplasy block gives 5
+        // derived alleles below B, which is past REDEEM_DERIVED.
         let c = calls(&[
             (146, 'G'),
             (500, 'C'),
@@ -1762,10 +1885,11 @@ mod tests {
             (903, 'A'),
             (904, 'A'),
         ]);
-        // Kulczynski is lured to Bdeep by the five coincidental matches...
+        // Kulczynski goes to Bdeep, because of the five matches by coincidence...
         assert_eq!(score(&t, &c)[0].name, "Bdeep");
-        // ...but B is a confident divergence (zero derived), never redeemed despite the derived block
-        // below it. The terminal is H, not Bdeep — the fix that stops a parallel-branch indel tunnel.
+        // ...but B is a confident divergence, with zero derived alleles, and nothing redeems it.
+        // The derived block below it does not help. The terminal is H and not Bdeep. That is the
+        // fix that stops an indel tunnel on a parallel branch.
         assert!(!path_admissible(&t, &c, id_of(&t, "Bdeep")));
         assert_eq!(guarded_terminal(&t, &c), "H");
     }
@@ -1789,14 +1913,16 @@ mod tests {
         let full = calls(&[(146, 'G'), (263, 'G')]);
         assert!(path_admissible(&t, &full, id_of(&t, "D")));
         assert_eq!(guarded_terminal(&t, &full), "D");
-        // 263 no-call (low coverage): D is *still* admissible (a no-call is not a
-        // contradiction) — the guard never blocks for lack of coverage. Kulczynski stops at H.
+        // 263 gives a no-call, because the coverage is low. D is *still* admissible, because a
+        // no-call is not a contradiction. The guard never blocks a path for lack of coverage.
+        // Kulczynski stops at H.
         let sparse = calls(&[(146, 'G')]);
         assert!(path_admissible(&t, &sparse, id_of(&t, "D")));
         assert_eq!(guarded_terminal(&t, &sparse), "H");
     }
 
-    // root -> H(146) -> D with three defining SNPs, used to exercise the net contradiction rule.
+    // root -> H(146) -> D, with three SNPs that define D. This covers the rule about the net
+    // contradiction.
     const NET_TREE: &str = r#"{
       "allNodes": {
         "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
@@ -1810,9 +1936,10 @@ mod tests {
       }
     }"#;
 
-    // root → P (2 derived SNPs) → C, an UNSPLIT node: 3 SNPs that define it + 3 SNPs of a
-    // not-yet-split sub-branch. A sample on C's trunk is derived for the first 3 and ancestral
-    // for the other 3 — so C looks half-ancestral and Kulczynski can rank it below P.
+    // root → P (2 derived SNPs) → C, where C is a node that nobody has SPLIT yet. C holds 3 SNPs
+    // that define it, and 3 SNPs of a sub-branch that the tree has not split. A sample on the
+    // trunk of C carries the derived allele at the first 3, and the ancestral allele at the
+    // other 3. C then looks half ancestral, and Kulczynski can rank it below P.
     const UNSPLIT_TREE: &str = r#"{
       "allNodes": {
         "1": {"haplogroupId": 1, "name": "root", "isRoot": true, "variants": [], "children": [2]},
@@ -1845,10 +1972,12 @@ mod tests {
             (700, 'A'),
             (800, 'A'),
         ]);
-        // Deepen enters C from P: it carries 3 derived (≥2) and is not contradicted (3 anc ≤ 3 der).
-        // (The "Kulczynski stops at the parent" condition needs a long backbone — validated on
-        // the real WGS229 short-read sample, where the guard stops at R-FGC29067 and deepen
-        // recovers R-FGC29071.)
+        // Deepen goes into C from P. C carries 3 derived alleles, which is 2 or more, and
+        // nothing contradicts it, because 3 ancestral is not more than 3 derived.
+        //
+        // The condition where Kulczynski stops at the parent needs a long backbone. A check on
+        // the real WGS229 short-read sample showed it: the guard stops at R-FGC29067, and deepen
+        // recovers R-FGC29071.
         assert_eq!(deepen_terminal(&t, &c, id_of(&t, "P")), id_of(&t, "C"));
     }
 
