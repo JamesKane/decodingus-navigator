@@ -1,10 +1,12 @@
-//! One alignment record → one original read, or a reason it was dropped.
+//! One alignment record becomes one original read, or a reason that the code dropped it.
 //!
-//! Everything an aligner did to a read has to be undone here, because the mapper downstream is
-//! going to redo it against a different reference. The subtle one is orientation: SAM stores SEQ
-//! and QUAL in *reference* orientation, so a read that mapped to the reverse strand is held
-//! reverse-complemented relative to what the sequencer produced. Emitting that to FASTQ without
-//! flipping it back would hand the mapper a read that never existed.
+//! This code must undo everything that an aligner did to a read, because the mapper after it does
+//! that work again, against a different reference.
+//!
+//! The orientation is the part to watch. SAM stores SEQ and QUAL in the orientation of the
+//! *reference*. A read that mapped to the reverse strand then sits there as the reverse complement
+//! of what the sequencer gave. To put that into a FASTQ, and not turn it back, would give the
+//! mapper a read that never existed.
 
 use noodles::sam::alignment::record::cigar::op::Kind;
 use noodles::sam::alignment::record::data::field::Tag;
@@ -12,18 +14,21 @@ use noodles::sam::alignment::RecordBuf;
 
 use super::{HardClipPolicy, RevertParams, RevertStats};
 
-/// `OQ` — the original base qualities, before any recalibration overwrote `QUAL`.
+/// The `OQ` tag. It holds the original base qualities, from before a recalibration wrote over
+/// `QUAL`.
 const OQ_TAG: Tag = Tag::new(b'O', b'Q');
 
-/// Phred used when a record carries no qualities at all. See [`RevertStats::qualities_synthesized`]
-/// — the reads are worth keeping, but the qualities are invented and must be counted as such.
+/// The phred value that the code uses when a record carries no qualities at all. See
+/// [`RevertStats::qualities_synthesized`]. The reads are worth a place in the output, but the code
+/// invents those qualities, and the count must say so.
 const SYNTHETIC_PHRED: u8 = 40;
 
 /// Which end of a template a read is, from the segment flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mate {
-    /// Not part of a pair (`0x1` clear), or paired but with neither/both segment bits set — a
-    /// record whose flags contradict themselves can not be placed in an R1/R2 file.
+    /// The record is not part of a pair, where `0x1` is clear. Or it is part of a pair, and it has
+    /// neither segment bit set, or both. The flags of such a record contradict themselves, so the
+    /// code can not put it into an R1 or R2 file.
     Unpaired,
     /// First segment (`0x40`).
     One,
@@ -34,22 +39,25 @@ pub enum Mate {
 /// Why a record produced no read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Skipped {
-    /// Secondary alignment (`0x100`) — the read's full sequence lives on its primary record.
+    /// A secondary alignment, at flag `0x100`. The full sequence of the read lives on its primary
+    /// record.
     Secondary,
-    /// Supplementary alignment (`0x800`) — likewise, and usually hard-clipped besides.
+    /// A supplementary alignment, at flag `0x800`. The same holds, and it usually carries a hard
+    /// clip as well.
     Supplementary,
     /// `SEQ` was `*`; there is no read here to recover.
     NoSequence,
     /// A hard-clipped primary under [`HardClipPolicy::Skip`].
     HardClipped,
-    /// No read name, so the record can never be paired with anything.
+    /// The record has no read name, so nothing can ever pair with it.
     NoName,
 }
 
-/// An original, unaligned read: exactly what the sequencer emitted, as far as the record allows.
+/// An original, unaligned read. It is exactly what the sequencer gave, as far as the record lets
+/// the code recover.
 ///
-/// Ordered by `(name, mate)` so a sort brings mates together with R1 ahead of R2 — which is the
-/// entire mechanism [`super::collate`] relies on.
+/// The order is by `(name, mate)`. A sort then brings two mates together, with the R1 before the
+/// R2. That is the whole mechanism that [`super::collate`] stands on.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RevertedRead {
     pub name: Vec<u8>,
@@ -64,10 +72,12 @@ impl RevertedRead {
     /// Rough heap footprint, for the sort's memory budget. The two `Vec`s dominate; the constant
     /// covers the struct itself and allocator overhead closely enough to size a buffer by.
     pub fn heap_bytes(&self) -> usize {
-        // The read sits inline in the collator's `Vec`, so its own size counts; the three vectors
-        // each cost an allocation on top of their contents. The flat 64 this replaced was smaller
-        // than the struct alone, which was harmless against a fixed 256 MB budget and is not
-        // against a budget sized from the machine (see `navigator_resource::spill_budget`).
+        // The read sits inside the `Vec` of the collator, so its own size counts. The three
+        // vectors each cost an allocation on top of what they hold.
+        //
+        // The flat 64 before this was smaller than the struct alone. Against a fixed budget of
+        // 256 MB that did no harm. Against a budget that comes from the machine it does. See
+        // `navigator_resource::spill_budget`.
         std::mem::size_of::<Self>()
             + self.name.len()
             + self.sequence.len()
@@ -76,24 +86,25 @@ impl RevertedRead {
     }
 }
 
-/// Record the reason a record was dropped.
+/// Note down the reason that the code dropped a record.
 pub fn count_skip(skipped: Skipped, stats: &mut RevertStats) {
     match skipped {
         Skipped::Secondary => stats.secondary_dropped += 1,
         Skipped::Supplementary => stats.supplementary_dropped += 1,
         Skipped::NoSequence | Skipped::NoName => stats.no_sequence_dropped += 1,
-        // Already counted by `revert_record` before it consulted the policy — the stat means
-        // "records affected by hard clipping" under both policies, so counting it again here
-        // would double it on the skip path only.
+        // `revert_record` already counted this, before it read the policy. The statistic means
+        // "the records that a hard clip affected", under either policy. To count it again here
+        // would make it twice too large, and only on the skip path.
         Skipped::HardClipped => {}
     }
 }
 
-/// Strip a record back to the read it was made from.
+/// Strip a record back to the read that made it.
 ///
-/// Alignment state (position, CIGAR, MAPQ, mate fields, aligner tags like `NM`/`MD`/`AS`) needs no
-/// explicit clearing: none of it is carried into [`RevertedRead`], so it is dropped by
-/// construction rather than by a list of fields someone has to remember to extend.
+/// The alignment state needs no explicit removal. That state is the position, the CIGAR, the MAPQ,
+/// the mate fields, and an aligner tag such as `NM`, `MD` or `AS`. None of it goes into a
+/// [`RevertedRead`], so the construction itself drops all of it. There is no list of fields that
+/// somebody must remember to extend.
 pub fn revert_record(
     record: &RecordBuf,
     params: &RevertParams,
@@ -101,8 +112,8 @@ pub fn revert_record(
 ) -> Result<RevertedRead, Skipped> {
     let flags = record.flags();
 
-    // Primaries only. Both of these carry a partial view of a read whose whole sequence is on
-    // another record, so keeping them would duplicate reads and truncate some of them.
+    // Primary records alone. The other two kinds each hold part of a read whose whole sequence
+    // sits on another record. To keep them would put some reads in twice, and cut others short.
     if flags.is_secondary() {
         return Err(Skipped::Secondary);
     }
@@ -116,14 +127,16 @@ pub fn revert_record(
         return Err(Skipped::NoSequence);
     }
 
-    // A hard clip on a *primary* means sequence was thrown away before we ever saw the record —
-    // rare, but real, and undetectable downstream once it reaches a FASTQ.
+    // A hard clip on a *primary* record means that somebody threw sequence away before this code
+    // saw the record. That is rare, and it is real. Once such a read reaches a FASTQ, no later
+    // step can find it.
     let hard_clipped = record.cigar().as_ref().iter().any(|op| op.kind() == Kind::HardClip);
     if hard_clipped {
         stats.hard_clipped += 1;
         if params.hard_clipped == HardClipPolicy::Skip {
-            // Counted here rather than through `count_skip`, so the stat means "records affected
-            // by hard clipping" under either policy instead of changing definition with the flag.
+            // The count goes here, and not through `count_skip`. The statistic then says "the
+            // records that a hard clip affected" under either policy, and the flag does not move
+            // what it says.
             return Err(Skipped::HardClipped);
         }
     }
@@ -137,8 +150,9 @@ pub fn revert_record(
         stats.qualities_synthesized += 1;
     }
 
-    // A record whose QUAL disagrees with SEQ is malformed; trust SEQ (the mapper needs one
-    // quality per base) and pad or truncate rather than emitting an unwritable FASTQ record.
+    // A record whose QUAL does not agree with SEQ is not correct. Trust SEQ, because the mapper
+    // needs one quality at each base. Then add to the qualities, or cut them, and do not emit a
+    // FASTQ record that no writer can write.
     if qualities.len() != sequence.len() {
         qualities.resize(sequence.len(), SYNTHETIC_PHRED);
     }
@@ -161,8 +175,9 @@ pub fn revert_record(
     })
 }
 
-/// The `OQ` tag's qualities, if present and wanted. `OQ` is stored as an ASCII phred+33 string —
-/// the same encoding FASTQ uses — so it is decoded back to raw phred here to match `QUAL`.
+/// The qualities of the `OQ` tag, when that tag is present and the caller wants it. `OQ` holds an
+/// ASCII phred+33 string, which is the same encoding that FASTQ uses. So the code decodes it back
+/// to a raw phred here, to match `QUAL`.
 fn original_qualities(record: &RecordBuf, params: &RevertParams, stats: &mut RevertStats) -> Option<Vec<u8>> {
     use noodles::sam::alignment::record_buf::data::field::Value;
 
@@ -186,14 +201,16 @@ fn mate_of(flags: noodles::sam::alignment::record::Flags) -> Mate {
     match (flags.is_first_segment(), flags.is_last_segment()) {
         (true, false) => Mate::One,
         (false, true) => Mate::Two,
-        // Both or neither: the record claims to be paired but will not say which end. It can not go in
-        // a synchronized R1/R2 file, so it becomes a singleton rather than corrupting the pairing.
+        // Both bits, or neither. The record says that it is part of a pair, and it does not say
+        // which end. It can not go into an R1 or R2 file that must stay in step. So it becomes a
+        // singleton, and it does not put the wrong reads together.
         _ => Mate::Unpaired,
     }
 }
 
-/// Reverse-complement in place. `N` and any other non-ACGT byte is passed through unchanged rather
-/// than normalized — the read is meant to come out of here exactly as the sequencer produced it.
+/// Take the reverse complement in place. An `N`, and any other byte that is not ACGT, goes through
+/// unchanged. The code does not normalize it, because the read must come out of here exactly as
+/// the sequencer gave it.
 fn reverse_complement(seq: &mut [u8]) {
     seq.reverse();
     for b in seq.iter_mut() {

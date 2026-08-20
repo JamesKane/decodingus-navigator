@@ -1,11 +1,15 @@
 //! Emit collated reads as paired FASTQ.
 //!
-//! The invariant the mapper depends on: `_1.fastq` and `_2.fastq` must stay in lockstep, record
-//! for record. A template only reaches those files if it has exactly one R1 and exactly one R2;
-//! anything else — an unpaired library, a mate lost to hard clipping, flags that do not say which
-//! end a read is — goes to singletons. Silently writing an unmatched read into `_1` would shift
-//! every later pair by one and mis-pair the entire rest of the file, so the check is per-template
-//! rather than a trailing reconciliation.
+//! Here is the invariant that the mapper depends on. `_1.fastq` and `_2.fastq` must stay in step,
+//! record for record. A template reaches those two files only when it holds exactly one R1 and
+//! exactly one R2.
+//!
+//! Everything else goes to the singletons file. That covers a library with no pairs, a mate that
+//! a hard clip removed, and flags that do not say which end a read is.
+//!
+//! To write a read with no partner into `_1` would move every later pair by one. The whole rest of
+//! the file would then hold the wrong pairs, and nobody would see it happen. So the check runs at
+//! each template, and not as a reconciliation at the end.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -20,23 +24,25 @@ use super::RevertStats;
 use crate::cancel::CancelToken;
 use crate::error::AnalysisError;
 
-/// Output buffer per FASTQ file. FASTQ is small records and many of them, so the write path is
-/// syscall-bound without a generous buffer.
+/// The size of the output buffer of each FASTQ file. FASTQ holds many small records, so without a
+/// large buffer the syscalls control the time of the write path.
 const FASTQ_BUFFER: usize = 1024 * 1024;
 
-/// The reverted reads are written **gzipped**, and that is not an optimisation.
+/// The reverted reads go out **through gzip**, and that is not an improvement for its own sake.
 ///
-/// A 30x WGS reverted to plain FASTQ is on the order of 200 GB — larger than the free space on a
-/// normal machine, and several times the source alignment it came from, because FASTQ stores one
-/// ASCII quality byte per base with none of BAM's packing. Compressed it is nearer 55 GB, which is
-/// the difference between the pipeline running and filling the disk in its second stage.
+/// A 30x WGS reverted to plain FASTQ is about 200 GB. That is more than the free space on a usual
+/// machine, and some times the size of the alignment that it came from. FASTQ stores one ASCII
+/// quality byte at each base, and a BAM packs its data where FASTQ does not. Through gzip the same
+/// data is nearer to 55 GB. That is the difference between a pipeline that runs and one that fills
+/// the disk in its second stage.
 ///
-/// `fast` rather than `default`: this is a temporary file consumed once by the mapper, so trading
-/// a few percent of ratio for materially less CPU in a job already measured in hours is the right
-/// side of that curve. minimap2 detects gzip from the magic bytes, so nothing downstream changes.
+/// The level is `fast`, and not `default`. This is a temporary file, and the mapper reads it once.
+/// A few percent of the ratio buys much less CPU, in a job that already takes hours. That is the
+/// correct side of the curve. The mapper finds gzip from the first bytes of the file, so
+/// nothing after this changes.
 const FASTQ_COMPRESSION: Compression = Compression::fast();
 
-/// A gzip-compressing FASTQ sink.
+/// A FASTQ sink that puts its output through gzip.
 type FastqWriter = GzEncoder<BufWriter<navigator_resource::PacedFile>>;
 
 /// Phred offset for FASTQ's ASCII quality encoding (Sanger / Illumina 1.8+).
@@ -63,8 +69,9 @@ pub fn write_fastq(
     let mut ws = open(&ps)?;
 
     let mut group: Vec<RevertedRead> = Vec::new();
-    // Reused across every record: the ASCII quality line is the only part that needs building
-    // rather than copying, and allocating one per read would dominate the write path.
+    // Every record uses this again. The ASCII quality line is the one part that the code must
+    // build, and not copy. To allocate one at each read would control the time of the write
+    // path.
     let mut qual_scratch: Vec<u8> = Vec::new();
     let mut templates = 0u64;
 
@@ -98,9 +105,12 @@ pub fn write_fastq(
     Ok((p1, p2, ps))
 }
 
-/// The indices of the R1 and R2 of a complete pair, or `None` if this template is not exactly one
-/// of each. Duplicated segment bits (two R1s under one name) are treated as unpaired: which of the
-/// two is "the" R1 is unanswerable, and guessing would silently corrupt the pairing.
+/// The indices of the R1 and the R2 of a complete pair, or `None` when this template does not hold
+/// exactly one of each.
+///
+/// A template with the same segment bit twice, which is two R1 records under one name, counts as
+/// unpaired. Nobody can say which of the two is "the" R1. A guess would put the wrong reads
+/// together, and nobody would see it happen.
 fn pair_of(group: &[RevertedRead]) -> Option<(usize, usize)> {
     let mut one = None;
     let mut two = None;
@@ -114,7 +124,7 @@ fn pair_of(group: &[RevertedRead]) -> Option<(usize, usize)> {
         }
     }
     match (one, two) {
-        // Exactly one of each, and nothing else tagging along under the same name.
+        // Exactly one of each, and nothing else under the same name.
         (Some(a), Some(b)) if group.len() == 2 => Some((a, b)),
         _ => None,
     }
@@ -128,24 +138,28 @@ fn open(path: &Path) -> Result<FastqWriter, AnalysisError> {
     ))
 }
 
-/// Finish the gzip stream, not merely flush it. A gzip member without its trailer is truncated,
-/// and a reader would stop early rather than error — the same class of bug as a missing BGZF EOF
-/// block, and just as quiet.
+/// Finish the gzip stream. Do not only flush it. A gzip member with no trailer is a file that
+/// stops early. A reader would then stop early too, and it would give no error. That is the same
+/// class of bug as a missing BGZF EOF block, and it is as hard to see.
 fn finish(w: FastqWriter, path: &Path) -> Result<(), AnalysisError> {
     let mut inner = w.finish().map_err(|e| AnalysisError::io(path, e))?;
     inner.flush().map_err(|e| AnalysisError::io(path, e))
 }
 
-/// One FASTQ record. Names are written bare — no `/1` or `/2` — so R1/R2 pair by position; see the
-/// module docs on why. Qualities are shifted into ASCII here, the inverse of the decode in
-/// [`super::transform`], through `scratch` so the shift costs no allocation per read.
+/// One FASTQ record. The names go out bare, with no `/1` and no `/2`, so an R1 and an R2 pair by
+/// their position. The module documentation says why. The code shifts the qualities into ASCII
+/// here, which is the inverse of the decode in [`super::transform`]. It does that through
+/// `scratch`, so the shift allocates nothing at each read.
 ///
-/// The whole record is assembled in `scratch` and handed over in **one** `write_all`. It was seven
-/// — `@`, name, newline, sequence, `\n+\n`, qualities, newline — and each one entered the gzip
-/// encoder's state machine separately, paying that overhead seven times per read rather than once.
-/// Measured on this exact stack at 151 bp: **1,882 ns/record against 539 ns**, a 3.5x difference on
-/// the write path of the stage that already holds the scratch peak. At ~600 M reads for a 30x WGS
-/// that is roughly thirteen minutes of single-threaded CPU per realignment. Identical bytes out.
+/// The code builds the whole record in `scratch`, and it gives that to **one** `write_all`. There
+/// were seven of those: `@`, the name, a newline, the sequence, `\n+\n`, the qualities, and a
+/// newline. Each one went into the state machine of the gzip encoder on its own. Each read then
+/// paid that cost seven times, and not once.
+///
+/// A measurement on this exact stack, at 151 bp, gave **1,882 ns for each record, against
+/// 539 ns**. That is a difference of 3.5x, on the write path of the stage that already holds the
+/// peak of the scratch space. At about 600M reads for a 30x WGS, that is about thirteen minutes of
+/// CPU on one thread, for each realignment. The bytes that come out are the same.
 fn write_record(
     w: &mut FastqWriter,
     read: &RevertedRead,

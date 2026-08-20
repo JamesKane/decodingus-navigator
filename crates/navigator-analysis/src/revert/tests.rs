@@ -1,10 +1,13 @@
 //! Tests for the revert stage.
 //!
-//! Records are built by hand rather than read from BAM fixtures: the container layer is
-//! [`crate::reader`]'s responsibility and is covered there, and everything interesting here — flag
-//! handling, orientation, pairing, the external sort's spill/merge boundary — is independent of
-//! how the bytes arrived. Building records directly also lets a test construct the malformed
-//! inputs that matter (contradictory flags, absent qualities) which a real aligner rarely emits.
+//! These tests build their records by hand, and they do not read a BAM fixture. The container
+//! layer belongs to [`crate::reader`], and the tests there cover it. Everything that matters here
+//! is independent of how the bytes arrived. That is the flags, the orientation, how two mates
+//! pair, and the spill and merge boundary of the external sort.
+//!
+//! A record that a test builds directly also lets that test make the inputs that are not correct,
+//! and those are the ones that matter. A real aligner rarely gives flags that contradict
+//! themselves, or a record with no qualities.
 
 use noodles::sam::alignment::record::cigar::op::{Kind, Op};
 use noodles::sam::alignment::record::data::field::Tag;
@@ -17,8 +20,8 @@ use super::*;
 
 const OQ: Tag = Tag::new(b'O', b'Q');
 
-/// Unique scratch dir per test, under the system temp dir (matching the convention elsewhere in
-/// the crate — no `tempfile` dependency).
+/// A scratch directory of its own for each test, under the temp directory of the system. That is
+/// the convention elsewhere in this crate, and it needs no `tempfile` dependency.
 fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("dun-revert-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -26,7 +29,8 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// A minimal record: name, flags, sequence, and qualities matching the sequence length.
+/// A small record. It holds a name, the flags, a sequence, and qualities whose length matches
+/// that sequence.
 fn record(name: &str, flags: u16, seq: &str, quals: &[u8]) -> RecordBuf {
     RecordBuf::builder()
         .set_name(name)
@@ -50,8 +54,8 @@ fn run(records: Vec<RecordBuf>, dir: &Path, params: &RevertParams) -> RevertOutp
 
 fn read_lines(path: &Path) -> Vec<String> {
     use std::io::BufRead;
-    // The reverted FASTQ is gzipped (see writer.rs on why), so tests read it the same way the
-    // mapper does rather than assuming plain text.
+    // The reverted FASTQ goes through gzip. writer.rs says why. So a test reads it the same way
+    // that the mapper does, and it does not expect plain text.
     crate::gzio::open_maybe_gz(path)
         .unwrap()
         .lines()
@@ -61,8 +65,8 @@ fn read_lines(path: &Path) -> Vec<String> {
 
 // ---- the transform --------------------------------------------------------
 
-/// The core correctness property: a reverse-strand alignment stores the read flipped, and the
-/// FASTQ has to carry what the sequencer produced, not what the aligner stored.
+/// The core property. A reverse-strand alignment stores the read the other way round. The FASTQ
+/// must carry what the sequencer gave, and not what the aligner stored.
 #[test]
 fn a_reverse_strand_read_is_restored_to_sequencer_orientation() {
     let dir = scratch("revcomp");
@@ -81,8 +85,8 @@ fn a_reverse_strand_read_is_restored_to_sequencer_orientation() {
     );
 }
 
-/// A forward-strand read must be passed through untouched — the mirror of the test above, so a
-/// bug that reverse-complements unconditionally can not pass both.
+/// A forward-strand read must go through unchanged. This is the mirror of the test above. A bug
+/// that takes the reverse complement of every read can then not pass both.
 #[test]
 fn a_forward_strand_read_is_left_alone() {
     let dir = scratch("forward");
@@ -99,8 +103,9 @@ fn a_forward_strand_read_is_left_alone() {
     );
 }
 
-/// Secondary and supplementary records duplicate a read whose full sequence lives on the primary;
-/// keeping them would emit the same read more than once and, for supplementaries, truncated.
+/// A secondary record and a supplementary one each repeat a read whose full sequence lives on the
+/// primary. To keep them would emit the same read more than once, and a supplementary one would
+/// come out short.
 #[test]
 fn secondary_and_supplementary_records_are_dropped() {
     let dir = scratch("nonprimary");
@@ -119,8 +124,8 @@ fn secondary_and_supplementary_records_are_dropped() {
     assert_eq!(out.stats.reads_emitted, 1, "only the primary survives");
 }
 
-/// Unmapped reads are the realignment payoff — they must flow through, and be counted so the
-/// payoff is measurable.
+/// The reads with no mapping are the gain of the realignment. They must come through, and the code
+/// must count them, so that somebody can measure the gain.
 #[test]
 fn unmapped_reads_are_kept_and_counted() {
     let dir = scratch("unmapped");
@@ -129,8 +134,9 @@ fn unmapped_reads_are_kept_and_counted() {
     assert_eq!(out.stats.reads_emitted, 1);
 }
 
-/// `OQ` holds the qualities from before recalibration overwrote `QUAL`, ASCII-encoded. Preferring
-/// it is the difference between reverting to the original read and reverting to a processed one.
+/// `OQ` holds the qualities from before a recalibration wrote over `QUAL`, in ASCII. To take `OQ`
+/// first is the difference between a revert to the original read and a revert to one that a
+/// pipeline already changed.
 #[test]
 fn original_qualities_are_preferred_over_recalibrated_ones() {
     let dir = scratch("oq");
@@ -148,7 +154,7 @@ fn original_qualities_are_preferred_over_recalibrated_ones() {
     assert_eq!(read_lines(&out.singletons)[3], "IIII", "OQ won, decoded and re-encoded");
 }
 
-/// Opting out has to actually opt out, or the flag is decoration.
+/// The option that turns this off must turn it off. Else the flag says nothing.
 #[test]
 fn original_qualities_can_be_declined() {
     let dir = scratch("oq-off");
@@ -169,8 +175,8 @@ fn original_qualities_can_be_declined() {
     assert_eq!(read_lines(&out.singletons)[3], "####", "QUAL 2 == '#', one per base");
 }
 
-/// A hard-clipped primary has already lost sequence. Skipping is the default because a dropped
-/// read shows up in the stats and a truncated one does not.
+/// A primary record with a hard clip has already lost sequence. To skip it is the default. A read
+/// that the code drops shows in the statistics, and a read that comes out short does not.
 #[test]
 fn hard_clipped_primaries_are_skipped_by_default_and_emittable_on_request() {
     let rec = || {
@@ -196,8 +202,8 @@ fn hard_clipped_primaries_are_skipped_by_default_and_emittable_on_request() {
     assert_eq!(emitted.stats.reads_emitted, 1);
 }
 
-/// `QUAL` of `*` is legal. The read is still mappable, so it is kept — but the qualities that come
-/// out are invented, and the stat is the only thing that says so.
+/// A `QUAL` of `*` is legal. A mapper can still map the read, so the code keeps it. But the code
+/// invents the qualities that come out, and the statistic is the one thing that says so.
 #[test]
 fn missing_qualities_are_synthesized_and_counted() {
     let dir = scratch("noqual");
@@ -207,9 +213,10 @@ fn missing_qualities_are_synthesized_and_counted() {
     assert_eq!(lines[3].len(), 4, "one quality per base, as FASTQ requires");
 }
 
-// ---- pairing --------------------------------------------------------------
+// ---- how two mates pair ---------------------------------------------------
 
-/// The headline case: mates arrive far apart in coordinate order and must come back together.
+/// The main case. In coordinate order the two mates arrive far apart, and they must come back
+/// together.
 #[test]
 fn mates_separated_in_the_input_are_paired_in_the_output() {
     let dir = scratch("pairing");
@@ -232,7 +239,8 @@ fn mates_separated_in_the_input_are_paired_in_the_output() {
 
     let r1 = read_lines(&out.read1);
     let r2 = read_lines(&out.read2);
-    // Name order, and — the invariant the mapper depends on — R1 and R2 in lockstep.
+    // The names come in order. And, as the invariant that the mapper depends on says, R1 and R2
+    // stay in step.
     assert_eq!([r1[0].as_str(), r1[4].as_str(), r1[8].as_str()], ["@a", "@b", "@c"]);
     assert_eq!(r1.len(), r2.len(), "files stay the same length");
     for i in (0..r1.len()).step_by(4) {
@@ -240,8 +248,8 @@ fn mates_separated_in_the_input_are_paired_in_the_output() {
     }
 }
 
-/// A mate whose partner was dropped must not be written into `_1` — doing so would shift every
-/// later pair by one and mis-pair the rest of the file.
+/// A mate whose partner the code dropped must not go into `_1`. That would move every later pair
+/// by one, and the rest of the file would hold the wrong pairs.
 #[test]
 fn a_read_whose_mate_was_dropped_becomes_a_singleton() {
     let dir = scratch("orphan");
@@ -262,7 +270,8 @@ fn a_read_whose_mate_was_dropped_becomes_a_singleton() {
     assert_eq!(read_lines(&out.singletons)[0], "@b");
 }
 
-/// Flags that claim "paired" but not which end can not be placed in a synchronized file.
+/// Flags that say "part of a pair", and that do not say which end, have no place in a file that
+/// must stay in step.
 #[test]
 fn a_paired_record_with_contradictory_segment_flags_is_a_singleton() {
     let dir = scratch("contradictory");
@@ -276,8 +285,8 @@ fn a_paired_record_with_contradictory_segment_flags_is_a_singleton() {
     assert_eq!(out.stats.singletons, 1);
 }
 
-/// Two records claiming the same name *and* the same end is unresolvable — picking one would
-/// silently drop a read and could mis-pair the template.
+/// Two records with the same name *and* the same end have no answer. To take one of them would
+/// drop a read where nobody sees it, and it could put the wrong reads together.
 #[test]
 fn duplicate_segment_bits_under_one_name_do_not_pair() {
     let dir = scratch("dupe-segment");
@@ -296,9 +305,9 @@ fn duplicate_segment_bits_under_one_name_do_not_pair() {
 
 // ---- the external sort ----------------------------------------------------
 
-/// The property the whole design rests on: the result must not depend on whether the input fit in
-/// memory. A budget of 1 byte forces a spill per read and exercises the k-way merge; the output
-/// has to be identical to the single-run case.
+/// The property that the whole design stands on: the result must not depend on whether the input
+/// fit in memory. A budget of 1 byte makes the code spill at every read, and that covers the k-way
+/// merge. The output must match the output of the one-run case exactly.
 #[test]
 fn spilling_to_disk_produces_the_same_output_as_sorting_in_memory() {
     let records = || {
@@ -341,8 +350,9 @@ fn spilling_to_disk_produces_the_same_output_as_sorting_in_memory() {
     assert_eq!(read_lines(&spilled.read2), read_lines(&in_memory.read2));
 }
 
-/// Names must come out in sorted order after a merge across many runs — the grouping logic reads
-/// runs of equal names, so an unsorted merge would silently split templates.
+/// The names must come out in sorted order after a merge across many runs. The code that makes the
+/// groups reads a run of equal names. A merge that does not sort would then split a template in
+/// two, and nobody would see it.
 #[test]
 fn the_merge_emits_names_in_sorted_order() {
     let dir = scratch("sorted");
@@ -366,7 +376,8 @@ fn the_merge_emits_names_in_sorted_order() {
     assert_eq!(names.len(), 30);
 }
 
-/// Scratch files are large — tens of GB for a WGS — so they must not outlive the run.
+/// The scratch files are large, at tens of GB for a WGS, so none of them must stay after the run
+/// ends.
 #[test]
 fn run_files_are_cleaned_up() {
     let dir = scratch("cleanup");
@@ -394,8 +405,8 @@ fn run_files_are_cleaned_up() {
 
 // ---- cancellation ---------------------------------------------------------
 
-/// A revert is an hours-long job; an already-cancelled token must stop it rather than run to
-/// completion, and must report itself as cancelled rather than as a failure.
+/// A revert takes hours. A token that somebody already cancelled must stop it, and the job must
+/// not run to its end. The job must also report itself as cancelled, and not as a failure.
 #[test]
 fn an_already_cancelled_token_stops_the_revert() {
     let dir = scratch("cancel");
