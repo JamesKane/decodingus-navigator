@@ -1,25 +1,45 @@
-//! Prove-out for the reassembly caller (Option B) — pure Rust (bio), no external tools, Windows-clean.
+//! A proof of the reassembly caller, which is Option B. It is pure Rust, over the `bio` crate. It
+//! needs no external tool, and it is clean on Windows.
 //!
-//! Purpose: (1) validate the pure-Rust library stack end-to-end on a real CRAM, and (2) scope what
-//! the resolver actually needs. It builds a reference and an alternate haplotype over a window around
-//! `pos`, realigns every spanning read to both (`bio::alignment::pairwise`), drops reads that align
-//! poorly to both (misaligned paralog junk), POA-assembles the survivors as a check
-//! (`bio::alignment::poa`), and — the load-bearing step — scores each spanning read against both
-//! haplotypes with a **base-quality-aware PairHMM** (`bio::stats::pairhmm`) and genotypes by the
-//! aggregate log-likelihood ratio.
+//! It has two purposes. The first is to check the pure-Rust library stack from end to end, on a
+//! real CRAM. The second is to find out what the resolver needs.
 //!
-//! Finding (validated on the real WGS229 CHM13 CRAM vs GATK's own gVCF, which calls all five DERIVED):
-//! plain realignment resolves the *clean* controls but TIES the marginal misaligned-ref sites the pileup
-//! caller misses (e.g. 4284195: crude score 10/10). The base-quality-aware PairHMM breaks those ties and
-//! recovers **4 of 5** — 3318203/16652092 (controls), 4284195 (GATK AD 9,10 / GQ44 / MQRankSum -3.55, the
-//! textbook misaligned-ref case) and 11191589 all → DERIVED, matching GATK. The one miss (20973395) has
-//! paralog reference reads that pass the MQ≥20 gate; GATK drops them via active-region fragment/read
-//! selection (its own DP falls 7→5 there) — the remaining ingredient the full caller needs. So the Option
-//! B caller = active-region detection + POA assembly + **read-vs-haplotype PairHMM** + genotyping; this
-//! probe proves the whole pure-Rust stack compiles/runs on a real CRAM and that PairHMM is the tie-breaker.
+//! It builds a reference haplotype and an alternate one, over a window around `pos`. It realigns
+//! every read that covers the window to both, with `bio::alignment::pairwise`. It drops a read
+//! that aligns poorly to both, which is paralog junk that the aligner put in the wrong place. It
+//! then assembles the reads that stay with a POA, as a check, through `bio::alignment::poa`.
 //!
-//!   cargo run --release --example reassembly_probe -p navigator-analysis -- \
-//!       <cram> <ref.fa> chrY <pos[,pos,...]> [window=40]
+//! The step that carries the weight comes last. It scores each read that covers the window
+//! against both haplotypes, with a **PairHMM that knows the base qualities**, from
+//! `bio::stats::pairhmm`. It then takes a genotype from the log-likelihood ratio over all of the
+//! reads.
+//!
+//! **What it found.** The check ran on the real WGS229 CHM13 CRAM, against the own gVCF of GATK,
+//! which calls all five sites DERIVED.
+//!
+//! A plain realignment resolves the *clean* control sites. But it gives a TIE at the marginal
+//! misaligned-reference sites that the pileup caller misses. At 4284195 the crude score is 10
+//! against 10.
+//!
+//! The PairHMM over base qualities breaks those ties, and it recovers **4 of the 5**. Those are
+//! 3318203 and 16652092, which are the controls; 4284195, where GATK gives AD 9,10, GQ 44 and
+//! MQRankSum -3.55, and which is the textbook misaligned-reference case; and 11191589. All four
+//! come out DERIVED, and they match GATK.
+//!
+//! The one that it misses is 20973395. There, paralog reference reads pass the MQ≥20 gate. GATK
+//! drops them in its selection of the fragments and reads of the active region, and its own DP
+//! falls from 7 to 5 there. That selection is the one part that the full caller still needs.
+//!
+//! So the Option B caller has four parts. Find the active region. Assemble with a POA. Score each
+//! **read against each haplotype with a PairHMM**. Then genotype.
+//!
+//! This probe shows two things. The whole pure-Rust stack builds and runs on a real CRAM. And the
+//! PairHMM is what breaks the tie.
+//!
+//! ```text
+//! cargo run --release --example reassembly_probe -p navigator-analysis -- \
+//!     <cram> <ref.fa> chrY <pos[,pos,...]> [window=40]
+//! ```
 
 use std::path::Path;
 
@@ -45,7 +65,8 @@ fn base_index(b: u8) -> Option<usize> {
 /// segmental-duplication / ampliconic loci masquerade as high-base-quality reference support.
 const MIN_MAPQ: u8 = 20;
 
-/// A spanning read's window sequence, its per-base Phred qualities, mapping quality, and site cover.
+/// One read that covers the window. It holds the sequence in the window frame, the Phred quality
+/// of each of its bases, its mapping quality, and whether it covers the site.
 struct WinRead {
     bases: Vec<u8>,
     quals: Vec<u8>,
@@ -53,7 +74,7 @@ struct WinRead {
     covers_pos: bool,
 }
 
-/// Reads overlapping `[lo, hi]` as [`WinRead`]s, plus the raw A/C/G/T pileup at `pos`.
+/// The reads inside `[lo, hi]`, as [`WinRead`] values, and the raw A/C/G/T pileup at `pos`.
 fn window_reads(cram: &Path, refp: &Path, contig: &str, pos: i64, lo: i64, hi: i64) -> (Vec<WinRead>, [u32; 4]) {
     let (header, mut reader) = open_indexed(cram, Some(refp)).expect("open cram");
     let region: Region = format!("{contig}:{lo}-{hi}").parse().expect("region");
@@ -103,7 +124,8 @@ fn window_reads(cram: &Path, refp: &Path, contig: &str, pos: i64, lo: i64, hi: i
                 }
                 (true, false) => ref_pos += len as i64,
                 (false, true) => {
-                    // keep insertion bases inside the window so an indel haplotype is preserved
+                    // Keep the bases of an insertion that lie inside the window, so that an
+                    // indel haplotype survives.
                     if kind == noodles::sam::alignment::record::cigar::op::Kind::Insertion
                         && ref_pos > lo
                         && ref_pos <= hi
@@ -143,8 +165,9 @@ fn poa_consensus(reads: &[Vec<u8>]) -> Vec<u8> {
     aligner.consensus()
 }
 
-/// Base the consensus carries at reference coordinate `pos`, by semiglobally aligning the consensus
-/// (query) to the reference window `win_ref` (which starts at reference coordinate `win_start`).
+/// The base that the consensus carries at the reference coordinate `pos`. It aligns the consensus,
+/// as the query, to the reference window `win_ref`, in a semiglobal way. That window starts at the
+/// reference coordinate `win_start`.
 fn consensus_base_at(consensus: &[u8], win_ref: &[u8], win_start: i64, pos: i64) -> char {
     let score = |a: u8, b: u8| if a == b { 1i32 } else { -4i32 };
     let mut aligner = PwAligner::new(-5, -1, score);
@@ -198,18 +221,23 @@ fn consensus_base_at(consensus: &[u8], win_ref: &[u8], win_start: i64, pos: i64)
 
 // ---- base-quality-aware PairHMM: P(read | haplotype) ------------------------------------------
 //
-// This is the tie-breaker the crude alignment score lacks. Each read base votes for ref-vs-alt at
-// `pos` weighted by its Phred quality: a Q40 base mismatching a haplotype costs ~10^-4, a Q10 base
-// costs only ~10^-1, so noisy bases can't outvote clean ones. Aggregating the log-likelihood ratio
-// over all spanning reads is exactly how GATK's HaplotypeCaller resolves the misaligned-ref pileups.
+// This is what breaks a tie, and the crude alignment score can not. Each base of a read votes for
+// the ref allele, or for the alt allele, at `pos`. The Phred quality of that base sets the weight
+// of its vote. A Q40 base that does not match a haplotype costs about 10^-4, and a Q10 base costs
+// only about 10^-1. A noisy base can then not out-vote a clean one.
+//
+// The sum of the log-likelihood ratio, over every read that covers the site, is how GATK does
+// this. Its HaplotypeCaller resolves a pileup with a wrong reference alignment that way.
 
-/// Phred score → error probability, clamped to a sane band (Q>0, and never a certain match/mismatch).
+/// The error probability that a Phred score gives, clamped to a correct band: Q>0, and never a
+/// match or a mismatch that is sure.
 fn phred_err(q: u8) -> f64 {
     let q = q.clamp(2, 60) as f64;
     10f64.powf(-q / 10.0)
 }
 
-/// Emission: `x` = read (carries per-base quality), `y` = candidate haplotype.
+/// The emission. `x` is the read, which carries a quality at each base. `y` is the candidate
+/// haplotype.
 struct ReadHapEmission<'a> {
     read: &'a [u8],
     quals: &'a [u8],
@@ -256,7 +284,8 @@ impl GapParameters for GapParams {
     }
 }
 
-/// Semiglobal in the read: free leading/trailing offset so window-edge trimming is not penalised.
+/// Semiglobal in the read. The offset at the start and at the end is free, so a cut at the edge of
+/// the window costs nothing.
 struct Semiglobal;
 impl StartEndGapParameters for Semiglobal {
     fn free_start_gap_x(&self) -> bool {
@@ -267,7 +296,8 @@ impl StartEndGapParameters for Semiglobal {
     }
 }
 
-/// Log-probability that `read` (with `quals`) was produced by `hap`, marginalised over alignments.
+/// The log-probability that `hap` gave `read`, which carries `quals`. It marginalises over the
+/// alignments.
 fn hap_likelihood(hmm: &mut PairHMM, read: &[u8], quals: &[u8], hap: &[u8]) -> LogProb {
     hmm.prob_related(&ReadHapEmission { read, quals, hap }, &Semiglobal, None)
 }
@@ -319,9 +349,12 @@ fn main() {
             win_alt[off] = alt_base as u8;
         }
 
-        // Realign each spanning read to both haplotypes; drop reads that align poorly to *both*
-        // (they carry mismatches beyond the site → misaligned paralog / junk, not from this locus).
-        // For the survivors, also score P(read|ref-hap) vs P(read|alt-hap) with the PairHMM.
+        // Realign each read that covers the window to both haplotypes. Drop a read that aligns
+        // poorly to *both*, because it carries mismatches beyond the site. That read is a paralog
+        // that the aligner put in the wrong place, or junk, and it did not come from this locus.
+        //
+        // For the reads that stay, also score P(read|ref-hap) against P(read|alt-hap), with the
+        // PairHMM.
         let mut hmm = PairHMM::new(&GapParams);
         let (mut ref_supp, mut alt_supp, mut dropped) = (0u32, 0u32, 0u32);
         let (mut hmm_ref, mut hmm_alt) = (0u32, 0u32);
@@ -352,7 +385,7 @@ fn main() {
                 std::cmp::Ordering::Less => ref_supp += 1,
                 std::cmp::Ordering::Equal => {}
             }
-            // Base-quality-aware likelihood ratio (the load-bearing tie-breaker).
+            // The likelihood ratio that knows the base qualities. It is what breaks the tie.
             let lp_ref = hap_likelihood(&mut hmm, win, &r.quals, &win_ref);
             let lp_alt = hap_likelihood(&mut hmm, win, &r.quals, &win_alt);
             logodds += *lp_alt - *lp_ref;
@@ -362,7 +395,7 @@ fn main() {
                 _ => {}
             }
         }
-        // POA consensus of the surviving reads as a cross-check (informational).
+        // The POA consensus of the reads that stay, as a cross-check. It is for information.
         let cons_note = if kept.len() >= 2 {
             let cons = poa_consensus(&kept);
             let cb = consensus_base_at(&cons, &win_ref, lo, pos);

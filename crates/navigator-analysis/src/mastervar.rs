@@ -1,19 +1,25 @@
-//! CompleteGenomics **masterVar** reader — the whole-genome variant table `cgatools` emitted
-//! for the old CG sequencing service (`var-<slide>-ASM.tsv[.bz2]`, `FORMAT_VERSION 2.0`).
+//! The reader of a CompleteGenomics **masterVar** file. That is the whole-genome variant table
+//! that `cgatools` wrote for the old CG sequencing service. Its name is
+//! `var-<slide>-ASM.tsv[.bz2]`, and its `FORMAT_VERSION` is 2.0.
 //!
-//! The file is a tab-separated per-allele call over the *entire* genome: `ref` / `no-call`
-//! blocks interleaved with the actual `snp` / `ins` / `del` / `sub` calls. Each locus is one
-//! or more consecutive rows sharing the leading `locus` id — a diploid heterozygous SNP is two
-//! rows (allele `1` and allele `2`), a homozygous or haploid call one row (allele `all` / `1`).
-//! Coordinates are **0-based half-open** (`begin`/`end`); the 1-based SNP position is `begin + 1`.
+//! The file holds one call for each allele, over the *whole* genome, with tabs between the
+//! fields. Blocks of `ref` and `no-call` sit between the real `snp`, `ins`, `del` and `sub`
+//! calls.
 //!
-//! We extract SNPs only (matching the VCF/CSV variant importer, which is SNP-only): each locus
-//! becomes at most one biallelic [`VariantCall`] with a reconstructed genotype (`1`, `0/1`,
-//! `1/1`, `1/2`, or `1/.` when the partner allele is a no-call). Indels/substitutions and the
-//! `ref`/`no-call` spans are skipped. NCBI build 37 ⇒ the calls are on **GRCh37** (chrM = rCRS).
+//! One locus is one row, or more than one row in a line, and they share the `locus` id at the
+//! front. A diploid heterozygous SNP is two rows, for allele `1` and allele `2`. A homozygous or
+//! haploid call is one row, for allele `all` or `1`. The coordinates are **0-based and
+//! half-open**, in `begin` and `end`, and the 1-based position of a SNP is `begin + 1`.
 //!
-//! The whole file is streamed (a genome masterVar is multi-GB uncompressed), transparently
-//! decoding `.bz2` / `.gz` via [`crate::gzio::open_maybe_compressed`].
+//! This reader takes SNPs alone. That matches the variant importer for a VCF or a CSV, which also
+//! takes SNPs alone. Each locus becomes at most one biallelic [`VariantCall`], with a genotype
+//! that the code builds: `1`, `0/1`, `1/1`, `1/2`, or `1/.` when the partner allele has no call.
+//! It skips an indel, a substitution, and the `ref` and `no-call` spans. NCBI build 37 means that
+//! the calls are on **GRCh37**, where chrM is the rCRS.
+//!
+//! The code streams the whole file, because a genome masterVar is some GB when nothing compresses
+//! it. It decodes a `.bz2` or a `.gz` on the way, through
+//! [`crate::gzio::open_maybe_compressed`].
 
 use std::io::BufRead;
 use std::path::Path;
@@ -30,16 +36,18 @@ pub enum MasterVarError {
     Format(String),
 }
 
-/// The result of reading a masterVar file: the SNP calls plus the sample id / reference build
-/// parsed from the `#`-comment header, and a couple of tallies for the import summary.
+/// The result of a read of a masterVar file. It holds the SNP calls. It also holds the sample id
+/// and the reference build, which the code read out of the `#` comment header. And it holds two
+/// tallies for the import summary.
 #[derive(Debug, Default, Clone)]
 pub struct MasterVarImport {
     /// The `#SAMPLE` header value, if present (e.g. `GS00253-DNA_A01`).
     pub sample_id: Option<String>,
-    /// Reference build the calls are on — `"GRCh37"` for `NCBI build 37` (the only build the CG
-    /// service shipped), else a best-effort echo of the `#GENOME_REFERENCE` header.
+    /// The reference build that the calls sit on. It is `"GRCh37"` for `NCBI build 37`, which is
+    /// the only build that the CG service ever sent out. Otherwise it repeats the
+    /// `#GENOME_REFERENCE` header as best it can.
     pub reference_build: String,
-    /// The extracted biallelic SNP calls (one per SNP locus).
+    /// The biallelic SNP calls that the code took out, one at each SNP locus.
     pub calls: Vec<VariantCall>,
     /// Total loci examined (distinct `locus` ids).
     pub loci_seen: u64,
@@ -96,8 +104,9 @@ enum VarType {
     Other,
 }
 
-/// One parsed data row (only the fields we need). Borrows nothing — a locus group is buffered
-/// before it is resolved, so the owning line has already been consumed.
+/// One data row that the code parsed, with the fields that it needs and no others. It borrows
+/// nothing. A group of rows for one locus goes into a buffer before the code resolves it, so the
+/// line that held them is already gone.
 struct Row {
     locus: u64,
     ploidy: u8,
@@ -182,8 +191,8 @@ fn locus_call(rows: &[Row]) -> Option<VariantCall> {
     // A dbSNP rsID from any of the locus's rows.
     let rs_id = rows.iter().find_map(|r| r.rs_id.clone());
 
-    // Haploid contigs (chrY, chrM, male non-PAR chrX) come through as ploidy 1 with a single
-    // called allele — emit the alt with a hemizygous genotype.
+    // A haploid contig comes through at ploidy 1, with one called allele. chrY, chrM and the male
+    // non-PAR part of chrX are haploid. Emit the alt with a hemizygous genotype.
     if snp.ploidy == 1 {
         return snp_call(contig, position, reference, &snp.allele_seq, rs_id, Some("1".into()));
     }
@@ -196,9 +205,10 @@ fn locus_call(rows: &[Row]) -> Option<VariantCall> {
         return snp_call(contig, position, reference, &all.allele_seq, rs_id, Some("1/1".into()));
     }
     let hap = |which: Allele| -> Hap {
-        // A compound locus can list several rows for one allele (e.g. a `ref` segment beside the
-        // `snp` segment). Prefer the SNP call for that allele; fall back to ref, else missing —
-        // so a snp is not hidden behind a same-allele ref/no-call row and the locus lost.
+        // A compound locus can list more than one row for one allele, such as a `ref` segment
+        // beside the `snp` segment. Take the SNP call of that allele first. Fall back to the ref
+        // call, and then to a missing call. A `ref` or `no-call` row on the same allele can then
+        // not hide a snp, and the locus does not go away.
         let mut result = Hap::Missing;
         for r in rows.iter().filter(|r| r.allele == which) {
             match r.var_type {
@@ -216,7 +226,8 @@ fn locus_call(rows: &[Row]) -> Option<VariantCall> {
         (Hap::Alt(a), Hap::Alt(_)) => (a.clone(), "1/2"), // tri-allelic het; keep allele 1's alt
         (Hap::Alt(a), Hap::Ref) | (Hap::Ref, Hap::Alt(a)) => (a.clone(), "0/1"),
         (Hap::Alt(a), Hap::Missing) | (Hap::Missing, Hap::Alt(a)) => (a.clone(), "1/."),
-        // No alt on either haplotype — not a variant (should not occur given the snp row above).
+        // There is no alt on either haplotype, so this is not a variant. The snp row above means
+        // that this must not happen.
         _ => return None,
     };
     snp_call(contig, position, reference, &alt, rs_id, Some(genotype.into()))
@@ -230,12 +241,14 @@ fn build_for_reference(genome_reference: &str) -> String {
     } else if g.contains("build 38") || g.contains("grch38") || g.contains("hg38") {
         "GRCh38".to_string()
     } else {
-        // Unknown/blank header: CG service data is build 37, so default there rather than to None.
+        // The header is absent, or the code does not know it. The data of the CG service is
+        // build 37, so default to that, and not to None.
         "GRCh37".to_string()
     }
 }
 
-/// Read and parse a masterVar file (transparently decompressing `.bz2` / `.gz`).
+/// Read a masterVar file, and parse it. It decodes a `.bz2` or a `.gz` on the way, and the caller
+/// sees no difference.
 pub fn parse_file(path: &Path) -> Result<MasterVarImport, MasterVarError> {
     let reader = gzio::open_maybe_compressed(path)?;
     parse_reader(reader)
@@ -397,9 +410,9 @@ mod tests {
 
     #[test]
     fn compound_locus_snp_hidden_behind_same_allele_ref() {
-        // A single locus can list several segments for one allele: here allele 1 has a `ref`
-        // segment *before* its `snp` segment. The snp must still win (not be masked by the ref),
-        // so the locus yields a 0/1 call rather than being dropped.
+        // One locus can list more than one segment for one allele. Here allele 1 has a `ref`
+        // segment *before* its `snp` segment. The snp must still win, and the ref must not hide
+        // it. The locus then gives a 0/1 call, and the code does not drop it.
         let out = parse(
             "500\t2\t1\tchr1\t9000\t9005\tref\tACGTA\tACGTA\t\t\t\t\t\n\
              500\t2\t1\tchr1\t9005\t9006\tsnp\tT\tC\t80\t80\tVQHIGH\t\tdbsnp.1:rs99\n\
