@@ -1,14 +1,19 @@
-//! `AlnRead` — the minimal record view the quality-metrics walkers need, abstracted over the
-//! **lazy** `bam::Record` (zero-copy, the hot path) and the owned `RecordBuf` (CRAM). The walkers
-//! used to consume `RecordBuf`, which forced a per-read owned copy of the sequence, qualities,
-//! CIGAR, name, and *every* optional tag — measured at ~half the per-read CPU on a WGS BAM. The
-//! walkers touch only a handful of scalar fields plus the CIGAR ops and per-base qualities, all of
-//! which `bam::Record` exposes as borrowed views, so this trait lets the same accumulator code run
-//! over either record type with no allocation on the BAM path.
+//! `AlnRead` is the smallest view of a record that the quality-metrics walkers need. It covers two
+//! types: the **lazy** `bam::Record`, which is zero-copy and the hot path, and the owned
+//! `RecordBuf`, which a CRAM gives.
 //!
-//! Implementations map noodles' lazy `io::Result` accessors to plain `Option`/values, treating a
-//! decode error as "absent" (skips that field) rather than aborting the walk — strictly more robust
-//! than the old `RecordBuf` conversion, which would have errored the whole pass on a bad record.
+//! The walkers once took a `RecordBuf`. That forced an owned copy, at each read, of the sequence,
+//! the qualities, the CIGAR, the name, and *every* optional tag. A measurement on a WGS BAM put
+//! that at about half of the CPU at each read.
+//!
+//! The walkers touch a few scalar fields, plus the CIGAR operations and the quality of each base.
+//! `bam::Record` gives all of those as borrowed views. So this trait lets the same accumulator
+//! code run over either record type, and it allocates nothing on the BAM path.
+//!
+//! An implementation maps the lazy `io::Result` accessors of noodles to a plain `Option` or a
+//! value. It reads a decode error as "absent", and it skips that field. It does not stop the walk.
+//! That is more robust than the old conversion to a `RecordBuf`, which would have failed the whole
+//! pass on one bad record.
 
 use noodles::sam::alignment::record::cigar::op::Kind;
 use noodles::sam::alignment::record::data::field::Tag;
@@ -28,22 +33,31 @@ pub trait AlnRead {
     fn mapping_quality(&self) -> Option<u8>;
     fn template_length(&self) -> i32;
     fn sequence_len(&self) -> usize;
-    /// Read (template) name as raw bytes, or `None` when unset. Borrowed — the caller decides
-    /// whether to pay for a `String`.
+    /// The name of the read, which is its template name, as raw bytes. It is `None` when the
+    /// record has none. This borrows the bytes, so the caller decides whether to pay for a
+    /// `String`.
     fn name(&self) -> Option<&[u8]>;
-    /// A string-valued auxiliary tag (e.g. `SA`), or `None` when absent, undecodable, or of another
-    /// type. Owned because the three record types spell their `Data` view differently; the tags this
-    /// serves (`SA`) appear on a small minority of reads, so the allocation is not on the hot path.
+    /// An auxiliary tag whose value is a string, such as `SA`. It is `None` when the tag is
+    /// absent, when the code can not decode it, or when it holds another type.
+    ///
+    /// This owns the value, because the three record types each give their `Data` view a
+    /// different shape. The one tag that this serves is `SA`, and it occurs on a small minority of
+    /// the reads. So the allocation does not sit on the hot path.
     fn string_tag(&self, tag: Tag) -> Option<String>;
-    /// Run `f` with an iterator of CIGAR `(kind, len)` ops. The callback form keeps the lazy
-    /// `bam::Record`'s borrowed view alive for the duration; undecodable ops are skipped. Prefer
-    /// this over [`AlnRead::pileup_with`] when only the CIGAR is needed — the CRAM impl of
-    /// `pileup_with` materializes the quality scores, which this skips.
+    /// Run `f` with an iterator over the CIGAR operations, as `(kind, len)`. The callback form
+    /// keeps the borrowed view of the lazy `bam::Record` alive while `f` runs. It skips an
+    /// operation that the code can not decode.
+    ///
+    /// Use this, and not [`AlnRead::pileup_with`], when you need the CIGAR alone. The CRAM version
+    /// of `pileup_with` builds the quality scores, and this function does not.
     fn cigar_with<T>(&self, f: impl FnOnce(&mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T;
-    /// Run `f` with the per-base phred qualities (raw, no +33; indexable by query offset) and an
-    /// iterator of CIGAR `(kind, len)` ops. Via a callback so the lazy `bam::Record` views (which
-    /// borrow the record's buffer through a temporary wrapper) stay alive for the duration — no
-    /// per-read allocation. Undecodable CIGAR ops are skipped.
+    /// Run `f` with two things: the phred quality of each base, and an iterator over the CIGAR
+    /// operations as `(kind, len)`. The qualities are raw, with no +33, and you index them by the
+    /// offset into the query.
+    ///
+    /// It uses a callback so that the views of the lazy `bam::Record` stay alive while `f` runs.
+    /// Those views borrow the buffer of the record through a temporary wrapper. There is then no
+    /// allocation at each read. It skips a CIGAR operation that the code can not decode.
     fn pileup_with<T>(&self, f: impl FnOnce(&[u8], &mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T;
 }
 
@@ -145,14 +159,20 @@ impl AlnRead for noodles::bam::Record {
     }
 }
 
-/// A borrowed view over a decoded **CRAM** record (`noodles::cram::Record`) paired with the header,
-/// implementing [`AlnRead`] by delegating to the `sam::alignment::Record` trait. CRAM stores the
-/// sequence as deltas against the reference, so a `cram::Record` already holds the per-read data in
-/// borrowed/lightweight form — driving the walkers off it directly skips the per-read
-/// `RecordBuf::try_from_alignment_record` copy (sequence + quals + cigar + name + *every* tag into
-/// owned form), measured at ~1.74× the per-read decode cost on a 30× short-read WGS CRAM. The
-/// header is only needed by the trait's `reference_sequence_id` accessors (which, for CRAM, ignore
-/// it and return the record's stored id — but the signature requires one).
+/// A borrowed view over a decoded **CRAM** record, which is a `noodles::cram::Record`, together
+/// with the header. It implements [`AlnRead`], and it hands the work to the
+/// `sam::alignment::Record` trait.
+///
+/// A CRAM stores the sequence as deltas against the reference. So a `cram::Record` already holds
+/// the data of each read in a borrowed, light form. To drive the walkers from it directly
+/// leaves out the `RecordBuf::try_from_alignment_record` copy at each read.
+///
+/// That copy takes the sequence, the qualities, the CIGAR, the name and *every* tag into owned
+/// form. A measurement on a 30x short-read WGS CRAM put it at about 1.74 times the cost of the
+/// decode of one read.
+///
+/// The header serves the `reference_sequence_id` accessors of the trait alone. For a CRAM those
+/// ignore it, and they return the id that the record stores. But the signature needs one.
 pub struct CramRead<'a, 'c> {
     pub rec: &'a noodles::cram::Record<'c>,
     pub header: &'a noodles::sam::Header,
@@ -211,10 +231,11 @@ impl AlnRead for CramRead<'_, '_> {
     }
     fn pileup_with<T>(&self, f: impl FnOnce(&[u8], &mut dyn Iterator<Item = (Kind, usize)>) -> T) -> T {
         use noodles::sam::alignment::Record as _;
-        // CRAM exposes qualities only via an iterator (not a contiguous slice), so collect them
-        // once per read — a small (~read-length) allocation, still far cheaper than the full
-        // `RecordBuf` materialization the high-level reader would do. The cigar is a lazy view over
-        // the record's features, iterated directly with no allocation.
+        // A CRAM gives the qualities through an iterator alone, and not as one slice. So the code
+        // collects them once at each read. That allocation is small, at about one read length, and
+        // it still costs far less than the full `RecordBuf` that the high-level reader would
+        // build. The cigar is a lazy view over the features of the record, and the code walks it
+        // directly, with no allocation.
         let quals: Vec<u8> = self.rec.quality_scores().iter().map(|r| r.unwrap_or(0)).collect();
         let cigar = self.rec.cigar();
         let mut ops = cigar.iter().filter_map(|op| op.ok().map(|o| (o.kind(), o.len())));
@@ -222,12 +243,17 @@ impl AlnRead for CramRead<'_, '_> {
     }
 }
 
-/// A record yielded by a **sequential** (whole-file, no index) walk over either format: the
-/// **lazy, zero-copy** `bam::Record` on the BAM path (no owned `RecordBuf` decode/tag-parse — the
-/// hot-path win) and the decoded `RecordBuf` on the CRAM path (CRAM has no cheaper lazy form). It
-/// implements [`AlnRead`] by delegating to the per-type impls above, so the same accumulator code
-/// (`CoverageState`/`ReadMetricsState`/`SexState`) drives both with no allocation on the BAM path —
-/// the sequential counterpart to the indexed [`crate::reader::RecordSink`] fan-out.
+/// A record that a **sequential** walk gives, over either format. Such a walk covers the whole
+/// file and uses no index.
+///
+/// On the BAM path it is the **lazy, zero-copy** `bam::Record`. There is then no decode into an
+/// owned `RecordBuf`, and no parse of a tag, and that is the gain on the hot path. On the CRAM
+/// path it is the decoded `RecordBuf`, because a CRAM has no cheaper lazy form.
+///
+/// It implements [`AlnRead`] by a call into the implementation of each type above. The same
+/// accumulator code, which is `CoverageState`, `ReadMetricsState` and `SexState`, then drives
+/// both, and it allocates nothing on the BAM path. This is the sequential counterpart of the
+/// indexed [`crate::reader::RecordSink`] fan-out.
 pub enum SeqRecord {
     Bam(noodles::bam::Record),
     Cram(RecordBuf),
