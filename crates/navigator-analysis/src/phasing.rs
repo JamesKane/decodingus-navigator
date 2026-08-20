@@ -1,20 +1,24 @@
-//! Statistical haplotype phasing — the "which allele came from which parent" step the chromosome
-//! painter needs to split ancestry into two internally-consistent parental sides.
+//! Statistical phasing of the haplotypes. It answers "which allele came from which parent". The
+//! chromosome painter needs that answer, to split the ancestry into two parental sides that agree
+//! with themselves.
 //!
-//! Navigator analyses **one subject at a time**, so there is no cohort to phase against; we phase
-//! against a bundled panel of **phased reference haplotypes** ([`HaplotypeReference`]) using the
-//! Li & Stephens copying model — the same reference-based mode EAGLE2/Beagle use. Each of the
-//! sample's two haplotypes is modelled as a mosaic of reference haplotypes; the ordered pair of
-//! copied reference haplotypes at each site implies the phase.
+//! Navigator analyses **one subject at a time**, so there is no cohort to phase against. It phases
+//! against a bundled panel of **phased reference haplotypes**, which is a
+//! [`HaplotypeReference`], with the Li & Stephens copying model. That is the same mode against a
+//! reference that EAGLE2 and Beagle use. The model takes each of the two haplotypes of the sample
+//! as a mosaic of reference haplotypes. The ordered pair of copied reference haplotypes at each
+//! site then gives the phase.
 //!
-//! The exact diploid HMM has `K²` states (K = number of reference haplotypes, ~5000), which is
-//! infeasible. [`ReferencePhaser`] uses a **beam search** over ordered pair-states, with switch
-//! targets restricted to a per-site candidate set of the reference haplotypes sharing the longest
-//! IBS run with the sample (a cheap, PBWT-like heuristic). That makes it `O(N · B · M)` in the
-//! number of sites `N`, beam width `B`, and candidate count `M`.
+//! The exact diploid HMM has `K²` states, where K is the count of reference haplotypes, at about
+//! 5000. Nobody can run that. [`ReferencePhaser`] uses a **beam search** over the ordered pair
+//! states instead. It limits the targets of a switch to a candidate set at each site: the
+//! reference haplotypes with the longest IBS run against the sample. That heuristic costs little,
+//! and it works like a PBWT. The cost is then `O(N · B · M)`, over the count of sites `N`, the
+//! beam width `B`, and the candidate count `M`.
 //!
-//! The [`Phaser`] trait keeps the seam stable so a Mendelian [`TrioPhaser`] (used when a parent
-//! sample is in the workspace) or a full PBWT phaser can drop in without touching callers.
+//! The [`Phaser`] trait holds the seam steady. Two other phasers can then go in, and no caller
+//! changes. One is a Mendelian [`TrioPhaser`], for a workspace that holds a parent sample. The
+//! other is a full PBWT phaser.
 
 use std::collections::HashMap;
 
@@ -22,10 +26,13 @@ use crate::ancestry::HaplotypeReference;
 use crate::caller::SiteGenotype;
 use crate::ibd::GeneticMap;
 
-/// One phased site: the coordinate plus the allele placed on each of the two sides (`0` = ref
-/// allele, `1` = alt). `side0`/`side1` are consistent across the whole chromosome (a genuine
-/// parental split), not sorted per site. `confidence` is the phase confidence (1.0 at homozygous
-/// sites, which are unambiguous; lower at heterozygous sites the model is unsure about).
+/// One phased site. It holds the coordinate, and the allele on each of the two sides, where `0` is
+/// the ref allele and `1` is the alt.
+///
+/// `side0` and `side1` keep the same sense across the whole chromosome, so they are a true parental
+/// split. The code does not sort them at each site. `confidence` is the confidence of the phase. It
+/// is 1.0 at a homozygous site, which is not ambiguous, and lower at a heterozygous site that the
+/// model is unsure about.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PhasedSite {
     pub contig: String,
@@ -49,18 +56,22 @@ pub trait Phaser {
     fn phase(&self, genotypes: &[SiteGenotype]) -> PhasedGenotypes;
 }
 
-/// Tuning knobs for [`ReferencePhaser`].
+/// The controls of [`ReferencePhaser`].
 #[derive(Debug, Clone)]
 pub struct PhaseParams {
-    /// Beam width `B`: ordered pair-states kept per site. Larger → more accurate, slower.
+    /// The beam width `B`. It is the count of ordered pair states that the code keeps at each
+    /// site. A larger value is more accurate, and slower.
     pub beam: usize,
-    /// Per-site switch-target candidates `M`: the reference haplotypes with the longest current
-    /// IBS run with the sample that a side may recombine onto.
+    /// The count `M` of switch-target candidates at each site. Those are the reference haplotypes
+    /// with the longest current IBS run against the sample, and a side may recombine onto one of
+    /// them.
     pub candidates: usize,
-    /// Copying mutation/mismatch rate μ: probability a copied reference allele is observed flipped.
+    /// The mutation and mismatch rate μ of the copy. It is the probability that a copied reference
+    /// allele reads the other way round.
     pub mutation: f64,
-    /// Recombination intensity (expected copy switches per centiMorgan). Sets the distance-scaled
-    /// switch probability `1 - exp(-d_cM · rate)`.
+    /// The recombination intensity. It is the count of copy switches that the model expects in one
+    /// centiMorgan. It sets the switch probability, which scales with distance, as
+    /// `1 - exp(-d_cM · rate)`.
     pub recomb_per_cm: f64,
 }
 
@@ -95,8 +106,9 @@ impl<'a> ReferencePhaser<'a> {
         Self { reference, map, params }
     }
 
-    /// ln P(observe genotype `g` | the two copied reference alleles `c0`, `c1`) under independent
-    /// per-copy mutation at rate μ. `c*`/`o*` are 0/1 alleles; `g` is the unordered dosage.
+    /// ln P(the code observes genotype `g` | the two copied reference alleles are `c0` and `c1`),
+    /// under independent mutation on each copy, at the rate μ. `c*` and `o*` are alleles, 0 or 1.
+    /// `g` is the dosage, and it holds no order.
     fn emit_ln(&self, g: u8, c0: u8, c1: u8) -> f64 {
         let mu = self.params.mutation;
         // P(observe o | copied c): faithful with prob 1-μ, flipped with μ.
@@ -110,9 +122,11 @@ impl<'a> ReferencePhaser<'a> {
         prob.max(1e-300).ln()
     }
 
-    /// Given the MAP copied alleles `(c0, c1)` at a heterozygous site, the ordered `(side0, side1)`
-    /// alleles and a confidence. When the copies disagree (one 0, one 1) the phase is determined;
-    /// when they agree the het is explained by a mutation and phase is ambiguous (low confidence).
+    /// From the MAP copied alleles `(c0, c1)` at a heterozygous site, this gives the ordered
+    /// alleles `(side0, side1)`, and a confidence.
+    ///
+    /// When the two copies disagree, at one 0 and one 1, the phase follows. When they agree, a
+    /// mutation explains the het, and the phase is ambiguous, so the confidence is low.
     fn resolve_het(c0: u8, c1: u8) -> (u8, u8, f32) {
         match (c0, c1) {
             (0, 1) => (0, 1, 1.0),
@@ -122,7 +136,8 @@ impl<'a> ReferencePhaser<'a> {
         }
     }
 
-    /// Phase one contig's usable sites. Returns `(side0, side1, confidence)` per site.
+    /// Phase the sites of one contig that the code can use. It returns a
+    /// `(side0, side1, confidence)` at each site.
     fn phase_contig(&self, contig: &str, sites: &[UsableSite]) -> Vec<(u8, u8, f32)> {
         let n = sites.len();
         let k = self.reference.n_haplotypes;
@@ -131,10 +146,13 @@ impl<'a> ReferencePhaser<'a> {
         }
         let allele = |col: usize, hap: usize| self.reference.allele(hap, col);
 
-        // Running IBS match length per reference haplotype: consecutive recent sites where the
-        // haplotype's allele is consistent with the observed genotype (homozygous sites only
-        // discriminate; heterozygous sites are consistent with every haplotype). Used to pick the
-        // per-site switch candidates — the reference haplotypes sharing the longest tract.
+        // The IBS match length of each reference haplotype, as the walk goes on. It counts the
+        // recent sites in a row where the allele of that haplotype agrees with the observed
+        // genotype. A homozygous site separates the haplotypes, and a heterozygous one agrees with
+        // every haplotype.
+        //
+        // The code uses this to take the switch candidates at each site: the reference haplotypes
+        // with the longest shared tract.
         let mut match_len = vec![0u32; k];
 
         // Beam state: (side0 copied hap, side1 copied hap, ln prob, backpointer into prev beam).
@@ -177,7 +195,8 @@ impl<'a> ReferencePhaser<'a> {
             }
         };
 
-        // Initialise the beam at site 0 from the leading candidate set (uniform prior over pairs).
+        // Set up the beam at site 0, from the first candidate set. The prior over the pairs is
+        // uniform.
         update_match(&mut match_len, sites[0].ref_col, sites[0].dosage);
         let cand0 = candidates_at(&match_len, self.params.candidates);
         let mut beam: Vec<Bs> = Vec::new();
@@ -206,8 +225,8 @@ impl<'a> ReferencePhaser<'a> {
             let sw = 1.0 - (-d_cm * self.params.recomb_per_cm).exp();
             let sw = sw.clamp(1e-6, 0.999);
             let stay_ln = (1.0 - sw).ln();
-            // A recombination lands on a specific candidate with prob sw/K; we only enumerate the
-            // strong candidates but charge the per-target sw/K mass.
+            // A recombination lands on one candidate with a probability of sw/K. This code walks
+            // the strong candidates alone, and it still charges the sw/K mass of each target.
             let jump_ln = (sw / k as f64).max(1e-300).ln();
 
             update_match(&mut match_len, sites[i].ref_col, sites[i].dosage);
@@ -217,7 +236,8 @@ impl<'a> ReferencePhaser<'a> {
             let col = sites[i].ref_col;
             let g = sites[i].dosage;
 
-            // Collect candidate successor states, keyed by (x,y), keeping the best incoming lp.
+            // Collect the candidate successor states, keyed by (x,y). Keep the best lp that comes
+            // in.
             let mut next: HashMap<(u32, u32), (f64, u32)> = HashMap::new();
             let consider =
                 |x: u32, y: u32, base_lp: f64, trans_ln: f64, bp: u32, next: &mut HashMap<(u32, u32), (f64, u32)>| {
@@ -412,8 +432,9 @@ mod tests {
         let phased = phaser.phase(&genos);
         assert_eq!(phased.sites.len(), n);
 
-        // Count het sites resolved to the correct ordering (allowing a global side-swap, since
-        // side labels are arbitrary until anchored).
+        // Count the het sites that came out in the correct order. A swap of the two sides across
+        // the whole chromosome is acceptable, because the side labels mean nothing until an anchor
+        // fixes them.
         let mut agree_direct = 0;
         let mut agree_swapped = 0;
         let mut hets = 0;
@@ -434,7 +455,7 @@ mod tests {
         }
         assert!(hets > 0);
         let best = agree_direct.max(agree_swapped);
-        // Allow a couple of switch errors but demand the phase is overwhelmingly recovered.
+        // A few switch errors are acceptable. But the phase must come back almost complete.
         assert!(
             best as f64 >= 0.9 * hets as f64,
             "recovered {best}/{hets} het sites (direct {agree_direct}, swapped {agree_swapped})"

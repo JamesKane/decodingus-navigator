@@ -133,6 +133,8 @@ ING_OK = {
     "reading", "writing", "counting", "timing", "build", "backing", "copying", "loading",
     # Surnames in a citation. "Busing et al. 1999" is the jackknife paper, not a verb.
     "busing", "balding",
+    # GangSTR's published read-class names.
+    "enclosing", "spanning", "flanking",
 }
 # A sentence can end inside emphasis ("**...ancestries.**"), so step over any trailing
 # `*` or `_` before the space. Without this the rule reads two sentences as one and

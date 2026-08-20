@@ -1,31 +1,37 @@
 //! Cooperative cancellation for the long walks.
 //!
-//! A whole-genome pass takes minutes, and the UI's Cancel button used to do nothing visible for
-//! all of them: the flag it set lived in `navigator-ui` and was only read *between* pipeline steps,
-//! while the step itself ran inside a `spawn_blocking` closure that tokio can not interrupt. Once a
-//! walk starts, the only thing that can stop it is the walk itself — so the walkers have to ask.
+//! A pass over the whole genome takes minutes. For all of those minutes, the Cancel button of the
+//! UI once did nothing that a user could see. The flag that it set lived in `navigator-ui`, and
+//! the code read that flag only *between* the steps of the pipeline. The step itself ran inside a
+//! `spawn_blocking` closure, and tokio can not interrupt one of those. Once a walk starts, the one
+//! thing that can stop it is the walk itself. So a walker has to ask.
 //!
-//! [`CancelToken`] is that question, and the rule for using it is about *where* you ask: often
-//! enough that a click feels instant, rarely enough that the check does not show up in a profile.
-//! Every place one is checked here sits on a path that already does real per-record or per-contig
-//! work, so an atomic load is noise by comparison. Checking inside the innermost per-base loop
+//! [`CancelToken`] is that question. The rule for its use is about *where* you ask. Ask often
+//! enough that a click feels immediate, and rarely enough that the check does not show in a
+//! profile.
+//!
+//! Every check in this crate sits on a path that already does real work at each record, or at each
+//! contig. An atomic load is noise next to that. A check inside the innermost loop over the bases
 //! would not be.
 //!
-//! A cancelled walk returns [`AnalysisError::Cancelled`] rather than a partial result. Partial
-//! coverage is indistinguishable from genuinely low coverage once it is persisted, and silently
-//! caching a half-finished walk as if it were complete is a far worse failure than not cancelling
-//! at all — so cancellation is an error, and callers skip their persistence step on it.
+//! A walk that somebody cancelled returns [`AnalysisError::Cancelled`], and not a partial result.
+//! Once the store holds a partial coverage, nothing can separate it from a coverage that is truly
+//! low. To cache a walk that stopped half way, as if it were complete, is a far worse failure than
+//! no cancellation at all. So a cancellation is an error, and a caller skips its store step on
+//! it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::error::AnalysisError;
 
-/// A shared "stop what you are doing" flag, cheap to clone into worker threads.
+/// A shared flag that says "stop what you are doing". A clone of it, into a worker thread, costs
+/// almost nothing.
 ///
-/// [`CancelToken::none`] is a token that can never be cancelled. It exists so callers with nothing
-/// to cancel — tests, CLI one-shots, the non-progress convenience wrappers — pay nothing and read
-/// naturally, instead of every signature growing an `Option`.
+/// [`CancelToken::none`] gives a token that nobody can cancel. It exists so that a caller with
+/// nothing to cancel pays nothing, and reads naturally. A test, a one-shot CLI command and the
+/// wrappers that report no progress are all such callers. Without it, every signature would carry
+/// an `Option`.
 #[derive(Clone, Debug, Default)]
 pub struct CancelToken(Option<Arc<AtomicBool>>);
 
@@ -42,18 +48,19 @@ impl CancelToken {
 
     /// Request cancellation. Idempotent, and safe to call from any thread.
     ///
-    /// There is deliberately no way back to the un-cancelled state: a token covers exactly one run,
-    /// and reusing one across runs is what let a stale reset clobber a pending cancel before.
+    /// There is no way back to the state before the cancel, and that is deliberate. A token covers
+    /// exactly one run. To use one token across two runs is what let a stale reset write over a
+    /// cancel that had not yet arrived.
     pub fn cancel(&self) {
         if let Some(flag) = &self.0 {
             flag.store(true, Ordering::Relaxed);
         }
     }
 
-    /// Whether cancellation has been requested.
+    /// True when somebody has asked for a cancel.
     ///
-    /// `Relaxed` is enough: this guards no other memory, and the only cost of observing the
-    /// store one loop iteration late is one more iteration of work.
+    /// `Relaxed` is enough. This flag guards no other memory. To see the store one iteration of
+    /// the loop late costs one more iteration of work, and nothing else.
     pub fn is_cancelled(&self) -> bool {
         self.0.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed))
     }
@@ -89,9 +96,10 @@ mod tests {
         assert!(matches!(worker.check(), Err(AnalysisError::Cancelled)));
     }
 
-    /// `Default` has to be the inert token: a struct that gains a `CancelToken` field by
-    /// `..Default::default()` must not silently start out cancellable-but-never-cancelled in a way
-    /// that differs from `none()`.
+    /// `Default` must give the token that does nothing. Take a struct that gains a `CancelToken`
+    /// field through `..Default::default()`. That struct must not start in a state where somebody
+    /// can cancel it, and nobody ever does, and where it differs from `none()`. Nobody would see
+    /// that.
     #[test]
     fn default_is_the_inert_token() {
         let t = CancelToken::default();
@@ -99,9 +107,9 @@ mod tests {
         assert!(!t.is_cancelled());
     }
 
-    /// The property the whole feature rests on: a token cancelled from *another thread* is observed
-    /// by a walk already in progress. This is the case the old design could not express at all —
-    /// the flag lived in the UI and the walk had no way to ask.
+    /// The property that the whole feature stands on. A walk that already runs sees a token that
+    /// *another thread* cancelled. The old design could not express this case at all: the flag
+    /// lived in the UI, and the walk had no way to ask.
     #[test]
     fn a_walk_in_progress_observes_a_cancel_from_another_thread() {
         let token = CancelToken::new();
@@ -122,8 +130,8 @@ mod tests {
         );
     }
 
-    /// Cancellation must be reported as itself, never as a generic failure — the UI branches on
-    /// this to avoid telling the user their own click was an error.
+    /// A cancellation must go out as itself, and never as a general failure. The UI branches on
+    /// that, so it does not tell the user that their own click was an error.
     #[test]
     fn cancellation_is_its_own_error_kind() {
         let t = CancelToken::new();

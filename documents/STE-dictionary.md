@@ -77,6 +77,9 @@ tracking · caching · processing · operating system · pacing · sampling · s
 spilling · phasing · binning · masking · trimming · clipping · calling · sorting · merging ·
 reasoning model · streaming · copying · loading
 
+GangSTR names its read classes `enclosing`, `spanning` and `flanking`. Those are the published
+names of the method, so they are Technical Names here: enclosing · spanning · flanking
+
 ## Technical Verbs
 
 STE permits a project to declare Technical Verbs when no approved verb has the meaning. Use these

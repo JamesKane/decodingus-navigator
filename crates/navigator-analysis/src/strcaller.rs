@@ -1,17 +1,24 @@
-//! STR genotyping from aligned reads — the enclosing-read model.
+//! STR genotypes from aligned reads. The model works on a read that encloses the tract.
 //!
-//! For STRs shorter than a read (Y-STRs and forensic/genealogical markers all qualify), the
-//! informative reads are those that **enclose** the whole repeat tract plus clean flanking sequence
-//! on both sides (GangSTR's "enclosing" class — the Spanning/Flanking/FRR classes only matter for
-//! expansions longer than a read). For each enclosing read the observed repeat length is read off
-//! the **CIGAR** — `tract_bp + (insertions − deletions) within the tract`, measured against the
-//! known reference allele (so it carries no systematic offset, unlike counting motif copies in a
-//! loose feature region). A geometric **PCR-stutter** model then turns the per-read counts into a
-//! maximum-likelihood genotype (haploid for chrY, diploid elsewhere).
+//! An STR shorter than a read is the case here, and every Y-STR, and every forensic and
+//! genealogical marker, qualifies. The reads that carry information are the ones that **enclose**
+//! the whole repeat tract, plus clean sequence on both sides of it. GangSTR calls those the
+//! "enclosing" class. Its Spanning, Flanking and FRR classes matter only for an expansion that is
+//! longer than a read.
 //!
-//! This is the tractable, principled core of HipSTR/GangSTR — it omits their stutter-EM, HMM
-//! realignment, and SNP phasing (a future refinement), trusting the aligner's CIGAR within tight
-//! tracts and letting the modal-over-reads genotype absorb per-read misalignment.
+//! At each enclosing read the code takes the observed repeat length off the **CIGAR**. It is
+//! `tract_bp + (insertions − deletions) inside the tract`, measured against the known reference
+//! allele. So it carries no systematic offset, where a count of the motif copies in a loose
+//! feature region would.
+//!
+//! A geometric model of **PCR stutter** then turns the counts of the reads into a
+//! maximum-likelihood genotype. That genotype is haploid on chrY, and diploid elsewhere.
+//!
+//! This is the core of HipSTR and GangSTR that a person can build and defend. It leaves out their
+//! stutter EM, their HMM realignment, and their SNP phasing, and those are a later improvement.
+//!
+//! It trusts the CIGAR of the aligner inside a tight tract. And it lets the genotype, which is the
+//! mode over the reads, absorb a read that the aligner put in the wrong place.
 
 use std::path::Path;
 
@@ -27,15 +34,17 @@ use crate::strref::StrLocus;
 /// Tunables for the STR caller.
 #[derive(Debug, Clone, Copy)]
 pub struct StrCallerParams {
-    /// Minimum mapping quality for a read to be used.
+    /// The mapping quality that a read needs before the code uses it.
     pub min_mapping_quality: u8,
     /// Clean, indel-free reference bases required on each side of the tract to count a read.
     pub flank: i64,
-    /// Minimum enclosing-read depth to emit a genotype.
+    /// The depth of reads that enclose the tract that the code needs before it emits a genotype.
     pub min_depth: u32,
-    /// `P(read shows the true allele exactly)` — the no-stutter probability (HipSTR default 0.9).
+    /// `P(a read shows the true allele exactly)`. It is the probability of no stutter, and the
+    /// HipSTR default is 0.9.
     pub no_stutter: f64,
-    /// Geometric decay of stutter magnitude (per extra repeat unit). Smaller → ±1 dominates.
+    /// The geometric decay of the stutter size, at each extra repeat unit. A smaller value makes
+    /// ±1 dominate.
     pub stutter_decay: f64,
 }
 
@@ -63,7 +72,8 @@ pub enum StrConfidence {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StrGenotype {
     pub contig: String,
-    /// 0-based tract start (BED), for joining back to the reference / a vendor mapping.
+    /// The 0-based start of the tract, in BED form. Use it to join back to the reference, or to a
+    /// mapping that a vendor gives.
     pub start: i64,
     pub end: i64,
     pub period: u8,
@@ -71,18 +81,21 @@ pub struct StrGenotype {
     /// HipSTR locus id (the result name until a vendor DYS mapping exists).
     pub name: String,
     pub ref_copies: f64,
-    /// Called allele(s) in **repeat copies** — one for haploid (chrY), one or two for diploid.
+    /// The called alleles, in **repeat copies**. There is one on a haploid contig, such as chrY,
+    /// and one or two on a diploid one.
     pub alleles: Vec<i32>,
-    /// Enclosing reads used (the genotype's depth).
+    /// The count of enclosing reads that the code used. It is the depth of the genotype.
     pub depth: u32,
-    /// Fraction of enclosing reads matching the called allele(s) exactly.
+    /// The fraction of the enclosing reads that match the called alleles exactly.
     pub concordance: f64,
     pub confidence: StrConfidence,
 }
 
-/// `ln P(observed copies | true allele copies)` under the geometric stutter model: the read shows
-/// the allele exactly with probability `no_stutter`; otherwise the magnitude of the deviation (in
-/// repeat units) is geometric and symmetric up/down.
+/// `ln P(the observed copies | the true allele copies)`, under the geometric stutter model.
+///
+/// The read shows the allele exactly, at a probability of `no_stutter`. Otherwise the size of the
+/// deviation, in repeat units, follows a geometric distribution, and it is symmetric up and
+/// down.
 fn obs_lnlik(observed: i32, allele: i32, p: &StrCallerParams) -> f64 {
     if observed == allele {
         p.no_stutter.ln()
@@ -111,8 +124,9 @@ fn call_haploid(observed: &[i32], p: &StrCallerParams) -> Option<i32> {
         .map(|(a, _)| a)
 }
 
-/// Maximum-likelihood **diploid** genotype `(A,B)` (A<=B): argmax over candidate pairs of the
-/// summed `ln[½P(o|A) + ½P(o|B)]` — each read equally likely from either allele.
+/// The maximum-likelihood **diploid** genotype `(A,B)`, where A<=B. It is the argmax over the
+/// candidate pairs of the sum of `ln[½P(o|A) + ½P(o|B)]`. Each read comes from either allele with
+/// equal probability.
 fn call_diploid(observed: &[i32], p: &StrCallerParams) -> Option<(i32, i32)> {
     let cands = candidates(observed);
     let mut best: Option<((i32, i32), f64)> = None;
@@ -134,13 +148,17 @@ fn call_diploid(observed: &[i32], p: &StrCallerParams) -> Option<(i32, i32)> {
     best.map(|(g, _)| g)
 }
 
-/// The repeat copies observed in one enclosing read at `locus`, or `None` if the read is not a clean
-/// enclosing read (not anchored `flank` bp of indel-free reference on both sides). Reads the length
-/// off the CIGAR: `tract_bp + insertions − deletions` within the tract, ÷ period.
+/// The repeat copies that one enclosing read shows at `locus`. It is `None` when that read does
+/// not enclose the tract cleanly. To do so it must sit on `flank` bp of reference with no indel,
+/// on both sides.
+///
+/// The code takes the length off the CIGAR, as `tract_bp + insertions − deletions` inside the
+/// tract, divided by the period.
 fn observed_copies(ops: &[(Kind, usize)], aln_start: i64, locus: &StrLocus, flank: i64) -> Option<i32> {
-    // HipSTR tracts are end-INCLUSIVE: ref_copies = (end - start + 1)/period (e.g. Y:2795644-2795670
-    // period 4 → 27/4 = 6.75). So the 1-based tract is [start+1, end+1] (length end-start+1), and a
-    // ref-matching read measures exactly ref_copies — no systematic offset.
+    // A HipSTR tract INCLUDES its end. So ref_copies = (end - start + 1)/period. For example,
+    // Y:2795644-2795670 at period 4 gives 27/4 = 6.75. The 1-based tract is then [start+1, end+1],
+    // and its length is end-start+1. A read that matches the reference then measures exactly
+    // ref_copies, with no systematic offset.
     let (ts, te) = (locus.start + 1, locus.end + 1); // 1-based inclusive tract
     let period = locus.period as i64;
     if period == 0 {
@@ -197,7 +215,8 @@ fn read_passes(r: &RecordBuf, min_mapq: u8) -> bool {
         && r.mapping_quality().map(|m| m.get()).unwrap_or(0) >= min_mapq
 }
 
-/// Build a genotype from a locus's enclosing-read counts. `ploidy` 1 = haploid (chrY), else diploid.
+/// Build a genotype from the counts of the reads that enclose a locus. A `ploidy` of 1 is haploid,
+/// as on chrY. Any other value is diploid.
 fn genotype_from_counts(locus: &StrLocus, counts: &[i32], ploidy: u8, p: &StrCallerParams) -> Option<StrGenotype> {
     let depth = counts.len() as u32;
     if depth < p.min_depth {
@@ -235,9 +254,11 @@ fn genotype_from_counts(locus: &StrLocus, counts: &[i32], ploidy: u8, p: &StrCal
     })
 }
 
-/// Genotype every locus in `loci` (assumed all on `contig`, sorted by start) from `bam`, in one
-/// streaming pass: each read contributes its observed copy number to every locus it cleanly
-/// encloses. `ploidy` 1 = haploid (chrY). `reference` is required for CRAM.
+/// Genotype every locus in `loci` from `bam`, in one streaming pass. Every locus must lie on
+/// `contig`, and `loci` must come in order of its start.
+///
+/// Each read gives its observed copy number to every locus that it encloses cleanly. A `ploidy` of
+/// 1 is haploid, as on chrY. A CRAM needs `reference`.
 pub fn genotype_str_loci(
     bam: &Path,
     contig: &str,
@@ -253,7 +274,7 @@ pub fn genotype_str_loci(
     let region: Region = contig
         .parse()
         .map_err(|_| AnalysisError::Message(format!("bad region for contig {contig}")))?;
-    // Loci sorted by start; collect per-locus observed counts.
+    // The loci come in order of their start. Collect the observed counts at each locus.
     let starts: Vec<i64> = loci.iter().map(|l| l.start).collect();
     let mut counts: Vec<Vec<i32>> = vec![Vec::new(); loci.len()];
 
