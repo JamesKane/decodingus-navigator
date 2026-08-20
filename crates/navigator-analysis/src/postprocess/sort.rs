@@ -1,29 +1,34 @@
 //! Coordinate-sort a BAM, on disk.
 //!
-//! Same shape as [`crate::revert::collate`] and for the same reason: a WGS alignment does not fit
-//! in memory, so this fills a budget, sorts it, spills a run, and k-way merges the runs at the end.
-//! Peak memory is the budget plus one buffered block per run, independent of input size.
+//! This has the same shape as [`crate::revert::collate`], and for the same reason. A WGS alignment
+//! does not fit in memory. So this code fills a budget, sorts it, spills a run, and then merges
+//! the runs k at a time at the end. The peak memory is the budget, plus one buffered block for
+//! each run, and it does not grow with the input.
 //!
-//! The budget comes from the machine ([`navigator_resource::spill_budget`]), not from a constant.
-//! It was 512 MB for everyone, which on a 30x WGS spilled **688 runs** that the merge then opened
-//! at once — bounded memory by design, and a great deal of fan-in to buy on a machine with 128 GB
-//! sitting idle.
+//! The budget comes from the machine. See [`navigator_resource::spill_budget`]. It is not a
+//! constant. It was 512 MB for everybody, and on a 30x WGS that spilled **688 runs**, which the
+//! merge then opened at one time. The memory had a bound by design. But that is a great deal of
+//! fan-in to buy on a machine with 128 GB that nothing uses.
 //!
-//! ## Runs are ordinary BAM files
+//! ## A run is an ordinary BAM file
 //!
-//! The revert stage spills a bespoke binary encoding because its records are four small fields.
-//! An alignment record is not — it has a CIGAR, a tag dictionary, and per-base sequence and
-//! quality — so inventing a serialization for it would mean re-deriving BAM's encoding badly.
-//! Each run is written as a real BAM instead, using the same noodles encoder as the final output.
-//! It costs a header per run (a few kB against runs of hundreds of MB) and buys a format that is
-//! already correct, already tested, and inspectable with any tool when something looks wrong.
+//! The revert stage spills a binary encoding of its own, because its records hold four small
+//! fields. An alignment record does not. It holds a CIGAR, a tag dictionary, and a sequence and a
+//! quality at each base. To invent a serialization for that would mean a second, worse version of
+//! the BAM encoding.
 //!
-//! ## Order
+//! So each run goes out as a real BAM, through the same noodles encoder as the final output. That
+//! costs one header for each run, which is a few kB against runs of hundreds of MB. It buys a
+//! format that is already correct, already tested, and that any tool can open when something looks
+//! wrong.
 //!
-//! SAM's coordinate order is by reference sequence, then by alignment start, with **unplaced reads
-//! last**. Those unplaced reads are not an afterthought here: recovering reads the old reference
-//! could not place is a large part of why realignment exists, so they have to survive the sort and
-//! land somewhere a reader will find them, rather than being dropped for having no coordinate.
+//! ## The order
+//!
+//! The coordinate order of SAM goes by reference sequence, then by alignment start, and it puts
+//! **the reads with no place last**. Those reads matter here. To recover a read that the old
+//! reference could not place is a large part of why realignment exists. So they must survive the
+//! sort, and land where a reader will find them. The sort must not drop a read because it has no
+//! coordinate.
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -37,20 +42,23 @@ use super::bamio;
 use crate::cancel::CancelToken;
 use crate::error::AnalysisError;
 
-/// How often the record loop asks whether it has been cancelled — same cadence as the walkers.
+/// How often the record loop asks whether somebody cancelled it. This is the same rate as in the
+/// walkers.
 const CANCEL_CHECK_INTERVAL: u64 = 4096;
 
-/// Tuning for [`sort_alignment`].
+/// The controls of [`sort_alignment`].
 #[derive(Debug, Clone)]
 pub struct SortParams {
-    /// Approximate bytes of records held before a sorted run is spilled to scratch.
+    /// About how many bytes of records the code holds before it sorts them and spills a run to
+    /// the scratch space.
     pub buffer_bytes: usize,
 }
 
 impl Default for SortParams {
-    /// Sized from the machine, not from a constant — see [`navigator_resource::spill_budget`], which
-    /// also documents `NAVIGATOR_SORT_MB`. The constant this replaced was 512 MB, which spilled 688
-    /// runs on a 30x WGS regardless of whether the machine had 8 GB or 128 GB to work with.
+    /// The size comes from the machine, and not from a constant. See
+    /// [`navigator_resource::spill_budget`], which also documents `NAVIGATOR_SORT_MB`. The constant
+    /// before it was 512 MB. That spilled 688 runs on a 30x WGS, whether the machine had 8 GB or
+    /// 128 GB to work with.
     fn default() -> Self {
         Self {
             buffer_bytes: navigator_resource::spill_budget("NAVIGATOR_SORT_MB") as usize,
@@ -61,7 +69,7 @@ impl Default for SortParams {
 /// What the sort did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SortStats {
-    /// Records read, and written — the sort never drops one.
+    /// The count of records that the code read, and wrote. The sort never drops one.
     pub records: u64,
     /// Records with no coordinate, which sort to the end.
     pub unplaced: u64,
@@ -69,10 +77,10 @@ pub struct SortStats {
     pub runs: usize,
 }
 
-/// Coordinate-sort `input` into `output`, using `scratch` for spilled runs.
+/// Sort `input` into `output`, in coordinate order. It uses `scratch` for the runs that it spills.
 ///
-/// The output header is the input's, with `@HD SO:coordinate` set — the claim readers rely on to
-/// decide whether they may binary-search or must scan.
+/// The output header is the header of the input, with `@HD SO:coordinate` set. A reader depends on
+/// that claim to decide whether it may do a binary search, or must scan.
 pub fn sort_alignment(
     input: &Path,
     output: &Path,
@@ -116,7 +124,7 @@ pub fn sort_alignment(
 
 // ---- spilling -------------------------------------------------------------
 
-/// Accumulates records, spilling a sorted BAM run whenever the budget is reached.
+/// It collects records. Whenever they reach the budget, it sorts them and spills a BAM run.
 struct Spiller {
     dir: PathBuf,
     header: sam::Header,
@@ -151,10 +159,10 @@ impl Spiller {
         if self.buffered.is_empty() {
             return Ok(());
         }
-        // `sort_by_key` (stable) rather than `sort_unstable_by_key`: records that share a
-        // coordinate keep their input order, so the whole sort is deterministic. A duplicate
-        // marker downstream picks a representative from a group of identical positions, and it
-        // should pick the same one on every run.
+        // This uses `sort_by_key`, which is stable, and not `sort_unstable_by_key`. Records that
+        // share a coordinate then keep their input order, so the whole sort is deterministic. A
+        // later step marks the duplicates. It takes one record from a group at the same position,
+        // and it must take the same one on every run.
         self.buffered.sort_by_key(sort_key);
 
         let path = self.dir.join(format!("sort-run-{:05}.bam", self.paths.len()));
@@ -181,8 +189,9 @@ impl Spiller {
     }
 }
 
-/// The spilled runs, deleted on drop so a failed or cancelled sort leaves no scratch behind — at
-/// WGS scale these are the size of the alignment itself.
+/// The runs that the code spilled. They go away when this drops, so a sort that failed, or that
+/// somebody cancelled, leaves no scratch space behind. At WGS scale they are as large as the
+/// alignment itself.
 struct Runs {
     paths: Vec<PathBuf>,
 }
@@ -212,8 +221,9 @@ impl PartialEq for Entry {
 impl Eq for Entry {}
 impl Ord for Entry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Ties break on run index so the merge is deterministic; combined with the stable sort
-        // within each run, equal-coordinate records come out in a repeatable order.
+        // A tie breaks on the run index, so the merge is deterministic. With the stable sort
+        // inside each run, two records at the same coordinate always come out in the same
+        // order.
         self.key.cmp(&other.key).then(self.run.cmp(&other.run))
     }
 }
@@ -234,7 +244,7 @@ fn merge(
     let mut writer = bamio::create(output)?;
     writer.write_header(header).map_err(|e| AnalysisError::io(output, e))?;
 
-    // Each run is read through its own reader; only one record per run is resident at a time.
+    // Each run has its own reader. Only one record of each run sits in memory at a time.
     let mut readers = Vec::with_capacity(runs.paths.len());
     for path in &runs.paths {
         let mut reader = bamio::open_many(path)?;
@@ -279,8 +289,8 @@ fn merge(
 
     bamio::finish(writer, output)?;
 
-    // A sort that loses records is the failure this whole stage must not have, and it would be
-    // invisible downstream — coverage would simply read low.
+    // A sort that loses records is the one failure that this stage must not have. No later step
+    // would see it, because the coverage would only read low.
     if written != stats.records {
         return Err(AnalysisError::Message(format!(
             "sort lost records: read {}, wrote {written}",
@@ -293,8 +303,9 @@ fn merge(
 struct RunReader {
     path: PathBuf,
     header: sam::Header,
-    /// Single-threaded by design — see [`bamio::open_many`]. Every run in the merge is open at
-    /// once, so a worker pool per run is thousands of threads for work that is already parallel.
+    /// It runs on one thread, and that is deliberate. See [`bamio::open_many`]. Every run of the
+    /// merge is open at one time. A worker pool for each run is then thousands of threads, for
+    /// work that already runs in parallel.
     reader: bamio::PlainBamReader,
 }
 
@@ -324,20 +335,25 @@ fn sort_key(record: &RecordBuf) -> (u32, u64) {
 
 /// What one record costs the buffer.
 ///
-/// This used to be the variable-length parts plus a flat 256, which read as a reasonable stand-in
-/// for "fixed fields and allocator overhead" and was not one. It left out the tag dictionary
-/// entirely, and a mapped record carries a dozen tags — `NM`, `MD`, `AS`, `ms`, `nn`, `tp`, `cm`,
-/// `s1`, `s2`, `de`, `rl` from minimap2 alone — each an entry in a `Vec<(Tag, Value)>`. The buffer
-/// therefore held well over its stated budget, which mattered little against a constant picked with
-/// an unwritten margin and matters a great deal now that the budget is a fraction of the machine
-/// (see [`navigator_resource::spill_budget`]).
+/// This was the parts of variable length, plus a flat 256. That 256 read as a reasonable stand-in
+/// for the fixed fields and the allocator overhead, and it was not one. It left the tag dictionary
+/// out completely.
 ///
-/// Still an estimate: it does not chase a `Value`'s own heap (a string tag's bytes) or a `Vec`'s
-/// spare capacity. It is close enough to size a buffer by, and it no longer omits a whole field.
+/// A mapped record carries a dozen tags. minimap2 alone gives `NM`, `MD`, `AS`, `ms`, `nn`, `tp`,
+/// `cm`, `s1`, `s2`, `de` and `rl`. Each one is an entry in a `Vec<(Tag, Value)>`. So the buffer
+/// held well over the budget that it stated.
+///
+/// That mattered little against a constant that somebody chose with a margin nobody wrote down. It
+/// matters a great deal now that the budget is a fraction of the machine. See
+/// [`navigator_resource::spill_budget`].
+///
+/// This is still an estimate. It does not follow the own heap of a `Value`, which holds the bytes
+/// of a string tag. It also does not count the spare capacity of a `Vec`. It is close enough to
+/// size a buffer by, and it no longer leaves a whole field out.
 pub(super) fn heap_bytes(record: &RecordBuf) -> usize {
     use noodles::sam::alignment::record::Cigar as _;
-    // The record itself sits inline in the buffer's `Vec`, so its size is part of what a record
-    // costs — not something to approximate around.
+    // The record itself sits inside the `Vec` of the buffer. Its size is part of what a record
+    // costs, and not something to work around.
     std::mem::size_of::<RecordBuf>()
         + record.name().map(|n| n.len()).unwrap_or(0)
         + record.sequence().len()
@@ -350,15 +366,16 @@ pub(super) fn heap_bytes(record: &RecordBuf) -> usize {
 
 /// Bytes one tag occupies in a record's `Vec<(Tag, Value)>`.
 ///
-/// Pinned by `a_tag_entry_is_not_larger_than_the_estimate_assumes`, so a noodles upgrade that grows
-/// `Value` fails a test here rather than quietly halving the buffer's honesty.
+/// `a_tag_entry_is_not_larger_than_the_estimate_assumes` holds this value. So an upgrade of
+/// noodles that makes `Value` larger fails a test here. Without that test, the buffer would hold
+/// twice what it says, and nobody would see it.
 pub(super) const TAG_ENTRY_BYTES: usize = 48;
 
 /// Stamp `@HD SO:coordinate` on the header.
 ///
-/// Not cosmetic: an index is only valid for a coordinate-sorted file, and readers decide whether
-/// they may query a region by looking at this. A correctly sorted file that fails to say so is
-/// treated as unsorted and re-scanned.
+/// This is not for appearance. An index is correct only for a file in coordinate order, and a
+/// reader reads this to decide whether it may query a region. A file that the code sorted
+/// correctly, and that does not say so, reads as unsorted, and every reader scans it again.
 fn with_coordinate_sort_order(mut header: sam::Header) -> sam::Header {
     use noodles::sam::header::record::value::map::header::tag;
     use noodles::sam::header::record::value::{map, Map};

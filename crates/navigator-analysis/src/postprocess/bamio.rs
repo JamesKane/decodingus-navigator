@@ -1,21 +1,24 @@
 //! Multithreaded BAM I/O for the post-processing stages.
 //!
-//! Stage C moves the whole alignment through BGZF four times over — the sort reads the mapped BAM,
-//! writes its spilled runs, reads them back to merge, and writes the sorted output — and duplicate
-//! marking and CRAM emission each read it once more. On a 30x WGS that is hundreds of GB of
-//! inflate and deflate, and every pass of it was running on one thread: the first WGS-scale run
-//! measured the sort at 4 h 44 m, the most expensive stage in the pipeline, ahead of the mapping
-//! it feeds.
+//! Stage C moves the whole alignment through BGZF four times. The sort reads the mapped BAM,
+//! writes its spilled runs, reads them back to merge, and writes the sorted output. The duplicate
+//! mark and the CRAM output then each read it once more.
 //!
-//! BGZF is a *block*-gzip stream, so compression and decompression parallelize across blocks while
-//! the record stream stays sequential and byte-identical. That is the same reasoning
-//! [`crate::reader::open_seq`] already applies to reading vendor BAMs; these stages simply never
-//! got it, because they were written against the plain constructors.
+//! On a 30x WGS that is hundreds of GB of inflate and deflate, and every pass of it ran on one
+//! thread. The first run at WGS scale measured the sort at 4 h 44 m. That made it the stage in the
+//! pipeline that cost the most, ahead of the mapping that it feeds.
 //!
-//! Compression *level* is deliberately unchanged. These are all intermediates consumed once, so a
-//! faster level is tempting, but it would inflate the scratch footprint that
-//! `navigator-app::realign_job`'s preflight is calibrated against — a separate change, with a
-//! recalibration attached.
+//! BGZF is a stream of gzip *blocks*. So the compression and the decompression run in parallel
+//! across those blocks, while the stream of records stays sequential, and its bytes do not
+//! change.
+//! That is the same reasoning that [`crate::reader::open_seq`] already applies to a read of a
+//! vendor BAM. These stages never got it, because somebody wrote them against the plain
+//! constructors.
+//!
+//! The compression *level* does not change, and that is deliberate. These are all intermediates
+//! that one step reads once, so a faster level looks attractive. But a faster level makes the
+//! scratch space larger, and the preflight of `navigator-app::realign_job` holds a calibration
+//! against that space. That is a separate change, and it carries a new calibration with it.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
@@ -40,10 +43,12 @@ pub(crate) type BamWriter = bam::io::Writer<bgzf::io::MultithreadedWriter<BufWri
 
 const WRITE_BUFFER: usize = 1 << 20;
 
-/// The BGZF end-of-file marker: an empty deflate block, written last by every conforming writer.
+/// The end-of-file marker of BGZF. It is an empty deflate block, and every writer that follows the
+/// specification writes it last.
 ///
-/// Not exported by noodles, so it is spelled out here. It is fixed by the BAM specification, which
-/// is why a 28-byte literal is the right way to hold it rather than something derived.
+/// The code writes it out here, because noodles does not export it. The BAM specification fixes
+/// its value, and that is why a literal of 28 bytes is the correct way to hold it. Nothing needs
+/// to derive it.
 const BGZF_EOF: [u8; 28] = [
     0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00, 0x1b, 0x00, 0x03,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -51,14 +56,17 @@ const BGZF_EOF: [u8; 28] = [
 
 /// Whether `path` is a BAM whose writer finished.
 ///
-/// The only difference between a complete BGZF stream and one whose process was killed partway is
-/// this marker, so it is the whole test. It answers a question that matters at a scale where
-/// re-deriving the file costs hours: `navigator-app`'s realignment resume uses it to decide whether
-/// a previous attempt's intermediate can be picked up or has to be thrown away.
+/// This marker is the only difference between a complete BGZF stream and one whose process
+/// somebody killed in the middle. So it is the whole test.
 ///
-/// Cheap by construction — one open and a 28-byte read from the end, regardless of a file that may
-/// be 60 GB. It does not validate the records inside; a writer that finished wrote them, and a
-/// deeper check would mean reading the whole file, which is the cost this exists to avoid.
+/// It answers a question that matters at a scale where a new derivation of the file costs hours.
+/// The realignment resume in `navigator-app` uses it. That resume decides whether it can take up
+/// the intermediate of an earlier try, or must throw that file away.
+///
+/// It costs almost nothing by construction: one open, and a read of 28 bytes from the end, even
+/// on a file of 60 GB. It does not check the records inside. A writer that reached its end wrote
+/// them, and a deeper check would mean a read of the whole file. That cost is what this function
+/// exists to avoid.
 pub fn is_complete_bam(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -86,19 +94,22 @@ pub(crate) fn open(path: &Path) -> Result<BamReader, AnalysisError> {
     Ok(bam::io::Reader::from(inner))
 }
 
-/// Open `path` as one of many streams that will be read concurrently.
+/// Open `path` as one of many streams that the code reads at the same time.
 ///
-/// [`open`] is right for a stream that is alone: threading its inflation is the difference between
-/// one core and six on a file the stage reads end to end. It is badly wrong for a stream that is
-/// one of hundreds. The sort's merge opens every spilled run at once — 688 of them on a 30x WGS at
-/// the default budget — and giving each its own worker pool spawned **4,843 threads** in a measured
-/// run, each independently reading ahead. The machine did 15,000 IOPS and 6.6 GB/s of disk reads to
-/// produce 5 MB/s of merged output, WindowServer could not get scheduled, and the run was killed by
-/// the watchdog that noticed.
+/// [`open`] is correct for a stream that stands alone. There, threads on its inflation are the
+/// difference between one core and six, on a file that the stage reads from end to end. It is very
+/// wrong for a stream that is one of hundreds.
 ///
-/// There is nothing for a worker pool to do here anyway: the merge is already parallel across runs,
-/// and it consumes one record at a time from each. So this inflates on the calling thread, behind a
-/// modest buffer — 688 of these cost 688 buffers and no threads at all.
+/// The merge of the sort opens every spilled run at one time. That is 688 of them on a 30x WGS, at
+/// the default budget. A worker pool for each one started **4,843 threads** in a measured run, and
+/// each of those read ahead on its own. The machine did 15,000 IOPS, and 6.6 GB/s of reads from
+/// the disk, to make 5 MB/s of merged output. WindowServer could not get onto a core, and its
+/// watchdog saw that and killed the run.
+///
+/// A worker pool has nothing to do here in any case. The merge already runs in parallel across the
+/// runs, and it takes one record at a time from each. So this function inflates on the thread that
+/// calls it, behind a buffer of modest size. There, 688 of these cost 688 buffers, and no
+/// threads.
 pub(crate) fn open_many(path: &Path) -> Result<PlainBamReader, AnalysisError> {
     let file = File::open(path).map_err(|e| AnalysisError::io(path, e))?;
     let inner = bgzf::io::Reader::new(BufReader::with_capacity(READ_BUFFER, file));
@@ -117,13 +128,13 @@ pub(crate) fn create(path: &Path) -> Result<BamWriter, AnalysisError> {
 
 /// Finish the stream, including the BGZF end-of-file block.
 ///
-/// A BGZF file without its EOF block is indistinguishable from a truncated one, and the plain
-/// writer's `try_finish` does not exist on this type — the equivalent is draining the workers.
+/// Nothing can separate a BGZF file with no EOF block from one that stops early. This type has no
+/// `try_finish`, which the plain writer has. Here the equivalent is to run the workers dry.
 ///
-/// The finished file is then synced, which matters more here than it looks: that EOF block is
-/// exactly what [`navigator_app::realign_job`]'s resume uses to tell a stage output it can trust
-/// from one a killed job left half-written. A marker still sitting in the page cache would be a
-/// promise the disk has not made.
+/// The code then syncs the finished file, and that matters more than it looks. The resume in
+/// [`navigator_app::realign_job`] uses that EOF block. It separates a stage output that it can
+/// trust from one that a killed job left half written. A marker that still sits in the page cache
+/// is a promise that the disk has not made.
 pub(crate) fn finish(mut writer: BamWriter, path: &Path) -> Result<(), AnalysisError> {
     let mut buffered = writer.get_mut().finish().map_err(|e| AnalysisError::io(path, e))?;
     buffered.flush().map_err(|e| AnalysisError::io(path, e))?;

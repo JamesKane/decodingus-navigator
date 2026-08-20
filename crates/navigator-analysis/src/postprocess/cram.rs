@@ -1,30 +1,33 @@
-//! Compress a sorted, marked alignment to CRAM and index it — the last step of stage C.
+//! Compress a sorted alignment that carries its duplicate marks to a CRAM, and make its index.
+//! This is the last step of stage C.
 //!
-//! CRAM stores each read as its *difference* from the reference rather than as bases, which is why
-//! it is dramatically smaller than BAM and why it needs the reference to read back. Navigator
-//! already reads CRAM this way (`reader::open_seq` takes a reference for exactly this), so a
-//! realigned alignment lands in the same shape as a vendor one.
+//! A CRAM stores each read as its *difference* from the reference, and not as bases. That is why a
+//! CRAM is much smaller than a BAM, and why a reader needs the reference to read it back.
+//! Navigator already reads a CRAM this way, and `reader::open_seq` takes a reference for exactly
+//! that. So a realigned alignment comes out in the same shape as a vendor one.
 //!
 //! ## The reference is part of the file
 //!
-//! A CRAM is unreadable without the reference it was written against — not "degraded", unreadable.
-//! That makes the reference argument here a correctness matter rather than a tuning knob, and it is
-//! why the realigned alignment's row records `reference_path` alongside `bam_path` in stage D.
-//! Compressing against the wrong reference produces a file that decodes to wrong bases rather than
-//! failing, so the caller must pass the reference the reads were actually mapped to.
+//! Nothing can read a CRAM without the reference that it went out against. The file is not
+//! "worse": no reader can read it at all. So the reference argument here is a matter of
+//! correctness, and not a control that somebody tunes. It is also why the row of a realigned
+//! alignment records `reference_path` beside `bam_path`, in stage D.
 //!
-//! ## Order matters, and it is checked
+//! A compression against the wrong reference makes a file that decodes to the wrong bases. It does
+//! not fail. So the caller must give the reference that the mapper mapped the reads to.
 //!
-//! CRAM's compression assumes coordinate-sorted, reference-adjacent records; feeding it read-order
-//! input produces a file that is both slow to write and larger than the BAM it replaced. Rather
-//! than trust the caller to have sorted first, [`write_cram`] reads the `@HD SO` the sort stamped
-//! and refuses input that does not claim coordinate order.
+//! ## The order matters, and the code checks it
+//!
+//! The compression of a CRAM needs records in coordinate order, and near to the reference. Read
+//! order instead makes a file that is slow to write, and larger than the BAM that it replaced.
+//! [`write_cram`] does not trust the caller to have sorted first. It reads the `@HD SO` that the
+//! sort wrote, and it refuses input that does not say coordinate order.
 //!
 //! ## The index
 //!
-//! A `.crai` is what turns a region query from a full-file scan into a seek. It is built by reading
-//! the finished CRAM back and recording where each container starts, so it necessarily happens
-//! after the file is complete rather than during the write.
+//! A `.crai` turns a region query from a scan of the whole file into a seek. The code builds it
+//! from a read of the finished CRAM, and it notes where each container starts. That must happen
+//! after the file is complete, and not during the write.
 
 use std::path::{Path, PathBuf};
 
@@ -48,21 +51,25 @@ pub struct CramOutput {
     pub index: PathBuf,
     /// Records written.
     pub records: u64,
-    /// Non-primary records dropped for carrying no `SEQ` — see [`is_unencodable`].
+    /// The count of records that are not primary, and that the code dropped because they hold no
+    /// `SEQ`. See [`is_unencodable`].
     pub sequenceless_dropped: u64,
 }
 
-/// Can this record not be written as differences from the reference?
+/// Can the code not write this record as a difference from the reference?
 ///
-/// CRAM stores a read as its diff against the reference, so encoding one means walking its CIGAR
-/// and comparing bases. A record with an aligned CIGAR but `SEQ: *` has no bases to compare, and
-/// noodles indexes the empty sequence rather than checking — a panic (`range end index N out of
-/// range for slice of length 0`) from inside the writer, ten hours into a WGS job.
+/// A CRAM stores a read as its difference against the reference. To encode one means a walk over
+/// its CIGAR, and a comparison of the bases. A record with an aligned CIGAR, and a `SEQ` of `*`,
+/// has no base to compare. There, noodles indexes the empty sequence, and it does not check first.
+/// The result is a panic from inside the writer, ten hours into a WGS job:
+/// `range end index N out of range for slice of length 0`.
 ///
-/// This is not malformed input. SAM permits `SEQ: *` on a secondary alignment, and minimap2 uses
-/// that permission: only the primary carries the bases, and the secondaries point at other loci
-/// the same read could have come from. So the reads are not lost by dropping these — the primary
-/// holds the sequence — but the records can not be represented and must not reach the writer.
+/// This input is not malformed. SAM lets a secondary alignment carry a `SEQ` of `*`, and minimap2
+/// uses that. The primary alignment alone holds the bases. A secondary one points at another locus
+/// that the same read could have come from.
+///
+/// So to drop these loses no read, because the primary holds the sequence. But a CRAM can not
+/// represent these records, and they must not reach the writer.
 fn is_unencodable(record: &noodles::sam::alignment::RecordBuf) -> bool {
     !record.cigar().as_ref().is_empty() && record.sequence().as_ref().is_empty()
 }
@@ -84,9 +91,9 @@ pub fn write_cram(
     require_coordinate_sorted(&header, input)?;
 
     let repository = fasta_repository(reference)?;
-    // The final CRAM is tens of GB and was the last writer in the pipeline still handing its output
-    // straight to the page cache: `build_from_path` opens the file itself, which is how an encoder
-    // ends up holding a raw `File` that nothing paces and nothing counts.
+    // The final CRAM is tens of GB. It was the last writer in the pipeline that still gave its
+    // output straight to the page cache. `build_from_path` opens the file itself, and that is how
+    // an encoder comes to hold a raw `File` that nothing paces and nothing counts.
     let file = std::fs::File::create(output).map_err(|e| AnalysisError::io(output, e))?;
     let mut writer = cram::io::writer::Builder::default()
         .set_reference_sequence_repository(repository)
@@ -107,10 +114,12 @@ pub fn write_cram(
 
         if is_unencodable(&record) {
             let flags = record.flags();
-            // A secondary or supplementary record is a second opinion about where a read could go;
-            // the read itself survives on its primary, so dropping it costs no sequence. A *primary*
-            // with no SEQ would be an actual read going missing, which is not something to absorb
-            // quietly after the hours it took to get here.
+            // A secondary record, and a supplementary one, each give a second opinion about where
+            // a read could go. The read itself lives on its primary record, so to drop one of
+            // those costs no sequence.
+            //
+            // A *primary* record with no SEQ is a real read that goes missing. Nothing may take
+            // that in without a word, after the hours that this run took to reach here.
             if !flags.is_secondary() && !flags.is_supplementary() {
                 return Err(AnalysisError::Message(format!(
                     "{}: primary record {} has an aligned CIGAR but no SEQ, so it cannot be encoded \
@@ -132,15 +141,17 @@ pub fn write_cram(
         records += 1;
     }
 
-    // CRAM buffers records into containers and only writes the last one — and the end-of-file
-    // marker — on shutdown. A dropped writer leaves a file that looks complete and is not.
+    // A CRAM collects records into containers. It writes the last container, and the end-of-file
+    // marker, at shutdown alone. A writer that drops leaves a file that looks complete and is
+    // not.
     writer.try_finish(&header).map_err(|e| AnalysisError::io(output, e))?;
     {
         use std::io::Write as _;
         let buffered = writer.get_mut();
         buffered.flush().map_err(|e| AnalysisError::io(output, e))?;
-        // Synced before it is indexed and handed to the workspace: `index_cram` reads the file back
-        // immediately, and everything downstream treats this path as the finished alignment.
+        // Sync it before the code makes its index and gives it to the workspace. `index_cram`
+        // reads the file back at once, and every later step takes this path as the finished
+        // alignment.
         buffered.get_ref().sync().map_err(|e| AnalysisError::io(output, e))?;
     }
     progress(records);
@@ -154,10 +165,10 @@ pub fn write_cram(
     })
 }
 
-/// Build the `.crai` for a finished CRAM, returning its path.
+/// Build the `.crai` of a finished CRAM. Returns its path.
 ///
-/// Separate from [`write_cram`] because indexing reads the completed file back, so it is also what
-/// a "reindex this alignment" repair would call.
+/// It sits apart from [`write_cram`] because it reads the completed file back. So it is also the
+/// function that a repair which makes the index again would call.
 pub fn index_cram(cram_path: &Path) -> Result<PathBuf, AnalysisError> {
     let index = cram::fs::index(cram_path).map_err(|e| AnalysisError::io(cram_path, e))?;
     let index_path = crai_path(cram_path);
@@ -174,9 +185,9 @@ pub fn crai_path(cram_path: &Path) -> PathBuf {
 
 /// Refuse input that does not declare coordinate order.
 ///
-/// The sort stamps `@HD SO:coordinate`; anything else here means the caller skipped the sort, and
-/// the resulting CRAM would be slow to write, larger than the BAM, and unusable for region queries.
-/// Failing now beats discovering that after hours of compression.
+/// The sort writes `@HD SO:coordinate`. Anything else here means that the caller left the sort
+/// out. The CRAM would then be slow to write, larger than the BAM, and of no use for a region
+/// query. To fail now is better than to find that out after hours of compression.
 fn require_coordinate_sorted(header: &sam::Header, input: &Path) -> Result<(), AnalysisError> {
     use noodles::sam::header::record::value::map::header::tag;
 

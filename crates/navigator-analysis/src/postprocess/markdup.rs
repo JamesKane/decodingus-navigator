@@ -1,36 +1,41 @@
 //! Mark PCR/optical duplicates on a coordinate-sorted alignment.
 //!
-//! Two fragments that start and end at the same place, on the same strands, are almost certainly
-//! copies of one original molecule rather than two independent observations. Counting both inflates
-//! coverage and, worse, makes a sequencing error present as a confidently-supported variant. So one
-//! member of each such group keeps its flag clear and the rest get `0x400`.
+//! Take two fragments that start and end at the same place, on the same strands. They are almost
+//! surely copies of one original molecule, and not two independent observations. To count both
+//! makes the coverage too high. Worse, it makes a sequencing error look like a variant with strong
+//! support. So one member of each such group keeps its flag clear, and the rest get `0x400`.
 //!
-//! Nothing is removed. `0x400` is advice, and every consumer decides for itself — the coverage walk
-//! honours it, a structural-variant caller may not. Deleting reads would take that choice away.
+//! The code removes nothing. `0x400` is advice, and each consumer decides for itself. The coverage
+//! walk follows it, and a structural-variant caller may not. To delete a read would take that
+//! choice away.
 //!
-//! ## Short reads only
+//! ## Short reads alone
 //!
-//! Long-read libraries (HiFi, ONT) are typically PCR-free, and long reads genuinely share endpoints
-//! far less often, so the inference "same endpoints therefore same molecule" does not hold. Marking
-//! them would discard real coverage, which is why [`MarkDupParams::enabled`] exists and why stage C
-//! turns this off for the long-read presets.
+//! A long-read library, from HiFi or ONT, usually has no PCR step, and two long reads share their
+//! endpoints far less often. So the inference from the same endpoints to the same molecule does
+//! not hold. A mark on them would throw away real coverage. That is why
+//! [`MarkDupParams::enabled`] exists, and why stage C turns this off for the long-read presets.
 //!
-//! ## Unclipped positions
+//! ## The position before the clip
 //!
-//! Grouping uses each end's **unclipped** 5′ position, not its alignment start. Two copies of one
-//! molecule can be soft-clipped differently — a mismatch near one copy's end is enough — which
-//! moves the alignment start without moving the fragment. Adding the clipped bases back recovers
-//! where the molecule actually began, which is the thing being compared.
+//! The groups use the 5′ position of each end **before its clip**, and not its alignment start.
+//! Two copies of one molecule can carry different soft clips, and a mismatch near the end of one
+//! copy is enough to cause that. The alignment start then moves, and the fragment does not. To add
+//! the clipped bases back gives the place where the molecule began, and that is what the code must
+//! compare.
 //!
 //! ## Both ends of a template must agree
 //!
-//! A template with one end marked and the other not is a real corruption: consumers that filter on
-//! `0x400` would see half a pair. This marks each end independently, which is safe only because a
-//! template's signature is symmetric — it combines this end's 5′ position and strand with its
-//! mate's, so both ends of two duplicate templates land in groups with identical membership, and
-//! first-seen-in-coordinate-order picks the same template at both. The sort upstream is
-//! deterministic precisely so that "first" means the same thing on every run. There is a test that
-//! holds this property directly rather than trusting the argument.
+//! A template with a mark on one end, and none on the other, is real damage. A consumer that
+//! filters on `0x400` would then see half of a pair.
+//!
+//! This code marks each end on its own. That is safe for one reason only: the signature of a
+//! template is symmetric. It puts the 5′ position and strand of this end together with those of
+//! its mate. Both ends of two duplicate templates land in groups with the same membership. The
+//! rule "the first one in coordinate order" then takes the same template at both ends.
+//!
+//! The sort before this is deterministic for exactly that reason: "first" must mean the same thing
+//! on every run. A test holds this property directly, and it does not depend on the argument.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
@@ -47,14 +52,15 @@ use crate::error::AnalysisError;
 
 const CANCEL_CHECK_INTERVAL: u64 = 4096;
 
-/// How far back a candidate duplicate can sit and still be compared, in bases.
+/// How far back a candidate duplicate can sit, in bases, and still enter a comparison.
 ///
-/// Only clipping separates two copies' alignment starts, so this needs to exceed the largest
-/// plausible clip — a read length, comfortably. It also bounds memory: only signatures within the
-/// window are held.
+/// A clip is the only thing that separates the alignment starts of two copies. So this value must
+/// be more than the largest clip that can occur, and one read length covers that with room to
+/// spare. It also bounds the memory, because the code holds a signature only while it is inside
+/// the window.
 const DEFAULT_WINDOW: usize = 1_000;
 
-/// Tuning for [`mark_duplicates`].
+/// The controls of [`mark_duplicates`].
 #[derive(Debug, Clone)]
 pub struct MarkDupParams {
     /// Off for long-read data. See the module docs.
@@ -72,23 +78,24 @@ impl Default for MarkDupParams {
     }
 }
 
-/// What the marking did.
+/// What this pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MarkDupStats {
-    /// Records read, and written — marking never drops one.
+    /// The count of records that the code read, and wrote. This pass never drops one.
     pub records: u64,
     /// Records flagged `0x400`.
     pub duplicates: u64,
     /// Records not eligible: unmapped, secondary, or supplementary.
     pub ineligible: u64,
-    /// True when [`MarkDupParams::enabled`] was false and records were copied through unmarked.
+    /// True when [`MarkDupParams::enabled`] was false, and the code copied every record through
+    /// with no mark.
     pub skipped: bool,
 }
 
 /// Mark duplicates in `input`, writing to `output`.
 ///
-/// `input` must be coordinate-sorted — grouping relies on copies of a molecule being near each
-/// other in the file, which is only true after the sort.
+/// `input` must be in coordinate order. The groups depend on the copies of a molecule that lie
+/// near each other in the file, and that holds only after the sort.
 pub fn mark_duplicates(
     input: &Path,
     output: &Path,
@@ -123,8 +130,9 @@ pub fn mark_duplicates(
         if params.enabled {
             match signature(&record) {
                 Some(sig) => {
-                    // Recompute from scratch: an input that was marked before (a re-run, or a
-                    // vendor file) must not inherit a verdict this pass did not reach.
+                    // Compute this again from nothing. Take an input that already carries a mark,
+                    // from a second run or from a vendor. It must not keep an answer that this
+                    // pass did not reach.
                     set_duplicate(&mut record, false);
                     if seen.is_duplicate(sig) {
                         set_duplicate(&mut record, true);
@@ -149,8 +157,9 @@ pub fn mark_duplicates(
 
 /// What makes two records copies of one molecule.
 ///
-/// Symmetric across a pair by construction: it carries this end's 5′ position and strand *and* the
-/// mate's, so both ends of two duplicate templates produce groups with the same membership.
+/// It is symmetric across a pair by construction. It carries the 5′ position and strand of this
+/// end, *and* those of the mate. Both ends of two duplicate templates then make groups with the
+/// same membership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Signature {
     reference: usize,
@@ -161,11 +170,12 @@ struct Signature {
     mate_reverse: bool,
 }
 
-/// The signature of an eligible record, or `None` when the record can not be marked.
+/// The signature of a record that the code may mark, or `None` when it may not mark that
+/// record.
 ///
-/// Unmapped records have no position to compare. Secondary and supplementary records describe an
-/// alignment of a read whose primary is elsewhere; marking them would double-count a template that
-/// the primary already represents.
+/// A record with no mapping has no position to compare. A secondary record, and a supplementary
+/// one, each describe an alignment of a read whose primary record sits elsewhere. To mark one of
+/// those would count a template twice, because its primary record already stands for it.
 fn signature(record: &RecordBuf) -> Option<Signature> {
     let flags = record.flags();
     if flags.is_unmapped() || flags.is_secondary() || flags.is_supplementary() {
@@ -176,8 +186,8 @@ fn signature(record: &RecordBuf) -> Option<Signature> {
 
     let (leading, trailing, span) = clip_and_span(record);
     let reverse = flags.is_reverse_complemented();
-    // The 5′ end of the molecule: the alignment start for a forward read, the alignment end for a
-    // reverse one — in both cases with the clipped bases added back.
+    // The 5′ end of the molecule. For a forward read that is the alignment start. For a reverse
+    // read it is the alignment end. In both cases the code adds the clipped bases back.
     let five_prime = if reverse {
         start + span - 1 + trailing
     } else {
@@ -205,10 +215,10 @@ fn signature(record: &RecordBuf) -> Option<Signature> {
     })
 }
 
-/// Leading clip, trailing clip, and reference span, from the CIGAR.
+/// The clip at the start, the clip at the end, and the reference span, from the CIGAR.
 ///
-/// Both soft (`S`) and hard (`H`) clips count: a hard clip means bases were removed from the
-/// record, but the molecule still started that far back.
+/// Both a soft clip (`S`) and a hard clip (`H`) count. A hard clip means that somebody removed
+/// bases from the record. But the molecule still began that far back.
 fn clip_and_span(record: &RecordBuf) -> (i64, i64, i64) {
     use noodles::sam::alignment::record::Cigar as _;
 
@@ -250,11 +260,11 @@ fn set_duplicate(record: &mut RecordBuf, duplicate: bool) {
     *record.flags_mut() = flags;
 }
 
-// ---- the sliding window ---------------------------------------------------
+// ---- the window that slides -----------------------------------------------
 
 /// Signatures seen recently, evicted once the file has moved past them.
 ///
-/// Bounded by the window rather than the file, so a WGS costs the same as an exome.
+/// The window bounds this, and the file does not, so a WGS costs the same as an exome.
 struct SeenSignatures {
     window: i64,
     live: HashMap<Signature, ()>,
@@ -270,8 +280,8 @@ impl SeenSignatures {
         }
     }
 
-    /// Whether this signature has been seen inside the window. The first record of a group is the
-    /// one kept; everything matching it afterwards is a duplicate.
+    /// True when this signature already occurred inside the window. The code keeps the first
+    /// record of a group. Everything after it that matches is a duplicate.
     fn is_duplicate(&mut self, sig: Signature) -> bool {
         self.evict(sig.five_prime);
         if self.live.contains_key(&sig) {
@@ -295,8 +305,9 @@ impl SeenSignatures {
     }
 }
 
-/// Copy `header` and every record through unchanged. Used when marking is disabled, so callers get
-/// the same output path either way rather than branching on whether stage C ran.
+/// Copy `header`, and every record, through unchanged. The code calls this when the mark is off. A
+/// caller then gets the same output path either way, and it does not have to ask whether stage C
+/// ran.
 pub fn copy_through(input: &Path, output: &Path) -> Result<u64, AnalysisError> {
     let mut reader = bamio::open(input)?;
     let header: sam::Header = reader.read_header().map_err(|e| AnalysisError::io(input, e))?;
