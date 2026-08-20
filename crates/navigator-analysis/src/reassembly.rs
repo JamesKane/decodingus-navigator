@@ -1,24 +1,35 @@
-//! Haploid **local reassembly** resolver (private-Y Option B, phase 1) — pure Rust, no external
-//! tools, Windows/MSVC-clean.
+//! The haploid **local reassembly** resolver, which is Option B of the private-Y work, phase 1. It
+//! is pure Rust, it needs no external tool, and it is clean on Windows and MSVC.
 //!
-//! Design: `documents/design/haploid-reassembly-caller.md`. This module owns **Stages B–E** over a single
-//! active window: read selection (mapping-quality gate + fragment dedup), candidate haplotypes
-//! (per-SNV in v1: reference vs reference-with-one-substitution), read↔haplotype likelihood via a
-//! **base-quality-aware PairHMM** (`bio::stats::pairhmm`), and haploid genotyping by the aggregate
-//! log-odds. `caller.rs` owns Stage A (active-region detection — it already tallies the per-position
-//! counts) and Stage F (turning [`ReassemblyCall`]s into `VariantCall`s); this module is deliberately
-//! **I/O-free** so it is unit-testable on synthetic windows.
+//! The design is in `documents/design/haploid-reassembly-caller.md`. This module owns **Stages B to
+//! E** over one active window. Those four stages are:
 //!
-//! Why it exists: the pileup caller (`caller.rs`) rejects a position whose pileup is ~50/50 as a
-//! suspected paralog artifact (`is_paralogous`). At Y segmental-duplication / ampliconic loci that
-//! throws away *true* derived SNVs, because reads from a paralogous region mismap and carry the
-//! reference base onto the site. GATK resolves these by local reassembly + a base-quality PairHMM;
-//! this is the haploid-only equivalent. Proven on WGS229 (POC `examples/reassembly_probe.rs`): the
-//! base-quality PairHMM recovers the misaligned-ref sites the crude match/mismatch pileup ties.
+//! - the selection of the reads, with a gate on the mapping quality and a dedup of the fragments;
+//! - the candidate haplotypes, which in v1 is one for each SNV: the reference, against the
+//!   reference with one substitution;
+//! - the likelihood of a read against a haplotype, from a **PairHMM that knows the base
+//!   qualities** (`bio::stats::pairhmm`);
+//! - the haploid genotype, from the log-odds over all of the reads.
 //!
-//! v1 is **per-candidate-SNV** (one alternate haplotype per candidate position). Linked variants and
-//! short indels via POA multi-haplotype assembly are the v2 extension (see the design doc); POA still
-//! serves here as an optional cross-check for the caller.
+//! `caller.rs` owns Stage A and Stage F. Stage A finds the active region, and that code already
+//! tallies the counts at each position. Stage F turns a [`ReassemblyCall`] into a `VariantCall`.
+//! This module does **no I/O**, and that is deliberate: a unit test can then run it on a synthetic
+//! window.
+//!
+//! Here is why it exists. The pileup caller in `caller.rs` refuses a position whose pileup is near
+//! 50/50, because it suspects a paralog artifact. See `is_paralogous`. At a Y locus with a
+//! segmental duplication, or an ampliconic one, that throws away a *true* derived SNV. Reads from
+//! a paralogous region map to the wrong place and bring the reference base onto the site.
+//!
+//! GATK resolves those by local reassembly and a PairHMM over the base qualities. This module is
+//! the haploid-only equivalent. The POC in `examples/reassembly_probe.rs` showed it on WGS229: the
+//! PairHMM over base qualities recovers the misaligned-reference sites where the crude
+//! match-against-mismatch pileup gives a tie.
+//!
+//! v1 works on **one candidate SNV at a time**, with one alternate haplotype for each candidate
+//! position. Linked variants and short indels, through a POA assembly of more than one haplotype,
+//! are the v2 extension. See the design document. POA still serves here as an optional
+//! cross-check for the caller.
 
 use std::collections::HashMap;
 
@@ -30,28 +41,38 @@ use bio::stats::{LogProb, Prob};
 /// Natural-log → Phred scale factor (`10 / ln 10`); `LogProb` is base-*e*.
 const PHRED_PER_NAT: f64 = 4.342_944_819_032_518;
 
-/// Tuning for the reassembly resolver. Defaults are the POC-validated starting points; the design
-/// doc's §Open-questions flags τ / window size for calibration on the full truth set.
+/// The controls of the reassembly resolver. The defaults are the start points that the POC
+/// checked. The §Open-questions of the design document marks τ and the window size for a
+/// calibration against the full truth set.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReassemblyParams {
-    /// Reads below this mapping quality are excluded (GATK default) — this is what drops the
-    /// ambiguously-placed paralog reads that masquerade as high-base-quality reference support.
+    /// The code drops a read below this mapping quality, which is the GATK default. That is what
+    /// removes a paralog read whose place is in doubt, and which otherwise looks like reference
+    /// support at a high base quality.
     pub min_mapping_quality: u8,
     /// Minimum aggregate log-odds (nats) for a haploid DERIVED call; symmetric for ANCESTRAL.
     pub min_log_odds: f64,
-    /// A DERIVED call needs at least this many alt-supporting fragments (post-dedup).
+    /// A DERIVED call needs this many fragments that support the alt allele, or more, after the
+    /// dedup.
     pub min_alt_fragments: u32,
-    /// v2: assemble the alternate haplotype from the alt-supporting reads (majority consensus over
-    /// the reference frame — [`assemble_alt_haplotype`]) so linked variants the true reads carry
-    /// do not penalise them against reference. **Default off**: it helps the synthetic linked-variant
-    /// case but on real WGS229 it perturbs marginal ~50/50 sites (regressed `chrY:4284195`), and
-    /// there is no real linked-variant truth site yet to validate the benefit. The mechanism is
-    /// unit-tested and opt-in (this flag / `NAVIGATOR_REASSEMBLY_ASSEMBLE=1`) pending that validation;
-    /// the read-likelihood floor below is the default-on v2 win. See `haploid-reassembly-caller.md`.
+    /// A v2 option: build the alternate haplotype from the reads that support the alt allele. It
+    /// is a majority consensus over the reference frame. See [`assemble_alt_haplotype`]. A linked
+    /// variant that the true reads carry then does not count against them, in the comparison with
+    /// the reference.
+    ///
+    /// **The default is off.** It helps the synthetic case with a linked variant. But on the real
+    /// WGS229 data it moves a site that sits near 50/50, and it broke `chrY:4284195`. There is also
+    /// no real truth site with a linked variant yet, so nobody can check the gain.
+    ///
+    /// Unit tests cover the mechanism, and you turn it on with this flag or with
+    /// `NAVIGATOR_REASSEMBLY_ASSEMBLE=1`, until somebody checks it. The floor on the read
+    /// likelihood below is the v2 gain that is on by default. See
+    /// `haploid-reassembly-caller.md`.
     pub assemble_alt: bool,
-    /// v2: drop a read whose best (ref-or-alt) haplotype log-likelihood is below this — it matches
-    /// *neither* local haplotype, i.e. paralog/junk from another locus. Roughly `-9 nats` per
-    /// mismatch, so `-90` tolerates real divergence (~9–10 mismatches) before excluding a read.
+    /// A v2 rule: drop a read whose best log-likelihood, over the reference haplotype and the alt
+    /// one, is below this. Such a read matches *neither* local haplotype. It is a paralog, or junk
+    /// from another locus. One mismatch costs about `-9 nats`, so `-90` accepts real divergence, at
+    /// about 9 or 10 mismatches, before the code drops a read.
     pub min_read_loglik: f64,
 }
 
@@ -75,16 +96,19 @@ pub struct SiteObs {
     pub qual: u8,
 }
 
-/// A read projected onto the active window's reference frame. Construction (the CIGAR walk that
-/// yields the window-frame sequence, per-base qualities, and per-candidate [`SiteObs`]) is the
-/// caller's job; this module consumes the projection so it stays I/O-free and testable.
+/// A read projected onto the reference frame of the active window.
+///
+/// The caller builds it. That build is the CIGAR walk that gives the sequence in the window frame,
+/// the quality of each base, and a [`SiteObs`] at each candidate. This module reads the
+/// projection, so it stays free of I/O and a test can cover it.
 #[derive(Debug, Clone)]
 pub struct WindowRead {
-    /// Fragment identity (query name) — same name for a read and its mate, used for dedup.
+    /// The identity of the fragment, which is the query name. A read and its mate share the name,
+    /// and the dedup uses it.
     pub name: Vec<u8>,
     /// Window-frame bases (uppercase), for the whole-read PairHMM realignment.
     pub seq: Vec<u8>,
-    /// Per-base Phred qualities, parallel to `seq`.
+    /// The Phred quality of each base, in line with `seq`.
     pub quals: Vec<u8>,
     /// Mapping quality of the source record.
     pub mapq: u8,
@@ -108,25 +132,28 @@ pub enum Zygosity {
     Derived,
     /// The reference haplotype explains the reads (drop it).
     Ancestral,
-    /// Neither wins by `min_log_odds` — genuinely undecided (do not call).
+    /// Neither side wins by `min_log_odds`. The data does not decide this site, so do not call
+    /// it.
     Ambiguous,
 }
 
-/// A genotyped candidate. The caller keeps [`Zygosity::Derived`] calls and turns them into
-/// `VariantCall`s (Stage F); the others are returned so tests and diagnostics can see the decision.
+/// A candidate with a genotype. The caller keeps a [`Zygosity::Derived`] call and turns it into a
+/// `VariantCall`, in Stage F. The others come back too, so that a test and a diagnostic can see
+/// the decision.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReassemblyCall {
     pub position: i64,
     pub ref_base: u8,
     pub alt_base: u8,
-    /// Fragments spanning the site after the MAPQ gate + mate dedup.
+    /// The count of fragments that cover the site, after the MAPQ gate and the dedup of the
+    /// mates.
     pub depth: u32,
-    /// Spanning fragments whose site base is the alternate allele.
+    /// The count of those fragments whose base at the site is the alternate allele.
     pub alt_depth: u32,
     pub allele_fraction: f64,
     /// Aggregate `Σ ln P(read|alt) − ln P(read|ref)` (nats); >0 favours the alt haplotype.
     pub log_odds: f64,
-    /// Phred-scaled confidence of the winning genotype (GQ-like).
+    /// The confidence of the genotype that won, on the Phred scale. It is like a GQ.
     pub quality: f64,
     pub genotype: Zygosity,
 }
@@ -150,8 +177,9 @@ pub fn genotype_window(
         .collect()
 }
 
-/// Resolve a single candidate: build the alt haplotype, select + dedup spanning reads, score each
-/// against ref vs alt with the PairHMM, and genotype by the aggregate log-odds.
+/// Resolve one candidate. It builds the alt haplotype. It takes the reads that cover the site, and
+/// dedups them. It scores each of those against the reference and the alt with the PairHMM. It
+/// then gives a genotype from the log-odds over all of them.
 fn genotype_candidate(
     hmm: &mut PairHMM,
     ref_window: &[u8],
@@ -163,13 +191,16 @@ fn genotype_candidate(
 ) -> ReassemblyCall {
     let off = (cand.position - window_start) as usize;
 
-    // Stage B — select reads that clear the MAPQ gate and span this candidate, then collapse
-    // overlapping mate pairs to one fragment (keep the record whose site base has higher quality).
+    // Stage B. Take the reads that clear the MAPQ gate and that cover this candidate. Then put a
+    // mate pair that overlaps into one fragment, and keep the record whose base at the site has
+    // the higher quality.
     let kept = dedup_spanning_fragments(reads, ci, params);
 
-    // Stage C — alternate haplotype. v2: POA-assemble the alt-supporting reads so linked variants
-    // they carry do not penalise them against reference; fall back to reference-plus-one-substitution
-    // when assembly is degenerate. v1 behaviour is the fallback, so simple sites are unchanged.
+    // Stage C, the alternate haplotype. In v2, a POA builds it from the reads that support the
+    // alt allele. A linked variant that those reads carry then does not count against them in the
+    // comparison with the reference. When the assembly is degenerate, the code falls back to the
+    // reference plus one substitution. That fallback is the v1 behaviour, so a simple site does
+    // not change.
     let mut single_snv = ref_window.to_vec();
     if off < single_snv.len() {
         single_snv[off] = cand.alt_base;
@@ -180,8 +211,9 @@ fn genotype_candidate(
         single_snv
     };
 
-    // Stages D/E — per-fragment likelihood ratio and site-base vote, with the absolute-likelihood
-    // floor excluding reads that match neither haplotype (paralog/junk from another locus).
+    // Stages D and E. Take the likelihood ratio of each fragment, and the vote of its base at the
+    // site. The floor on the absolute likelihood drops a read that matches neither haplotype,
+    // which is a paralog, or junk from another locus.
     let mut log_odds = 0.0f64;
     let mut depth = 0u32;
     let mut alt_depth = 0u32;
@@ -225,9 +257,12 @@ fn genotype_candidate(
     }
 }
 
-/// Reads clearing the MAPQ gate and spanning candidate `ci`, with overlapping mate pairs collapsed
-/// to one fragment (keep the record whose site base has higher quality). Returns read indices sorted
-/// by fragment name so downstream assembly is deterministic (`HashMap` order is not).
+/// The reads that clear the MAPQ gate and that cover the candidate `ci`. A mate pair that overlaps
+/// goes into one fragment, and the code keeps the record whose base at the site has the higher
+/// quality.
+///
+/// It returns the read indices in the order of the fragment names. The assembly that follows is
+/// then deterministic, where the order of a `HashMap` is not.
 fn dedup_spanning_fragments(reads: &[WindowRead], ci: usize, params: &ReassemblyParams) -> Vec<usize> {
     let mut by_fragment: HashMap<&[u8], usize> = HashMap::new();
     for (ri, read) in reads.iter().enumerate() {
@@ -252,17 +287,23 @@ fn dedup_spanning_fragments(reads: &[WindowRead], ci: usize, params: &Reassembly
     kept
 }
 
-/// Build the alternate haplotype from the alt-supporting fragments (site base == `alt_base`) by
-/// **majority consensus over the reference frame**: reference, plus every position where a strict
-/// majority of the covering alt reads concordantly carry the same non-reference base, plus the
-/// candidate substitution at `site_off`. Returns `None` (→ caller falls back to reference+SNV) when
-/// there are fewer than two alt reads.
+/// Build the alternate haplotype from the fragments that support the alt allele, which are the
+/// ones whose base at the site is `alt_base`. The method is a **majority consensus over the
+/// reference frame**.
 ///
-/// This is deliberately *not* raw POA. POA over ragged, partially-spanning real reads produces a
-/// noisy consensus that mis-scores marginal 50/50 sites (it regressed `chrY:4284195` in testing).
-/// The majority rule reduces to reference+SNV when the alt reads carry no concordant linked variant
-/// — so it never hurts a site without linked context — while still adding real linked variants so
-/// the true reads match cleanly. (Short indels are v2b, via POA over the confirmed alt reads.)
+/// It takes three things. The reference. Every position where a strict majority of the alt reads
+/// that cover it agree on the same non-reference base. And the candidate substitution at
+/// `site_off`. It returns `None` with fewer than two alt reads, and the caller then falls back to
+/// the reference plus the SNV.
+///
+/// This is *not* a raw POA, and that is deliberate. A real read has ragged ends, and it covers the
+/// window only in part. A POA over such reads gives a noisy consensus, and that consensus scores a
+/// site near 50/50 wrongly. In a test it broke `chrY:4284195`.
+///
+/// The majority rule comes down to the reference plus the SNV when the alt reads carry no linked
+/// variant that they agree on. So it never hurts a site with no linked context. And it still adds
+/// a real linked variant, so that the true reads match cleanly. A short indel is v2b, through a
+/// POA over the alt reads that the code confirmed.
 fn assemble_alt_haplotype(
     reads: &[WindowRead],
     kept: &[usize],
@@ -280,7 +321,8 @@ fn assemble_alt_haplotype(
         return None;
     }
 
-    // Tally each alt read's bases per reference position (via pairwise projection onto the window).
+    // Tally the bases of each alt read at each reference position, through a pairwise projection
+    // onto the window.
     let mut counts = vec![[0u32; 4]; ref_window.len()];
     let mut cover = vec![0u32; ref_window.len()];
     for r in &alt_reads {
@@ -298,7 +340,8 @@ fn assemble_alt_haplotype(
             hap[pos] = BASES[bi];
         }
     }
-    // The candidate substitution is why we are here — force it (its column may be exactly 50/50).
+    // The candidate substitution is the reason for this call, so force it in. Its column can sit
+    // at exactly 50/50.
     if site_off < hap.len() {
         hap[site_off] = alt_base;
     }
@@ -328,8 +371,9 @@ fn argmax4(counts: &[u32; 4]) -> (usize, u32) {
     (bi, counts[bi])
 }
 
-/// Add `seq`'s bases to the per-reference-position `counts`/`cover` tallies by semiglobally aligning
-/// it to `ref_window` (only aligned match/mismatch columns contribute; insertions/deletions do not).
+/// Add the bases of `seq` to the `counts` and `cover` tallies at each reference position. It aligns
+/// `seq` to `ref_window` in a semiglobal way. Only a column that aligns as a match or a mismatch
+/// counts. An insertion and a deletion do not.
 fn project_read_onto_ref(seq: &[u8], ref_window: &[u8], counts: &mut [[u32; 4]], cover: &mut [u32]) {
     let score = |a: u8, b: u8| if a == b { 1i32 } else { -4i32 };
     let mut aligner = PwAligner::new(-5, -1, score);
@@ -356,20 +400,23 @@ fn project_read_onto_ref(seq: &[u8], ref_window: &[u8], counts: &mut [[u32; 4]],
     }
 }
 
-/// Log-probability that `read` (with `quals`) was produced by `hap`, marginalised over alignments.
+/// The log-probability that `hap` gave `read`, which carries `quals`. It marginalises over the
+/// alignments.
 fn hap_likelihood(hmm: &mut PairHMM, read: &[u8], quals: &[u8], hap: &[u8]) -> LogProb {
     hmm.prob_related(&ReadHapEmission { read, quals, hap }, &Semiglobal, None)
 }
 
 // ---- base-quality-aware PairHMM emission model (POC-validated) --------------------------------
 
-/// Phred score → error probability, clamped to Q2–Q60 (never a certain match/mismatch).
+/// The error probability that a Phred score gives, clamped to Q2 and Q60. A match or a mismatch is
+/// then never sure.
 fn phred_err(q: u8) -> f64 {
     let q = q.clamp(2, 60) as f64;
     10f64.powf(-q / 10.0)
 }
 
-/// Emission: `x` = read (carries per-base quality), `y` = candidate haplotype.
+/// The emission. `x` is the read, which carries a quality at each base. `y` is the candidate
+/// haplotype.
 struct ReadHapEmission<'a> {
     read: &'a [u8],
     quals: &'a [u8],
@@ -416,7 +463,8 @@ impl GapParameters for GapParams {
     }
 }
 
-/// Semiglobal in the read: free leading/trailing offset so window-edge trimming is not penalised.
+/// Semiglobal in the read. The offset at the start and at the end is free, so a cut at the edge of
+/// the window costs nothing.
 struct Semiglobal;
 impl StartEndGapParameters for Semiglobal {
     fn free_start_gap_x(&self) -> bool {
@@ -449,9 +497,10 @@ mod tests {
         read_muts(name, site_base, &[], qual, mapq)
     }
 
-    /// Like [`read`] but also applies `muts` (offset → base) to the window sequence — for building
-    /// reads that carry linked variants (or, with many muts, paralog junk). `site_obs` reflects only
-    /// the candidate site base, as the caller's CIGAR-walk extraction would produce it.
+    /// The same as [`read`], and it also applies `muts`, which maps an offset to a base, to the
+    /// sequence of the window. Use it to make reads that carry a linked variant, or, with many
+    /// muts, paralog junk. `site_obs` holds the base at the candidate site alone, as the CIGAR
+    /// walk of the caller would give it.
     fn read_muts(name: &str, site_base: u8, muts: &[(usize, u8)], qual: u8, mapq: u8) -> WindowRead {
         let mut seq = REF.to_vec();
         seq[CAND_OFF] = site_base;
@@ -479,7 +528,7 @@ mod tests {
 
     #[test]
     fn clean_derived_site_is_called() {
-        // Twelve fragments all carrying the alt allele → strongly DERIVED.
+        // Twelve fragments, and all of them carry the alt allele. The call is strongly DERIVED.
         let reads: Vec<_> = (0..12).map(|i| read(&format!("r{i}"), b'T', 35, 60)).collect();
         let c = call(&reads);
         assert_eq!(c.genotype, Zygosity::Derived);
@@ -491,9 +540,10 @@ mod tests {
 
     #[test]
     fn low_mapq_paralog_reference_reads_are_dropped_recovering_the_site() {
-        // The misaligned-ref case: 8 clean alt fragments (MAPQ 60) + 6 paralog reference fragments
-        // that carry the ref base but are ambiguously placed (MAPQ 5). The MAPQ gate excludes the
-        // paralogs, so the site is recovered as DERIVED instead of rejected as ~50/50.
+        // The case where the reference alignment is wrong. There are 8 clean alt fragments at
+        // MAPQ 60, and 6 paralog fragments that carry the ref base but whose place is in doubt, at
+        // MAPQ 5. The MAPQ gate drops the paralogs, so the site comes back as DERIVED. Without the
+        // gate it would go out as a 50/50 rejection.
         let mut reads: Vec<_> = (0..8).map(|i| read(&format!("alt{i}"), b'T', 35, 60)).collect();
         reads.extend((0..6).map(|i| read(&format!("par{i}"), b'A', 35, 5)));
         let c = call(&reads);
@@ -504,8 +554,8 @@ mod tests {
 
     #[test]
     fn genuinely_balanced_high_quality_site_is_not_called() {
-        // Specificity: an even split of high-quality, well-placed ref and alt fragments is truly
-        // undecided — reassembly must NOT invent a call.
+        // A test of the specificity. An even split of ref and alt fragments, all of high quality
+        // and all placed well, decides nothing. The reassembly must NOT invent a call.
         let mut reads: Vec<_> = (0..6).map(|i| read(&format!("alt{i}"), b'T', 35, 60)).collect();
         reads.extend((0..6).map(|i| read(&format!("ref{i}"), b'A', 35, 60)));
         let c = call(&reads);
@@ -514,8 +564,9 @@ mod tests {
 
     #[test]
     fn overlapping_mates_are_counted_once() {
-        // Four distinct alt fragments plus a read and its mate (same name) both covering the site.
-        // Fragment dedup must collapse the mate pair so depth is 5, not 6.
+        // Four separate alt fragments, plus a read and its mate, which share a name, and which
+        // both cover the site. The dedup must put the mate pair into one fragment, so that the
+        // depth reads 5 and not 6.
         let mut reads: Vec<_> = (0..4).map(|i| read(&format!("f{i}"), b'T', 35, 60)).collect();
         reads.push(read("pair", b'T', 20, 60)); // read
         reads.push(read("pair", b'T', 35, 60)); // its mate (higher qual → the kept one)
@@ -541,10 +592,12 @@ mod tests {
 
     #[test]
     fn assembled_alt_haplotype_lifts_confidence_on_linked_variant_site() {
-        // True reads (majority) carry the derived allele PLUS two linked variants; reference reads
-        // are clean. Against a reference+single-SNV alt haplotype (v1) the linked variants penalise
-        // the true reads; the POA-assembled haplotype (v2) lets them match cleanly, so the call is
-        // both DERIVED and more confident than v1.
+        // The true reads are the majority, and they carry the derived allele PLUS two linked
+        // variants. The reference reads are clean.
+        //
+        // Against a v1 alt haplotype, which is the reference plus one SNV, those linked variants
+        // count against the true reads. The v2 haplotype, which a POA assembles, lets them match
+        // cleanly. The call is then DERIVED, and it carries more confidence than in v1.
         let mut reads: Vec<_> = (0..10)
             .map(|i| read_muts(&format!("alt{i}"), b'T', LINKED, 35, 60))
             .collect();
@@ -570,11 +623,13 @@ mod tests {
 
     #[test]
     fn paralog_junk_read_matching_neither_haplotype_is_filtered() {
-        // Five clean reference reads + one "read" carrying the alt base but riddled with mismatches
-        // *throughout* the window (a paralog fragment from another locus). Spread matters: the
-        // semiglobal PairHMM clips clean prefixes/suffixes, so only mismatches distributed across the
-        // read make it match neither haplotype. The likelihood floor must exclude it, so it neither
-        // inflates depth nor tilts the call away from ANCESTRAL.
+        // Five clean reference reads, plus one "read" that carries the alt base and holds
+        // mismatches *across the whole* window. That is a paralog fragment from another locus.
+        //
+        // The spread of those mismatches matters. The semiglobal PairHMM cuts a clean start and a
+        // clean end off a read. So only mismatches that lie across the whole read make it match
+        // neither haplotype. The floor on the likelihood must drop it. It must not raise the
+        // depth, and it must not move the call away from ANCESTRAL.
         let junk_muts: Vec<(usize, u8)> = (0..REF.len())
             .step_by(2)
             .filter(|&k| k != CAND_OFF)
@@ -591,8 +646,9 @@ mod tests {
 
     #[test]
     fn assembly_falls_back_to_single_snv_when_alt_reads_are_too_few() {
-        // One lone alt read (< 2) can't seed an assembly → fall back to reference+SNV; with only one
-        // alt fragment against ten reference reads the site stays ANCESTRAL (no spurious call).
+        // One alt read, which is fewer than 2, can not start an assembly. So the code falls back
+        // to the reference plus the SNV. With one alt fragment against ten reference reads,
+        // the site stays ANCESTRAL, and there is no false call.
         let mut reads: Vec<_> = (0..10).map(|i| read(&format!("ref{i}"), b'A', 35, 60)).collect();
         reads.push(read("lone", b'T', 35, 60));
         let c = call(&reads);

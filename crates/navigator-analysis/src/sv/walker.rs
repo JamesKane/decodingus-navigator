@@ -1,15 +1,20 @@
-//! SV evidence walker — port of the Scala `SvEvidenceWalker`. One pass over the alignment
-//! collecting per-bin read depth (CNV), discordant read pairs (BreakDancer-style), and
-//! split reads from the SA tag (Pindel-style).
+//! The walker over the SV evidence. It is the port of the Scala `SvEvidenceWalker`. It makes one
+//! pass over the alignment, and in that pass it collects three things:
 //!
-//! Two walks share one per-record body ([`EvidenceSink::accept_read`]), so they can not drift:
-//! [`collect_evidence_parallel`] fans one region query per contig across a decode-safe rayon pool,
-//! and [`collect_evidence`] makes a single sequential pass for files with no coordinate index.
-//! Prefer the parallel entry point — it falls back to the sequential one on its own.
+//! - the read depth in each bin, for a CNV call;
+//! - the discordant read pairs, in the style of BreakDancer;
+//! - the split reads from the SA tag, in the style of Pindel.
 //!
-//! It walks records as [`AlnRead`] views rather than a concrete record type: the BAM path stays on
-//! the lazy, zero-copy `bam::Record` (this is a whole-genome pass, so a per-read owned copy would
-//! be costly), while the CRAM path gets the decoded record it has no cheaper form of.
+//! Two walks share one body at the record level, which is [`EvidenceSink::accept_read`]. The two
+//! can then never come apart. [`collect_evidence_parallel`] fans one region query for each contig
+//! across a rayon pool whose stacks are safe for a decode. [`collect_evidence`] makes one
+//! sequential pass, for a file with no coordinate index. Call the parallel one: it falls back to
+//! the sequential one by itself.
+//!
+//! It walks the records as [`AlnRead`] views, and not as one concrete record type. So the BAM path
+//! stays on the lazy, zero-copy `bam::Record`. This is a pass over the whole genome, so an
+//! owned copy at each read would cost much. The CRAM path gets the decoded record, because it has
+//! no cheaper form.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -32,17 +37,19 @@ const SA_TAG: Tag = Tag::new(b'S', b'A');
 /// How often the record loop polls the cancel token, matching the indexed reader's own cadence.
 const CANCEL_CHECK_RECORDS: u32 = 4096;
 
-/// The running evidence tally. One instance covers the whole file in the sequential walk and one
-/// contig in the parallel fan-out — the difference is only which records get fed to it and how
-/// many entries `depth_bins` starts with, so both walks run the identical per-record body.
+/// The tally of the evidence as the walk goes on. One instance covers the whole file in the
+/// sequential walk, and one contig in the parallel fan-out. The only difference is which records
+/// go into it, and how many entries `depth_bins` holds at the start. So both walks run the same
+/// body at each record.
 struct EvidenceSink<'a> {
-    /// Reference id -> interned name, header order. Needed whole even per contig: a discordant pair
-    /// names its *mate's* contig, which is routinely a different one.
+    /// A map from a reference id to an interned name, in header order. Even a walk over one contig
+    /// needs the whole map. A discordant pair names the contig of its *mate*, and that is often a
+    /// different contig.
     names: &'a [Arc<str>],
     config: &'a SvCallerConfig,
     budget: &'a EvidenceBudget,
-    /// The empty name a pair falls back to when its mate's reference id resolves to nothing,
-    /// interned so that path allocates no more than the normal one.
+    /// The empty name that a pair takes when the reference id of its mate resolves to nothing. The
+    /// code interns it, so that path allocates no more than the usual one.
     unknown_contig: Arc<str>,
     insert_min: f64,
     insert_max: f64,
@@ -86,8 +93,8 @@ impl<'a> EvidenceSink<'a> {
         let Some(ref_id) = record.reference_sequence_id() else {
             return;
         };
-        // `names` is a shared slice, so this borrows the interned name for `'a` — not from `self`,
-        // which leaves the tallies below free to take `&mut self`.
+        // `names` is a shared slice, so this borrows the interned name for `'a`. It does not
+        // borrow from `self`, which leaves the tallies below free to take `&mut self`.
         let Some(contig) = self.names.get(ref_id) else { return };
         let Some(start) = record.alignment_start().map(|p| p as i64) else {
             return;
@@ -128,8 +135,8 @@ impl<'a> EvidenceSink<'a> {
         }
     }
 
-    /// Drop the borrowed lookup tables, keeping the tally. The fan-out returns this rather than the
-    /// sink itself so the per-contig results carry no lifetime.
+    /// Drop the borrowed lookup tables, and keep the tally. The fan-out returns this, and not the
+    /// sink itself, so that the result of each contig carries no lifetime.
     fn into_parts(self) -> ContigEvidence {
         ContigEvidence {
             depth_bins: self.depth_bins,
@@ -141,11 +148,13 @@ impl<'a> EvidenceSink<'a> {
     }
 }
 
-/// A ceiling on retained evidence, shared across the fan-out's contig workers so the bound is
-/// genome-wide rather than per contig (24 contigs each allowed the full cap would bound nothing).
+/// An upper limit on the evidence that the code keeps. The contig workers of the fan-out share it,
+/// so the limit covers the whole genome, and not one contig. With 24 contigs, and the full limit
+/// for each, the limit would hold nothing back.
 ///
-/// Counts only what is *kept*. Evidence past the cap is still detected and counted as dropped, so
-/// the reported totals stay honest and a truncated run is visible rather than silent.
+/// It counts what the code *keeps*, and nothing else. The walk still finds the evidence past the
+/// limit, and it counts that evidence as dropped. So the totals in the report stay honest, and a
+/// run that the limit cut short is visible to the user.
 struct EvidenceBudget {
     cap: u64,
     discordant_kept: AtomicU64,
@@ -161,8 +170,9 @@ impl EvidenceBudget {
         }
     }
 
-    /// Claim one slot in `counter`, or return false once the cap is met. Relaxed ordering: the
-    /// counters guard memory growth, and nothing is ordered against them.
+    /// Take one slot in `counter`, or return false once the count reaches the limit. It uses a
+    /// relaxed ordering. These counters hold the memory down, and nothing orders itself against
+    /// them.
     fn claim(&self, counter: &AtomicU64) -> bool {
         counter
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
@@ -221,9 +231,9 @@ impl RecordSink for EvidenceSink<'_> {
     }
 }
 
-/// Reference id -> name (header order), interned once per walk. Every retained pair and split read
-/// holds `Arc`s from this table, so a contig name is stored once for the whole run instead of once
-/// per record.
+/// A map from a reference id to a name, in header order, interned once for each walk. Every pair
+/// and split read that the code keeps holds an `Arc` from this table. A contig name goes into
+/// memory once for the whole run, and not once at each record.
 fn contig_names(header: &noodles::sam::Header) -> Vec<Arc<str>> {
     header
         .reference_sequences()
@@ -254,19 +264,20 @@ fn insert_bounds(expected_insert_size: f64, insert_size_sd: f64, config: &SvCall
     (min, max)
 }
 
-/// Collect SV evidence one contig at a time, in parallel. `contig_lengths` selects which contigs
-/// get depth bins (and their sizes); `expected_insert_size`/`insert_size_sd` come from
-/// read-metrics. `reference` is required for CRAM (ignored for BAM) — SV evidence never consults
-/// reference *bases*, but decoding a CRAM record at all does.
+/// Collect the SV evidence one contig at a time, in parallel. `contig_lengths` says which contigs
+/// get depth bins, and how large those contigs are. `expected_insert_size` and `insert_size_sd`
+/// come from read-metrics. A CRAM needs `reference`, and a BAM ignores it. The SV evidence never
+/// reads a reference *base*, but the decode of a CRAM record does.
 ///
-/// SV was the last whole-genome analysis still walking the file on one thread, which on a 30x WGS
-/// CRAM is hours of single-core decode: 2–5 h per sample, against ~55 min for the per-contig
-/// [`crate::unified`] walk over the same files. Region-querying each contig separately spends the
-/// same total decode across every core instead of one.
+/// SV was the last analysis over the whole genome that still walked the file on one thread. On a
+/// 30x WGS CRAM that is hours of decode on one core. It took 2 to 5 h for each sample, against
+/// about 55 min for the [`crate::unified`] walk over the contigs, on the same files. A separate
+/// region query for each contig spends the same total decode across every core, and not on one.
 ///
-/// Evidence is concatenated in header order, which for a coordinate-sorted file is exactly the
-/// order the sequential walk emits — and the clusterer sorts by position regardless, so the calls
-/// are identical either way. Falls back to [`collect_evidence`] when there is no `.bai`/`.crai`.
+/// The code joins the evidence together in header order. For a file in coordinate order that is
+/// exactly the order that the sequential walk gives. And the clusterer sorts by position in any
+/// case, so the calls are the same either way. This function falls back to [`collect_evidence`]
+/// when there is no `.bai` and no `.crai`.
 pub fn collect_evidence_parallel(
     bam_path: &Path,
     reference: Option<&Path>,
@@ -276,8 +287,8 @@ pub fn collect_evidence_parallel(
     config: &SvCallerConfig,
     cancel: &crate::cancel::CancelToken,
 ) -> Result<SvEvidenceCollection, AnalysisError> {
-    // Per-contig region queries need a coordinate index. Without one the only way to reach the
-    // records is a sequential pass, so take it rather than failing.
+    // A region query on one contig needs a coordinate index. Without one, a sequential pass is
+    // the only way to reach the records. So take that pass, and do not fail.
     if !reader::has_region_index(bam_path) {
         return collect_evidence(
             bam_path,
@@ -293,18 +304,19 @@ pub fn collect_evidence_parallel(
     let header = reader::read_header(bam_path, reference)?;
     let names = contig_names(&header);
     let (insert_min, insert_max) = insert_bounds(expected_insert_size, insert_size_sd, config);
-    // Shared across the workers so the ceiling is on the genome, not on each contig.
+    // The workers share this, so the limit covers the genome, and not each contig.
     let budget = EvidenceBudget::new(config.max_evidence_records);
 
-    // One work item per *header* contig, not per `contig_lengths` entry: depth bins are limited to
-    // the requested contigs, but discordant pairs and split reads are collected genome-wide (the
-    // sequential walk sees every record in the file), so every contig has to be visited.
+    // One work item for each *header* contig, and not for each `contig_lengths` entry. The depth
+    // bins cover the contigs that the caller asked for. But the discordant pairs and the split
+    // reads cover the whole genome, because the sequential walk sees every record in the file. So
+    // the code must visit every contig.
     //
-    // Records with no reference position are skipped by both walks — the sequential one via the
-    // `is_unmapped` guard, this one by never querying for them — so nothing is lost by not sweeping
-    // the unmapped tail here.
+    // Both walks skip a record with no reference position. The sequential one does that with its
+    // `is_unmapped` guard, and this one never queries for such a record. Nothing goes missing when
+    // this code does not sweep the unmapped tail.
     let process_contig = |name: &Arc<str>| -> Result<ContigEvidence, AnalysisError> {
-        // Bail before paying for this contig's reader.
+        // Stop before the cost of the reader of this contig.
         cancel.check()?;
         let (h, mut idx) = reader::open_indexed(bam_path, reference)?;
         let region = Region::new(name.as_bytes().to_vec(), ..); // whole contig
@@ -317,9 +329,10 @@ pub fn collect_evidence_parallel(
         Ok(sink.into_parts())
     };
 
-    // noodles' CRAM decoder can recurse deeply enough to blow rayon's default 2 MiB worker stack
-    // (the main thread's larger stack handles the same file in the sequential walker) — and an
-    // overflow aborts the whole process, so the workers get a decode-safe stack.
+    // The CRAM decoder of noodles can recurse deep enough to overflow the default 2 MiB worker
+    // stack of rayon. In the sequential walker, the larger stack of the main thread holds the same
+    // file. An overflow aborts the whole process, so the workers get a stack that is safe for a
+    // decode.
     let pool = reader::decode_pool(crate::unified::analysis_thread_count())?;
     let per_contig: Vec<ContigEvidence> = pool.install(|| {
         names
@@ -328,8 +341,9 @@ pub fn collect_evidence_parallel(
             .collect::<Result<Vec<_>, AnalysisError>>()
     })?;
 
-    // Merge. Each contig owns a disjoint depth-bin key, so inserting over the pre-zeroed map is a
-    // fill rather than a sum; a requested contig with no records keeps its zeros.
+    // The merge. The depth-bin keys of two contigs never meet. A write over the map, which starts
+    // at zero, then fills a slot and does not add to one. A contig that the caller asked for, and
+    // that holds no record, keeps its zeros.
     let mut merged = ContigEvidence {
         depth_bins: all_zeroed_bins(contig_lengths, config.bin_size),
         ..ContigEvidence::default()
@@ -344,9 +358,9 @@ pub fn collect_evidence_parallel(
     Ok(merged.into_collection(expected_insert_size, insert_size_sd, config.max_evidence_records))
 }
 
-/// Collect SV evidence in a single sequential pass — the parity reference for
-/// [`collect_evidence_parallel`], and the walk used when the alignment has no coordinate index.
-/// Arguments are as documented there.
+/// Collect the SV evidence in one sequential pass. It is the reference that
+/// [`collect_evidence_parallel`] must agree with, and it is the walk for an alignment with no
+/// coordinate index. The arguments are the same, and that function documents them.
 pub fn collect_evidence(
     bam_path: &Path,
     reference: Option<&Path>,
@@ -384,13 +398,16 @@ pub fn collect_evidence(
 }
 
 impl EvidenceSink<'_> {
-    /// Classify one primary paired read, building a [`DiscordantPair`] only if it is discordant.
+    /// Classify one primary read that has a pair. It builds a [`DiscordantPair`] only when that
+    /// read is discordant.
     ///
-    /// This runs for essentially every read in the file and all but a fraction of a percent are
-    /// concordant, so nothing is built before the verdict is known. It used to allocate the read
-    /// name and clone the mate contig name up front — two mallocs per read, thrown away almost
-    /// every time — which is what made a 30x WGS walk malloc-bound. The pair that does get built is
-    /// now allocation-free: both contigs are `Arc` clones from the interned table.
+    /// This runs at almost every read in the file, and all but a small fraction of a percent are
+    /// concordant. So the code builds nothing before it knows the answer.
+    ///
+    /// An earlier version allocated the read name, and cloned the name of the mate contig, at the
+    /// start. That was two mallocs at each read, and it threw away almost all of them. It is what
+    /// made a 30x WGS walk spend its time in malloc. The pair that the code does build now
+    /// allocates nothing: both contigs are `Arc` clones from the interned table.
     fn detect_discordant_pair(&self, record: &impl AlnRead, contig: &Arc<str>, mapq: u8) -> Option<DiscordantPair> {
         let flags = record.flags();
         if flags.is_mate_unmapped() || mapq < self.config.min_mapq {
@@ -448,11 +465,13 @@ fn is_expected_orientation(record: &impl AlnRead, pos1: i64, mate_pos: i64) -> b
 }
 
 impl EvidenceSink<'_> {
-    /// Parse the first SA-tag alignment into a [`SplitRead`]; clip length is the read's own
-    /// soft/hard-clip total. Only reads that actually carry an `SA` tag get this far, so unlike
-    /// the discordant-pair path this one is not hot — a genome-wide walk yields ~0.1–1 M of these
-    /// against billions of reads, which is why interning the supplementary contig off the tag text
-    /// is not worth a lookup table.
+    /// Parse the first alignment of the SA tag into a [`SplitRead`]. The clip length is the total
+    /// soft clip and hard clip of the read itself.
+    ///
+    /// Only a read that carries an `SA` tag reaches this code, so this path is not hot, and the
+    /// discordant-pair path is. A walk over the whole genome gives about 0.1M to 1M of these,
+    /// against billions of reads. That is why the supplementary contig comes straight off the tag
+    /// text, and a lookup table to intern it is not worth the code.
     fn extract_split_read(&self, record: &impl AlnRead, contig: &Arc<str>, mapq: u8) -> Option<SplitRead> {
         let sa = record.string_tag(SA_TAG)?;
         if sa.is_empty() {
