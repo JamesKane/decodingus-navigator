@@ -1,7 +1,9 @@
-//! Probe a BAM/CRAM **header** for the metadata a user would otherwise type in: the reference
-//! build (from `@SQ`), the aligner (from `@PG`), and the sequencing platform / instrument /
-//! test type (from `@RG`). Only the SAM header is read — no records, and (for CRAM) no
-//! reference FASTA — so it is cheap and runs before the reference is resolved.
+//! Read the **header** of a BAM or CRAM, for the metadata that a user would else type in. That is
+//! the reference build, from `@SQ`; the aligner, from `@PG`; and the sequencing platform, the
+//! instrument and the test type, from `@RG`.
+//!
+//! It reads the SAM header and nothing else. It reads no record, and, for a CRAM, no reference
+//! FASTA. So it costs little, and it can run before the code resolves the reference.
 
 use std::path::Path;
 
@@ -24,13 +26,19 @@ pub struct AlignmentProbe {
     pub instrument_model: Option<String>,
     /// Best-guess test type code from the catalog, e.g. `"WGS_HIFI"`, `"WGS"`.
     pub test_type: Option<String>,
-    /// Vendor hint scraped from the header (`@RG CN` center / `@RG LB` library / `@PG` / `@CO`),
-    /// e.g. `"FamilyTreeDNA"`, `"Full Genomes"`, `"YSEQ"` — refines a coverage-detected targeted-Y
-    /// test into the specific vendor product. `None` when no recognizable vendor token appears.
+    /// A hint about the vendor, which the code took out of the header. It comes from the `@RG CN`
+    /// center, the `@RG LB` library, a `@PG` line or a `@CO` line. Examples are
+    /// `"FamilyTreeDNA"`, `"Full Genomes"` and `"YSEQ"`.
+    ///
+    /// It turns a targeted-Y test that the coverage shape found into the specific product of a
+    /// vendor. It is `None` when no vendor token that the code knows appears.
     pub vendor_hint: Option<String>,
-    /// FTDNA Big Y generation code (`"BIG_Y_700"` / `"BIG_Y_500"`) when the recent FTDNA pipeline
-    /// stamped it into the `@RG LB` library label (e.g. `unknown-library-Big Y-700`). Authoritative
-    /// — overrides the coverage-shape guess. `None` on older headers that omit the generation.
+    /// The generation code of an FTDNA Big Y, which is `"BIG_Y_700"` or `"BIG_Y_500"`. It is here
+    /// when the recent FTDNA pipeline wrote it into the `@RG LB` library label, as in
+    /// `unknown-library-Big Y-700`.
+    ///
+    /// It is authoritative, and it wins over the guess from the coverage shape. It is `None` on an
+    /// older header that leaves the generation out.
     pub big_y_code: Option<String>,
 }
 
@@ -54,9 +62,10 @@ pub fn probe_alignment(path: &Path) -> Result<AlignmentProbe, AnalysisError> {
     })
 }
 
-/// FTDNA stamps the Big Y generation into the `@RG LB` (library) label on recent pipeline output —
-/// `unknown-library-Big Y-700` / `…-Big Y-500`. Map that to the catalog code. `None` when no such
-/// label is present (older 2019-era headers just carry `unknown-library`).
+/// FTDNA writes the Big Y generation into the `@RG LB` library label, on recent output of its
+/// pipeline. That label reads `unknown-library-Big Y-700`, or `…-Big Y-500`. This maps it to the
+/// catalog code. It gives `None` when there is no such label. An older header, from about 2019,
+/// carries `unknown-library` alone.
 fn detect_big_y_code(header: &sam::Header) -> Option<&'static str> {
     for map in header.read_groups().values() {
         if let Some(lb) = map.other_fields().get(&read_group::tag::LIBRARY) {
@@ -94,8 +103,9 @@ fn detect_vendor_hint(header: &sam::Header) -> Option<String> {
             hay.push_str(&s(cn));
             hay.push(' ');
         }
-        // The library label carries the product on recent FTDNA output (`…-Big Y-700`), where the
-        // `@PG` path no longer mentions FTDNA — so scan it too (the "big y" token marks FTDNA).
+        // On recent FTDNA output the library label carries the product, as `…-Big Y-700`. There
+        // the `@PG` path no longer names FTDNA. So scan the label too. The "big y" token marks
+        // FTDNA.
         if let Some(lb) = map.other_fields().get(&read_group::tag::LIBRARY) {
             hay.push_str(&s(lb));
             hay.push(' ');
@@ -142,16 +152,18 @@ fn read_header_only(path: &Path) -> Result<sam::Header, AnalysisError> {
     }
 }
 
-/// Lossy UTF-8 of a header field value (a `bstr::BString` or sequence name — any `AsRef<[u8]>`).
+/// The lossy UTF-8 of the value of a header field. That value is a `bstr::BString`, or a sequence
+/// name, or any other `AsRef<[u8]>`.
 fn s<T: AsRef<[u8]>>(v: &T) -> String {
     String::from_utf8_lossy(v.as_ref()).into_owned()
 }
 
 /// Reference build from `@SQ`: prefer the assembly (`AS`) tag, else the chr1 length signature.
 fn detect_build(header: &sam::Header) -> Option<String> {
-    // The Y-PAR-masked + rCRS CHM13 analysis set is indistinguishable from plain chm13v2.0
-    // by `@SQ` (same contig names/lengths), so check the reference filename the aligner
-    // recorded (`@PG CL` / `@SQ UR`) first. Plain chm13 will not match this signature.
+    // The CHM13 analysis set with a masked Y-PAR and the rCRS looks the same as a plain
+    // chm13v2.0 through `@SQ`. The contig names and lengths match. So check first the name of the
+    // reference file that the aligner recorded, in `@PG CL` or `@SQ UR`. A plain chm13 does not
+    // match this signature.
     if header_mentions_masked_rcrs(header) {
         return Some("chm13v2.0_maskedY_rCRS".into());
     }
@@ -227,8 +239,9 @@ const ALIGNERS: &[(&str, &str)] = &[
     ("bwa", "bwa"),
 ];
 
-/// Aligner from `@PG`: match the program id / name (`PN`) / command line (`CL`) against the
-/// known-aligner list, so non-aligner programs (samtools, gatk, …) are ignored.
+/// The aligner, from `@PG`. It matches the program id, the name in `PN`, and the command line in
+/// `CL`, against the list of aligners that the code knows. A program that is not an aligner, such
+/// as samtools or gatk, then does not match.
 fn detect_aligner(header: &sam::Header) -> Option<String> {
     for (id, map) in header.programs().as_ref().iter() {
         let pn = map.other_fields().get(&program::tag::NAME).map(s).unwrap_or_default();
@@ -247,9 +260,11 @@ fn detect_aligner(header: &sam::Header) -> Option<String> {
     None
 }
 
-/// A recognized SAM `@RG PL` value, upper-cased — or `None` for a missing / non-standard string
-/// (e.g. Dante/DRAGEN's `PL0` placeholder), so the caller falls back to read-name inference rather
-/// than recording a bogus platform. SAM spec values + the common `NANOPORE` alias for `ONT`.
+/// An `@RG PL` value from SAM that the code knows, in upper case. It is `None` when the value is
+/// absent, or when it is not in the standard. The `PL0` placeholder of Dante and DRAGEN is one such
+/// value. The caller then falls back to an inference from the read names, and it does not record a
+/// platform that means nothing. The list holds the values of the SAM specification, plus the common
+/// `NANOPORE` alias for `ONT`.
 fn normalize_platform(raw: &str) -> Option<String> {
     let u = raw.trim().to_uppercase();
     matches!(
@@ -272,9 +287,10 @@ fn normalize_platform(raw: &str) -> Option<String> {
     .then_some(u)
 }
 
-/// Platform (`PL`, validated against the SAM platform vocabulary) + instrument model (`PM`) from the
-/// first informative `@RG`. A non-standard `PL` is dropped so read-name inference can supply the
-/// real platform.
+/// The platform, from `PL`, and the instrument model, from `PM`, out of the first `@RG` line that
+/// carries them. The code checks the `PL` against the platform vocabulary of SAM. It drops a `PL`
+/// that is not in that vocabulary, so that an inference from the read names can give the real
+/// platform.
 fn detect_platform(header: &sam::Header) -> (Option<String>, Option<String>) {
     for map in header.read_groups().values() {
         let pl = map
@@ -341,7 +357,7 @@ mod tests {
         // @RG CN (sequencing center).
         let rg = header_from_sam("@HD\tVN:1.6\n@SQ\tSN:chrY\tLN:57227415\n@RG\tID:r1\tCN:FamilyTreeDNA\tPL:ILLUMINA\n");
         assert_eq!(detect_vendor_hint(&rg).as_deref(), Some("FamilyTreeDNA"));
-        // @CO free-text comment naming the product.
+        // A free-text `@CO` comment that names the product.
         let co = header_from_sam("@HD\tVN:1.6\n@SQ\tSN:chrY\tLN:57227415\n@CO\tFull Genomes Y Elite v2\n");
         assert_eq!(detect_vendor_hint(&co).as_deref(), Some("Full Genomes"));
         // No vendor token.
@@ -355,7 +371,8 @@ mod tests {
         let by700 =
             header_from_sam("@HD\tVN:1.4\n@SQ\tSN:chrY\tLN:57227415\n@RG\tID:r\tLB:unknown-library-Big Y-700\tSM:s\n");
         assert_eq!(detect_big_y_code(&by700), Some("BIG_Y_700"));
-        // The library label also marks the vendor (via the "big y" token) when @PG/@CN do not.
+        // The library label also marks the vendor, through the "big y" token, when `@PG` and
+        // `@CN` do not.
         assert_eq!(detect_vendor_hint(&by700).as_deref(), Some("FamilyTreeDNA"));
 
         let by500 =
@@ -369,8 +386,9 @@ mod tests {
 
     #[test]
     fn nonstandard_platform_is_dropped() {
-        // Dante/DRAGEN writes PL:PL0 (not a SAM platform); the probe drops it so read-name
-        // inference can recover the real platform instead of recording "PL0".
+        // Dante and DRAGEN write `PL:PL0`, and that is not a SAM platform. The probe drops it, so
+        // that an inference from the read names can recover the real platform. Without that, the
+        // record would hold "PL0".
         let h = header_from_sam("@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:248956422\n@RG\tID:1\tPL:PL0\n");
         let (pl, _) = detect_platform(&h);
         assert_eq!(pl, None);

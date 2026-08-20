@@ -1,4 +1,4 @@
-//! Error type for the analysis layer (plan §6: one `thiserror` enum per layer).
+//! The error type of the analysis layer. See plan §6: one `thiserror` enum in each layer.
 
 use std::path::PathBuf;
 
@@ -14,11 +14,12 @@ pub enum AnalysisError {
     #[error("{0}")]
     Message(String),
 
-    /// The walk stopped because cancellation was requested (see [`crate::cancel`]).
+    /// The walk stopped because somebody asked for a cancel. See [`crate::cancel`].
     ///
-    /// A distinct variant, not a `Message`, because callers must be able to tell a user-requested
-    /// stop from a real failure: a cancelled walk holds a *partial* result, so its caller has to
-    /// skip persisting it, and the UI has to report "cancelled" rather than an error.
+    /// This is a variant of its own, and not a `Message`. A caller must be able to separate a stop
+    /// that a user asked for from a real failure. A walk that somebody cancelled holds a *partial*
+    /// result, so its caller must not put that result into the store. And the UI must report
+    /// "cancelled", and not an error.
     #[error("cancelled")]
     Cancelled,
 }
@@ -32,8 +33,8 @@ impl AnalysisError {
     }
 }
 
-/// The text a panic carried, if any — `panic!("…")` payloads are always a `&'static str` or a
-/// `String`. Used to surface *what* actually went wrong instead of guessing at a cause.
+/// The text that a panic carried, when it carried one. The payload of a `panic!("…")` is always a
+/// `&'static str` or a `String`. Use it to show *what* went wrong, and do not guess at a cause.
 pub fn panic_text(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
     payload
         .downcast_ref::<&'static str>()
@@ -41,20 +42,24 @@ pub fn panic_text(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
 }
 
-/// Run a BAM/CRAM walk, converting a **panic** into a clean [`AnalysisError`] so one undecodable
-/// file fails gracefully instead of unwinding into a cryptic `JoinError`/aborting a worker. The
-/// motivating cases are noodles' `todo!()`/`expect()` on inputs it does not handle (an unimplemented
-/// CRAM data series, or a decode that needs reference bases it was not given): without this, such a
-/// file panics deep inside the decoder. `what` labels the operation/file for the surfaced message.
+/// Run a walk over a BAM or CRAM, and turn a **panic** into a clean [`AnalysisError`]. One file
+/// that the code can not decode then fails cleanly. It does not unwind into a `JoinError` that
+/// says nothing, and it does not abort a worker.
 ///
-/// The panic's own text is included rather than a guessed explanation — this is a last-resort net,
-/// so it does not know which limitation it caught. Callers that *do* know (see
-/// [`crate::index::ensure_index`]) should diagnose the specific case themselves and say what to do
-/// about it; anything reaching here is genuinely unclassified.
+/// The cases that led to this are the `todo!()` and `expect()` calls of noodles, on an input that
+/// it does not handle. A CRAM data series that nobody implemented is one. A decode that needs
+/// reference bases which nobody gave it is another. Without this net, such a file panics deep
+/// inside the decoder. `what` names the operation and the file, for the message that goes out.
 ///
-/// `AssertUnwindSafe` is sound here: on a caught panic we discard `f`'s partial state entirely and
-/// return an error — no possibly-inconsistent value crosses the boundary. The default panic hook
-/// still prints the original message to stderr (useful diagnostics); only the control flow changes.
+/// The message holds the own text of the panic, and not an explanation that this code guessed.
+/// This is a net of last resort, so it does not know which limit it caught. A caller that *does*
+/// know must diagnose its own case and say what to do about it. See
+/// [`crate::index::ensure_index`]. This code can put no class on anything that reaches here.
+///
+/// `AssertUnwindSafe` is sound here. On a panic that this code catches, it throws away the whole
+/// partial state of `f`, and it returns an error. No value that could be inconsistent crosses the
+/// boundary. The default panic hook still prints the original message to stderr, which is useful,
+/// and only the control flow changes.
 pub fn guard_walk<T>(what: &str, f: impl FnOnce() -> Result<T, AnalysisError>) -> Result<T, AnalysisError> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
         let detail = panic_text(&*payload).unwrap_or("no further detail");

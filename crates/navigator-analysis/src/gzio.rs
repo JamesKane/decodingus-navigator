@@ -1,20 +1,25 @@
 //! Transparent decompression for line-oriented genomics text (VCF, BED, CompleteGenomics
 //! masterVar).
 //!
-//! BGZF — the bgzip format used for `.vcf.gz` / `.bed.gz` — is a *concatenation* of
-//! independent gzip members (each ≤64 KiB of payload). `flate2::read::GzDecoder` decodes
-//! only the first member and then reports EOF, silently truncating any multi-block
-//! bgzipped file; `MultiGzDecoder` decodes every member, so it reads plain gzip and BGZF
-//! whole. bzip2 (the `.tsv.bz2` CompleteGenomics ships) is handled the same way via
-//! `MultiBzDecoder`, which spans concatenated streams (pbzip2 output). Detection is by the
-//! leading magic bytes, not the extension, so a compressed file is handled even when it is
-//! misnamed (e.g. a `.vcf` that is really bgzf).
+//! BGZF is the bgzip format of a `.vcf.gz` or a `.bed.gz`. It is a *chain* of independent gzip
+//! members, and each one holds 64 KiB of payload or less.
+//!
+//! `flate2::read::GzDecoder` decodes the first member alone, and it then reports an end of file.
+//! So it cuts short any bgzipped file of more than one block, and nobody sees it happen.
+//! `MultiGzDecoder` decodes every member, so it reads a plain gzip file and a BGZF file whole.
+//!
+//! bzip2 gets the same treatment, through `MultiBzDecoder`, which reads a chain of streams that
+//! pbzip2 wrote. CompleteGenomics ships a `.tsv.bz2`.
+//!
+//! The code finds the compression from the first bytes of the file, and not from the extension. So
+//! it handles a compressed file even when its name is wrong, such as a `.vcf` that holds bgzf.
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
-/// Detected on-disk compression, by leading magic bytes.
+/// The compression that the file on disk uses, which the code finds from the first bytes of that
+/// file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Compression {
     None,
@@ -22,10 +27,11 @@ enum Compression {
     Bzip2,
 }
 
-/// Open `path` for buffered line reading, transparently decoding gzip/BGZF when the file
-/// begins with the gzip magic bytes. Plain (uncompressed) text is read directly.
+/// Open `path` to read its lines through a buffer. It decodes gzip and BGZF when the file starts
+/// with the first bytes of a gzip stream, and the caller sees no difference. It reads plain text
+/// directly.
 ///
-/// See [`open_maybe_compressed`] to also decode bzip2.
+/// See [`open_maybe_compressed`] to decode bzip2 as well.
 pub fn open_maybe_gz(path: &Path) -> io::Result<Box<dyn BufRead>> {
     let mut file = File::open(path)?;
     match detect_compression(&mut file)? {
@@ -36,9 +42,10 @@ pub fn open_maybe_gz(path: &Path) -> io::Result<Box<dyn BufRead>> {
     }
 }
 
-/// Open `path` for buffered line reading, transparently decoding gzip/BGZF **or** bzip2 by
-/// content. Plain text is read directly. Used by importers that accept the compressed dumps
-/// vendors ship (e.g. a CompleteGenomics `var-*-ASM.tsv.bz2`).
+/// Open `path` to read its lines through a buffer. It decodes gzip and BGZF, **or** bzip2, from
+/// the content of the file, and the caller sees no difference. It reads plain text directly. An
+/// importer that accepts a compressed dump from a vendor uses this, such as a CompleteGenomics
+/// `var-*-ASM.tsv.bz2`.
 pub fn open_maybe_compressed(path: &Path) -> io::Result<Box<dyn BufRead>> {
     let mut file = File::open(path)?;
     match detect_compression(&mut file)? {
@@ -48,8 +55,8 @@ pub fn open_maybe_compressed(path: &Path) -> io::Result<Box<dyn BufRead>> {
     }
 }
 
-/// Peek the leading magic bytes for gzip (`1f 8b`) or bzip2 (`BZh`), then rewind to the start
-/// so the returned reader sees the whole file.
+/// Look at the first bytes of the file, for gzip (`1f 8b`) or for bzip2 (`BZh`). Then go back to
+/// the start, so that the reader that comes out sees the whole file.
 fn detect_compression(file: &mut File) -> io::Result<Compression> {
     let mut magic = [0u8; 3];
     let n = read_up_to(file, &mut magic)?;
@@ -63,8 +70,8 @@ fn detect_compression(file: &mut File) -> io::Result<Compression> {
     }
 }
 
-/// Fill `buf` from `file`, tolerating short reads; returns the number of bytes read (may be
-/// fewer than `buf.len()` only at EOF).
+/// Fill `buf` from `file`. It accepts a short read. It returns the count of bytes that it read,
+/// and that count is below `buf.len()` only at the end of the file.
 fn read_up_to(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
     let mut filled = 0;
     while filled < buf.len() {
@@ -115,7 +122,8 @@ mod tests {
 
     #[test]
     fn reads_bzip2_by_content() {
-        // A `.txt`-named bzip2 stream must be decoded by content (magic `BZh`), not extension.
+        // A bzip2 stream whose name ends in `.txt` must decode from its content, where the first
+        // bytes are `BZh`. The extension must not decide.
         let path = tmp_dir().join("cg.txt");
         let mut enc = bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
         enc.write_all(b"x\ny\nz\n").unwrap();

@@ -1,15 +1,17 @@
 //! Short-tandem-repeat reference loci, parsed from a HipSTR-format reference BED.
 //!
-//! The HipSTR reference defines **tight repeat tracts** (not loose feature regions) — the
-//! coordinate precision an enclosing-read repeat counter needs. Each line is tab-delimited:
+//! The HipSTR reference gives **tight repeat tracts**, and not loose feature regions. That is the
+//! coordinate precision that a repeat counter over enclosing reads needs. Each line holds tabs
+//! between its fields:
 //!
 //! ```text
 //! chrom  start(0-based)  end  period  ref_copies  locus_id  motif
 //! Y      10001           10038  6      6.33333     Human_STR_1604566  AACCCT
 //! ```
 //!
-//! `motif` is occasionally a `/`-separated alternative set (e.g. `CCTT/CCCT`) — the first is taken
-//! as canonical. Contig names are bare (`1`, `Y`); callers normalize against the BAM's naming.
+//! Sometimes `motif` holds a set of alternatives, with a `/` between them, as in `CCTT/CCCT`. The
+//! code takes the first one as canonical. A contig name is bare, as `1` or `Y`, and a caller
+//! normalizes it against the names in the BAM.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -22,7 +24,7 @@ use crate::error::AnalysisError;
 /// One STR locus: a tight repeat tract with its period (motif length) and reference copy number.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StrLocus {
-    /// Contig as written in the reference BED (bare — `1`, `X`, `Y`).
+    /// The contig, as the reference BED writes it. It is bare: `1`, `X` or `Y`.
     pub contig: String,
     /// 0-based, half-open tract start (BED convention).
     pub start: i64,
@@ -30,7 +32,8 @@ pub struct StrLocus {
     pub end: i64,
     /// Repeat-unit length (motif size) in bp.
     pub period: u8,
-    /// Copy number in the reference allele (can be fractional — a partial final unit).
+    /// The copy number of the reference allele. It can hold a fraction, when the last unit is
+    /// partial.
     pub ref_copies: f64,
     /// Locus id (HipSTR `Human_STR_N`), used as the result name until a vendor mapping exists.
     pub name: String,
@@ -39,8 +42,9 @@ pub struct StrLocus {
 }
 
 impl StrLocus {
-    /// Whether `name`/the BED contig matches `query` after stripping an optional `chr` prefix on
-    /// either side (the BAM may be `chrY`, the BED `Y`; see the contig-naming convention).
+    /// True when `name`, which is the contig of the BED, matches `query`. The comparison removes a
+    /// `chr` prefix from either side first. The BAM can say `chrY` where the BED says `Y`. See the
+    /// convention for the names of the contigs.
     pub fn contig_matches(&self, query: &str) -> bool {
         crate::contig::bare(&self.contig).eq_ignore_ascii_case(crate::contig::bare(query))
     }
@@ -71,10 +75,16 @@ fn parse_line(line: &str) -> Option<StrLocus> {
     })
 }
 
-/// Read STR loci from a (gzipped) HipSTR reference BED, keeping only those on `contig` (matched
-/// prefix-insensitively) with `period >= min_period`. Filtering while streaming avoids holding the
-/// genome-wide ~1.6M-locus set in memory when only one chromosome is needed. Results are sorted by
-/// start. `min_period` of 2 drops homopolymers (period 1) — noisy and not genealogical markers.
+/// Read the STR loci from a HipSTR reference BED. That BED may come through gzip. This keeps a
+/// locus only when that locus is on `contig`, and when its `period` is `min_period` or more. The
+/// match on the contig ignores a `chr` prefix.
+///
+/// The filter runs as the code streams the file. It thereby never holds the genome-wide set of
+/// about 1.6M loci in memory, when the caller needs one chromosome. The results come back in order
+/// of their start.
+///
+/// A `min_period` of 2 drops the homopolymers, which have a period of 1. Those are noisy, and they
+/// are not genealogical markers.
 pub fn load_hipstr_contig(bed_gz: &Path, contig: &str, min_period: u8) -> Result<Vec<StrLocus>, AnalysisError> {
     let file = File::open(bed_gz).map_err(|e| AnalysisError::io(bed_gz, e))?;
     let reader = BufReader::new(MultiGzDecoder::new(file));

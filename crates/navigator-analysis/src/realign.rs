@@ -1,18 +1,22 @@
 //! Light local realignment around candidate indels (plan §4b mitigation).
 //!
-//! Ambiguous indels in homopolymers/repeats make BWA place the same insertion
-//! differently across reads, smearing bases onto neighbouring positions — e.g. on
-//! HG002 chrM a +1C in the 16295–16301 C-run makes ~47 reads put a spurious C on the
-//! reference T at 16302, a false T>C SNP. GATK avoids this by local reassembly; here we
-//! re-fit each read's bases over an active window back onto the reference with a
-//! consistent gap model, so the homopolymer bases land in one place and the spurious
-//! substitution disappears.
+//! An indel in a homopolymer or a repeat is ambiguous. So BWA puts the same insertion at a
+//! different place in different reads. That spreads bases onto the positions beside it.
 //!
-//! The aligner is a **fitting alignment**: the read substring is fully consumed, with
-//! free end gaps on the reference window (so reads starting/ending inside the window
-//! still align). This module is pure and unit-tested; [`crate::caller`] drives it.
+//! Here is a real case. On HG002 chrM, a +1C in the C-run at 16295 to 16301 makes about 47 reads
+//! put a false C onto the reference T at 16302. That reads as a T>C SNP, and it is not one.
+//!
+//! GATK avoids this with a local reassembly. This module instead puts the bases of each read, over
+//! an active window, back onto the reference, with one consistent gap model. The homopolymer bases
+//! then land in one place, and the false substitution goes away.
+//!
+//! The aligner does a **fit of the read into the window**. It consumes the whole part of the read
+//! that it looks at, and the end gaps on the reference window are free. So a read that starts or
+//! ends inside the window still aligns. This module is pure, and unit tests cover it.
+//! [`crate::caller`] drives it.
 
-/// One aligned column between a read substring (query) and a reference window (target).
+/// One aligned column, between a part of a read, which is the query, and a reference window,
+/// which is the target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     /// Query base aligned to a reference base (match or mismatch).
@@ -23,8 +27,9 @@ pub enum Op {
     Deletion,
 }
 
-// Linear-gap scoring. Single-base homopolymer indels dominate, so affine gaps add no
-// resolving power here; a clear mismatch penalty drives the insertion choice.
+// The score uses a linear gap. An indel of one base in a homopolymer is the case that dominates
+// here, so an affine gap separates nothing more. A clear mismatch penalty is what drives the
+// choice of where the insertion goes.
 const MATCH: i32 = 2;
 const MISMATCH: i32 = -4;
 const GAP: i32 = -3;
@@ -48,12 +53,14 @@ pub fn fitting_align(query: &[u8], target: &[u8]) -> (usize, Vec<Op>) {
     let mut score = vec![vec![0i32; m + 1]; n + 1];
     let mut tb = vec![vec![Move::Stop; m + 1]; n + 1];
 
-    // Query must be fully consumed: leading query bases against empty target cost gaps.
+    // The alignment must consume the whole query. So a query base at the start, against an empty
+    // target, costs a gap.
     for i in 1..=n {
         score[i][0] = GAP * i as i32;
         tb[i][0] = Move::Up;
     }
-    // Row 0: free leading target gap (query can start anywhere in target) -> stays 0.
+    // Row 0. A target gap at the start is free, so the query can start anywhere in the target.
+    // The row stays at 0.
 
     for i in 1..=n {
         for j in 1..=m {
@@ -80,7 +87,7 @@ pub fn fitting_align(query: &[u8], target: &[u8]) -> (usize, Vec<Op>) {
         }
     }
 
-    // Free trailing target gap: best score across the last query row.
+    // A target gap at the end is free, so take the best score across the last query row.
     let mut end_j = 0;
     let mut best = i32::MIN;
     for (j, &s) in score[n].iter().enumerate() {
@@ -90,7 +97,7 @@ pub fn fitting_align(query: &[u8], target: &[u8]) -> (usize, Vec<Op>) {
         }
     }
 
-    // Traceback to row 0 (free leading target gap).
+    // Trace back to row 0, because a target gap at the start is free.
     let mut ops = Vec::new();
     let (mut i, mut j) = (n, end_j);
     while i > 0 {
@@ -167,7 +174,8 @@ mod tests {
 
     #[test]
     fn query_fits_into_a_substring_of_target() {
-        // query aligns to target[2..6]; free leading/trailing target gaps.
+        // The query aligns to target[2..6]. The target gaps at the start and at the end are
+        // free.
         assert_eq!(aligned_string(b"CGTA", b"AACGTACG"), (2, "MMMM".into()));
     }
 
@@ -177,7 +185,7 @@ mod tests {
         // insertion so the read's T aligns to the ref T (not a C smeared onto T).
         let (_start, ops) = fitting_align(b"CCCCCCCCT", b"CCCCCCCT");
         assert_eq!(ops.iter().filter(|o| **o == Op::Insertion).count(), 1);
-        // last column aligns the trailing T.
+        // The last column aligns the T at the end.
         assert_eq!(*ops.last().unwrap(), Op::Aligned);
 
         // Projection puts the T on the last reference position, never a C.
@@ -190,8 +198,8 @@ mod tests {
 
     #[test]
     fn read_ending_in_homopolymer_does_not_reach_the_trailing_base() {
-        // read ends in the C-run (no T); after realignment it should not place any base
-        // on the reference T position — the spurious-SNP fix.
+        // The read ends inside the C-run, and it holds no T. After the realignment it must put no
+        // base at all on the reference T position. That is the fix for the false SNP.
         let ref_window = b"CCCCCCCT"; // ref C-run + T
         let read = b"CCCCCCCC"; // 8 C's, no T (read ended in the homopolymer)
         let (start, ops) = fitting_align(read, ref_window);
