@@ -1,5 +1,7 @@
-//! Lift a HipSTR reference BED to another build via the cached chain.
-//! Usage: cargo run -p navigator-refgenome --example lift_str_ref -- <in.bed.gz> <out.bed.gz> [from] [to] [contig]
+//! Lift a HipSTR reference BED to another build, through the cached chain.
+//!
+//! To use it, run:
+//! `cargo run -p navigator-refgenome --example lift_str_ref -- <in.bed.gz> <out.bed.gz> [from] [to] [contig]`
 use navigator_refgenome::{cache, gateway::ReferenceGateway};
 
 #[tokio::main]

@@ -16,10 +16,12 @@ fn part_path(dest: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Download `url` to `dest`, reporting `(received, total)` as bytes arrive (`total` is the
-/// `Content-Length`, if the server sent one). Streams to `dest.part` and renames on success.
-/// Retries once on a transient error. Returns the SHA-256 (lowercase hex) of the **downloaded
-/// bytes** — computed on the fly so callers can verify against a pinned hash without a re-read.
+/// Download `url` to `dest`, and report `(received, total)` as the bytes arrive. `total` is the
+/// `Content-Length`, when the server sends one. It streams to `dest.part`, and renames that file
+/// on success. It tries once more after a transient error.
+///
+/// It returns the SHA-256 of the **downloaded bytes**, in lowercase hex. It computes that during
+/// the download, so a caller can check it against a pinned hash with no second read.
 pub async fn download(
     client: &reqwest::Client,
     url: &str,
