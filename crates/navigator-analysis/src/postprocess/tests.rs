@@ -1,9 +1,11 @@
 //! Tests for the coordinate sort.
 //!
-//! The property that matters most is that the sort is *lossless* — a sort that quietly drops
-//! records would show up downstream only as coverage reading a bit low, which is close to
-//! undetectable. The spill/no-spill equivalence test is the second: the result must not depend on
-//! how much of the input happened to fit in memory.
+//! The property that matters most is that the sort loses nothing. A sort that drops records, where
+//! nobody sees it, would show later as a coverage that reads a little low. Almost nobody would
+//! find that.
+//!
+//! The second property is the test that the spill path and the no-spill path agree. The result
+//! must not depend on how much of the input fit in memory.
 
 use std::path::{Path, PathBuf};
 
@@ -118,9 +120,10 @@ fn unsorted_fixture(dir: &Path) -> (PathBuf, sam::Header, usize) {
 
 // ---- the buffer estimate ---------------------------------------------------
 
-/// The buffer is now sized as a fraction of the machine rather than a hand-picked constant, so what
-/// a record is charged against it has to be roughly true. It was not: the tag dictionary was free,
-/// and a mapped record carries a dozen tags.
+/// The size of the buffer is now a fraction of the machine, and not a constant that somebody
+/// chose. So the cost that the code charges a record against that buffer must be about correct. It
+/// was not correct before: the tag dictionary cost nothing, and a mapped record carries a dozen
+/// tags.
 #[test]
 fn the_buffer_estimate_counts_the_tag_dictionary() {
     use noodles::sam::alignment::record::data::field::Tag;
@@ -140,8 +143,8 @@ fn the_buffer_estimate_counts_the_tag_dictionary() {
     assert_eq!(charged, 3 * TAG_ENTRY_BYTES, "three tags should cost three entries");
 }
 
-/// A noodles upgrade that grows `Value` should fail here, rather than quietly making every buffer
-/// hold more than its budget says.
+/// An upgrade of noodles that makes `Value` larger must fail here. Without this test, every buffer
+/// would hold more than its budget says, and nobody would see it.
 #[test]
 fn a_tag_entry_is_not_larger_than_the_estimate_assumes() {
     use noodles::sam::alignment::record::data::field::Tag;
@@ -154,7 +157,8 @@ fn a_tag_entry_is_not_larger_than_the_estimate_assumes() {
     );
 }
 
-/// The record's own size is part of what it costs — it lives inline in the buffer's `Vec`.
+/// The own size of the record is part of what it costs, because it lives inside the `Vec` of the
+/// buffer.
 #[test]
 fn the_buffer_estimate_covers_the_record_itself() {
     let empty = RecordBuf::default();
@@ -191,9 +195,9 @@ fn records_come_out_in_coordinate_order_with_unplaced_reads_last() {
     }
 }
 
-/// A sort that loses records would show up downstream only as slightly low coverage — which is
-/// close to undetectable. Nothing may be dropped, including the unplaced reads that realignment
-/// exists to recover.
+/// A sort that loses records would show later as a coverage that is a little low, and almost
+/// nobody would find that. The sort must drop nothing, and that includes the reads with no place,
+/// which realignment exists to recover.
 #[test]
 fn the_sort_is_lossless() {
     let dir = scratch("lossless");
@@ -212,8 +216,9 @@ fn the_sort_is_lossless() {
     assert_eq!(names, expected, "every input record must appear exactly once");
 }
 
-/// The result must not depend on how much of the input fit in memory — the same claim the revert
-/// stage's external sort makes, and the reason the disk path is safe to rely on.
+/// The result must not depend on how much of the input fit in memory. The external sort of the
+/// revert stage makes the same claim. That is the reason you can rely on the path that uses the
+/// disk.
 #[test]
 fn spilling_produces_the_same_order_as_sorting_in_memory() {
     let dir = scratch("spill");
@@ -238,8 +243,9 @@ fn spilling_produces_the_same_order_as_sorting_in_memory() {
     assert_eq!(read_back(&a).1, read_back(&b).1);
 }
 
-/// An index is only valid for a coordinate-sorted file, and readers decide whether they may query
-/// a region by reading this. Sorting correctly but failing to say so means every reader rescans.
+/// An index is correct only for a file in coordinate order, and a reader reads this to decide
+/// whether it may query a region. A sort that works, and that does not say so, makes every reader
+/// scan the file again.
 #[test]
 fn the_output_header_declares_coordinate_order() {
     let dir = scratch("header");
@@ -289,8 +295,9 @@ fn cancellation_stops_the_sort() {
     assert!(matches!(err, AnalysisError::Cancelled));
 }
 
-/// An already-sorted file is a normal input (a re-run, or a mapper that happened to emit in
-/// order), and must come out unchanged rather than subtly reordered.
+/// A file that is already sorted is a usual input. It comes from a second run, or from a mapper
+/// that gave its output in order. It must come out unchanged, and the sort must not move a record
+/// where nobody looks.
 #[test]
 fn an_already_sorted_file_is_unchanged() {
     let dir = scratch("idempotent");
@@ -304,7 +311,7 @@ fn an_already_sorted_file_is_unchanged() {
     assert_eq!(read_back(&once).1, read_back(&twice).1);
 }
 
-// ---- duplicate marking ----------------------------------------------------
+// ---- the mark on a duplicate ----------------------------------------------
 
 use super::markdup::{mark_duplicates, MarkDupParams};
 
@@ -336,8 +343,9 @@ fn pair_record(
         .set_cigar(parse_cigar(cigar))
         .set_mate_reference_sequence_id(mate_ref)
         .set_mate_alignment_start(noodles::core::Position::new(mate_pos).unwrap())
-        // SEQ must be exactly as long as the CIGAR's query consumption — soft clips count, hard
-        // clips do not. noodles rejects the record otherwise, which is how this was caught.
+        // SEQ must have exactly the length that the CIGAR takes from the query. A soft clip
+        // counts, and a hard clip does not. noodles refuses the record if the two differ, and that
+        // is how somebody found this.
         .set_sequence(Sequence::from(vec![b'A'; query_len(cigar)]))
         .set_quality_scores(QualityScores::from(vec![30; query_len(cigar)]))
         .build()
@@ -361,7 +369,7 @@ fn query_len(spec: &str) -> usize {
     total
 }
 
-/// Minimal CIGAR parser for the fixtures, e.g. "3S10M".
+/// A small CIGAR parser for the fixtures, for example "3S10M".
 fn parse_cigar(spec: &str) -> noodles::sam::alignment::record_buf::Cigar {
     use noodles::sam::alignment::record::cigar::op::{Kind, Op};
     let mut ops = Vec::new();
@@ -410,8 +418,9 @@ fn mark(input: &Path, dir: &Path, params: MarkDupParams) -> (PathBuf, super::Mar
     (output, stats)
 }
 
-/// Two templates from the same molecule: same endpoints, same strands. One survives unmarked, the
-/// other is flagged — and an independent template at another position is untouched.
+/// Two templates from the same molecule, with the same endpoints and the same strands. One of them
+/// stays without a mark, and the code flags the other. A separate template at another position does
+/// not change.
 #[test]
 fn identical_fragments_are_marked_and_one_representative_is_kept() {
     let dir = scratch("dupes");
@@ -462,14 +471,15 @@ fn both_ends_of_a_duplicate_template_are_marked_alike() {
     assert_eq!(verdicts("b"), vec![true, true], "both ends of 'b' agree");
 }
 
-/// Copies of one molecule can be clipped differently — a mismatch near an end is enough. Grouping
-/// on the alignment start would miss them; grouping on the unclipped 5' position finds them.
+/// Two copies of one molecule can carry different clips, and one mismatch near an end is enough to
+/// cause that. A group on the alignment start would miss them. A group on the 5' position before
+/// the clip finds them.
 #[test]
 fn differently_clipped_copies_of_one_fragment_are_still_duplicates() {
     let dir = scratch("clipping");
     let hdr = header(&[("chr1", 100_000)]);
-    // Both molecules begin at 100: one aligns from 100 with no clip, the other is clipped by 3 and
-    // so *starts* at 103 while describing the same fragment.
+    // Both molecules begin at 100. One aligns from 100 with no clip. The other carries a clip of
+    // 3, so it *starts* at 103, and it covers the same fragment.
     let records = vec![
         pair_record("plain", 0, 100, false, true, 0, 500, true, "10M"),
         pair_record("clipped", 0, 103, false, true, 0, 500, true, "3S10M"),
@@ -482,8 +492,9 @@ fn differently_clipped_copies_of_one_fragment_are_still_duplicates() {
     assert!(duplicate_flags(&output)[1].1, "the clipped copy is the duplicate");
 }
 
-/// Same start, different mate — two independent molecules that happen to share one endpoint. A
-/// signature that ignored the mate would collapse them and delete real coverage.
+/// The same start, and a different mate. These are two separate molecules that share one endpoint
+/// by chance. A signature that left out the mate would put them together, and that would delete
+/// real coverage.
 #[test]
 fn fragments_sharing_one_end_but_not_the_other_are_not_duplicates() {
     let dir = scratch("mate");
@@ -515,8 +526,9 @@ fn opposite_strands_are_not_duplicates() {
     assert_eq!(stats.duplicates, 0);
 }
 
-/// Long-read libraries are usually PCR-free and long reads rarely share endpoints by chance, so
-/// marking them would throw away real coverage. Disabling must actually disable.
+/// A long-read library usually has no PCR step, and two long reads rarely share an endpoint by
+/// chance. A mark on them would then throw away real coverage. The option that turns the mark off
+/// must turn it off.
 #[test]
 fn marking_can_be_turned_off_for_long_reads() {
     let dir = scratch("disabled");
@@ -541,8 +553,9 @@ fn marking_can_be_turned_off_for_long_reads() {
     assert!(duplicate_flags(&output).iter().all(|(_, d)| !d));
 }
 
-/// Unmapped, secondary, and supplementary records have no molecule of their own to represent —
-/// their primary already does. They pass through unmarked and are counted as ineligible.
+/// An unmapped record, a secondary record and a supplementary record represent no molecule of
+/// their own, because the primary record already does. They go through with no mark, and the count
+/// puts them outside the set that the pass can mark.
 #[test]
 fn ineligible_records_pass_through_unmarked() {
     let dir = scratch("ineligible");
@@ -567,8 +580,8 @@ fn ineligible_records_pass_through_unmarked() {
     assert!(duplicate_flags(&output).iter().all(|(_, d)| !d));
 }
 
-/// A re-run, or an input a vendor already marked, must get this pass's verdict rather than
-/// inheriting one it did not reach.
+/// A second run, and an input that a vendor already marked, must both take the answer of this
+/// pass. Neither may keep an answer that this pass did not reach.
 #[test]
 fn pre_existing_duplicate_flags_are_recomputed() {
     let dir = scratch("recompute");
@@ -587,7 +600,7 @@ fn pre_existing_duplicate_flags_are_recomputed() {
     );
 }
 
-/// Marking never drops a record — it only changes a flag.
+/// The mark never drops a record. It changes a flag and nothing else.
 #[test]
 fn marking_is_lossless() {
     let dir = scratch("mdlossless");
@@ -605,9 +618,10 @@ fn marking_is_lossless() {
 
 use super::cram::{crai_path, index_cram, write_cram};
 
-/// CRAM stores reads as differences from the reference, so a test needs a real one — bases the
-/// records actually match, plus the `.fai` the repository reads. A stub would either fail to build
-/// or silently encode mismatches for every base.
+/// A CRAM stores a read as the difference from the reference, so a test needs a real reference.
+/// That means bases that the records match, and the `.fai` that the repository reads. A stub
+/// reference would either fail to build, or encode a mismatch at every base where nobody sees
+/// it.
 fn write_reference_fasta(dir: &Path, name: &str, len: usize) -> PathBuf {
     let path = dir.join("ref.fa");
     let bases: Vec<u8> = (0..len).map(|i| b"ACGT"[(i * 7 + 3) % 4]).collect();
@@ -621,7 +635,8 @@ fn write_reference_fasta(dir: &Path, name: &str, len: usize) -> PathBuf {
     }
     std::fs::write(&path, &text).unwrap();
 
-    // A minimal `.fai`: name, length, offset of the first base, bases per line, bytes per line.
+    // A small `.fai`. Its five fields are the name, the length, the offset of the first base, the
+    // bases in a line, and the bytes in a line.
     let offset = name.len() + 2; // ">name\n"
     std::fs::write(
         dir.join("ref.fa.fai"),
@@ -635,9 +650,9 @@ fn reference_bases_at(len: usize) -> Vec<u8> {
     (0..len).map(|i| b"ACGT"[(i * 7 + 3) % 4]).collect()
 }
 
-/// A record whose sequence matches the reference at `pos`, so CRAM has nothing to store but the
-/// position — which is the case worth testing, since a mismatch-heavy fixture would not exercise
-/// reference-based compression at all.
+/// A record whose sequence matches the reference at `pos`. A CRAM then has nothing to store but
+/// the position. That is the case that this test needs, because a fixture with many mismatches
+/// would not cover the compression against a reference at all.
 fn matching_record(name: &str, pos: usize, len: usize, reference: &[u8]) -> RecordBuf {
     RecordBuf::builder()
         .set_name(name)
@@ -650,7 +665,7 @@ fn matching_record(name: &str, pos: usize, len: usize, reference: &[u8]) -> Reco
         .build()
 }
 
-/// A sorted BAM plus the reference it was aligned to.
+/// A sorted BAM, and the reference that the mapper aligned it to.
 fn cram_fixture(dir: &Path, count: usize) -> (PathBuf, PathBuf, usize) {
     let contig_len = 10_000;
     let reference = write_reference_fasta(dir, "chr1", contig_len);
@@ -660,8 +675,8 @@ fn cram_fixture(dir: &Path, count: usize) -> (PathBuf, PathBuf, usize) {
     let mut records: Vec<RecordBuf> = (0..count)
         .map(|i| matching_record(&format!("r{i:03}"), 1 + i * 50, 50, &bases))
         .collect();
-    // Coordinate order is the precondition; the fixture is already in it, but stamp the header the
-    // way the sort would so the check under test sees what it expects.
+    // Coordinate order is the condition. The fixture is already in that order. But write the
+    // header the way that the sort would, so that the check under test sees what it expects.
     records.sort_by_key(|r| r.alignment_start().map(|p| p.get()).unwrap_or(0));
 
     let bam = dir.join("sorted.bam");
@@ -669,7 +684,7 @@ fn cram_fixture(dir: &Path, count: usize) -> (PathBuf, PathBuf, usize) {
     (bam, reference, count)
 }
 
-/// Like [`write_bam`], but stamping `@HD SO:coordinate` as the sort does.
+/// The same as [`write_bam`], and it also writes `@HD SO:coordinate`, as the sort does.
 fn write_bam_sorted(path: &Path, header: &sam::Header, records: &[RecordBuf]) {
     use noodles::sam::header::record::value::map::header::tag;
     use noodles::sam::header::record::value::{map, Map};
@@ -682,8 +697,8 @@ fn write_bam_sorted(path: &Path, header: &sam::Header, records: &[RecordBuf]) {
     write_bam(path, &header, records);
 }
 
-/// The headline: a sorted BAM becomes a CRAM that reads back with the same records, and gets an
-/// index beside it.
+/// The main property. A sorted BAM becomes a CRAM that reads back with the same records, and an
+/// index sits beside it.
 #[test]
 fn cram_round_trips_every_record_and_writes_an_index() {
     let dir = scratch("cram");
@@ -702,8 +717,8 @@ fn cram_round_trips_every_record_and_writes_an_index() {
         "an empty index would leave every query scanning the whole file"
     );
 
-    // Read back through the same path Navigator uses for vendor CRAMs — if the realigned output
-    // is not readable that way, it is not usable by any existing analysis.
+    // Read it back through the same path that Navigator uses for a vendor CRAM. If no reader can
+    // take the realigned output that way, then no analysis in the app can use it.
     let (header, mut reader) = crate::reader::open_seq(&out, Some(&reference)).unwrap();
     let names: Vec<String> = reader
         .records(&header)
@@ -713,8 +728,9 @@ fn cram_round_trips_every_record_and_writes_an_index() {
     assert_eq!(names[0], "r000");
 }
 
-/// CRAM reconstructs bases from the reference. If that round trip were wrong the sequences would
-/// come back altered rather than the read failing, so the bases are compared explicitly.
+/// A CRAM builds the bases again from the reference. If that round trip were wrong, the sequences
+/// would come back changed, and the read itself would not fail. So this test compares the bases
+/// one by one.
 #[test]
 fn sequences_survive_reference_based_compression() {
     let dir = scratch("crambases");
@@ -736,8 +752,8 @@ fn sequences_survive_reference_based_compression() {
     }
 }
 
-/// Compressing read-order input produces a file that is slow to write, larger than the BAM, and
-/// useless for region queries. Refusing up front beats discovering that after hours.
+/// Input in read order makes a file that is slow to write, larger than the BAM, and of no use for
+/// a region query. To refuse it at the start is better than to find that out after hours.
 #[test]
 fn unsorted_input_is_refused_before_compressing() {
     let dir = scratch("cramunsorted");
@@ -802,9 +818,10 @@ fn cancellation_stops_cram_emission() {
     assert!(matches!(err, AnalysisError::Cancelled));
 }
 
-/// A secondary alignment with `SEQ: *` — legal SAM, and what minimap2 emits, since only the
-/// primary carries the bases. It can not be encoded as differences from the reference, so it is
-/// dropped and counted rather than panicking the writer from inside noodles.
+/// A secondary alignment with `SEQ: *`. That is legal SAM, and it is what minimap2 gives, because
+/// the primary alignment alone carries the bases. The code can not encode it as a difference from
+/// the reference. So it drops that record and counts it. Without that, the writer would panic from
+/// inside noodles.
 #[test]
 fn cram_drops_a_secondary_record_that_carries_no_sequence() {
     let dir = scratch("cram-secondary");
@@ -832,8 +849,9 @@ fn cram_drops_a_secondary_record_that_carries_no_sequence() {
     assert_eq!(result.sequenceless_dropped, 1, "the secondary is dropped, and counted");
 }
 
-/// The same shape on a *primary* is a read going missing, not a redundant record, so it fails
-/// loudly instead of being absorbed into a drop count.
+/// The same shape on a *primary* alignment means that a read goes missing. It is not a record that
+/// says nothing new. So the code fails loudly there, and it does not put that record into a count
+/// of drops.
 #[test]
 fn cram_refuses_a_primary_record_that_carries_no_sequence() {
     let dir = scratch("cram-primary-noseq");
@@ -866,9 +884,10 @@ fn cram_refuses_a_primary_record_that_carries_no_sequence() {
     );
 }
 
-/// Finalising moves the marked BAM into place and indexes it — across *several* contigs, which is
-/// the shape that can not be indexed as CRAM: every slice straddling a contig boundary is
-/// multi-reference, and `cram::fs::index` decodes those against an empty reference repository.
+/// The last step moves the marked BAM into place and makes its index. This test covers *more than
+/// one* contig, which is the shape that the code can not index as a CRAM. Every slice that crosses
+/// a contig boundary holds more than one reference, and `cram::fs::index` decodes those against an
+/// empty reference repository.
 #[test]
 fn finalizing_moves_the_bam_into_place_and_indexes_it() {
     use super::finalize::{bai_path, finalize_bam};
@@ -908,11 +927,12 @@ fn finalizing_moves_the_bam_into_place_and_indexes_it() {
     assert_eq!(read_back.len(), 60, "every record survives finalising");
 }
 
-// ---- completeness ---------------------------------------------------------
+// ---- is the file complete -------------------------------------------------
 //
-// `is_complete_bam` is what `navigator-app`'s realignment resume trusts when it decides whether a
-// killed attempt's 60 GB intermediate can be picked up or has to be re-derived over several hours.
-// Getting it wrong in either direction is expensive, so both directions are pinned here.
+// The realignment resume in `navigator-app` trusts `is_complete_bam`. That answer decides one
+// thing. Can the app take up the 60 GB intermediate of a run that somebody killed, or must it
+// derive that file again over some hours? A wrong answer in either direction costs much, so this
+// section holds both directions.
 
 #[test]
 fn a_finished_bam_is_complete() {
@@ -924,8 +944,9 @@ fn a_finished_bam_is_complete() {
     assert!(crate::postprocess::is_complete_bam(&path));
 }
 
-/// The case this exists for: a writer that was killed mid-stream. The file is large, plausible,
-/// and readable up to the cut — only the end-of-file marker distinguishes it from a good one.
+/// This is the case that the check exists for: somebody killed a writer in the middle of its
+/// stream. The file is large, it looks correct, and a reader can read it up to the cut. Only the
+/// end-of-file marker separates it from a good file.
 #[test]
 fn a_truncated_bam_is_not_complete() {
     let dir = scratch("complete-truncated");
@@ -950,8 +971,9 @@ fn a_missing_or_empty_file_is_not_complete() {
     assert!(!crate::postprocess::is_complete_bam(&empty));
 }
 
-/// The writers the pipeline actually uses go through `bamio`, which now paces its flushes and
-/// syncs on the way out. Whatever that path does, what it leaves behind has to read as complete.
+/// The writers that the pipeline uses go through `bamio`, which now paces its flushes and its
+/// syncs on the way out. Whatever that path does, the file that it leaves must read as
+/// complete.
 #[test]
 fn what_the_pipeline_writes_reads_as_complete() {
     let dir = scratch("complete-pipeline");

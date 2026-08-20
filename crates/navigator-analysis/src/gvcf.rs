@@ -1,24 +1,27 @@
 //! Read called haploid bases at target positions from a GATK ploidy-1 GVCF.
 //!
-//! The `ytree` pipeline archives a per-sample chrY/chrM GVCF (HaplotypeCaller
-//! `--sample-ploidy 1 -ERC GVCF`) next to each CRAM. Those GVCFs already contain exactly
-//! what [`crate::caller::call_bases_at`] would recompute by walking the (multi-GB) CRAM at
-//! every haplotree position — the *observed haploid base* at each site. Reading the small
-//! GVCF instead of the CRAM is the fast path for haplogroup placement.
+//! The `ytree` pipeline keeps a chrY and chrM GVCF for each sample, beside each CRAM. It comes
+//! from HaplotypeCaller with `--sample-ploidy 1 -ERC GVCF`. Those GVCFs already hold exactly what
+//! [`crate::caller::call_bases_at`] would compute again, by a walk over the CRAM, which is some
+//! GB, at every haplotree position. That is the *observed haploid base* at each site. To read the
+//! small GVCF, and not the CRAM, is the fast path of a haplogroup placement.
 //!
-//! GVCF semantics (ploidy 1, `<NON_REF>` model):
-//! - **Variant record** (`ALT` has a real allele besides `<NON_REF>`):
-//!   `GT=1` → the sample carries the ALT. SNP → that base is the *derived* observation;
-//!   indel → confident but not a usable SNP base (skipped). `GT=0` → confident hom-ref
-//!   (an *ancestral* observation at a multiallelic emit site).
-//! - **Ref block** (`ALT=<NON_REF>`, `GT=0`, `END=` in INFO): every position in `[POS,END]`
-//!   was called hom-ref (ancestral) at the block's confidence.
+//! Here is what a GVCF means, at ploidy 1, under the `<NON_REF>` model:
 //!
-//! This module decodes the GVCF to two facts per target: the *derived base* where one was
-//! called, and whether the site was *callable* at all. [`assemble_calls`] then turns those
-//! into the `position → observed base` map [`crate::haplo::score`] consumes — using the
-//! tree's ancestral allele for callable-but-not-variant sites (on the native build the
-//! reference base == the tree's ancestral allele, so no FASTA lookup is needed).
+//! - A **variant record** has a real allele in `ALT`, beside `<NON_REF>`. `GT=1` means that the
+//!   sample carries the ALT. At a SNP, that base is the *derived* observation. At an indel, the
+//!   call is confident, but it gives no usable SNP base, so the code skips it. `GT=0` means a
+//!   confident hom-ref, which is an *ancestral* observation at a site with more than two alleles.
+//! - A **ref block** has `ALT=<NON_REF>`, `GT=0`, and an `END=` in its INFO. Every position in
+//!   `[POS,END]` got a hom-ref, which is ancestral, at the confidence of that block.
+//!
+//! This module decodes the GVCF to two facts at each target. The first is the *derived base*,
+//! where the caller called one. The second is whether the site was *callable* at all.
+//!
+//! [`assemble_calls`] then turns those into the `position → observed base` map that
+//! [`crate::haplo::score`] reads. At a site that is callable and not a variant, it uses the
+//! ancestral allele of the tree. On the native build the reference base equals that ancestral
+//! allele, so the code needs no lookup in the FASTA.
 
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
@@ -28,10 +31,11 @@ use noodles::bgzf;
 
 use crate::error::AnalysisError;
 
-/// Confidence thresholds for trusting a GVCF call. Ref blocks are gated on `MIN_DP`
-/// (falling back to `DP`) and `GQ`; variant records on `DP`/`GQ`. Defaults are permissive
-/// enough for low-coverage HiFi (the pipeline's ref blocks carry GQ 70–99) while rejecting
-/// genuinely unsupported sites.
+/// The confidence thresholds that a GVCF call must meet. A ref block goes through a gate on
+/// `MIN_DP`, or on `DP` when `MIN_DP` is absent, and on `GQ`. A variant record goes through a gate
+/// on `DP` and `GQ`. The defaults are open enough for HiFi data at a low coverage, where the ref
+/// blocks of the pipeline carry a GQ of 70 to 99. They still refuse a site that the data does not
+/// support at all.
 #[derive(Debug, Clone, Copy)]
 pub struct GvcfReadParams {
     pub min_dp: u32,
@@ -44,14 +48,14 @@ impl Default for GvcfReadParams {
     }
 }
 
-/// The two facts decoded per target position from the GVCF.
+/// The two facts that the code decodes from the GVCF at each target position.
 #[derive(Debug, Clone, Default)]
 pub struct CalledBases {
     /// SNP-derived ALT base (uppercase) at target sites where the sample carries a
     /// single-base ALT (`GT=1`).
     pub variant_bases: HashMap<i64, char>,
-    /// Target positions the GVCF confidently called (a passing ref block, a hom-ref
-    /// variant emit, or a confident SNP) — i.e. *not* a no-call.
+    /// The target positions where the GVCF made a confident call. That is a ref block that passes
+    /// the gate, a hom-ref variant record, or a confident SNP. None of these is a no-call.
     pub callable: HashSet<i64>,
 }
 
@@ -66,17 +70,19 @@ pub fn read_called_bases(
     read_called_bases_from(bgzf::io::Reader::new(file), contig, targets, params)
 }
 
-/// Decode core over any `BufRead` (plain-text VCF in tests). Streams the whole file —
-/// these GVCFs are small (chrY ~3 MB, chrM ~6 KB) and the targets are a few thousand
-/// scattered positions, so a single linear pass beats per-target tabix seeks.
+/// The decode core, over any `BufRead`. A test gives it a plain-text VCF. It streams the whole
+/// file. These GVCFs are small, at about 3 MB for chrY and about 6 KB for chrM. The targets are a
+/// few thousand positions spread over the contig. So one linear pass is faster than a tabix seek
+/// at each target.
 pub fn read_called_bases_from<R: BufRead>(
     mut reader: R,
     contig: &str,
     targets: &HashSet<i64>,
     params: &GvcfReadParams,
 ) -> Result<CalledBases, AnalysisError> {
-    // Sorted targets so a ref block's [POS, END] span resolves by binary search instead of
-    // iterating the (potentially thousands-wide) block.
+    // The targets come in sorted order, so a binary search resolves the [POS, END] span of a ref
+    // block. Without that, the code would walk the block, and a block can hold thousands of
+    // positions.
     let mut sorted: Vec<i64> = targets.iter().copied().collect();
     sorted.sort_unstable();
 
@@ -159,7 +165,8 @@ pub fn read_called_bases_from<R: BufRead>(
                 out.callable.insert(pos);
                 continue;
             }
-            // GT carries an ALT. First real ALT (skip the trailing <NON_REF>).
+            // The GT carries an ALT. Take the first real ALT, and skip the <NON_REF> at the
+            // end.
             let alt0 = alt.split(',').find(|a| *a != "<NON_REF>").unwrap_or("");
             if refa.len() == 1 && alt0.len() == 1 {
                 let b = alt0.as_bytes()[0].to_ascii_uppercase();
@@ -168,29 +175,35 @@ pub fn read_called_bases_from<R: BufRead>(
                     out.callable.insert(pos);
                 }
             }
-            // An indel ALT at a (SNP) tree position is left as a no-call rather than
-            // asserted ancestral — conservative; avoids a false ancestral refutation.
+            // An indel ALT at a tree position, which is a SNP, stays a no-call. The code does not
+            // call it ancestral. That is the careful direction, and it prevents a false ancestral
+            // call that would contradict a branch.
         }
     }
     Ok(out)
 }
 
-/// One target's diploid call from a GATK gVCF: the two alleles at a variant site, or a confident
-/// hom-ref ref block (the caller supplies the reference allele — from the panel — at a hom-ref site,
-/// since the gVCF's ref block only stores the base at its start position).
+/// The diploid call of one target, from a GATK gVCF. It is the two alleles at a variant site, or a
+/// confident hom-ref ref block. At a hom-ref site the caller gives the reference allele, and it
+/// takes that from the panel. The ref block of a gVCF stores the base at its start position
+/// alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GvcfDiploid {
     /// Both alleles the sample carries at a variant record (uppercase A/C/G/T), from `GT`.
     Genotype(char, char),
-    /// Covered by a passing hom-ref block — homozygous for the reference allele.
+    /// A hom-ref block that passes the gate covers this site. It is homozygous for the reference
+    /// allele.
     HomRef,
 }
 
-/// Genotype a set of panel targets (grouped by contig, each **sorted**) from a **diploid** GATK gVCF
-/// in a single linear pass — the autosomal (ploidy-2) counterpart to [`read_called_bases`]. Variant
-/// records yield the `GT` alleles; passing ref blocks yield [`GvcfDiploid::HomRef`]; uncovered,
-/// low-quality, indel, or `<NON_REF>`-allele sites are left absent (no-call). Transparently reads a
-/// plain or gzip/BGZF gVCF.
+/// Genotype a set of panel targets from a **diploid** GATK gVCF, in one linear pass. The targets
+/// come in groups by contig, and each group is **sorted**. This is the autosomal counterpart, at
+/// ploidy 2, of [`read_called_bases`].
+///
+/// A variant record gives the `GT` alleles. A ref block that passes the gate gives
+/// [`GvcfDiploid::HomRef`]. A site that no record covers, one of low quality, an indel, or one
+/// whose allele is `<NON_REF>`, stays absent, which is a no-call. This reads a plain gVCF, and a
+/// gzip or BGZF one, and the caller sees no difference.
 pub fn read_diploid_calls(
     gvcf: &Path,
     targets_by_contig: &HashMap<String, Vec<i64>>,
@@ -200,8 +213,9 @@ pub fn read_diploid_calls(
     read_diploid_calls_from(reader, targets_by_contig, params)
 }
 
-/// Decode core over any `BufRead` (plain-text gVCF in tests). One linear pass; a whole-genome gVCF is
-/// large but reading it is far cheaper than decoding the CRAM it was called from.
+/// The decode core, over any `BufRead`. A test gives it a plain-text gVCF. It makes one linear
+/// pass. A gVCF over the whole genome is large. But to read it costs much less than a decode of
+/// the CRAM that the caller called it from.
 pub fn read_diploid_calls_from<R: BufRead>(
     mut reader: R,
     targets_by_contig: &HashMap<String, Vec<i64>>,
@@ -247,7 +261,8 @@ pub fn read_diploid_calls_from<R: BufRead>(
         let idxs: Vec<&str> = gt.split(['/', '|']).collect();
 
         if alt == "<NON_REF>" {
-            // Ref block: confident hom-ref over [POS, END]. Require an all-ref GT (0/0).
+            // A ref block: a confident hom-ref over [POS, END]. The GT must be all-ref, which is
+            // 0/0.
             if idxs.iter().any(|a| *a != "0") {
                 continue;
             }
@@ -288,13 +303,14 @@ pub fn read_diploid_calls_from<R: BufRead>(
                 Some(i) => i,
                 None => continue,
             };
-            // A single index (a haploid emit on an autosome) is read as homozygous.
+            // One index alone, which is a haploid record on an autosome, counts as homozygous.
             let i1: usize = idxs.get(1).and_then(|s| s.parse().ok()).unwrap_or(i0);
             if let (Some(a), Some(b)) = (allele_at(i0), allele_at(i1)) {
                 out.insert((chrom.to_string(), pos), GvcfDiploid::Genotype(a, b));
             }
-            // An indel / `<NON_REF>` allele at a target is left as a no-call (absent), never
-            // asserted hom-ref — conservative, same as the haploid path.
+            // An indel allele at a target, and a `<NON_REF>` one, stay a no-call, and the map
+            // does not hold them. The code never calls them hom-ref. That is the careful
+            // direction, and the haploid path does the same.
         }
     }
     Ok(out)
@@ -313,11 +329,15 @@ pub struct GvcfSnv {
     pub gq: u32,
 }
 
-/// Stream **every** confident derived single-base SNV on `contig` from a ploidy-1 GVCF — the whole
-/// chrY variant set, not just tree targets. GATK's HaplotypeCaller does local haplotype reassembly,
-/// which resolves sites a pileup caller can't (misaligned ref reads → false ~50/50), so reading the
-/// GVCF recovers private SNVs the de-novo pileup caller drops. Ref blocks, hom-ref, and indel records
-/// are skipped; records are gated on `params.min_dp` / `params.min_gq`.
+/// Stream **every** confident derived single-base SNV on `contig`, from a ploidy-1 GVCF. That is
+/// the whole variant set of chrY, and not the tree targets alone.
+///
+/// The HaplotypeCaller of GATK does a local reassembly of the haplotypes. That resolves a site
+/// where a pileup caller can not, such as one where misaligned reference reads give a false 50/50.
+/// So a read of the GVCF recovers a private SNV that the de-novo pileup caller drops.
+///
+/// The code skips a ref block, a hom-ref record and an indel record. It gates the other records on
+/// `params.min_dp` and `params.min_gq`.
 pub fn read_derived_snvs(gvcf: &Path, contig: &str, params: &GvcfReadParams) -> Result<Vec<GvcfSnv>, AnalysisError> {
     let file = std::fs::File::open(gvcf).map_err(|e| AnalysisError::io(gvcf, e))?;
     read_derived_snvs_from(bgzf::io::Reader::new(file), contig, params)
@@ -405,13 +425,18 @@ pub fn read_derived_snvs_from<R: BufRead>(
     Ok(out)
 }
 
-/// Per-target genotype evidence for the branch-report tool. Unlike [`read_called_bases`] /
-/// [`read_derived_snvs`] this is **not gated** on depth/quality — a spot-check report wants to show
-/// low-confidence evidence too (the *call* comes from a separate, gated pass). A target covered by a
-/// confident `<NON_REF>` ref block reports `refblock: true` with the block `GQ` (DP/AD omitted — those
-/// are the "full" MIN_DP columns); a variant record reports `DP`, `AD = (ref, carried-alt)`, and `GQ`.
-/// A variant record overrides a ref block at the same position; positions with no covering record are
-/// absent from the map (no-call).
+/// The genotype evidence at each target, for the branch-report tool.
+///
+/// [`read_called_bases`] and [`read_derived_snvs`] gate on the depth and the quality. This function
+/// does **not**. A report that somebody uses to check one branch wants to see the evidence of low
+/// confidence too. The *call* itself comes from a separate pass, and that pass does gate.
+///
+/// A target that a confident `<NON_REF>` ref block covers reports `refblock: true`, with the `GQ`
+/// of that block. It leaves out the DP and the AD, because those are the "full" MIN_DP columns. A
+/// variant record reports `DP`, `AD = (ref, the alt that the sample carries)`, and `GQ`.
+///
+/// A variant record wins over a ref block at the same position. A position that no record covers
+/// is absent from the map, which is a no-call.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GvcfSiteEvidence {
     /// Carried GVCF allele index: `0` = hom-ref/ancestral, `≥1` = a derived ALT, `None` = missing GT.
@@ -422,7 +447,8 @@ pub struct GvcfSiteEvidence {
     pub refblock: bool,
 }
 
-/// Read per-target [`GvcfSiteEvidence`] from a ploidy-1 GVCF (ungated). See [`GvcfSiteEvidence`].
+/// Read a [`GvcfSiteEvidence`] at each target, from a ploidy-1 GVCF, with no gate. See
+/// [`GvcfSiteEvidence`].
 pub fn read_site_evidence(
     gvcf: &Path,
     contig: &str,
@@ -521,17 +547,23 @@ pub fn read_site_evidence_from<R: BufRead>(
     Ok(out)
 }
 
-/// Assemble the `position → observed base` map [`crate::haplo::score`] consumes from the
-/// decoded GVCF facts. A variant (derived) base wins; otherwise a callable hom-ref site takes
-/// the **reference genome base** at that position (`ref_base`); otherwise the position is a
-/// no-call and is omitted.
+/// Build the `position → observed base` map that [`crate::haplo::score`] reads, from the facts
+/// that the code decoded out of the GVCF.
 ///
-/// `ref_base` must be the *reference* base, not the tree ancestral — the two differ wherever
-/// the reference itself carries a derived allele. CHM13's Y is HG002 (haplogroup J1, deep in
-/// the tree), so at every backbone SNP shared by J1 and the sample the GVCF emits a ref block
-/// (hom-ref == reference == *derived*), and assuming ancestral there would silently break the
-/// descent. This mirrors [`crate::caller::call_bases_at`], which reads the actual base off the
-/// reads (== the reference base at a hom-ref site).
+/// A variant base, which is the derived one, wins. Otherwise a callable hom-ref site takes the
+/// **base of the reference genome** at that position, which is `ref_base`. Otherwise the position
+/// is a no-call, and the map leaves it out.
+///
+/// `ref_base` must be the *reference* base, and not the ancestral allele of the tree. The two
+/// differ wherever the reference itself carries a derived allele.
+///
+/// The Y of CHM13 is HG002, which is haplogroup J1, deep in the tree. So at every backbone SNP
+/// that J1 shares with the sample, the GVCF gives a ref block. There hom-ref equals the reference,
+/// and it equals the *derived* allele. To read ancestral there would break the descent, and nobody
+/// would see it happen.
+///
+/// This has the same shape as [`crate::caller::call_bases_at`], which reads the base off the reads
+/// themselves. At a hom-ref site that base is the reference base.
 pub fn assemble_calls(called: &CalledBases, ref_base: &HashMap<i64, char>) -> HashMap<i64, char> {
     let mut calls: HashMap<i64, char> = HashMap::with_capacity(called.callable.len());
     for &pos in &called.callable {
@@ -552,9 +584,10 @@ fn format_field<'a>(format: &str, sample: &'a str, key: &str) -> Option<&'a str>
     sample.split(':').nth(idx)
 }
 
-/// Whether a record passes the `GQ` gate. GQ is only enforced when the record **carries** it — a
-/// `bcftools mpileup` call set has no `GQ` (`GT:PL:DP:AD`), and gating an absent GQ as 0 would drop
-/// every site. A GATK gVCF does carry GQ, so its low-confidence sites are still filtered.
+/// True when a record passes the `GQ` gate. The gate applies only when the record **carries** a
+/// GQ. A call set from `bcftools mpileup` has no `GQ`, because its format is `GT:PL:DP:AD`. To
+/// read an absent GQ as 0 would drop every site. A GATK gVCF does carry a GQ, so this gate still
+/// removes its sites of low confidence.
 fn gq_passes(format: &str, sample: &str, params: &GvcfReadParams) -> bool {
     match format_field(format, sample, "GQ").and_then(|s| s.parse::<u32>().ok()) {
         Some(gq) => gq >= params.min_gq,
@@ -597,7 +630,8 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
     #[test]
     fn derived_snvs_streams_snps_skips_blocks_indels_and_other_contigs() {
         let v = read_derived_snvs_from(SAMPLE_GVCF.as_bytes(), "chrY", &GvcfReadParams::default()).unwrap();
-        // The two chrY SNVs, in order; the ref block, the A>AT indel, and the chrM SNV are skipped.
+        // The two chrY SNVs, in order. The code skips the ref block, the A>AT indel, and the chrM
+        // SNV.
         let got: Vec<(i64, char, char)> = v.iter().map(|s| (s.position, s.reference, s.alternate)).collect();
         assert_eq!(got, vec![(2459921, 'G', 'A'), (2477255, 'C', 'T')]);
         // AD = 0,18,0 → alt-depth 18, af 1.0.
@@ -713,11 +747,13 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
         assert_eq!(targets_in_range(&s, 40, 100), &[40]);
     }
 
-    /// Real-data smoke test: decode the pipeline's actual bgzipped chrY GVCF for HG00096
-    /// over a dense synthetic target grid across the non-PAR span. Validates real bgzf
-    /// inflation + record parsing at scale (thousands of records). No-ops when the NAS
-    /// file is not mounted, so it is safe on any machine. Run with:
-    ///   cargo test -p navigator-analysis gvcf -- --ignored --nocapture
+    /// A smoke test on real data. It decodes the bgzipped chrY GVCF of the pipeline, for HG00096,
+    /// over a dense synthetic grid of targets across the non-PAR span. It checks the real bgzf
+    /// inflation, and the parse of the records, at scale, over thousands of records.
+    ///
+    /// It does nothing when the NAS file is not mounted, so it is safe on any machine. Run it
+    /// with:
+    ///   `cargo test -p navigator-analysis gvcf -- --ignored --nocapture`
     #[test]
     #[ignore = "reads a NAS file; run explicitly"]
     fn real_chr_y_gvcf_decodes() {
@@ -726,7 +762,7 @@ chrM\t100\t.\tC\tT,<NON_REF>\t500\t.\tDP=30\tGT:AD:DP:GQ:PL\t1:0,30,0:30:99:510,
             eprintln!("skip: {} not mounted", path.display());
             return;
         }
-        // Every 50th base across the non-PAR region — a stand-in for tree positions.
+        // Every 50th base across the non-PAR region. It stands in for the tree positions.
         let t: HashSet<i64> = (2_458_321..62_122_809).step_by(50).collect();
         let c = read_called_bases(path, "chrY", &t, &GvcfReadParams::default()).unwrap();
         eprintln!(
