@@ -130,7 +130,7 @@ ING_OK = {
     # Technical Names from documents/STE-dictionary.md that end in -ing.
     "operating", "genotyping", "reasoning", "pacing", "sampling", "scaling", "streaming", "spilling", "phasing",
     "binning", "masking", "trimming", "clipping", "calling", "sorting", "merging",
-    "reading", "writing", "counting", "timing", "build", "backing", "copying",
+    "reading", "writing", "counting", "timing", "build", "backing", "copying", "loading",
 }
 # A sentence can end inside emphasis ("**...ancestries.**"), so step over any trailing
 # `*` or `_` before the space. Without this the rule reads two sentences as one and

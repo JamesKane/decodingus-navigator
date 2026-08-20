@@ -1,4 +1,5 @@
-//! Throwaway: dump an AncestryPanel's populations + per-population AF summary and pairwise Fst.
+//! A throwaway tool. It dumps an AncestryPanel's populations, the AF summary of each one, and the
+//! Fst of each pair.
 use navigator_analysis::ancestry::AncestryPanel;
 
 fn main() -> anyhow::Result<()> {
@@ -14,7 +15,8 @@ fn main() -> anyhow::Result<()> {
     println!("populations: {:?}", panel.populations);
 
     let k = panel.populations.len();
-    // Per-pop: mean AF, and how many sites are exactly 0.0 (the builder's "no data" sentinel).
+    // For each population: the mean AF, and how many sites hold exactly 0.0, which is the
+    // builder's sentinel for "no data".
     let mut sum = vec![0.0f64; k];
     let mut zeros = vec![0usize; k];
     let mut fixed = vec![0usize; k]; // 0.0 or 1.0

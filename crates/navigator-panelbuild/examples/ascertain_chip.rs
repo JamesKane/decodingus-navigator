@@ -1,7 +1,9 @@
-//! Throwaway (Option A′ concept test): emit a copy of the ancient AF panel restricted to
-//! consumer-array-found out sites. Reads the rsIDs assayed by one or more consumer chip files,
-//! maps them to CHM13 (contig,pos) via the IBD panel (which carries rsid + CHM13 locus), and keeps
-//! only ancient-panel sites at those positions. Usage:
+//! A throwaway tool that tests the Option A′ concept. It writes a copy of the ancient AF panel
+//! that holds the sites a consumer array reaches, and no other.
+//!
+//! It reads the rsIDs that one consumer chip file, or more, assays. It maps each one to a CHM13
+//! (contig,pos) pair through the IBD panel, which carries an rsid with its CHM13 locus. It then
+//! keeps the ancient-panel sites at those positions alone. Usage:
 //!   ascertain_chip <ancient.bin> <ibd_panel.bin> <out.bin> <chip1.txt> [chip2.txt ...]
 use navigator_analysis::ancestry::AncestryPanel;
 use navigator_analysis::ibd_panel::IbdPanel;
@@ -35,7 +37,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Map assayed rsIDs -> CHM13 (contig,pos) via the IBD panel.
+    // Map each assayed rsID to a CHM13 (contig,pos) pair, through the IBD panel.
     let ibd = IbdPanel::from_bytes(&std::fs::read(&ibd_path)?).map_err(|e| anyhow::anyhow!("{e}"))?;
     let chip_loci: HashSet<(String, i64)> = ibd
         .sites

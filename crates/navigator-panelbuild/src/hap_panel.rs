@@ -1,15 +1,19 @@
-//! Build the phased-haplotype reference asset (`ancestry_haps_<build>.bin`) — the substrate the
-//! statistical phaser and the parent-split chromosome painter copy from.
+//! Build the phased-haplotype reference asset (`ancestry_haps_<build>.bin`). It is the substrate
+//! that the statistical phaser, and the parent-split chromosome painter, copy from.
 //!
-//! Unlike the AF panels (which read INFO allele counts or collapse GT to a 0/1/2 dosage), this
-//! builder keeps the **phase**: each `0|1` field of the phased 1000G matrix becomes two separate
-//! haplotype bits. Every 1000G sample contributes two haplotypes carrying its fine-population label
-//! (e.g. GBR, YRI). Only labelled samples enter (the related/unlabelled set is dropped), and only
-//! biallelic SNV sites — matching the AIM painting loci the matrix was already sliced to.
+//! An AF panel reads the INFO allele counts, or collapses a GT to a 0/1/2 dosage. This builder is
+//! different: it keeps the **phase**. Each `0|1` field of the phased 1000G matrix becomes two
+//! separate haplotype bits.
 //!
-//! Input is the **phased, 1000G-only** matrix `$TMP/1kgp.matrix.tsv.gz` (bcftools `%GT` retains the
-//! `|` separator) + its sample list, NOT the combined multi-source matrix: only 1000G is phased
-//! (AADR is pseudo-haploid, SGDP unphased), so those sources must not enter the copying reference.
+//! Every 1000G sample gives two haplotypes, and both carry its fine-population label, such as GBR
+//! or YRI. Only a labelled sample enters, and the builder drops the related and unlabelled set. It
+//! also takes only a biallelic SNV site, which matches the AIM painting loci that the matrix
+//! already holds.
+//!
+//! The input is the **phased matrix of 1000G alone**, `$TMP/1kgp.matrix.tsv.gz`, where bcftools
+//! `%GT` keeps the `|` separator, together with its sample list. It is NOT the combined matrix of
+//! many sources. 1000G alone carries a phase. AADR gives a pseudo-haploid call, and SGDP gives no
+//! phase. So those two sources must not enter the copying reference.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::BufRead;
@@ -26,17 +30,21 @@ const BUILD: &str = "chm13v2.0";
 
 #[derive(Parser)]
 pub struct HapPanelArgs {
-    /// Comma-separated PHASED genotype matrices (`CHROM POS REF ALT [GT...]`, GT keeps its `|` phase,
-    /// e.g. `0|1`). Multiple sources (e.g. 1000G + HGDP) are unioned over the **intersection** of
-    /// their biallelic-SNV sites (matching ref/alt). Each must be phased — pseudo-haplotypes from an
-    /// unphased source would be noisier copy templates and bias the copying LAI against it.
+    /// PHASED genotype matrices, separated by commas, in the form `CHROM POS REF ALT [GT...]`. A GT
+    /// keeps its `|` phase, as in `0|1`.
+    ///
+    /// More than one source, such as 1000G with HGDP, join over the **intersection** of their
+    /// biallelic-SNV sites, where the ref and the alt match. Every source must carry a phase. A
+    /// pseudo-haplotype from a source with no phase would be a noisier copy template, and it would
+    /// bias the copying LAI against that source.
     #[arg(long)]
     matrix: String,
-    /// Comma-separated sample-id files, one per `--matrix` source, in the same order.
+    /// Sample-id files, separated by commas, one for each `--matrix` source, in the same order.
     #[arg(long)]
     samples: String,
-    /// `sample<TAB>fine-pop` map (e.g. `NA12718  CEU`, `HGDP00511  French`). Samples absent here are
-    /// dropped; a sample's two haplotypes both carry its population label.
+    /// A `sample<TAB>fine-pop` map, such as `NA12718  CEU` or `HGDP00511  French`. The builder
+    /// drops a sample that this map does not hold. Both haplotypes of a sample carry its population
+    /// label.
     #[arg(long)]
     pops: PathBuf,
     /// Output path for the bincode `HaplotypeReference` (`ancestry_haps_<build>.bin`).
@@ -47,7 +55,7 @@ pub struct HapPanelArgs {
 /// `(contig, pos)` → `(ref, alt, per-sample (allele_a, allele_b))` for one phased source.
 type PhasedSites = HashMap<(String, i64), (char, char, Vec<(u8, u8)>)>;
 
-/// One phased reference source: its samples and its per-site phased genotypes.
+/// One phased reference source: its samples, and its phased genotype at each site.
 struct Source {
     samples: Vec<String>,
     sites: PhasedSites,
@@ -158,9 +166,10 @@ pub fn build_hap_panel(args: HapPanelArgs) -> Result<()> {
         .map(|(m, s)| load_source(m, s))
         .collect::<Result<_>>()?;
 
-    // Site set = the biallelic-SNV sites present in EVERY source with a matching ref/alt (so the two
-    // allele codings align across sources), position-sorted. Intersection keeps the packed reference
-    // rectangular without imputing sites a source lacks.
+    // The site set holds the biallelic-SNV sites that EVERY source has, with a ref and an alt that
+    // match. The allele codes then line up across the sources, and the code sorts the set by
+    // position. The intersection keeps the packed reference rectangular, and the builder never has
+    // to fill in a site that a source lacks.
     let (first, rest) = sources.split_first().expect("non-empty sources");
     let mut site_keys: Vec<(String, i64, char, char)> = first
         .sites
@@ -189,15 +198,17 @@ pub fn build_hap_panel(args: HapPanelArgs) -> Result<()> {
         })
         .collect();
 
-    // Populations (first-seen order) and haplotype rows (two per labelled sample), unioned across
-    // sources. Samples absent from the pop map are dropped.
+    // The populations, in the order that they first appear, and the haplotype rows, which are two
+    // for each labelled sample. Both join across the sources. The builder drops a sample that the
+    // pop map does not hold.
     let mut populations: Vec<String> = Vec::new();
     let mut pop_index: BTreeMap<String, u16> = BTreeMap::new();
     let mut rows: Vec<Vec<u8>> = Vec::new();
     let mut hap_pop: Vec<u16> = Vec::new();
     let mut per_source_labelled = vec![0usize; sources.len()];
     for (src_i, src) in sources.iter().enumerate() {
-        // Per-site aligned genotype vectors for this source (one map lookup per site, not per sample).
+        // The aligned genotype vector at each site, for this source. That is one map lookup for
+        // each site, and not one for each sample.
         let aligned: Vec<&Vec<(u8, u8)>> = site_keys
             .iter()
             .map(|(c, p, _, _)| &src.sites[&(c.clone(), *p)].2)

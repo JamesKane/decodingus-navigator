@@ -1,7 +1,10 @@
-//! Verify our own `qpadm_fit` (the app-path pooled-frequency estimator) reproduces the admixtools2
-//! Patterson-2022 result on James's real WGS. Builds an in-memory CHM13 frequency panel from the AADR
-//! `.traw` (per-individual, hg19) — reconciling each population's frequency to the CHM13 bed_alt
-//! orientation — plus James's genotypes, and runs `qpadm_fit`. Expect ~WHG 15 / EEF 45 / Steppe 41.
+//! Check that our own `qpadm_fit`, which is the pooled-frequency estimator on the app path, gives
+//! the admixtools2 Patterson-2022 result on James's real WGS.
+//!
+//! It builds a CHM13 frequency panel in memory, from the AADR `.traw`, which holds one column for
+//! each individual, on hg19. It reconciles the frequency of each population to the CHM13 bed_alt
+//! orientation. It adds James's genotypes, and runs `qpadm_fit`. Expect about WHG 15, EEF 45, and
+//! Steppe 41.
 //!   verify_qpadm_fit <pat.traw> <pat.ind> <rs_chm13.tsv> <rs_bedalt.tsv> <james.tsv>
 //! rs_chm13.tsv: `rsid<TAB>contig<TAB>pos` (CHM13); james.tsv: `rsid<TAB>contig<TAB>pos<TAB>dosage`.
 use navigator_analysis::ancestry::{qpadm_fit, AncestryPanel, PanelSite, Pop, Quartet, F4_BLOCK_BP};
@@ -35,7 +38,7 @@ fn main() -> anyhow::Result<()> {
     ];
     let pop_idx: HashMap<&str, usize> = pops.iter().enumerate().map(|(i, &p)| (p, i)).collect();
 
-    // .ind → label per traw sample column (skip the appended Target row).
+    // The .ind file gives a label for each traw sample column. Skip the Target row at the end.
     let labels: Vec<Option<usize>> = std::fs::read_to_string(ind)?
         .lines()
         .filter(|l| !l.is_empty())
@@ -82,7 +85,7 @@ fn main() -> anyhow::Result<()> {
         let Some(&ba) = bedalt.get(rsid) else { continue };
         let counted = f[4].as_bytes()[0];
         let alt = f[5].as_bytes()[0];
-        // Per-population sum of COUNTED-allele copies and called count.
+        // For each population, the sum of the COUNTED-allele copies, and the count of calls.
         let mut sum = vec![0.0f64; k];
         let mut n = vec![0u32; k];
         for (c, cell) in f[6..].iter().enumerate() {
@@ -96,7 +99,8 @@ fn main() -> anyhow::Result<()> {
         if n.contains(&0) {
             continue; // require all pops present at the site
         }
-        // Orient frequency to count bed_alt (matches James's raw dosage), reconciling COUNTED/ALT.
+        // Orient the frequency to count bed_alt, which matches James's raw dosage. That reconciles
+        // COUNTED against ALT.
         let flip = if ba == counted || comp(ba) == counted {
             false
         } else if ba == alt || comp(ba) == alt {
@@ -144,7 +148,7 @@ fn main() -> anyhow::Result<()> {
         populations: pops.iter().map(|s| s.to_string()).collect(),
         sites,
     };
-    // Cross-check f4 wiring compiles for this panel (unused sanity ref).
+    // A cross-check that the f4 code compiles for this panel. Nothing uses the reference.
     let _ = Quartet::new(Pop::Target, Pop::Ref(0), Pop::Ref(3), Pop::Ref(4));
 
     let sources = [0usize, 1, 2];

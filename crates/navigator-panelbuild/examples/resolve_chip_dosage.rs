@@ -1,9 +1,13 @@
-//! Resolve a consumer-chip raw-data file (23andMe / AncestryDNA) to CHM13-oriented panel dosages,
-//! for the panel-depth sweep's WGS-vs-chip STABILITY gate (sibling of `score_modern_from_tsv`).
-//! Reuses the *production* chip path — `chipprofile::{detect_build, autosomal_calls}` +
-//! `IbdPanel::resolve_chip` — so the dosages are byte-for-byte what the app would feed the ancestry
-//! estimators (palindromes dropped, alleles oriented to the CHM13 ref/alt). Emits
-//! `contig<TAB>pos<TAB>dosage` (0/1/2) that `score_modern_from_tsv` reads directly.
+//! Resolve a raw-data file from a consumer chip, such as 23andMe or AncestryDNA, to panel dosages
+//! oriented to CHM13. It feeds the WGS-against-chip STABILITY gate of the panel-depth sweep, and it
+//! is the companion of `score_modern_from_tsv`.
+//!
+//! It reuses the *production* chip path: `chipprofile::{detect_build, autosomal_calls}` with
+//! `IbdPanel::resolve_chip`. So the dosages are exactly what the app would give the ancestry
+//! estimators. It drops a palindrome, and orients each allele to the CHM13 ref and alt.
+//!
+//! It writes `contig<TAB>pos<TAB>dosage`, where a dosage is 0, 1, or 2, and
+//! `score_modern_from_tsv` reads that file directly.
 //!   resolve_chip_dosage <ibd_panel.bin> <chip.txt> <out.tsv>
 use navigator_analysis::ibd_panel::IbdPanel;
 use navigator_domain::chipprofile;

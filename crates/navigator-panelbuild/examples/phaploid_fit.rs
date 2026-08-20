@@ -1,10 +1,14 @@
-//! Lever-1 prototype (documents/design/ancient-ancestry-rebuild.md §5.1): does harmonizing the WGS target
-//! to the pseudo-haploid ancient references collapse the WGS-vs-chip stability split?
+//! A prototype for lever 1 (documents/design/ancient-ancestry-rebuild.md §5.1), with one question.
+//! Give the WGS target the same pseudo-haploid form as the ancient references. Does the split
+//! between the WGS answer and the chip answer then close?
 //!
-//! Genotypes one CHM13-native alignment at the ancient-panel sites (with allele depths), then fits
-//! the ancient admixture four ways: diploid vs read-level pseudo-haploid (sample one allele per site
-//! with P(alt)=alt_depth/depth), each over all sites vs transversions-only. Compare to the diploid
-//! consensus (~75% Steppe) and the chip (~58%).
+//! It genotypes one CHM13-native alignment at the ancient-panel sites, with allele depths. It then
+//! fits the ancient admixture four ways: diploid against read-level pseudo-haploid, and each of
+//! those over all sites against transversions alone. The pseudo-haploid form draws one allele at
+//! each site, with P(alt) = alt_depth/depth.
+//!
+//! Compare the result to the diploid consensus, which gives about 75% Steppe, and to the chip,
+//! which gives about 58%.
 //!   phaploid_fit <ancient.bin> <bam_or_cram> [reference.fa]
 use navigator_analysis::ancestry::{ancient_admixture_fit, AncestryPanel};
 use navigator_analysis::caller::{genotype_sites_all_contigs, HaploidCallerParams, Site, SiteGenotype};
@@ -14,7 +18,7 @@ fn is_transition(r: &str, a: &str) -> bool {
     matches!((r, a), ("A", "G") | ("G", "A") | ("C", "T") | ("T", "C"))
 }
 
-// Deterministic per-site draw of one allele, P(alt) = alt_depth/depth.
+// A deterministic draw of one allele at each site, with P(alt) = alt_depth/depth.
 fn draw_alt(contig: &str, pos: i64, ref_d: u32, alt_d: u32) -> Option<bool> {
     let total = ref_d + alt_d;
     if total == 0 {
@@ -90,7 +94,7 @@ fn main() -> anyhow::Result<()> {
     let dip: Vec<SiteGenotype> = gts.iter().filter(|g| g.dosage >= 0).cloned().collect();
     let dip_tv: Vec<SiteGenotype> = dip.iter().filter(|g| tv(g)).cloned().collect();
 
-    // Read-level pseudo-haploid: one allele per site → homozygous representation (0 or 2).
+    // Read-level pseudo-haploid: one allele at each site, which gives a homozygous form of 0 or 2.
     let phap: Vec<SiteGenotype> = gts
         .iter()
         .filter(|g| g.dosage >= 0)

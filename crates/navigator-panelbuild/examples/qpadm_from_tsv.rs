@@ -1,9 +1,13 @@
-//! qpAdm from an external caller's genotypes (documents/design/ancient-ancestry-rebuild.md §7): is the
-//! WGS batch effect our native caller, or the method? Reads a `contig<TAB>pos<TAB>dosage` TSV
-//! (dosage 0/1/2, -1 = no-call) — e.g. from a GATK4 VCF via
-//! `bcftools query -f '%CHROM\t%POS\t[%GT]\n'` mapped to dosages — matches it to the panel by
-//! (contig,pos), and runs qpadm_fit. Compare the weights to our caller's qpadm_check result on the
-//! same alignment.
+//! qpAdm over the genotypes of an external caller
+//! (documents/design/ancient-ancestry-rebuild.md §7). It answers one question: does the WGS batch
+//! effect come from our own caller, or from the method?
+//!
+//! It reads a `contig<TAB>pos<TAB>dosage` TSV, where a dosage is 0, 1, or 2, and -1 is a no-call.
+//! A GATK4 VCF can give one, through
+//! `bcftools query -f '%CHROM\t%POS\t[%GT]\n'` with the genotypes mapped to dosages. It matches
+//! that file to the panel by (contig,pos), and runs qpadm_fit.
+//!
+//! Compare the weights to the qpadm_check result of our own caller, on the same alignment.
 //!   qpadm_from_tsv <qpadm_panel.bin> <dosage.tsv>
 use navigator_analysis::ancestry::{qpadm_fit, AncestryPanel, F4_BLOCK_BP};
 use navigator_analysis::caller::SiteGenotype;

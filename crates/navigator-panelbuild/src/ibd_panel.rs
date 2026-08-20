@@ -1,13 +1,20 @@
-//! Build the chip-compatible IBD panel asset (`ibd_panel_<build>.bin`) — a multi-build,
-//! probe SNP set (ancestry-ibd-asset-wiring B2). Palindromes are RETAINED so WGS/ancestry can use
-//! them; only the chip path skips them (at resolve time) since an array's strand can't be oriented.
+//! Build the chip-compatible IBD panel asset (`ibd_panel_<build>.bin`), which is a probe SNP set
+//! that covers more than one build (ancestry-ibd-asset B2).
 //!
-//! Input is a tab-separated table with a **named header**; required columns are the rsID and the
-//! CHM13 locus; the GRCh37/GRCh38 loci are optional per row (blank ⇒ that build absent for the
-//! site). The multi-build coordinates must come from an **allele-aware** liftover (GATK
-//! `LiftoverVcf`, which reverse-complements + swaps REF/ALT on inverted chain blocks) so each
-//! build's `(REF, ALT)` are the same biological alleles — a CrossMap lift would silently corrupt
-//! ~3/4 of sites. This step parses that table and serializes (palindromes retained; resolve_chip skips them).
+//! The panel KEEPS a palindrome, so WGS and ancestry can use it. The chip path alone skips one, at
+//! resolve time, because nobody can orient the strand of an array.
+//!
+//! The input is a tab-separated table with a **named header**. Two columns are necessary: the rsID
+//! and the CHM13 locus. The GRCh37 and GRCh38 loci are optional on each row, and a blank means that
+//! the site has no locus on that build.
+//!
+//! The coordinates of each build must come from an **allele-aware** liftover. GATK `LiftoverVcf`
+//! is one: it reverse-complements the alleles, and swaps REF and ALT, on an inverted chain block.
+//! The `(REF, ALT)` pair of each build then holds the same two biological alleles. A CrossMap lift
+//! would corrupt about 3 sites in every 4, and say nothing.
+//!
+//! This step parses that table and serializes it. It keeps a palindrome, and `resolve_chip` skips
+//! one.
 //!
 //! ```text
 //! rsid  chm13_contig chm13_pos chm13_ref chm13_alt  grch37_contig grch37_pos grch37_ref grch37_alt  grch38_contig grch38_pos grch38_ref grch38_alt

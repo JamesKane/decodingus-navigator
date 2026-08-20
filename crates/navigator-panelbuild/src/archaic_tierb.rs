@@ -1,13 +1,13 @@
-//! Build the two **Tier B** assets — the African-outgroup position track and the genome-wide
-//! lineage-classification track. Design: `documents/design/ArchaicAncestry_Design.md` §4 (assets 2
-//! and 3), §5 (how they are used).
+//! Build the two **Tier B** assets: the African-outgroup position track, and the genome-wide
+//! lineage-classification track. For the design see
+//! `documents/design/ArchaicAncestry_Design.md`, §4 for assets 2 and 3, and §5 for their use.
 //!
-//! Both are delta-varint position streams (see `navigator_analysis::archaic::PositionStream`),
-//! because the outgroup track alone is ~67 M positions genome-wide and must neither be held in
-//! memory nor shipped as raw integers.
+//! Each one is a delta-varint position stream (see
+//! `navigator_analysis::archaic::PositionStream`). The outgroup track alone holds about 67 M
+//! positions genome-wide. Nothing can hold that in memory, and nobody can ship it as raw integers.
 //!
-//! As everywhere else in this pipeline, `bcftools` does the VCF decoding in `08_build_archaic.sh`
-//! and this crate consumes tab-separated tables, so the logic stays pure and testable.
+//! As everywhere else in this pipeline, `bcftools` decodes the VCF, in `08_build_archaic.sh`, and
+//! this crate reads tab-separated tables. So the logic stays pure, and a test can drive it.
 
 use std::collections::BTreeMap;
 use std::io::BufRead;
@@ -29,8 +29,8 @@ pub struct ArchaicOutgroupArgs {
     /// Produced by stage 08 from the 1000G-on-CHM13 `AC_AFR_unrel` INFO field.
     #[arg(long)]
     sites: PathBuf,
-    /// Minimum outgroup allele count a site needed to be listed (recorded in the asset for
-    /// provenance — the filtering itself happens upstream in bcftools).
+    /// The minimum outgroup allele count that a site needed, to reach this list. The asset records
+    /// it for provenance. bcftools applies the filter itself, further up the pipeline.
     #[arg(long, default_value_t = 1)]
     min_allele_count: u32,
     /// Output (bincode `ArchaicOutgroup`).
@@ -38,7 +38,7 @@ pub struct ArchaicOutgroupArgs {
     out: PathBuf,
 }
 
-/// Read `CHROM<TAB>POS` into per-contig sorted, deduplicated position lists.
+/// Read `CHROM<TAB>POS` into one sorted position list for each contig, with no duplicate.
 fn load_positions(path: &Path) -> Result<BTreeMap<String, Vec<i64>>> {
     let rdr = open_maybe_gz(path).with_context(|| format!("opening {}", path.display()))?;
     let mut by_contig: BTreeMap<String, Vec<i64>> = BTreeMap::new();
@@ -95,7 +95,8 @@ pub fn build_archaic_outgroup(args: ArchaicOutgroupArgs) -> Result<()> {
 
 #[derive(Parser)]
 pub struct ArchaicClassifyArgs {
-    /// The candidates table from `archaic-candidates` (GRCh37 payload, carries the per-archaic calls).
+    /// The candidates table from `archaic-candidates`. Its payload is GRCh37, and it carries the
+    /// call of each archaic genome.
     #[arg(long)]
     candidates: PathBuf,
     /// The lifted BED (target build) for those candidates.
@@ -104,15 +105,17 @@ pub struct ArchaicClassifyArgs {
     /// Output (bincode `ArchaicClassify`).
     #[arg(long)]
     out: PathBuf,
-    /// Restrict to these contigs (comma-separated, e.g. `chr21,chr22`) — for fast iteration.
+    /// Take these contigs alone, separated by commas, as in `chr21,chr22`. It makes a test run
+    /// quick.
     #[arg(long)]
     contigs: Option<String>,
 }
 
 pub fn build_archaic_classify(args: ArchaicClassifyArgs) -> Result<()> {
-    // The classification track is the genome-wide superset of the marker panel: every polarized
-    // candidate with an archaic hom-derived call, BEFORE the frequency filters that select markers.
-    // Segment attribution wants maximum diagnostic density, not the found out marker subset.
+    // The classification track holds a genome-wide superset of the marker panel. It takes every
+    // polarized candidate with an archaic hom-derived call, BEFORE the frequency filters that
+    // select the markers. Segment attribution needs the highest diagnostic density, and not the
+    // smaller marker subset.
     let want: Option<Vec<String>> = args
         .contigs
         .as_ref()
@@ -131,10 +134,11 @@ pub fn build_archaic_classify(args: ArchaicClassifyArgs) -> Result<()> {
         }
         let Ok(idx) = f[0].parse::<usize>() else { continue };
         let derived = f[5].chars().next().unwrap_or('N');
-        // Re-derive the class from the stored per-genome call tokens: index 3 is Denisova.
-        // Same rule as `classify_diagnostic`: lineage-specificity needs the OTHER lineage called
-        // homozygous-ancestral ('0'), never merely missing ('.'). Tokens: 0 hom-ancestral,
-        // 1 het, 2 hom-derived, . no-call; index 3 is Denisova.
+        // Derive the class again from the stored call token of each genome. Index 3 is Denisova.
+        //
+        // The rule is the same as in `classify_diagnostic`. For a lineage to be specific, the OTHER
+        // lineage must have a homozygous-ancestral call, which is '0'. A missing call, which is
+        // '.', is not enough. The tokens are: 0 hom-ancestral, 1 het, 2 hom-derived, and . no-call.
         let calls: Vec<char> = f[6].chars().collect();
         let derived_at = |c: Option<&char>| matches!(c, Some('1') | Some('2'));
         let ancestral_at = |c: Option<&char>| matches!(c, Some('0'));
@@ -223,12 +227,13 @@ pub fn build_archaic_classify(args: ArchaicClassifyArgs) -> Result<()> {
 
 #[derive(Parser)]
 pub struct ArchaicCallableArgs {
-    /// Callable regions as BED on the target build — the intersection of the four archaic genomes'
-    /// `FilterBed` masks, lifted. Where all four archaic genomes are callable is where a
-    /// private-variant excess can be interpreted at all.
+    /// The callable regions as BED on the target build. They are the intersection of the
+    /// `FilterBed` masks of the four archaic genomes, after a lift. An excess of private variants
+    /// means something only where all four archaic genomes are callable.
     #[arg(long)]
     bed: PathBuf,
-    /// Window width the counts are binned at; must match the segment caller's `window_bp`.
+    /// The window width that the counts go into. It must equal the `window_bp` of the segment
+    /// caller.
     #[arg(long, default_value_t = 1000)]
     window_bp: i64,
     /// Output (bincode `ArchaicCallable`).
@@ -239,7 +244,7 @@ pub struct ArchaicCallableArgs {
 pub fn build_archaic_callable(args: ArchaicCallableArgs) -> Result<()> {
     anyhow::ensure!(args.window_bp > 0, "--window-bp must be positive");
     let rdr = open_maybe_gz(&args.bed).with_context(|| format!("opening {}", args.bed.display()))?;
-    // Accumulate callable bases per window, per contig.
+    // Add up the callable bases in each window, for each contig.
     let mut spans: BTreeMap<String, Vec<(i64, i64)>> = BTreeMap::new();
     for line in rdr.lines() {
         let line = line?;
@@ -272,7 +277,7 @@ pub fn build_archaic_callable(args: ArchaicCallableArgs) -> Result<()> {
         let n = (((last - start) / args.window_bp) + 1) as usize;
         let mut callable_bp = vec![0u16; n];
         for (s, e) in v {
-            // Split the interval across the windows it touches, saturating per window.
+            // Split the interval across the windows that it touches, and saturate each window.
             let (mut cur, end) = (s, e);
             while cur < end {
                 let idx = ((cur - start) / args.window_bp) as usize;

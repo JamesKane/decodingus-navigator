@@ -1,8 +1,12 @@
-//! Throwaway: does the ancient panel's per-source zero-frequency rate depend on modern MAF?
-//! Joins the ancient AF panel (WHG/ANF/Steppe) to the super-pop panel's EUR frequency by
-//! (contig, pos), bins ancient sites by EUR MAF, and reports the per-source "freq==0" rate and
-//! mean freq per bin. Hypothesis: at low modern MAF, the sparse sources (esp. WHG) collapse to 0
-//! while Steppe stays nonzero, so the EM over-weights Steppe there.
+//! A throwaway tool, with one question: does the zero-frequency rate of each ancient source depend
+//! on the modern MAF?
+//!
+//! It joins the ancient AF panel, which holds WHG, ANF, and Steppe, to the EUR frequency of the
+//! super-pop panel, by (contig, pos). It puts the ancient sites into bins by EUR MAF. For each bin
+//! it reports the "freq==0" rate and the mean freq of every source.
+//!
+//! The idea to test: at a low modern MAF, a sparse source, and WHG above all, falls to 0, while
+//! Steppe stays above 0. The EM would then give Steppe too much weight there.
 use navigator_analysis::ancestry::AncestryPanel;
 use std::collections::HashMap;
 

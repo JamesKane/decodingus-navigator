@@ -1,7 +1,9 @@
-//! Throwaway: emit a copy of the ancient AF panel keeping only sites whose modern EUR MAF (from the
-//! super-pop panel, joined by contig/pos) is >= a threshold. Validates the ascertainment-floor fix
-//! without rebuilding from the AADR: point NAVIGATOR_ANCESTRY_FREQ_ANCIENT at the output and re-run
-//! the stability gate.
+//! A throwaway tool. It writes a copy of the ancient AF panel that holds only the sites whose
+//! modern EUR MAF reaches a threshold. That MAF comes from the super-pop panel, joined by contig
+//! and pos.
+//!
+//! It checks the ascertainment-floor fix, and nobody has to build the panel again from the AADR.
+//! Point NAVIGATOR_ANCESTRY_FREQ_ANCIENT at the output, and run the stability gate again.
 use navigator_analysis::ancestry::AncestryPanel;
 use std::collections::HashMap;
 

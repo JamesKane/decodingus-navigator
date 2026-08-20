@@ -1,18 +1,23 @@
-//! Build the archaic percentile reference (`archaic_marker_dist_<build>.bin`) — Asset 4 of
+//! Build the archaic percentile reference (`archaic_marker_dist_<build>.bin`), which is Asset 4 of
 //! `documents/design/ArchaicAncestry_Design.md` §4.
 //!
-//! Tier A reports a **count**, and a bare count means nothing without a cohort to place it against
-//! (design §1: 23andMe pairs its count with a percentile for exactly this reason). This builder
-//! scores every reference sample through the same `count_archaic_markers` arithmetic the app will
-//! run on a subject, so the percentile compares like with like.
+//! Tier A reports a **count**, and a count on its own means nothing without a cohort to set it
+//! against. Design §1 gives the reason: 23andMe shows a percentile beside its count for exactly
+//! this purpose.
 //!
-//! **Counts are stored per fine population, not pre-reduced to super-populations** (design §9 Q3).
-//! v1 renders the percentile against a super-population — keying it to the user's inferred fine
-//! ancestry would let an ancestry error silently move the archaic headline — but keeping the
-//! fine-grained counts means a fine-pop percentile later is a re-keying, not an asset rebuild.
+//! So this builder scores every reference sample through the same `count_archaic_markers`
+//! arithmetic that the app runs on a subject. The percentile then compares like with like.
 //!
-//! Input is a `bcftools query` matrix at the panel sites plus the 1kGP `sample/pop/super_pop`
-//! panel, mirroring how every other stage feeds this crate.
+//! **The asset holds a count for each fine population, and does not reduce them to
+//! super-populations first** (design §9 Q3).
+//!
+//! Version 1 draws the percentile against a super-population. To key it to the user's inferred
+//! fine ancestry would let an error in that ancestry move the archaic figure, with no warning. But
+//! the fine-grained counts stay, so a fine-pop percentile later needs only a new key, and not a new
+//! asset.
+//!
+//! The input is a `bcftools query` matrix at the panel sites, plus the 1kGP `sample/pop/super_pop`
+//! panel. That is how every other stage feeds this crate.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::BufRead;
@@ -26,29 +31,34 @@ use crate::pca::{open_maybe_gz, write_bin};
 
 #[derive(Parser)]
 pub struct ArchaicDistArgs {
-    /// The built marker panel (`archaic_markers_<build>.bin`). The distribution is only meaningful
-    /// against the panel it was scored with, so its site count is recorded in the output.
+    /// The marker panel that a build produced (`archaic_markers_<build>.bin`). The distribution
+    /// means something only against the panel that scored it, so the output records that panel's
+    /// site count.
     #[arg(long)]
     panel: PathBuf,
     /// Genotype matrix at the panel sites: `CHROM POS REF ALT [GT...]` from `bcftools query`.
     #[arg(long)]
     matrix: PathBuf,
-    /// Sample ids, one per line, in the matrix's column order (`bcftools query -l`).
+    /// The sample ids, one on each line, in the column order of the matrix (`bcftools query -l`).
     #[arg(long)]
     samples: PathBuf,
-    /// 1kGP-style panel: `sample<TAB>pop<TAB>super_pop[...]`, with a header line. Samples absent
-    /// here are dropped — which is also how related samples are excluded, since the unrelated-2504
-    /// panel is the one that carries labels.
+    /// A panel in the 1kGP style: `sample<TAB>pop<TAB>super_pop[...]`, with a header line. The
+    /// builder drops a sample that this panel does not hold. That is also how a related sample
+    /// stays out, because the unrelated-2504 panel is the one that carries the labels.
     #[arg(long)]
     pops: PathBuf,
     /// Extra site sets to measure variance inflation on, as `contig<TAB>pos` files (repeatable).
     ///
-    /// Load-bearing for real users: a random subset of the panel and a real capture/chip subset of
-    /// the SAME size behave very differently, because array content is spatially clustered and so
-    /// retains far more linkage. Measured here: a random 3 % subset gives EUR 2.0x inflation while
-    /// the real 1240k intersection (2.6 % of the panel) gives 5.3x. Feeding the actual site sets
-    /// users have — 1240k, a consumer-array manifest — keeps the interpolation honest instead of
-    /// under-inflating and producing over-confident percentiles.
+    /// This matters for a real user. A random subset of the panel, and a real capture or chip
+    /// subset of the SAME size, behave very differently. The content of an array sits in clusters
+    /// along the genome, so it holds far more linkage.
+    ///
+    /// Measured here: a random 3 % subset gives EUR an inflation of 2.0x, and the real 1240k
+    /// intersection, which is 2.6 % of the panel, gives 5.3x.
+    ///
+    /// So give this option the site sets that users have, such as 1240k, or the manifest of a
+    /// consumer array. The interpolation then stays honest. Without them it inflates too little,
+    /// and every percentile becomes over-confident.
     #[arg(long = "subset-sites")]
     subset_sites: Vec<PathBuf>,
     /// Output (bincode `ArchaicCountDistribution`).
@@ -66,7 +76,7 @@ fn load_pops(path: &Path) -> Result<HashMap<String, (String, String)>> {
         if f.len() < 3 {
             continue;
         }
-        // Skip a header row without needing to know its exact spelling.
+        // Skip a header row, and do not depend on its exact text.
         if i == 0 && f[0].eq_ignore_ascii_case("sample") {
             continue;
         }
@@ -97,9 +107,10 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
         pops.len()
     );
 
-    // Derived allele per site, keyed by position — the matrix and the panel agree on CHM13
-    // coordinates, but the matrix states its own REF/ALT, so the derived BASE is what we match on
-    // (a dosage would invert wherever the panel's orientation put the derived allele on REF).
+    // The derived allele at each site, keyed by position. The matrix and the panel agree on the
+    // CHM13 coordinates, but the matrix carries its own REF and ALT. So the match uses the derived
+    // BASE. A dosage would invert at every site where the panel's orientation puts the derived
+    // allele on REF.
     let derived: HashMap<(&str, i64), char> = panel
         .sites
         .iter()
@@ -111,7 +122,8 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
         })
         .collect();
 
-    // Panel-order index per site, so per-site frequencies land in the order the runtime indexes by.
+    // The panel-order index of each site, so a frequency lands in the order that the runtime uses
+    // as its index.
     let site_index: HashMap<(&str, i64), usize> = panel
         .sites
         .iter()
@@ -121,7 +133,7 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
 
     let mut totals = vec![0u32; samples.len()];
     let mut scored = vec![0u32; samples.len()];
-    // Derived-allele counts per (site, super-population), for the frequency table.
+    // The derived-allele count of each (site, super-population) pair, for the frequency table.
     let mut super_of: Vec<Option<String>> = Vec::with_capacity(samples.len());
     for smp in &samples {
         super_of.push(pops.get(smp).map(|(_, sup)| sup.clone()));
@@ -133,15 +145,19 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
     let mut ac = vec![vec![0u32; panel.len()]; supers.len()];
     let mut an = vec![vec![0u32; panel.len()]; supers.len()];
 
-    // Variance inflation is measured at a LADDER of densities, not once: it is a strong function of
-    // how many sites per linked haplotype block a subset samples (52x on the full panel vs 5.3x on a
-    // 2.6% subset of the same panel), so a single factor applied to a chip would over-widen the
-    // spread ~3x and squash every percentile toward 50. Nested deterministic subsets by site index,
-    // accumulated in the same pass as everything else.
+    // The code measures the variance inflation at a LADDER of densities, and not once.
+    //
+    // That inflation depends strongly on how many sites a subset takes from each linked haplotype
+    // block. It is 52x on the full panel, and 5.3x on a subset that is 2.6% of the same panel.
+    //
+    // So one factor, applied to a chip, would widen the spread about 3 times too much, and push
+    // every percentile toward 50. The rungs are deterministic subsets by site index, one inside the
+    // next, and this pass accumulates them with everything else.
     const DENSITY_LADDER: [f32; 5] = [1.0, 0.3, 0.1, 0.03, 0.01];
     let in_rung = |site_idx: usize, rung: usize| -> bool {
-        // Deterministic and nested: rung r keeps every site whose index falls in the first
-        // `density` fraction of a fixed stride, so a sparser rung is a subset of a denser one.
+        // The rungs are deterministic, and one sits inside the next. Rung r keeps every site whose
+        // index falls in the first `density` part of a fixed stride. So a sparser rung is a subset
+        // of a denser one.
         let d = DENSITY_LADDER[rung];
         ((site_idx as u64).wrapping_mul(2654435761) % 1_000_000) < (d as f64 * 1_000_000.0) as u64
     };
@@ -199,8 +215,8 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
         let (Some(r), Some(a)) = (f[2].chars().next(), f[3].chars().next()) else {
             continue;
         };
-        // Which allele index carries the derived base? A site whose alleles match neither is a
-        // matrix/panel disagreement and is skipped rather than guessed.
+        // Which allele index carries the derived base? A site whose alleles match neither one is a
+        // disagreement between the matrix and the panel. The code skips it, and makes no guess.
         let (r, a) = (r.to_ascii_uppercase(), a.to_ascii_uppercase());
         let derived_idx = if a == d {
             1u8
@@ -259,7 +275,7 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
         "no matrix row matched the panel — wrong build or wrong matrix?"
     );
 
-    // Group per fine population, keeping counts sorted so a percentile is a cheap scan.
+    // Group by fine population, and keep the counts sorted, so a percentile is one quick scan.
     let mut by_pop: BTreeMap<(String, String), Vec<u32>> = BTreeMap::new();
     let mut unlabelled = 0usize;
     for (i, s) in samples.iter().enumerate() {
@@ -300,8 +316,8 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
         eprintln!("  {sup:<5} n={n:<5} mean archaic copies {:.0}", *sum as f64 / *n as f64);
     }
 
-    // Per-site derived-allele frequency per super-population. Sites with no called sample in a
-    // population get 0.0 and contribute nothing to either the mean or the variance.
+    // The derived-allele frequency at each site, for each super-population. A site with no called
+    // sample in a population gets 0.0, and adds nothing to the mean or to the variance.
     let site_freqs: Vec<Vec<f32>> = ac
         .iter()
         .zip(&an)
@@ -313,11 +329,12 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
         })
         .collect();
 
-    // LD variance inflation: how much wider the cohort's real spread is than an
-    // independent-sites model predicts. Archaic alleles travel in linked blocks, so the binomial
-    // sum understates the variance; without this correction every percentile is pushed toward the
-    // extremes and an ordinary person looks remarkable. Measured on the full panel, applied to any
-    // subset.
+    // The LD variance inflation: how much wider the cohort's real spread is than a model of
+    // independent sites predicts.
+    //
+    // An archaic allele travels in a linked block, so the binomial sum states too small a variance.
+    // Without this correction, every percentile moves toward an extreme, and an ordinary person
+    // looks remarkable. The code measures it on the full panel, and applies it to any subset.
     let mut variance_inflation: Vec<Vec<(f32, f32)>> = Vec::with_capacity(supers.len());
     for (pi, sup) in supers.iter().enumerate() {
         let mut ladder: Vec<(f32, f32)> = Vec::new();
@@ -349,7 +366,7 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
                 / panel.len().max(1) as f32;
             ladder.push((realised, (observed / predicted).max(1.0) as f32));
         }
-        // Real site sets: same computation, but over the actual mask rather than a hash rung.
+        // A real site set: the same computation, but over the real mask, and not a hash rung.
         for (m, (label, mask)) in subset_masks.iter().enumerate() {
             let predicted: f64 = site_freqs[pi]
                 .iter()
@@ -376,11 +393,13 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
             );
             ladder.push((realised, inflation));
         }
-        // Real subsets DISPLACE the synthetic rungs rather than joining them. Mixing the two makes
-        // the ladder non-monotonic — EUR measures 5.3x on the real 2.6% subset but only 2.0x on a
-        // random 3% one — so interpolating across both would *lower* the inflation as density rises
-        // and hand chip users over-confident percentiles. Keep the full-panel rung (that one is
-        // real by construction) plus every measured subset.
+        // A real subset TAKES THE PLACE OF the synthetic rungs, and does not join them. With both
+        // in one ladder, the ladder no longer climbs in order: EUR measures 5.3x on the real 2.6%
+        // subset, but only 2.0x on a random 3% one.
+        //
+        // An interpolation across both would then *lower* the inflation as the density rises, and
+        // give a chip user an over-confident percentile. So keep the full-panel rung, which is real
+        // by construction, plus every subset that the code measured.
         if !subset_masks.is_empty() {
             let full = ladder.first().copied();
             let mut kept: Vec<(f32, f32)> = ladder.drain(DENSITY_LADDER.len().min(ladder.len())..).collect();
@@ -398,8 +417,8 @@ pub fn build_archaic_dist(args: ArchaicDistArgs) -> Result<()> {
         variance_inflation.push(ladder);
     }
 
-    // Reuse the shared hash helper rather than a local sha2 impl (the codebase deliberately
-    // consolidated every sha256 onto du_bio::hash).
+    // Use the shared hash helper, and not a local sha2 implementation. The codebase brought every
+    // sha256 onto du_bio::hash on purpose.
     let panel_fingerprint = navigator_analysis::manifest::sha256_hex(&bytes);
 
     let dist = ArchaicCountDistribution {

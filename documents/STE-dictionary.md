@@ -64,7 +64,7 @@ permitted: genotyping array · mapping · sequencing · painting · matching · 
 indexing · logging · polling · signing · setting · heading · listing · ordering · padding · casing ·
 tracking · caching · processing · operating system · pacing · sampling · scaling · streaming ·
 spilling · phasing · binning · masking · trimming · clipping · calling · sorting · merging ·
-reasoning model · streaming · copying
+reasoning model · streaming · copying · loading
 
 ## Technical Verbs
 

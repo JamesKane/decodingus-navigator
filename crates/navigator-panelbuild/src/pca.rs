@@ -1,16 +1,20 @@
-//! Build the fine-grained (26-population) ancestry assets from a genotype matrix produced by
-//! `bcftools query -f '%CHROM\t%POS\t%REF\t%ALT[\t%GT]\n'` over the 1000G genotype VCFs, plus
-//! the sample order and sample→population map:
+//! Build the fine-grained ancestry assets, over 26 populations. The inputs are a genotype matrix,
+//! the sample order, and a sample→population map. `bcftools query -f
+//! '%CHROM\t%POS\t%REF\t%ALT[\t%GT]\n'` makes that matrix from the 1000G genotype VCFs. The assets
+//! are:
 //!
-//! * `pca`           — PCA loadings (per-SNP loadings+means, per-population centroids+variances).
-//! * `fine-panel`    — an [`AncestryPanel`] with per-fine-population alt-allele frequencies.
-//! * `ancient-panel` — an [`AncestryPanel`] over the deep ancestral sources (WHG/ANF/Steppe), with
-//!   a per-population call floor so every retained site has genuine frequencies in every source.
+//! * `pca` gives the PCA loadings: a loading and a mean for each SNP, and a centroid and a
+//!   variance for each population.
+//! * `fine-panel` gives an [`AncestryPanel`] with the alt-allele frequency of each fine population.
+//! * `ancient-panel` gives an [`AncestryPanel`] over the deep ancestral sources, WHG, ANF, and
+//!   Steppe. It applies a call floor to each population, so every site that stays has a true
+//!   frequency in every source.
 //!
-//! PCA uses the sample-space Gram matrix: with the centred genotype matrix `X` (samples × sites),
-//! `X·Xᵀ = U·Σ²·Uᵀ`, so eigendecomposing the small Gram gives `U`/`Σ`; the per-SNP loadings are
-//! `V = Xᵀ·U·Σ⁻¹` and reference sample coordinates `R = U·Σ`, from which each population's
-//! centroid and per-component variance follow.
+//! The PCA works on the Gram matrix in sample space. Take the centred genotype matrix `X`, of
+//! samples by sites. Then `X·Xᵀ = U·Σ²·Uᵀ`, so an eigendecomposition of the small Gram gives `U`
+//! and `Σ`. The loading of each SNP is `V = Xᵀ·U·Σ⁻¹`, and the reference sample coordinates are
+//! `R = U·Σ`. The centroid of each population, and its variance on each component, follow from
+//! those.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
@@ -25,11 +29,13 @@ use navigator_analysis::ancestry::{AncestryPanel, PanelSite, PcaLoadings};
 
 #[derive(Parser)]
 pub struct PcaArgs {
-    /// Genotype matrix/matrices `CHROM POS REF ALT GT...` per line (bcftools query), optionally
-    /// .gz. Comma-separated to merge several panels by site (e.g. 1000G + SGDP).
+    /// One genotype matrix, or more, with `CHROM POS REF ALT GT...` on each line, from a bcftools
+    /// query. Each one can be .gz. Separate them with commas to merge more than one panel by site,
+    /// such as 1000G with SGDP.
     #[arg(long)]
     matrix: String,
-    /// Sample-ID files (one per line), comma-separated and parallel to `--matrix`.
+    /// Sample-ID files, with one id on each line, separated by commas, in the order of
+    /// `--matrix`.
     #[arg(long)]
     samples: String,
     /// `sample<TAB>population` for every sample across the matrices.
@@ -44,25 +50,29 @@ pub struct PcaArgs {
     /// Drop sites whose call rate across samples is below this.
     #[arg(long, default_value_t = 0.9)]
     min_call_rate: f64,
-    /// Projection mode: a file of population codes (one per line) whose samples build the PCA
-    /// basis. All other labelled samples are *projected* onto that basis rather than shaping it
-    /// — use it to keep sparse/biased ancient references (which would distort the axes) out of
-    /// the decomposition while still placing them in PC space. Absent → every sample is basis.
+    /// Projection mode. This is a file of population codes, one on each line, whose samples build
+    /// the PCA basis. Every other labelled sample *projects* onto that basis, and does not shape
+    /// it.
+    ///
+    /// Use it to keep a sparse or biased ancient reference out of the decomposition, where it
+    /// would bend the axes. Such a reference still gets a place in PC space. With no file, every
+    /// sample builds the basis.
     #[arg(long)]
     basis_pops: Option<PathBuf>,
 }
 
 #[derive(Parser)]
 pub struct AncientPanelArgs {
-    /// Genotype matrix/matrices `CHROM POS REF ALT GT...` per line, optionally .gz.
-    /// Comma-separated to merge several panels by site.
+    /// One genotype matrix, or more, with `CHROM POS REF ALT GT...` on each line, and each one can
+    /// be .gz. Separate them with commas to merge more than one panel by site.
     #[arg(long)]
     matrix: String,
-    /// Sample-ID files (one per line), comma-separated and parallel to `--matrix`.
+    /// Sample-ID files, with one id on each line, separated by commas, in the order of
+    /// `--matrix`.
     #[arg(long)]
     samples: String,
-    /// `sample<TAB>population` for every sample across the matrices (the pipeline's pop map;
-    /// samples whose population is not in `--components` are ignored).
+    /// A `sample<TAB>population` line for every sample in the matrices. This is the pipeline's pop
+    /// map. The builder ignores a sample whose population is not in `--components`.
     #[arg(long)]
     pops: PathBuf,
     /// The deep source (**left**) populations, comma-separated and **in panel-axis order**
@@ -70,62 +80,82 @@ pub struct AncientPanelArgs {
     /// alongside EHG and CHG makes the mixture ill-conditioned.
     #[arg(long, default_value = "WHG,ANF,Steppe")]
     components: String,
-    /// The qpAdm **outgroup (right)** populations, comma-separated, appended to the panel axis after
-    /// the sources (e.g. `YRI,CHB,GIH,Karitiana,Papuan,Onge`). f4 admixture measures the target's
-    /// allele-sharing *against* these; they carry no weight but must be differentially related to the
-    /// sources. They get their own, lower call floor (`--outgroup-min-called`) because good outgroups
-    /// are often single high-quality genomes (Onge n≈2 is standard). Empty → a sources-only panel
-    /// (the old frequency-EM asset). See documents/design/ancient-ancestry-rebuild.md §7.4.
+    /// The qpAdm **outgroup**, or right, populations, separated by commas. They go on the panel
+    /// axis after the sources, as in `YRI,CHB,GIH,Karitiana,Papuan,Onge`.
+    ///
+    /// f4 admixture measures how many alleles the target has in common *against* these. They carry
+    /// no weight, but each one must relate to the sources by a different amount.
+    ///
+    /// They have their own call floor, `--outgroup-min-called`, which is lower. A good outgroup is
+    /// often one high-quality genome, and Onge with n near 2 is normal.
+    ///
+    /// With no value, the builder makes a panel of sources alone, which is the old frequency-EM
+    /// asset. See documents/design/ancient-ancestry-rebuild.md §7.4.
     #[arg(long, default_value = "")]
     outgroups: String,
     /// Output AncestryPanel (bincode).
     #[arg(long)]
     out: PathBuf,
-    /// Keep a site only if **every source** has at least this many called samples there. This is the
-    /// point of a separate ancient asset: ancient genomes are sparse, and a site with no calls in a
-    /// source has no frequency — it must be dropped, not silently recorded as 0.0.
+    /// Keep a site only when **every source** has this many called samples there, or more.
+    ///
+    /// This is why the ancient asset is separate. An ancient genome is sparse, and a site with no
+    /// call in a source has no frequency. The builder must drop such a site. It must not record
+    /// 0.0, and say nothing.
     #[arg(long, default_value_t = 8)]
     min_called: usize,
-    /// The call floor for **outgroups** (see `--outgroups`), separate from the source `--min-called`.
-    /// Lower because qpAdm outgroups are legitimately small (a handful of present-day genomes per
-    /// lineage); the f4 jackknife accounts for the frequency noise. A site survives only if every
-    /// source clears `--min-called` **and** every outgroup clears this.
+    /// The call floor for an **outgroup**, see `--outgroups`. It is separate from the source floor
+    /// `--min-called`, and it is lower.
+    ///
+    /// A qpAdm outgroup is correctly small: a few present-day genomes for each lineage. The f4
+    /// jackknife handles the noise in the frequency. A site stays only when every source passes
+    /// `--min-called` **and** every outgroup passes this floor.
     #[arg(long, default_value_t = 2)]
     outgroup_min_called: usize,
-    /// **Ascertainment floor (Option A′).** Restrict the panel to the CHM13 `contig<TAB>pos` sites in
-    /// this file — a consumer-array manifest. Allele-frequency admixture is only valid when the
-    /// sample and the reference share ascertainment; the AADR/1240k universe includes capture sites
-    /// consumer chips do not assay, and on those the deep estimate is unstable (a WGS sample reads
-    /// ~90% Steppe where its own chip reads ~58%). Intersecting with the sites arrays actually assay
-    /// makes the estimate agree across data sources. See `documents/design/ancient-ancestry-rebuild.md` §4.
-    /// Optional: omit to build the full (unascertained) panel.
+    /// **The ascertainment floor (Option A′).** Hold the panel to the CHM13 `contig<TAB>pos` sites
+    /// in this file, which is the manifest of a consumer array.
+    ///
+    /// Allele-frequency admixture holds only when the sample and the reference share their
+    /// ascertainment. The AADR and 1240k universe covers capture sites that a consumer chip does
+    /// not assay. On those sites the deep estimate is unstable: a WGS sample reads about 90%
+    /// Steppe, where that person's own chip reads about 58%.
+    ///
+    /// An intersection with the sites that an array assays makes the estimate agree across data
+    /// sources. See `documents/design/ancient-ancestry-rebuild.md` §4. It is optional: leave it out
+    /// to build the full panel, with no ascertainment.
     #[arg(long)]
     ascertain_sites: Option<PathBuf>,
-    /// Also write an inspection TSV (contig, pos, ref, alt, per-pop AF and called count).
+    /// Also write a TSV to read: contig, pos, ref, alt, and the AF and call count of each
+    /// population.
     #[arg(long)]
     sites_tsv: Option<PathBuf>,
-    /// CHM13 reference FASTA (indexed, `.fai` alongside). When given, each site is oriented so its
-    /// `reference_allele` is the **actual CHM13 base** (swapping ref↔alt and each freq→1−freq where
-    /// the input labels are reversed). Without this, a panel built off a *lifted* sites file inherits
-    /// the source build's allele labels, which are ~30% swapped relative to CHM13 — self-consistent
-    /// for its own fit, but NOT joinable with the other CHM13-canonical assets (docs §7.16).
+    /// The CHM13 reference FASTA, with its `.fai` index beside it.
+    ///
+    /// With this file, the builder orients each site so that its `reference_allele` is the **real
+    /// CHM13 base**. Where the input labels are the other way round, it exchanges ref and alt, and
+    /// changes each freq to 1−freq.
+    ///
+    /// Without it, a panel that comes from a *lifted* sites file keeps the allele labels of the
+    /// source build. About 30% of those are the other way round from CHM13. Such a panel is
+    /// consistent with itself, for its own fit, but nothing can join it to the other assets, which
+    /// are CHM13-canonical (docs §7.16).
     #[arg(long)]
     reference: Option<PathBuf>,
 }
 
 #[derive(Parser)]
 pub struct FinePanelArgs {
-    /// Genotype matrix/matrices `CHROM POS REF ALT GT...` per line, optionally .gz.
-    /// Comma-separated to merge several panels by site.
+    /// One genotype matrix, or more, with `CHROM POS REF ALT GT...` on each line, and each one
+    /// can be .gz. Separate them with commas to merge more than one panel by site.
     #[arg(long)]
     matrix: String,
-    /// Sample-ID files (one per line), comma-separated and parallel to `--matrix`.
+    /// Sample-ID files, with one id on each line, separated by commas, in the order of
+    /// `--matrix`.
     #[arg(long)]
     samples: String,
     /// `sample<TAB>population` for every sample across the matrices.
     #[arg(long)]
     pops: PathBuf,
-    /// Output AncestryPanel (bincode) with per-fine-population allele frequencies.
+    /// The output AncestryPanel, in bincode, with the allele frequency of each fine population.
     #[arg(long)]
     out: PathBuf,
     /// Drop sites whose call rate across samples is below this.
@@ -135,7 +165,8 @@ pub struct FinePanelArgs {
 
 /// One matrix indexed by site: `(contig,pos) → (ref, alt, per-sample dosages)`.
 type SiteMap = HashMap<(String, i64), (char, char, Vec<i8>)>;
-/// Loaded + merged matrices: combined sample IDs, site metadata, and per-site dosage rows.
+/// The matrices after a load and a merge: the combined sample IDs, the site metadata, and one
+/// dosage row for each site.
 type LoadedMatrix = (Vec<String>, Vec<SiteMeta>, Vec<Vec<i8>>);
 
 /// A genotyped site: coordinates + the biallelic ref/alt the genotypes are relative to.
@@ -206,7 +237,8 @@ fn distinct_fine_pops(samples: &[String], fine: &HashMap<String, String>) -> Vec
     set.into_iter().collect()
 }
 
-/// A set of population codes from a file (one per line; `#` comments and blanks skipped).
+/// A set of population codes from a file, with one code on each line. The parser skips a `#`
+/// comment and a blank line.
 fn load_pop_set(path: &Path) -> Result<HashSet<String>> {
     let mut s = String::new();
     open_maybe_gz(path)?.read_to_string(&mut s)?;
@@ -217,10 +249,12 @@ fn load_pop_set(path: &Path) -> Result<HashSet<String>> {
         .collect())
 }
 
-/// Project sample `s` onto the basis loadings `v` (sites × k), centring each site by the basis mean.
-/// Defers to the runtime's [`navigator_analysis::ancestry::project_centered`] so a sparse ancient
-/// reference and a query sample land on the same scale as the basis coordinates — the un-shrink
-/// policy has exactly one definition.
+/// Project sample `s` onto the basis loadings `v`, of sites by k, and centre each site by the basis
+/// mean.
+///
+/// It calls the runtime's [`navigator_analysis::ancestry::project_centered`]. So a sparse ancient
+/// reference, and a query sample, land on the same scale as the basis coordinates. The un-shrink
+/// policy then has exactly one definition.
 fn project_sample(rows: &[Vec<i8>], s: usize, basis_means: &[f64], v: &DMatrix<f64>, k: usize) -> Vec<f64> {
     let centered = rows
         .iter()
@@ -230,7 +264,8 @@ fn project_sample(rows: &[Vec<i8>], s: usize, basis_means: &[f64], v: &DMatrix<f
     navigator_analysis::ancestry::project_centered(rows.len(), k, centered, |j, c| v[(j, c)])
 }
 
-/// Per-sample index into `pops` (its fine population), or `None` if unmapped.
+/// The index of each sample into `pops`, which is its fine population. It is `None` for a sample
+/// that the map does not hold.
 fn sample_pop_index(samples: &[String], fine: &HashMap<String, String>, pops: &[String]) -> Vec<Option<usize>> {
     samples
         .iter()
@@ -276,9 +311,11 @@ fn load_one(path: &Path, n_samples: usize) -> Result<SiteMap> {
     Ok(map)
 }
 
-/// Load and merge one or more matrices by site: combined samples = concatenation of each file's
-/// samples (in order); sites = those present in **all** matrices with combined call rate ≥
-/// `min_call_rate`; dosages concatenated in the same order. Sorted by (contig, pos).
+/// Load one matrix, or more, and merge them by site.
+///
+/// The combined samples are the samples of each file, one file after another, in order. The sites
+/// are the ones that **every** matrix holds, and whose combined call rate reaches `min_call_rate`.
+/// The dosages follow the same order as the samples. The output sorts by (contig, pos).
 fn load_combined(matrices: &[PathBuf], sample_files: &[PathBuf], min_call_rate: f64) -> Result<LoadedMatrix> {
     anyhow::ensure!(
         !matrices.is_empty() && matrices.len() == sample_files.len(),
@@ -342,8 +379,9 @@ pub fn build_pca(args: PcaArgs) -> Result<()> {
     let n_sites = metas.len();
     anyhow::ensure!(n_sites > 0, "no sites passed the call-rate filter");
 
-    // Projection mode: only `basis_pops` samples build the PCA basis; all other labelled
-    // samples are projected onto it. Absent → every sample is basis (original behaviour).
+    // Projection mode. The `basis_pops` samples alone build the PCA basis, and every other
+    // labelled sample projects onto it. With no file, every sample builds the basis, which is the
+    // first behaviour.
     let basis_set: Option<HashSet<String>> = match &args.basis_pops {
         Some(p) => Some(load_pop_set(p)?),
         None => None,
@@ -369,8 +407,9 @@ pub fn build_pca(args: PcaArgs) -> Result<()> {
     }
     let k = args.components.min(n_basis - 1).min(n_sites);
 
-    // Per-site mean dosage over the BASIS samples only — the centring used both for the basis
-    // decomposition and (stored in the asset) for projecting query samples at runtime.
+    // The mean dosage at each site, over the BASIS samples alone. The basis decomposition uses
+    // that centre, and so does the projection of a query sample at run time, which reads it from
+    // the asset.
     let mut basis_means = vec![0.0f64; n_sites];
     for (j, row) in rows.iter().enumerate() {
         let (sum, cnt) = basis_idx
@@ -417,9 +456,10 @@ pub fn build_pca(args: PcaArgs) -> Result<()> {
         rb.column_mut(c).scale_mut(sigma[c]);
     }
 
-    // Unified per-sample coordinates: basis samples take their decomposition rows; every other
-    // labelled sample is projected through V (centred by the basis means, with the same
-    // missing-data un-shrink as the runtime `project_pca`, so ancient/query coords share a scale).
+    // One set of coordinates for every sample. A basis sample takes its row from the
+    // decomposition. Every other labelled sample projects through V, centred by the basis means,
+    // with the same un-shrink for missing data that the runtime `project_pca` applies. So the
+    // ancient coordinates and the query coordinates share one scale.
     let mut coords = DMatrix::<f64>::zeros(n_samples, k);
     for (bi, &s) in basis_idx.iter().enumerate() {
         for c in 0..k {
@@ -436,7 +476,7 @@ pub fn build_pca(args: PcaArgs) -> Result<()> {
         }
     }
 
-    // Per-population centroid + diagonal variance over the unified coordinates.
+    // The centroid and the diagonal variance of each population, over the unified coordinates.
     let n_pops = pops.len();
     let mut centroids = vec![0.0f32; n_pops * k];
     let mut variances = vec![1.0f32; n_pops * k];
@@ -500,7 +540,8 @@ pub fn build_fine_panel(args: FinePanelArgs) -> Result<()> {
     let sample_pop = sample_pop_index(&samples, &fine, &pops);
     anyhow::ensure!(!metas.is_empty(), "no sites passed the call-rate filter");
 
-    // Per-site, per-population alt-allele frequency = Σ dosage / (2 · called) within the pop.
+    // The alt-allele frequency at each site, for each population: Σ dosage / (2 · called) inside
+    // that population.
     let n_pops = pops.len();
     let sites: Vec<PanelSite> = metas
         .iter()
@@ -550,21 +591,25 @@ pub fn build_fine_panel(args: FinePanelArgs) -> Result<()> {
     Ok(())
 }
 
-/// Build the **ancient** deep-source frequency panel: per-site alt-allele frequency for each of
-/// the deep sources (default WHG/ANF/Steppe), from the AADR genotype matrix.
+/// Build the **ancient** deep-source frequency panel: the alt-allele frequency at each site, for
+/// each deep source. The default sources are WHG, ANF, and Steppe, and the input is the AADR
+/// genotype matrix.
 ///
-/// This is deliberately a *separate asset* from `fine-panel` rather than a column subset of it.
-/// `build_fine_panel` writes `0.0` for a population with no called samples at a site, which is
-/// indistinguishable from a genuine "alt allele absent". For the 1000G fine populations that is
-/// nearly harmless (they are called almost everywhere); for ancient sources it is fatal — they are
-/// sparse and pseudo-haploid, so a large fraction of sites would enter the mixture as fake
-/// "frequency 0" evidence and the fitted proportions would track *missingness* rather than
-/// ancestry. Here a site survives only if **every** source has ≥ `min_called` calls, so every
-/// frequency in the emitted panel is backed by real observations.
+/// This is a *separate asset* from `fine-panel`, on purpose, and not a subset of its columns.
+/// `build_fine_panel` writes `0.0` for a population with no called sample at a site, and nothing
+/// separates that from a true "no alt allele here".
 ///
-/// Pseudo-haploid genotypes (AADR emits one sampled allele as a homozygous diploid call) still give
-/// an unbiased frequency: `E[dosage/2] = f`. Only the *variance* is inflated, which is why the call
-/// floor — not the diploid coding — is what matters.
+/// For a 1000G fine population that does almost no harm, because such a population has a call
+/// almost everywhere. For an ancient source it is fatal. An ancient source is sparse and
+/// pseudo-haploid, so a large part of the sites would enter the mixture as false "frequency 0"
+/// evidence. The fitted proportions would then follow the *missing data*, and not the ancestry.
+///
+/// Here a site stays only when **every** source has `min_called` calls or more. So a real
+/// observation stands behind every frequency in the panel.
+///
+/// A pseudo-haploid genotype still gives an unbiased frequency, and AADR writes one sampled allele
+/// as a homozygous diploid call: `E[dosage/2] = f`. Only the *variance* grows. That is why the call
+/// floor is what matters, and not the diploid form.
 pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
     let parse_list = |s: &str| -> Vec<String> {
         s.split(',')
@@ -583,7 +628,8 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
         comps.iter().collect::<std::collections::HashSet<_>>().len() == comps.len(),
         "a population appears in both --components and --outgroups"
     );
-    // Per-population call floor: sources use --min-called, outgroups the lower --outgroup-min-called.
+    // The call floor of each population. A source uses --min-called, and an outgroup uses the
+    // lower --outgroup-min-called.
     let floor: Vec<usize> = (0..comps.len())
         .map(|i| {
             if i < n_src {
@@ -595,9 +641,9 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
         .collect();
 
     let pop_of = load_fine_map(&args.pops)?;
-    // No global call-rate filter: the AADR matrix is mostly individuals we do not reference, so a
-    // matrix-wide call rate says nothing about the sources. The per-component floor below is the
-    // filter that matters.
+    // There is no call-rate filter over the whole matrix. Most individuals in the AADR matrix are
+    // ones that nothing here references, so a call rate across the matrix says nothing about the
+    // sources. The floor of each component, below, is the filter that matters.
     let (samples, metas, rows) = load_combined(&split_paths(&args.matrix), &split_paths(&args.samples), 0.0)?;
     anyhow::ensure!(!samples.is_empty(), "no samples");
     anyhow::ensure!(!metas.is_empty(), "no sites in the matrix");
@@ -655,7 +701,7 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
         }
         None => None,
     };
-    // Per-component running totals, for the build report.
+    // The cumulative total of each component, for the build report.
     let mut called_total = vec![0usize; k];
 
     let mut dropped_unascertained = 0usize;
@@ -709,10 +755,13 @@ pub fn build_ancient_panel(args: AncientPanelArgs) -> Result<()> {
         "no site cleared every population's call floor — lower --min-called/--outgroup-min-called or widen the groups",
     );
 
-    // Orient every site so reference_allele == the actual CHM13 base (docs §7.16). Sites are in
-    // matrix order (sorted by contig, then pos), so we load each contig's sequence once. Where the
-    // labels are reversed (CHM13 carries the labelled ALT), swap ref↔alt and flip each freq→1−freq;
-    // where neither allele matches the base (a liftover/allele mismatch), drop the site.
+    // Orient every site, so that reference_allele equals the real CHM13 base (docs §7.16). The
+    // sites come in matrix order, sorted by contig and then by pos, so the code loads the sequence
+    // of each contig once.
+    //
+    // Where the labels are the other way round, and CHM13 carries the labelled ALT, exchange ref
+    // and alt, and change each freq to 1−freq. Where neither allele equals the base, which is a
+    // mismatch from the liftover or the alleles, drop the site.
     if let Some(ref_path) = &args.reference {
         let mut cur = String::new();
         let mut seq: Vec<u8> = Vec::new();
@@ -821,9 +870,10 @@ mod tests {
         assert_eq!(idx, vec![Some(0), Some(1), Some(0)]);
     }
 
-    /// Projecting a sample onto a 1-component basis: with loadings all 1.0 and basis mean 1.0,
-    /// a fully-genotyped hom-alt sample lands at +n_sites; a half-missing one lands at the same
-    /// place after the n_sites/used un-shrink (not pulled toward the origin).
+    /// A projection of a sample onto a basis of one component. Every loading is 1.0, and the basis
+    /// mean is 1.0. A hom-alt sample with a genotype at every site lands at +n_sites. A sample that
+    /// is half missing lands at the same place, after the n_sites/used un-shrink, and nothing pulls
+    /// it toward the origin.
     #[test]
     fn project_sample_centres_and_unshrinks() {
         // rows[site][sample]; one projected sample (index 0), 4 sites.
