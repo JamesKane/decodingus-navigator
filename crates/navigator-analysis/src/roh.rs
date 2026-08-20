@@ -1,23 +1,32 @@
-//! Runs of homozygosity (ROH) / autozygosity detection — the endogamy & consanguinity signal.
+//! Detection of runs of homozygosity (ROH), which is autozygosity. That is the signal of endogamy
+//! and of consanguinity.
 //!
-//! **Spike (2026-07-22).** A 2-state hidden Markov model (Autozygous / Normal) over a subject's
-//! autosomal genotypes, mirroring the [`crate::ancestry::paint_local_ancestry`] HMM idiom
-//! (per-contig sorted sites, distance-scaled "reset-to-prior" transitions, log-space Viterbi +
-//! forward/backward posteriors). Runs of the Autozygous state are stitched into [`RohSegment`]s and
-//! rolled up into an [`RohSummary`] with the genome-wide inbreeding coefficient F_ROH.
+//! **This is a spike, from 2026-07-22.** It is a hidden Markov model with two states, Autozygous
+//! and Normal, over the autosomal genotypes of a subject.
 //!
-//! **Input substrate.** Feed the subject's autosomal-consensus genotypes
-//! (`consensus_genotypes(&DiploidProfile)` in `navigator-app`), which are called at the full 1240k
-//! IBD panel — a dense (~1.15M), neutral, biallelic common-SNP set with full 0/1/2 dosages. That is
-//! the density class array-based ROH tools (PLINK, BCFtools/RoH, detectRUNS) assume. Segment cM
-//! lengths and the F_ROH denominator come from the same [`GeneticMap`] the IBD path already loads.
+//! It has the same idiom as the HMM in [`crate::ancestry::paint_local_ancestry`]. That means
+//! sorted sites in each contig, and transitions that scale with distance and reset to the prior.
+//! It also means a Viterbi and a forward-backward, both in log space.
 //!
-//! **What is deliberately simplified in the spike** (see the module tests + the follow-up notes):
-//! - The Normal-state heterozygosity expectation is a single `baseline_het` knob. A production
-//!   version should derive it per-site from panel allele frequencies (2·f·(1−f)), which
-//!   `AncestryPanel`/`IbdPanel` already carry, so the emission is properly frequency-aware.
-//! - The endogamy-vs-consanguinity [`RohPattern`] classification is a heuristic on the ROH
-//!   length-class distribution, not a calibrated model.
+//! The code joins the runs of the Autozygous state into [`RohSegment`] values. It then rolls those
+//! up into an [`RohSummary`], with the genome-wide coefficient F_ROH.
+//!
+//! **What to give it.** Give it the autosomal consensus genotypes of the subject, from
+//! `consensus_genotypes(&DiploidProfile)` in `navigator-app`. The caller calls those at the full
+//! 1240k IBD panel, which is a dense set of about 1.15M neutral, biallelic, common SNPs, with full
+//! 0/1/2 dosages. That is the density class that a ROH tool for arrays needs, such as PLINK,
+//! BCFtools/RoH or detectRUNS. The cM length of a segment, and the denominator of F_ROH, come from
+//! the same [`GeneticMap`] that the IBD path already loads.
+//!
+//! **What this spike leaves simple, deliberately.** See the module tests and the notes that follow
+//! them.
+//!
+//! - One `baseline_het` control holds the heterozygosity that the Normal state expects. A
+//!   production version must instead derive it at each site from the panel allele frequencies, as
+//!   2·f·(1−f). `AncestryPanel` and `IbdPanel` already carry those, so the emission can know the
+//!   frequency.
+//! - The [`RohPattern`] that separates endogamy from consanguinity is a heuristic over the
+//!   distribution of the ROH length classes. It is not a calibrated model.
 
 use crate::caller::SiteGenotype;
 use crate::ibd::{normalize_chromosome, GeneticMap};
@@ -26,23 +35,30 @@ use std::collections::BTreeMap;
 /// Detector configuration. Defaults target a 1240k-density common-SNP substrate.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RohConfig {
-    /// P(heterozygous call | truly autozygous) — i.e. the residual genotyping-error rate that lets a
-    /// stray het survive inside a homozygous run without breaking it. Small.
+    /// P(a heterozygous call | the site is truly autozygous). That is the rate of genotype error
+    /// that stays. It lets one stray het live inside a homozygous run, and that run does not
+    /// break. The value is small.
     pub het_error: f64,
-    /// Normal-state expected heterozygosity P(het | not autozygous). `None` (the default) estimates it
-    /// from the sample's own autosomal het fraction (clamped), so it tracks the panel's density and
-    /// ascertainment instead of a fixed guess. A production upgrade is per-site 2·f·(1−f) from allele
-    /// frequencies; `Some(v)` pins it (mainly for tests / advanced tuning).
+    /// The heterozygosity that the Normal state expects: P(het | the site is not autozygous).
+    ///
+    /// `None` is the default, and it estimates the value from the autosomal het fraction of the
+    /// sample itself, clamped. It then follows the density of the panel, and its ascertainment,
+    /// and it is not a fixed guess. The production upgrade is 2·f·(1−f) at each site, from the
+    /// allele frequencies. `Some(v)` fixes the value, mostly for a test, or for somebody who wants
+    /// to tune it.
     pub baseline_het: Option<f64>,
-    /// State-switch hazard per centimorgan. Switch probability over a gap of `d` cM is
-    /// `1 − exp(−d · switch_rate_per_cm)`. Smaller → longer runs. Default ≈ one switch per ~13 cM.
+    /// The hazard of a state switch in one centimorgan. The switch probability over a gap of `d`
+    /// cM is `1 − exp(−d · switch_rate_per_cm)`. A smaller value gives longer runs. The default is
+    /// about one switch in 13 cM.
     pub switch_rate_per_cm: f64,
-    /// Stationary autozygosity fraction — the prior mass on the Autozygous state that a switch
-    /// resets toward. The classic ROH HMM prior.
+    /// The stationary autozygosity fraction. It is the prior mass on the Autozygous state, and a
+    /// switch resets toward it. This is the classic prior of a ROH HMM.
     pub prior_autozygous: f64,
-    /// Report runs at least this long in **physical Mb**. PLINK/detectRUNS and the genealogy field
-    /// threshold ROH on physical length because ROH cluster in low-recombination (pericentromeric)
-    /// regions where a multi-Mb run spans well under a cM — a genetic (cM) threshold under-reports them.
+    /// Report a run of this length or more, in **physical Mb**.
+    ///
+    /// PLINK, detectRUNS and the genealogy field all threshold a ROH on its physical length. ROH
+    /// gather in regions of low recombination, near a centromere. There a run of some Mb covers
+    /// well under one cM, so a threshold in cM reports too few of them.
     pub min_length_mb: f64,
     /// Report runs with at least this many genotyped sites (guards sparse-coverage false runs).
     pub min_sites: usize,
@@ -71,26 +87,29 @@ pub struct RohSegment {
     /// Genetic length from the genetic map (cM); falls back to a 1 cM/Mb estimate if the map lacks
     /// the chromosome.
     pub length_cm: f64,
-    /// Physical span in Mb — the length the report threshold (`min_length_mb`) applies to.
+    /// The physical span, in Mb. The report threshold `min_length_mb` applies to this length.
     pub length_mb: f64,
     /// Number of genotyped sites inside the run.
     pub n_sites: usize,
     /// Heterozygous calls inside the run (should be near zero for a clean run).
     pub n_het: usize,
-    /// Mean Autozygous posterior over the run's sites (forward/backward) — a confidence in [0,1].
+    /// The mean Autozygous posterior over the sites of the run, from the forward-backward pass.
+    /// It is a confidence in [0,1].
     pub mean_posterior: f64,
 }
 
-/// ROH length classes (physical Mb), used for the endogamy-vs-consanguinity read. Short ROH reflect
-/// distant/background relatedness (endogamy); long ROH reflect recent shared ancestry (consanguinity),
-/// because longer haplotypes have had fewer generations of recombination to break them up.
+/// The length classes of a ROH, in physical Mb. They separate endogamy from consanguinity.
+///
+/// A short ROH shows distant, background relatedness, which is endogamy. A long ROH shows recent
+/// shared ancestry, which is consanguinity. A longer haplotype has had fewer generations of
+/// recombination to break it up.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RohClass {
-    /// < 5 Mb — deep/background (endogamy).
+    /// Below 5 Mb. This is deep, background relatedness, which is endogamy.
     Short,
-    /// 5–15 Mb — intermediate.
+    /// From 5 to 15 Mb. This is the middle class.
     Medium,
-    /// ≥ 15 Mb — recent (consanguinity).
+    /// 15 Mb or more. This is recent, and it is consanguinity.
     Long,
 }
 
@@ -106,24 +125,31 @@ impl RohClass {
     }
 }
 
-/// Coarse pattern read from the ROH length distribution. Heuristic — for narration, not diagnosis.
-/// Defined in `navigator-domain` so the Simple-mode brief can consume the verdict [`classify`]
-/// reaches here rather than re-deriving one from the raw numbers.
+/// A coarse pattern that the code reads from the distribution of the ROH lengths. It is a
+/// heuristic. Use it for narration, and not for a diagnosis.
+///
+/// It lives in `navigator-domain`, so that the Simple-mode brief can read the answer that
+/// [`classify`] reaches here. That brief does not have to derive its own answer from the raw
+/// numbers.
 pub use navigator_domain::roh::RohPattern;
 
-/// Genome-wide rollup. Lengths are **physical Mb** — the canonical (McQuillan) F_ROH is a physical
-/// ratio, and it stays consistent with the physical `min_length_mb` run filter (a genetic/cM F_ROH
-/// would badly under-count ROH that sit in low-recombination regions).
+/// The rollup over the whole genome. Every length is in **physical Mb**.
+///
+/// The canonical F_ROH, from McQuillan, is a physical ratio. That also keeps it consistent with
+/// `min_length_mb`, which filters the runs by physical length. An F_ROH in cM would count far too
+/// few of the ROH that sit in a region of low recombination.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RohSummary {
     pub n_segments: usize,
     pub total_roh_mb: f64,
-    /// Autosomal physical length covered by the input sites (Mb) — the F_ROH denominator.
+    /// The autosomal physical length that the input sites cover, in Mb. It is the denominator of
+    /// F_ROH.
     pub autosomal_mb: f64,
-    /// Inbreeding coefficient F_ROH = total ROH length / total autosomal length (both Mb).
+    /// The coefficient F_ROH. It is the total ROH length divided by the total autosomal length,
+    /// and both are in Mb.
     pub f_roh: f64,
     pub longest_mb: f64,
-    /// (count, summed Mb) per length class.
+    /// A (count, total Mb) pair for each length class.
     pub short: (usize, f64),
     pub medium: (usize, f64),
     pub long: (usize, f64),
@@ -137,14 +163,16 @@ pub struct RohResult {
     pub summary: RohSummary,
 }
 
-/// True for autosomes 1–22 (ROH is computed on autosomes only; X/Y/MT excluded).
+/// True for the autosomes 1 to 22. The code computes a ROH on an autosome alone, and it leaves X,
+/// Y and MT out.
 fn is_autosome(contig: &str) -> bool {
     matches!(normalize_chromosome(contig).parse::<u8>(), Ok(1..=22))
 }
 
 /// Detect runs of homozygosity across the autosomes.
 pub fn detect_roh(genotypes: &[SiteGenotype], gmap: &GeneticMap, config: &RohConfig) -> RohResult {
-    // Per-autosome sorted (pos, is_het) over *called* sites (dosage 0/1/2).
+    // The sorted (pos, is_het) pairs of each autosome, over the sites with a *call*, at dosage 0,
+    // 1 or 2.
     let mut by_chr: BTreeMap<String, Vec<(i64, bool)>> = BTreeMap::new();
     let (mut called, mut het) = (0u64, 0u64);
     for g in genotypes {
@@ -215,7 +243,7 @@ fn call_chromosome(
     let pi = [1.0 - cfg.prior_autozygous, cfg.prior_autozygous];
     let ln_pi = [ln(pi[0]), ln(pi[1])];
 
-    // Per-site emission log-likelihoods for each state: [normal, auto].
+    // The emission log-likelihood at each site, for each state: [normal, auto].
     let emit = |is_het: bool| -> [f64; 2] {
         if is_het {
             [ln(baseline), ln(cfg.het_error)]
@@ -258,7 +286,7 @@ fn call_chromosome(
         path[t] = back[t + 1][path[t + 1]];
     }
 
-    // ---- Forward/backward posteriors (for per-run confidence) ----
+    // ---- The forward-backward posteriors, which give the confidence of each run ----
     let posterior = forward_backward(chr, sites, gmap, cfg, baseline, &ln_pi);
 
     // ---- Stitch Autozygous runs ----
@@ -291,7 +319,7 @@ fn call_chromosome(
     runs
 }
 
-/// Autozygous-state posterior per site via scaled forward/backward.
+/// The posterior of the Autozygous state at each site, from a scaled forward-backward pass.
 fn forward_backward(
     chr: &str,
     sites: &[(i64, bool)],
@@ -410,9 +438,11 @@ fn summarize(segments: &[RohSegment], autosomal_mb: f64) -> RohSummary {
     }
 }
 
-/// Heuristic pattern read (illustrative — not calibrated). Keyed on the normalized F_ROH so it is
-/// independent of how much genome was analyzed; the length-class split then separates recent
-/// consanguinity (long-dominated) from endogamy (short-dominated).
+/// The heuristic read of the pattern. It is an illustration, and nobody calibrated it.
+///
+/// Its key is the normalized F_ROH, so it does not depend on how much of the genome the run
+/// covered. The split by length class then separates recent consanguinity, where the long ROH
+/// dominate, from endogamy, where the short ones do.
 fn classify(f_roh: f64, total: f64, short: &(usize, f64), long: &(usize, f64)) -> RohPattern {
     // Below ~F_ROH 0.02 (roughly a notable-relatedness floor) the sample reads as outbred.
     if f_roh < 0.02 {
@@ -457,7 +487,8 @@ mod tests {
         }
     }
 
-    /// Sites every `step` bp from 0..count, all homozygous → one ROH spanning the chromosome.
+    /// A site at every `step` bp, from 0 to count, and all of them homozygous. That gives one ROH
+    /// over the whole chromosome.
     #[test]
     fn all_homozygous_is_one_long_roh() {
         let step = 20_000i64;
@@ -479,7 +510,8 @@ mod tests {
     fn heterozygous_rich_has_no_roh() {
         let step = 20_000i64;
         let count = 1000;
-        // Every 3rd site het — dense enough to keep the HMM in the Normal state throughout.
+        // Every third site is het. That is dense enough to hold the HMM in the Normal state all
+        // the way.
         let genos: Vec<_> = (0..count).map(|i| site(i * step, i % 3 == 0)).collect();
         let gmap = map_chr1((count * step) as i32);
         let res = detect_roh(&genos, &gmap, &RohConfig::default());
@@ -512,7 +544,7 @@ mod tests {
         );
     }
 
-    /// A short homozygous run below `min_length_mb` is filtered out.
+    /// The filter removes a short homozygous run that is below `min_length_mb`.
     #[test]
     fn short_run_below_min_length_is_dropped() {
         let step = 20_000i64;

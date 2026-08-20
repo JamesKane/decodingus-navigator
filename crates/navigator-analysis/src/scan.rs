@@ -1,11 +1,13 @@
-//! Project-directory scanner (port of the Scala `ProjectDirectoryScanner`). NAS layout:
-//! `{projectRoot}/{sampleId}/files…` — each immediate subdirectory is one sample, and the
-//! files within are classified by role. The app turns the result into Project → Biosample
-//! → SequenceRun → Alignment rows.
+//! The scanner over a project directory. It is the port of the Scala `ProjectDirectoryScanner`.
 //!
-//! Pure filesystem classification: no DB, no noodles. Only alignment/index/variant files
-//! drive import this slice; `coverage.txt`/`stats.txt`/`*.dragstr.model` are recognized
-//! but not consumed (coverage is recomputed from the alignment).
+//! The layout on the NAS is `{projectRoot}/{sampleId}/files…`. Each subdirectory of the root is
+//! one sample, and the code puts the files inside it into classes by role. The app turns the
+//! result into rows: a Project, a Biosample, a SequenceRun and an Alignment.
+//!
+//! This module classifies files and nothing more. It uses no database and no noodles. In this
+//! slice, only an alignment file, an index file and a variant file drive an import. The code
+//! recognizes `coverage.txt`, `stats.txt` and `*.dragstr.model`, and it reads none of them,
+//! because it computes the coverage again from the alignment.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,7 +23,8 @@ pub enum DiscoveredFileType {
     Index,
     /// `.vcf` / `.vcf.gz` / `.g.vcf.gz` / `.gvcf.gz`.
     Variant,
-    /// A `coverage.txt` (precomputed; ignored — coverage is recomputed).
+    /// A `coverage.txt`, which somebody computed before. The code ignores it, because it computes
+    /// the coverage again.
     Coverage,
     /// A `stats.txt` (precomputed; ignored).
     Stats,
@@ -31,8 +34,9 @@ pub enum DiscoveredFileType {
     Other,
 }
 
-/// Classify a file by its (case-insensitive) name. Multi-part extensions are checked
-/// first so `.g.vcf.gz` is a Variant, not matched by a bare `.gz`.
+/// Put a file into a class, by its name. The case does not matter. The code checks an extension of
+/// more than one part first, so `.g.vcf.gz` gives a Variant, and a bare `.gz` does not match it
+/// first.
 pub fn classify(name: &str) -> DiscoveredFileType {
     let lower = name.to_ascii_lowercase();
     const VARIANT: [&str; 4] = [".g.vcf.gz", ".gvcf.gz", ".vcf.gz", ".vcf"];
@@ -62,37 +66,42 @@ pub struct DiscoveredFile {
     pub kind: DiscoveredFileType,
 }
 
-/// The `ytree` pipeline's per-sample sidecars, matched by name suffix. Present only when the
-/// sample was processed by that workflow; absent for a plain alignment-only directory. The
-/// app's fast-path ingest reads these instead of walking the CRAM.
+/// The sidecars that the `ytree` pipeline writes for each sample. The code matches them by the end
+/// of the name. They are there only when that workflow ran on the sample, and absent from a
+/// directory that holds an alignment alone. The fast-path ingest of the app reads these, and it
+/// does not walk the CRAM.
 ///
-/// Serializable so the app can record which files an alignment was ingested from. Discovery is a
-/// directory scan performed once at import; without a record of the result, re-running the fast
-/// path later — to re-place a haplogroup against a newer tree — would have nothing to run against.
+/// This type serializes, so the app can record which files an alignment came from. The code finds
+/// the sidecars in a directory scan, and it runs that scan once, at the import. Without a record
+/// of the result, a later run of the fast path would have nothing to run against. Such a run
+/// places a haplogroup again, against a newer tree.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SampleSidecars {
-    /// `*.chrY.g.vcf.gz` — ploidy-1 chrY GVCF (males).
+    /// `*.chrY.g.vcf.gz`: the chrY GVCF at ploidy 1, for a male.
     pub chr_y_gvcf: Option<PathBuf>,
-    /// `*.chrM.g.vcf.gz` — ploidy-1 chrM GVCF.
+    /// `*.chrM.g.vcf.gz`: the chrM GVCF at ploidy 1.
     pub chr_m_gvcf: Option<PathBuf>,
-    /// `*.callable.bed` — CallableLoci track.
+    /// `*.callable.bed`: the CallableLoci track.
     pub callable_bed: Option<PathBuf>,
-    /// `*.callable.summary.txt` — per-state base counts.
+    /// `*.callable.summary.txt`: the count of bases in each state.
     pub callable_summary: Option<PathBuf>,
-    /// `*.sex` — `male` / `female`.
+    /// `*.sex`: it holds `male` or `female`.
     pub sex: Option<PathBuf>,
-    /// `coverage.txt` — samtools coverage.
+    /// `coverage.txt`: the output of samtools coverage.
     pub coverage: Option<PathBuf>,
-    /// `stats.txt` — samtools stats.
+    /// `stats.txt`: the output of samtools stats.
     pub stats: Option<PathBuf>,
-    /// `*.flagstat[.txt]` — samtools flagstat (an alternative read-metrics source).
+    /// `*.flagstat[.txt]`: the output of samtools flagstat. It is another source of read
+    /// metrics.
     pub flagstat: Option<PathBuf>,
-    /// Picard `CollectWgsMetrics` output (`*wgs*metric*`) — the genome-wide depth distribution.
+    /// The output of Picard `CollectWgsMetrics`, at `*wgs*metric*`. It holds the depth
+    /// distribution over the whole genome.
     pub wgs_metrics: Option<PathBuf>,
     /// Picard `CollectAlignmentSummaryMetrics` (`*alignment_summary*`).
     pub alignment_summary: Option<PathBuf>,
-    /// Build token parsed from the GVCF name (e.g. `chm13`), for confirming the GVCF and the
-    /// alignment share a build before the liftover-free fast path is taken.
+    /// The build token that the code read out of the GVCF name, such as `chm13`. Use it to check
+    /// that the GVCF and the alignment sit on the same build. That check comes before the fast
+    /// path, which needs no liftover.
     pub build_hint: Option<String>,
 }
 
@@ -103,9 +112,9 @@ impl SampleSidecars {
     }
 }
 
-/// Detect pipeline sidecars among a sample's files by (case-insensitive) name. Specific
-/// multi-part suffixes are matched against the full file name, so `*.chrY.g.vcf.gz.tbi`
-/// (an index) does not match `*.chrY.g.vcf.gz`.
+/// Find the pipeline sidecars among the files of a sample, by name. The case does not matter. The
+/// code matches an exact suffix of more than one part against the whole file name. So
+/// `*.chrY.g.vcf.gz.tbi`, which is an index, does not match `*.chrY.g.vcf.gz`.
 fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
     let by_suffix = |suffix: &str| {
         files
@@ -129,8 +138,8 @@ fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
             })
             .map(|f| f.path.clone())
     };
-    // Picard/flagstat outputs have no fixed name — match a substring of the (lower-cased) filename
-    // (mirrors the Scala scanner's loose patterns).
+    // The output of Picard, and that of flagstat, have no fixed name. So the code matches a part
+    // of the file name, in lower case. The Scala scanner used the same open patterns.
     let by_pred = |pred: &dyn Fn(&str) -> bool| {
         files
             .iter()
@@ -143,10 +152,13 @@ fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
             .map(|f| f.path.clone())
     };
 
-    // Match the GVCF whether it carries a sample prefix (`HG00096.chm13.chrY.g.vcf.gz`, the ytree
-    // flat/staging name) or is a bare per-analysis file (`chrY.g.vcf.gz`, the in-repo GATK layout).
-    // No leading dot, so both match; `chrY.vcf.gz` (called variants, not a GVCF) and the `.tbi`
-    // index are still excluded.
+    // Match the GVCF in both forms. One carries a sample name in front, as
+    // `HG00096.chm13.chrY.g.vcf.gz`, which is the flat name that ytree writes to its work area.
+    // The other is a bare file of one analysis, as `chrY.g.vcf.gz`, which is the GATK layout
+    // inside the repo.
+    //
+    // The pattern has no dot in front, so both match. It still leaves out `chrY.vcf.gz`, which
+    // holds called variants and is not a GVCF, and it leaves out the `.tbi` index.
     let chr_y_gvcf = by_suffix("chry.g.vcf.gz");
     let chr_m_gvcf = by_suffix("chrm.g.vcf.gz");
     let build_hint = chr_y_gvcf.as_ref().or(chr_m_gvcf.as_ref()).and_then(|p| build_token(p));
@@ -154,8 +166,9 @@ fn detect_sidecars(files: &[DiscoveredFile]) -> SampleSidecars {
     SampleSidecars {
         chr_y_gvcf,
         chr_m_gvcf,
-        // CallableLoci output is named `*.callable.bed` in staging but `callable_status.bed` in the
-        // GATK repo layout — match any `.bed` whose name mentions "callable".
+        // The output of CallableLoci carries the name `*.callable.bed` in the work area, and
+        // `callable_status.bed` in the GATK repo layout. So match any `.bed` whose name holds
+        // "callable".
         callable_bed: by_pred(&|n| n.ends_with(".bed") && n.contains("callable")),
         callable_summary: by_suffix(".callable.summary.txt"),
         sex: by_suffix(".sex"),
@@ -177,7 +190,7 @@ fn build_token(gvcf: &Path) -> Option<String> {
     stem.rsplit('.').next().filter(|s| !s.is_empty()).map(|s| s.to_string())
 }
 
-/// A sample subdirectory holding at least one alignment or variant file.
+/// A subdirectory of one sample, which holds one alignment file or variant file, or more.
 #[derive(Debug, Clone)]
 pub struct DiscoveredSample {
     /// Subdirectory name (typically a sample alias, e.g. `HG00096`).
@@ -206,7 +219,8 @@ fn is_hidden(path: &Path) -> bool {
         .is_some_and(|n| n.starts_with('.'))
 }
 
-/// Recursively collect files under `dir` up to `max_depth`, skipping hidden directories.
+/// Collect the files under `dir`, down to `max_depth`. It walks into a subdirectory, and it skips
+/// a directory that is hidden.
 fn list_files_recursive(dir: &Path, max_depth: usize, depth: usize, out: &mut Vec<PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
@@ -262,8 +276,9 @@ pub fn scan_sample(dir: &Path) -> DiscoveredSample {
     }
 }
 
-/// Scan a project directory: each immediate (non-hidden) subdirectory is a sample. Samples
-/// with neither an alignment nor a variant file are dropped. Errors if the path is missing,
+/// Scan a project directory. Each subdirectory of it that is not hidden holds one sample. The
+/// code drops a sample that has no alignment file and no variant file. It returns an error when
+/// the path is absent,
 /// not a directory, has no subdirectories, or yields no samples with data.
 pub fn scan(project_dir: &Path) -> Result<DiscoveredProject, AnalysisError> {
     if !project_dir.exists() {
@@ -373,7 +388,8 @@ mod tests {
         assert_eq!(s.alignment_files.len(), 1);
         assert_eq!(s.index_files.len(), 1);
         assert_eq!(s.variant_files.len(), 1);
-        // coverage.txt / stats.txt are classified but not in the alignment/variant lists.
+        // The code classifies coverage.txt and stats.txt, and it puts neither into the list of
+        // alignments or the list of variants.
         assert!(s.all_files.iter().any(|f| f.kind == DiscoveredFileType::Coverage));
         assert!(s.all_files.iter().any(|f| f.kind == DiscoveredFileType::Stats));
 
@@ -404,7 +420,7 @@ mod tests {
         let project = scan(&root).unwrap();
         let sc = &project.samples[0].sidecars;
         assert!(sc.has_haplogroup_gvcf());
-        // The GVCF is matched, not its .tbi index.
+        // The code matches the GVCF, and not its .tbi index.
         assert!(sc
             .chr_y_gvcf
             .as_ref()
@@ -431,9 +447,10 @@ mod tests {
 
     #[test]
     fn detects_bare_named_gatk_repo_sidecars() {
-        // The real D2C repo layout: a sample dir with a `CP086569.2/` analysis subtree holding
-        // bare-named files (`chrY.g.vcf.gz`, `callable_status.bed`) two levels down — not the
-        // `<sample>.chrY.g.vcf.gz` staging names. scan_sample must still find them.
+        // The real layout of the D2C repo. A sample directory holds a `CP086569.2/` analysis
+        // subtree, and the bare-named files sit two levels down inside it: `chrY.g.vcf.gz` and
+        // `callable_status.bed`. Those are not the `<sample>.chrY.g.vcf.gz` names of the work
+        // area. scan_sample must still find them.
         let dir = scratch("bare-repo").join("1aceb711");
         for f in [
             "CP086569.2/chrYM.cram",
