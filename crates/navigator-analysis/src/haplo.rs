@@ -412,11 +412,6 @@ fn strand_ambiguous(a: char, d: char) -> bool {
     pair == ['A', 'T'] || pair == ['C', 'G']
 }
 
-/// Does the sample carry the derived allele of this locus? The code accepts the strand
-/// complement of the derived base, except at a SNP that is ambiguous about the strand. Some tree
-/// variants record their alleles on the other strand from the reference that the caller used on
-/// the alignment. See [`locus_state`].
-///
 /// True when a locus is a single-base SNP that a genotype at the base level can read. That is,
 /// it is NOT an indel and NOT an MNP, which carry an allele of more than one character.
 ///
@@ -442,6 +437,11 @@ pub const INDEL_DERIVED: char = '+';
 /// covers the reference, and it is ancestral.
 pub const INDEL_ANCESTRAL: char = '-';
 
+/// Does the sample carry the derived allele of this locus? The code accepts the strand
+/// complement of the derived base, except at a SNP that is ambiguous about the strand. Some tree
+/// variants record their alleles on the other strand from the reference that the caller used on
+/// the alignment. See [`locus_state`].
+///
 fn locus_carried(locus: &Locus, calls: &HashMap<i64, char>) -> bool {
     if !is_snp_locus(locus) {
         // Indel locus: carried iff the indel genotyper resolved it to the derived sentinel.
