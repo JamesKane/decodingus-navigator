@@ -213,6 +213,10 @@ def analyse(items, kind):
                 para, start = [], None
         if t.strip():
             if start is None:
+                # The marker of a list item is not prose. "1. " ends in a period, so the sentence
+                # splitter counted it as a sentence of its own and every numbered item read as one
+                # sentence longer than it is. Drop the marker, keep the text.
+                t = re.sub(r"^([-*+]|\d+\.)\s+", "", t.strip())
                 start = ln
             para.append(t)
         last = ln
