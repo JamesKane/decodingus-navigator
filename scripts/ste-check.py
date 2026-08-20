@@ -114,7 +114,7 @@ NOT_PARTICIPLE = {
     "garden", "token", "golden", "sudden", "hidden", "wooden", "kitchen", "screen", "between",
     "need", "indeed", "speed", "seed", "feed", "exceed", "red", "bed", "led", "ahead", "instead",
     # The -own branch of the participle pattern also matches these plain words.
-    "down", "town", "brown", "crown", "gown", "clown", "frown", "own",
+    "down", "town", "brown", "crown", "gown", "clown", "frown", "own", "unknown",
 }
 ING = re.compile(r"\b(\w{3,}ing)\b", re.I)
 ING_OK = {

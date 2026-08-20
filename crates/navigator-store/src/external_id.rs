@@ -1,7 +1,9 @@
-//! Vendor-neutral Subject identifiers (FTDNA project-import design §4.2). `(source, external_id)` is
-//! UNIQUE — one Subject per vendor id — and is the key the matching/dedup engine looks up.
+//! Vendor-neutral Subject identifiers (FTDNA project-import design §4.2). `(source, external_id)`
+//! is UNIQUE, so one vendor id belongs to one Subject. The match and dedup engine looks that pair
+//! up.
 //!
-//! PII / never-federated: see the migration `0029_subject_identity` header.
+//! This is PII, and it never goes to the federation. See the header of the migration
+//! `0029_subject_identity`.
 
 use du_domain::ids::SampleGuid;
 use navigator_domain::identity::ExternalId;
@@ -31,10 +33,13 @@ impl Row {
 
 const COLS: &str = "id, biosample_guid, source, external_id";
 
-/// Attach a vendor id to a Subject. Idempotent on `(source, external_id)`: a re-add for the **same**
-/// biosample is a no-op; a conflicting `(source, external_id)` already bound to a **different**
-/// biosample is left untouched (the matching engine resolves that — never silently re-point an id).
-/// Returns the resulting row (existing or new).
+/// Attach a vendor id to a Subject. It is idempotent on `(source, external_id)`.
+///
+/// A second add for the **same** biosample does nothing. A `(source, external_id)` that already
+/// belongs to a **different** biosample stays as it is. The match engine resolves such a case, and
+/// this code must never move an id to another subject with no word.
+///
+/// It returns the row, whether that row was there before or is new.
 pub async fn add(
     pool: &SqlitePool,
     guid: SampleGuid,
@@ -56,8 +61,9 @@ pub async fn add(
         .ok_or_else(|| StoreError::NotFound(format!("external_id {source}:{external_id}")))
 }
 
-/// Detach a vendor id by its row id. Returns `true` if a row was removed. Used by the subject
-/// editor to drop a kit association (the row is workspace-local PII, so a hard delete is fine).
+/// Detach a vendor id by its row id. It returns `true` when it removed a row. The subject editor
+/// uses it to drop a kit association. The row is PII that stays in the workspace, so a hard delete
+/// is correct.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     let res = sqlx::query("DELETE FROM external_id WHERE id = ?")
         .bind(id)
@@ -66,8 +72,8 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     Ok(res.rows_affected() > 0)
 }
 
-/// Fetch one vendor-id row by its id — used to recover the owning Subject before a delete (so the
-/// biosample anchor can be re-published with the updated id set).
+/// Fetch one vendor-id row by its id. The caller uses it to find the Subject that owns the row,
+/// before a delete. It can then publish the biosample anchor again, with the new set of ids.
 pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<ExternalId>, StoreError> {
     let row: Option<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM external_id WHERE id = ?"))
         .bind(id)
@@ -76,7 +82,8 @@ pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<ExternalId>, Store
     row.map(Row::into_domain).transpose()
 }
 
-/// Look up the Subject bound to a `(source, external_id)` — the exact-match step of dedup (§5.1).
+/// Look up the Subject that a `(source, external_id)` pair belongs to. This is the exact-match
+/// step of the dedup (§5.1).
 pub async fn find(pool: &SqlitePool, source: &str, external_id: &str) -> Result<Option<ExternalId>, StoreError> {
     let row: Option<Row> = sqlx::query_as(&format!(
         "SELECT {COLS} FROM external_id WHERE source = ? AND external_id = ?"
@@ -125,7 +132,7 @@ mod tests {
         // Re-add for the same subject is a no-op (same row).
         let again = add(pool, a, IdSource::FTDNA, "B5163").await.unwrap();
         assert_eq!(again.id, row.id);
-        // A conflicting (source, id) for a different subject does NOT steal the id.
+        // A (source, id) that another subject already holds does NOT move to this subject.
         let conflict = add(pool, b, IdSource::FTDNA, "B5163").await.unwrap();
         assert_eq!(
             conflict.biosample_guid, a,
@@ -154,7 +161,8 @@ mod tests {
         );
         assert_eq!(list_for(pool, a).await.unwrap().len(), 1);
 
-        // Delete by row id detaches it (and frees the (source, id) for re-binding).
+        // A delete by row id detaches the id, and frees the (source, id) pair for another
+        // subject.
         let row = find(pool, IdSource::FTDNA, "B5163").await.unwrap().unwrap();
         assert!(delete(pool, row.id).await.unwrap(), "row removed");
         assert!(!delete(pool, row.id).await.unwrap(), "second delete is a no-op");

@@ -1,9 +1,10 @@
-//! Cached tree-position genotypes for a variant set — the VCF counterpart of the per-alignment
-//! `tree-genotype` analysis artifact.
+//! Cached tree-position genotypes for a variant set. This is the VCF counterpart of the
+//! `tree-genotype` analysis artifact that each alignment has.
 //!
-//! Keyed by `(variant_set_id, cache_key)`, where `cache_key` carries a hash of the target positions
-//! exactly as the alignment path's `algorithm_version` does: a changed tree yields a different key,
-//! so a stale genotype misses rather than quietly placing the donor against sites that moved.
+//! The key is `(variant_set_id, cache_key)`. The `cache_key` holds a hash of the target positions,
+//! exactly as the `algorithm_version` of the alignment path does. A changed tree gives a different
+//! key, so a stale genotype misses the cache. Without that, the code would place the donor against
+//! sites that moved, and say nothing.
 
 use sqlx::SqlitePool;
 
@@ -35,7 +36,8 @@ pub async fn get(pool: &SqlitePool, set_id: i64, cache_key: &str) -> Result<Opti
     )
 }
 
-/// Drop every cached genotype for a set — used when the set's calls are replaced.
+/// Drop every cached genotype for a set. The code calls this when new calls replace the set's
+/// calls.
 pub async fn delete_for_set(pool: &SqlitePool, set_id: i64) -> Result<u64, StoreError> {
     Ok(sqlx::query("DELETE FROM variant_set_genotype WHERE variant_set_id = ?")
         .bind(set_id)

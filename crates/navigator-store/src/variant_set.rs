@@ -1,5 +1,5 @@
-//! Subject SNP-variant queries: variant sets and their calls. Sets attach to a biosample
-//! (the `SampleGuid` is stored as its hyphenated TEXT form, like elsewhere).
+//! Subject SNP-variant queries: the variant sets and their calls. A set attaches to a biosample.
+//! The `SampleGuid` goes in as its hyphenated TEXT form, as it does everywhere else.
 
 use du_domain::ids::SampleGuid;
 use navigator_domain::variants::{self, CallEvidence, NewVariantSet, SourceType, VariantCall, VariantSet};
@@ -40,8 +40,8 @@ const CALL_COLS: &str = "contig, position, reference, alternate, rs_id, genotype
 
 impl CallRow {
     fn into_domain(self) -> VariantCall {
-        // Stored as INTEGER (SQLite has no unsigned type); a negative would be corrupt data, so it
-        // reads back as absent rather than wrapping into a huge count.
+        // The column is an INTEGER, because SQLite has no unsigned type. A negative value would be
+        // corrupt data, so the read gives absent. It must not wrap into a huge count.
         let count = |v: Option<i64>| v.and_then(|n| u32::try_from(n).ok());
         VariantCall {
             contig: self.contig,
@@ -65,10 +65,11 @@ impl CallRow {
 /// Create a variant set and bulk-insert its calls in one transaction.
 pub async fn create(pool: &SqlitePool, new: &NewVariantSet) -> Result<VariantSet, StoreError> {
     let mut tx = pool.begin().await?;
-    // The schema tag is derived from what was actually captured, not from which importer ran. A
-    // sites-only VCF and a CSV marker table genuinely have no evidence, and a consumer asking "can
-    // I gate on quality here?" needs the truthful answer — a tag keyed to the importer version
-    // would claim evidence those sets can never supply.
+    // The schema tag comes from what the import captured, and not from which importer ran.
+    //
+    // A sites-only VCF, and a CSV marker table, truly hold no evidence. A consumer that asks "can I
+    // gate on quality here?" needs the true answer. A tag keyed to the importer version would claim
+    // evidence that those sets can never supply.
     let schema = if new.calls.iter().any(|c| !c.evidence.is_empty()) {
         variants::CALL_SCHEMA_EVIDENCE
     } else {
@@ -158,8 +159,8 @@ async fn calls_for(pool: &SqlitePool, set_id: i64) -> Result<Vec<VariantCall>, S
     Ok(rows.into_iter().map(CallRow::into_domain).collect())
 }
 
-/// Delete a variant set and its calls (children-first; FKs are enforced). Returns whether the
-/// set row was removed.
+/// Delete a variant set and its calls. The children go first, because the database enforces the
+/// FKs. It returns whether it removed the set row.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM variant_set_genotype WHERE variant_set_id = ?")

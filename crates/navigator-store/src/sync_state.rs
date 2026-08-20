@@ -1,7 +1,11 @@
-//! The PDS-assigned identity of each published entity (gap §5-p2). On first publish the PDS assigns a
-//! TID; we keep it here so the next publish UPDATES that record (putRecord at `rkey`) instead of
-//! creating a duplicate. `payload_hash` is the published JSON's sha256 at push time — a PULL compares
-//! it to the current local payload to tell whether local changed since the last push (conflict).
+//! The identity that the PDS gives to each published entity (gap §5-p2).
+//!
+//! The PDS assigns a TID at the first publish. The store keeps it here, so the next publish UPDATES
+//! that record, with a putRecord at `rkey`, and makes no duplicate.
+//!
+//! `payload_hash` is the sha256 of the published JSON, at push time. A PULL compares it against the
+//! current local payload. That says whether the local side changed after the last push, which is a
+//! conflict.
 
 use sqlx::SqlitePool;
 
@@ -46,7 +50,7 @@ pub async fn upsert(pool: &SqlitePool, s: &StoredSyncState) -> Result<(), StoreE
     Ok(())
 }
 
-/// The sync-state for one entity, if it has been published.
+/// The sync-state of one entity, if a publish has run for it.
 pub async fn get(
     pool: &SqlitePool,
     account_did: &str,
@@ -109,7 +113,7 @@ mod tests {
         let got = get(store.pool(), "did:plc:abc", "alignment:1").await.unwrap().unwrap();
         assert_eq!(got.rkey, "3kab2c");
         assert_eq!(got.at_cid, "cidA");
-        // Upsert replaces the cid (a re-push) without duplicating.
+        // The upsert replaces the cid, for a second push, and makes no duplicate.
         let mut updated = row("alignment:1", "cidB");
         updated.payload_hash = "hash2".into();
         upsert(store.pool(), &updated).await.unwrap();

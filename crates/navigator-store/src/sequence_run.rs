@@ -97,11 +97,12 @@ pub async fn create(pool: &SqlitePool, r: &NewSequenceRun) -> Result<SequenceRun
         pf_reads_aligned: r.pf_reads_aligned,
         mean_read_length: r.mean_read_length,
         mean_insert_size: r.mean_insert_size,
-        // `read_type` is filled in post-create by `set_library_stats` (import scan), `total_bases`
-        // by `set_read_stats` (read-metrics pass) — both back the standardized test label.
+        // `set_library_stats` fills in `read_type` after the create, during the import scan.
+        // `set_read_stats` fills in `total_bases`, during the read-metrics pass. Both of them
+        // support the standardized test label.
         total_bases: None,
         read_type: None,
-        // The lab/instrument identity block is filled in post-create by `set_library_stats`.
+        // `set_library_stats` fills in the lab and instrument identity block after the create.
         sequencing_facility: None,
         instrument_id: None,
         sample_name: None,
@@ -111,9 +112,10 @@ pub async fn create(pool: &SqlitePool, r: &NewSequenceRun) -> Result<SequenceRun
     })
 }
 
-/// Persist the lab/instrument identity block inferred from the alignment at import (read-name
-/// scan + `@RG` tags). Does not touch `sequencing_facility` (set separately via [`update`], or by
-/// a later instrument→lab resolution). Returns whether a row was affected.
+/// Store the lab and instrument identity block that the import inferred from the alignment, with a
+/// scan of the read names and the `@RG` tags. It does not touch `sequencing_facility`, which
+/// [`update`] sets, or which a later instrument→lab resolve sets. It returns whether it changed a
+/// row.
 #[allow(clippy::too_many_arguments)]
 pub async fn set_library_stats(
     pool: &SqlitePool,
@@ -142,13 +144,16 @@ pub async fn set_library_stats(
     Ok(affected > 0)
 }
 
-/// Set the library-level read stats (`total_reads`, `mean_read_length`, `mean_insert_size`,
-/// `library_layout`, `total_bases`) — populated after a read-metrics / unified-walker pass (or
-/// backfilled from a cached artifact). A `None` `total_bases` leaves the existing value. These
-/// describe the run's library; per-alignment counts (e.g. reads aligned)
-/// live on the alignment. A `None` `library_layout` leaves the existing value (set at import from
-/// the BAM flags). Leaves the descriptive + lab columns untouched. Returns whether a row was
-/// affected.
+/// Set the read stats of the library: `total_reads`, `mean_read_length`, `mean_insert_size`,
+/// `library_layout`, and `total_bases`. A read-metrics or unified-walker pass fills them, or a
+/// backfill takes them from a cached artifact.
+///
+/// A `total_bases` of `None` keeps the value that is there. A `library_layout` of `None` does the
+/// same, and the import sets that field from the BAM flags.
+///
+/// These describe the run's library. A count that belongs to one alignment, such as the reads
+/// aligned, lives on the alignment. This leaves the descriptive columns and the lab columns as they
+/// are. It returns whether it changed a row.
 pub async fn set_read_stats(
     pool: &SqlitePool,
     id: i64,
@@ -175,8 +180,9 @@ pub async fn set_read_stats(
     Ok(affected > 0)
 }
 
-/// Set only the sequencing facility (the lab) — used by the AppView instrument→lab resolution,
-/// which leaves the analysis-derived columns untouched. Returns whether a row was affected.
+/// Set the sequencing facility, which is the lab, and nothing else. The AppView instrument→lab
+/// resolve uses it, and leaves the columns that come from the analysis as they are. It returns
+/// whether it changed a row.
 pub async fn set_facility(pool: &SqlitePool, id: i64, facility: &str) -> Result<bool, StoreError> {
     let affected = sqlx::query("UPDATE sequence_run SET sequencing_facility = ? WHERE id = ?")
         .bind(facility)
@@ -187,10 +193,10 @@ pub async fn set_facility(pool: &SqlitePool, id: i64, facility: &str) -> Result<
     Ok(affected > 0)
 }
 
-/// Set a run's read chemistry/mode (`SHORT`/`HIFI`/`CLR`/`ONT_*`) — the long-read arm of the
-/// standardized test label. Used by the backfill to populate the field on runs imported before it
-/// existed, without disturbing the rest of the library-stats block. Returns whether a row was
-/// affected.
+/// Set a run's read chemistry or mode: `SHORT`, `HIFI`, `CLR`, or an `ONT_*` value. That is the
+/// long-read arm of the standardized test label. The backfill uses it to fill the field on a run
+/// that came in before the field existed. It leaves the rest of the library-stats block as it is,
+/// and returns whether it changed a row.
 pub async fn set_read_type(pool: &SqlitePool, id: i64, read_type: &str) -> Result<bool, StoreError> {
     let affected = sqlx::query("UPDATE sequence_run SET read_type = ? WHERE id = ?")
         .bind(read_type)
@@ -201,8 +207,9 @@ pub async fn set_read_type(pool: &SqlitePool, id: i64, read_type: &str) -> Resul
     Ok(affected > 0)
 }
 
-/// Set a run's test-type code (e.g. normalizing a generic `TARGETED_Y` to `BIG_Y_700` once the
-/// run's vendor is known to be FTDNA, which only sells Big Y). Returns whether a row was affected.
+/// Set a run's test-type code. One example: change a generic `TARGETED_Y` to `BIG_Y_700`, once the
+/// app knows that the run's vendor is FTDNA, which sells Big Y alone. It returns whether it changed
+/// a row.
 pub async fn set_test_type(pool: &SqlitePool, id: i64, test_type: &str) -> Result<bool, StoreError> {
     let affected = sqlx::query("UPDATE sequence_run SET test_type = ? WHERE id = ?")
         .bind(test_type)
@@ -213,9 +220,9 @@ pub async fn set_test_type(pool: &SqlitePool, id: i64, test_type: &str) -> Resul
     Ok(affected > 0)
 }
 
-/// Update a run's descriptive fields. The analysis-derived read-metric columns (total_reads,
-/// pf_reads_aligned, mean_read_length, mean_insert_size) are left untouched. Returns whether a
-/// row was affected.
+/// Update a run's descriptive fields. It leaves the read-metric columns that come from the
+/// analysis as they are: total_reads, pf_reads_aligned, mean_read_length, and mean_insert_size. It
+/// returns whether it changed a row.
 pub async fn update(
     pool: &SqlitePool,
     id: i64,
@@ -241,8 +248,9 @@ pub async fn update(
     Ok(affected > 0)
 }
 
-/// Delete a sequence run and everything beneath it (its alignments and their cached analysis
-/// artifacts), children-first since FKs are enforced. Returns whether the run row was removed.
+/// Delete a sequence run and everything below it, which is its alignments and their cached
+/// analysis artifacts. The children go first, because the database enforces the FKs. It returns
+/// whether it removed the run row.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -252,7 +260,8 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     .bind(id)
     .execute(&mut *tx)
     .await?;
-    // Unlink content-hash file records pointing at this run's alignments (keep the file identity).
+    // Unlink the content-hash file records that name this run's alignments. Keep the file
+    // identity itself.
     sqlx::query(
         "UPDATE source_file SET alignment_id = NULL WHERE alignment_id IN \
          (SELECT id FROM alignment WHERE sequence_run_id = ?)",

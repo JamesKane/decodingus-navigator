@@ -1,6 +1,6 @@
-//! Analysis-artifact queries — a versioned result cache keyed by
-//! `(alignment_id, kind, algorithm_version)`. `upsert` replaces a stale entry so a
-//! changed algorithm version supersedes the old payload (plan §6 cache versioning).
+//! Analysis-artifact queries: a result cache with a version, keyed by `(alignment_id, kind,
+//! algorithm_version)`. `upsert` replaces a stale entry, so a new algorithm version takes the place
+//! of the old payload (plan §6, the cache version).
 
 use chrono::{DateTime, Utc};
 use du_domain::ids::SampleGuid;
@@ -44,8 +44,8 @@ impl Row {
 
 const COLS: &str = "id, alignment_id, kind, algorithm_version, created_at, payload, source, completeness, source_sig";
 
-/// Insert or replace the artifact for `(alignment_id, kind, algorithm_version)`, recording its
-/// provenance (`source` = how produced, `completeness` = full/partial).
+/// Insert or replace the artifact for `(alignment_id, kind, algorithm_version)`, and record its
+/// provenance. `source` says how the app made it, and `completeness` says full or partial.
 #[allow(clippy::too_many_arguments)] // one parameter per artifact column — a DB row, not a refactor target
 pub async fn upsert(
     pool: &SqlitePool,
@@ -109,8 +109,9 @@ pub async fn get(
     row.map(Row::into_domain).transpose()
 }
 
-/// Remove a single `(alignment, kind, version)` artifact if present (no-op when absent). Used to
-/// clear a transient marker — e.g. the `error` artifact — once a later run succeeds.
+/// Remove one `(alignment, kind, version)` artifact when it is there, and do nothing when it is
+/// not. The app uses it to clear a transient marker, such as the `error` artifact, once a later run
+/// succeeds.
 pub async fn delete(
     pool: &SqlitePool,
     alignment_id: i64,
@@ -150,9 +151,9 @@ pub async fn list_kinds(pool: &SqlitePool, alignment_id: i64) -> Result<Vec<Stri
     Ok(rows.into_iter().map(|(k,)| k).collect())
 }
 
-/// Every artifact belonging to any of `alignment_ids`, in one query. The caller indexes the result
-/// by `(alignment_id, kind)` itself — this replaces a `get` per (alignment, kind), which for a
-/// project report meant one round-trip per cell. An empty `alignment_ids` yields no query.
+/// Every artifact of every id in `alignment_ids`, in one query. The caller indexes the result by
+/// `(alignment_id, kind)` itself. This replaces a `get` for each (alignment, kind) pair, which gave
+/// a project report one round trip for each cell. An empty `alignment_ids` runs no query.
 pub async fn list_for_alignments(
     pool: &SqlitePool,
     alignment_ids: &[i64],
@@ -160,8 +161,9 @@ pub async fn list_for_alignments(
     if alignment_ids.is_empty() {
         return Ok(Vec::new());
     }
-    // SQLite has no array binding; the placeholder list is built from the id count (never from
-    // user text) and every id is still bound, so this is not string-interpolated SQL.
+    // SQLite can not bind an array. The id count gives the length of the placeholder list, and no
+    // user text goes into it. The code still binds every id, so this SQL holds no interpolated
+    // string.
     let placeholders = vec!["?"; alignment_ids.len()].join(",");
     let sql = format!("SELECT {COLS} FROM analysis_artifact WHERE alignment_id IN ({placeholders}) ORDER BY id");
     let mut q = sqlx::query_as(&sql);
@@ -174,10 +176,10 @@ pub async fn list_for_alignments(
 
 /// [`list_for_alignments`] narrowed to a single `(kind, version)`.
 ///
-/// Use this whenever only one artifact kind is wanted. The unfiltered query selects `payload` for
-/// *every* artifact of every listed alignment, and some kinds are enormous — a `tree-genotype` row
-/// runs to megabytes — so fetching a cohort's worth to pick one small kind out reads gigabytes of
-/// JSON to no purpose.
+/// Use this whenever the caller wants one artifact kind. The query with no filter selects `payload`
+/// for *every* artifact of every listed alignment. Some kinds are very large: a `tree-genotype` row
+/// runs to megabytes. To fetch a whole cohort and then pick out one small kind reads gigabytes of
+/// JSON for nothing.
 pub async fn list_for_alignments_of_kind(
     pool: &SqlitePool,
     alignment_ids: &[i64],
@@ -187,8 +189,8 @@ pub async fn list_for_alignments_of_kind(
     if alignment_ids.is_empty() {
         return Ok(Vec::new());
     }
-    // As in `list_for_alignments`: placeholders are built from the id count, never interpolated
-    // text, and every value is bound.
+    // As in `list_for_alignments`: the id count gives the placeholders, no interpolated text goes
+    // into them, and the code binds every value.
     let placeholders = vec!["?"; alignment_ids.len()].join(",");
     let sql = format!(
         "SELECT {COLS} FROM analysis_artifact \
@@ -202,12 +204,16 @@ pub async fn list_for_alignments_of_kind(
     rows.into_iter().map(Row::into_domain).collect()
 }
 
-/// Per-subject analysis coverage census, in one pass over the whole workspace: for each biosample
-/// that owns ≥1 alignment, `(total alignments, alignments with a present `(kind, version)` artifact)`.
-/// A NULL `completeness` counts as complete (legacy rows predate the column; the app treats absent
-/// provenance as a full walk). Drives the Subjects-list Pending/Complete column — subjects with no
-/// alignments are simply absent from the result. `kind`/`version` are passed in so the store stays
-/// independent of the analysis crate (e.g. `"coverage"` / `coverage::COVERAGE_VERSION`).
+/// A census of the analysis coverage of each subject, in one pass over the whole workspace. For
+/// each biosample that owns one alignment or more it gives `(total alignments, alignments that have
+/// a `(kind, version)` artifact)`.
+///
+/// A NULL `completeness` counts as complete. A legacy row comes from before that column existed,
+/// and the app reads absent provenance as a full walk.
+///
+/// It feeds the Pending and Complete column of the Subjects list. A subject with no alignments is
+/// absent from the result. The caller passes `kind` and `version` in, so this crate needs nothing
+/// from the analysis crate. An example pair is `"coverage"` with `coverage::COVERAGE_VERSION`.
 pub async fn analyzed_census(
     pool: &SqlitePool,
     kind: &str,

@@ -1,8 +1,13 @@
-//! Peer direct-message persistence (social roadmap 3a) — the LOCAL, decrypted side of an encrypted
-//! conversation carried over the D1 relay. One [`DmConversation`] per broker session (it holds the
-//! persisted session key + the outgoing seq counter so messaging is async and restart-safe), and one
-//! [`DmMessage`] per relayed line. Bodies are plaintext and citizen-private: never federated, never
-//! sent to the AppView (which only ever relays ciphertext). Mirrors the `ibd_exchange` store style.
+//! Peer direct-message persistence (social roadmap 3a): the LOCAL, decrypted side of an encrypted
+//! conversation that the D1 relay carries.
+//!
+//! Each broker session has one [`DmConversation`]. It holds the stored session key and the seq
+//! counter for what we send, so the app can send asynchronously and survive a restart. Each relayed
+//! line has one [`DmMessage`].
+//!
+//! A body is plaintext, and private to the citizen. It never goes to the federation, and it never
+//! goes to the AppView, which relays ciphertext alone. The module follows the style of the
+//! `ibd_exchange` store.
 
 use sqlx::SqlitePool;
 
@@ -48,8 +53,9 @@ pub struct DmConversationSummary {
     pub updated_at: String,
 }
 
-/// Insert (or update the mutable fields of) a conversation. Called when a session is established:
-/// the session key + partner are set; the seq counters keep their existing values on re-connect.
+/// Insert a conversation, or update the fields that can change. The app calls this when it
+/// establishes a session. The call sets the session key and the partner. On a second connect the
+/// seq counters keep the values that they have.
 #[allow(clippy::too_many_arguments)]
 pub async fn upsert_conversation(
     pool: &SqlitePool,
@@ -111,8 +117,8 @@ pub async fn list_conversations(pool: &SqlitePool, my_did: &str) -> Result<Vec<D
     .await?)
 }
 
-/// Insert a message line, ignoring a duplicate `(session_id, from_did, seq)` (idempotent re-delivery).
-/// Returns `true` if a new row was inserted.
+/// Insert a message line. It skips a duplicate `(session_id, from_did, seq)`, so a second delivery
+/// is idempotent. It returns `true` when it inserted a new row.
 pub async fn insert_message(
     pool: &SqlitePool,
     session_id: &str,
@@ -144,8 +150,8 @@ pub async fn messages(pool: &SqlitePool, session_id: &str) -> Result<Vec<DmMessa
     )
 }
 
-/// Advance the outgoing seq counter by one and return the seq the caller should use for THIS send
-/// (the value before the bump). `None` if the conversation is unknown.
+/// Add one to the seq counter for what we send. It returns the seq that the caller must use for
+/// THIS send, which is the value from before. It gives `None` for an unknown conversation.
 pub async fn take_send_seq(pool: &SqlitePool, session_id: &str, now: &str) -> Result<Option<i64>, StoreError> {
     let mut tx = pool.begin().await?;
     let seq: Option<i64> = sqlx::query_scalar("SELECT next_send_seq FROM dm_conversation WHERE session_id = ?")
@@ -238,7 +244,7 @@ mod tests {
         let store = crate::Store::open_in_memory().await.unwrap();
         let pool = store.pool();
         convo(pool).await;
-        // Outgoing + two incoming.
+        // One line that we send, and two that arrive.
         assert!(insert_message(pool, "sess-1", ME, 1, "hi", "2026-06-20T00:01:00Z")
             .await
             .unwrap());
@@ -252,7 +258,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        // Re-delivery of partner seq 1 is ignored.
+        // A second delivery of the partner's seq 1 changes nothing.
         assert!(
             !insert_message(pool, "sess-1", PARTNER, 1, "hello", "2026-06-20T00:02:00Z")
                 .await

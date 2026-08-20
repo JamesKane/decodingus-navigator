@@ -1,4 +1,4 @@
-//! Store-layer error (plan §6: one `thiserror` enum per layer; propagate with `?`).
+//! The store-layer error (plan §6: one `thiserror` enum for each layer, sent up with `?`).
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -19,8 +19,8 @@ pub enum StoreError {
     NotFound(String),
 }
 
-/// Parse a stored GUID string into a [`SampleGuid`], tagging any decode error with `context`
-/// (the originating table/column) so a malformed value is traceable.
+/// Parse a stored GUID string into a [`SampleGuid`]. It marks any decode error with `context`,
+/// which names the table and column that the value came from. So a reader can trace a bad value.
 pub(crate) fn parse_sample_guid(guid: &str, context: &str) -> Result<du_domain::ids::SampleGuid, StoreError> {
     uuid::Uuid::parse_str(guid)
         .map(du_domain::ids::SampleGuid)

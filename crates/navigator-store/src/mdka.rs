@@ -1,8 +1,9 @@
-//! Most Distant Known Ancestor (FTDNA project-import design §4.3). One row per Subject per lineage,
-//! upserted on `(biosample_guid, lineage)`.
+//! Most Distant Known Ancestor (FTDNA project-import design §4.3). Each Subject has one row for
+//! each lineage, and the upsert key is `(biosample_guid, lineage)`.
 //!
-//! PII / project-shared-private: the most sensitive data in the importer. See the migration
-//! `0030_mdka` header — never federated, never stored in AppView.
+//! This is PII, and a project shares it in private. It is the most sensitive data in the importer.
+//! See the header of the migration `0030_mdka`. It never goes to the federation, and the AppView
+//! never stores it.
 
 use du_domain::ids::SampleGuid;
 use navigator_domain::identity::{Mdka, NewMdka};
@@ -87,7 +88,7 @@ pub async fn upsert(pool: &SqlitePool, guid: SampleGuid, m: &NewMdka, updated_at
     Ok(())
 }
 
-/// Remove a Subject's MDKA for one lineage. Returns `true` if a row was removed.
+/// Remove a Subject's MDKA for one lineage. It returns `true` when it removed a row.
 pub async fn delete(pool: &SqlitePool, guid: SampleGuid, lineage: &str) -> Result<bool, StoreError> {
     let res = sqlx::query("DELETE FROM mdka WHERE biosample_guid = ? AND lineage = ?")
         .bind(guid.0.to_string())
@@ -111,15 +112,16 @@ pub async fn list_for(pool: &SqlitePool, guid: SampleGuid) -> Result<Vec<Mdka>, 
 ///
 /// The predicate is the whole consent story, and it is deliberately narrow:
 ///
-/// - **the workspace holds primary data for the subject** — a `variant_set`, or a `sequence_run`
-///   with an `alignment`. A roster row alone is somebody else's kit that we happen to know of;
-///   publishing its genealogy would be republishing data the tester gave a vendor, not us.
+/// - **the workspace holds primary data for the subject**, which is a `variant_set`, or a
+///   `sequence_run` with an `alignment`. A roster row on its own is another person's kit that we
+///   happen to know of. To publish its genealogy would publish again what the tester gave to a
+///   vendor, and not to us.
 /// - **and the tester has not opted out.** `ftdna_member.publicly_shares` is the member's own FTDNA
-///   sharing setting, imported with the roster. A `0` there is an explicit "do not show me", and it
-///   wins over everything else. No roster row at all means no opt-out to honour.
+///   share setting, which arrives with the roster. A `0` there is an explicit "do not show me", and
+///   it wins over everything else. With no roster row there is no opt-out to obey.
 ///
-/// Measured on the reference workspace: 583 Y rows sit on subjects with primary data, of which 558
-/// are publicly-sharing — the other 25 must never publish.
+/// Measured on the reference workspace: 583 Y rows sit on subjects with primary data, and 558 of
+/// those share publicly. The other 25 must never publish.
 pub async fn publishable(pool: &SqlitePool, lineage: &str) -> Result<Vec<Mdka>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT {COLS} FROM mdka m \
@@ -138,8 +140,8 @@ pub async fn publishable(pool: &SqlitePool, lineage: &str) -> Result<Vec<Mdka>, 
     rows.into_iter().map(Row::into_domain).collect()
 }
 
-/// How many MDKA rows exist for a lineage, publishable or not — the denominator that makes a
-/// publishable count readable.
+/// How many MDKA rows a lineage has, whether the app may publish them or not. It is the
+/// denominator that makes a count of the publishable rows readable.
 pub async fn count_for_lineage(pool: &SqlitePool, lineage: &str) -> Result<usize, StoreError> {
     let n: i64 = sqlx::query_scalar("SELECT count(*) FROM mdka WHERE lineage = ?")
         .bind(lineage)
@@ -237,9 +239,9 @@ mod tests {
         assert_eq!(rows[0].lineage, "Mt");
     }
 
-    /// The consent predicate is the whole story of what may leave the workspace, so it is pinned
-    /// case by case. Measured against the reference workspace it selects 558 of 583 Y rows — the
-    /// 25 it drops are testers who told FTDNA not to share them publicly.
+    /// The consent predicate is the whole story of what may leave the workspace, so this test pins
+    /// it case by case. Against the reference workspace it selects 558 of 583 Y rows. The 25 that
+    /// it drops are testers who told FTDNA not to share them publicly.
     #[tokio::test]
     async fn publishable_requires_primary_data_and_no_opt_out() {
         let store = crate::Store::open_in_memory().await.unwrap();
@@ -253,7 +255,7 @@ mod tests {
             ..Default::default()
         };
 
-        // (a) primary data, no roster row — nothing to opt out of.
+        // (a) primary data, and no roster row, so there is nothing to opt out of.
         let owned = seed(pool).await;
         upsert(pool, owned, &mk("Thomas Kane"), t).await.unwrap();
         sqlx::query("INSERT INTO variant_set (biosample_guid, source_label, source_type, reference_build, call_schema, source_path) VALUES (?,?,?,?,?,?)")
@@ -286,8 +288,8 @@ mod tests {
             .await
             .unwrap();
 
-        // (d) a roster row and an MDKA, but the workspace holds no data of its own — somebody
-        // else's kit that we merely know of.
+        // (d) a roster row and an MDKA, but the workspace holds no data of its own. This is
+        // another person's kit that we only know of.
         let roster_only = seed(pool).await;
         upsert(pool, roster_only, &mk("Bridget Moore"), t).await.unwrap();
         sqlx::query("INSERT INTO ftdna_member (biosample_guid, member_name, publicly_shares) VALUES (?,?,1)")
@@ -308,7 +310,7 @@ mod tests {
         );
         assert_eq!(out.len(), 2);
 
-        // The lineage is honoured: an Mt row on a publishable subject is not a Y row.
+        // The query obeys the lineage: an Mt row on a publishable subject is not a Y row.
         assert!(publishable(pool, "Mt").await.unwrap().is_empty());
     }
 }

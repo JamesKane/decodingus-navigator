@@ -1,20 +1,20 @@
-//! The federated-IBD **request ledger** — durable state for a matching conversation from the
-//! introduction request through consent to a completed exchange. Its completed counterpart is
-//! [`crate::ibd_exchange`], which stores the *result*; this table is what makes the in-flight
-//! middle of that story survive a restart.
+//! The federated-IBD **request ledger**: durable state for a matching conversation, from the
+//! introduction request, through the consent, to a completed exchange. [`crate::ibd_exchange`] is
+//! its counterpart, and stores the *result*. This table is what makes the middle of that story,
+//! while it is still open, survive a restart.
 //!
-//! Keyed by the broker's `request_uri`. Rows are plain data: the lifecycle `status` and
-//! `direction` are stored as TEXT and given meaning by `navigator-app` (the same convention as
-//! [`crate::ibd_exchange::StoredIbdExchange::relationship`]).
+//! The broker's `request_uri` is the key. A row holds plain data: the `status` of the lifecycle
+//! and the `direction` go in as TEXT, and `navigator-app` gives them a sense. That is the same
+//! convention as [`crate::ibd_exchange::StoredIbdExchange::relationship`].
 
 use du_domain::ids::SampleGuid;
 use sqlx::SqlitePool;
 
 use crate::StoreError;
 
-/// One matching conversation. See `migrations/0041_ibd_request.up.sql` for the field semantics —
-/// in particular that `my_sample_ref` / `partner_sample_ref` are **AppView** sample handles while
-/// `biosample_guid` is the local subject, and that `consent_given` records only our own decision.
+/// One matching conversation. See `migrations/0041_ibd_request.up.sql` for what each field means.
+/// Note two things there. `my_sample_ref` and `partner_sample_ref` are **AppView** sample handles,
+/// and `biosample_guid` is the local subject. And `consent_given` records our own decision alone.
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct StoredIbdRequest {
     pub request_uri: String,
@@ -34,8 +34,8 @@ pub struct StoredIbdRequest {
     pub updated_at: String,
 }
 
-/// Insert or replace a request. `created_at` is preserved from the existing row (an update never
-/// rewrites when the conversation began).
+/// Insert or replace a request. The `created_at` of the existing row stays as it is, so an update
+/// never rewrites when the conversation began.
 pub async fn upsert(pool: &SqlitePool, r: &StoredIbdRequest) -> Result<(), StoreError> {
     sqlx::query(
         "INSERT INTO ibd_request (request_uri, direction, purpose, status, partner_did, session_id, \
@@ -70,9 +70,9 @@ pub async fn upsert(pool: &SqlitePool, r: &StoredIbdRequest) -> Result<(), Store
     Ok(())
 }
 
-/// Insert only if the request is unknown — the reconciler's primitive for adopting a request the
-/// broker reports. An existing row keeps every local field (notably our consent decision and the
-/// subject we chose), so re-polling can never walk them back.
+/// Insert only when the request is unknown. This is how the reconciler takes up a request that the
+/// broker reports. A row that exists keeps every local field, which cover our consent decision and
+/// the subject we chose. So a second poll can never undo them.
 pub async fn insert_if_absent(pool: &SqlitePool, r: &StoredIbdRequest) -> Result<bool, StoreError> {
     let res = sqlx::query(
         "INSERT INTO ibd_request (request_uri, direction, purpose, status, partner_did, session_id, \
@@ -208,7 +208,8 @@ mod tests {
         mine.consent_at = Some("2026-08-01T12:00:00Z".into());
         assert!(insert_if_absent(store.pool(), &mine).await.unwrap());
 
-        // The broker still lists it as awaiting consent; adopting it again is a no-op.
+        // The broker still lists it as a request that waits for consent, so a second adopt does
+        // nothing.
         let fresh = row("urn:ibd:xyz", "AWAITING_CONSENT");
         assert!(!insert_if_absent(store.pool(), &fresh).await.unwrap());
 

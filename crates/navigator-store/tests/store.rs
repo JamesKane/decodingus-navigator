@@ -68,11 +68,11 @@ async fn biosample_links_to_project_and_round_trips() {
 #[tokio::test]
 async fn foreign_keys_are_enforced() {
     let s = store().await;
-    // biosample referencing a non-existent project must fail.
+    // A biosample that names a project which does not exist must fail.
     let err = biosample::create(s.pool(), &sample(Some(42))).await;
     assert!(err.is_err(), "expected FK violation, got {err:?}");
 
-    // sequence_run referencing a non-existent biosample must fail.
+    // A sequence_run that names a biosample which does not exist must fail.
     let run = NewSequenceRun {
         library_layout: Some("PAIRED".into()),
         total_reads: Some(8_000_000),
@@ -158,7 +158,7 @@ async fn run_alignment_chain_persists() {
     assert_eq!(reloaded.library_layout.as_deref(), Some("PAIRED"));
     assert_eq!(reloaded.total_bases, Some(1_365_000_000)); // preserved by COALESCE
 
-    // The descriptive + identity columns are untouched by the read-stats write.
+    // The read-stats write leaves the descriptive columns and the identity columns as they are.
     assert_eq!(reloaded.instrument_id.as_deref(), Some("A00182"));
 
     let aln = alignment::create(
@@ -266,7 +266,7 @@ async fn clear_data_resets_subject_but_keeps_the_biosample() {
 
     biosample::clear_data(s.pool(), b.guid).await.unwrap();
 
-    // The subject survives; everything hanging off it is gone.
+    // The subject survives, and everything below it is gone.
     assert!(
         biosample::get(s.pool(), b.guid).await.unwrap().is_some(),
         "biosample kept"
@@ -382,7 +382,7 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     .await
     .unwrap();
 
-    // Deleting a single alignment removes its artifacts but leaves the run.
+    // A delete of one alignment removes its artifacts, and keeps the run.
     let aln2 = alignment::create(s.pool(), &NewAlignment::new(run.id, "grch38", "bwa"))
         .await
         .unwrap();
@@ -411,7 +411,7 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
         .await
         .unwrap()
         .is_none());
-    // The file record survives but is unlinked from the deleted alignment.
+    // The file record survives, with no link to the alignment that the code deleted.
     let sf = source_file::find_by_checksum(s.pool(), "hash-aln2")
         .await
         .unwrap()
@@ -423,8 +423,8 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
     );
     assert!(sequence_run::get(s.pool(), run.id).await.unwrap().is_some());
 
-    // Deleting the run removes the remaining alignment + artifact (FK-enforced cascade), and a
-    // source_file linked to that alignment must not block it either.
+    // A delete of the run removes the remaining alignment, and its artifact, through the cascade
+    // of the FKs. A source_file with a link to that alignment must not stop it.
     source_file::upsert_by_checksum(s.pool(), "hash-aln1", Some("/data/y.bam"), Some(1), Some("BAM"), "t")
         .await
         .unwrap();
@@ -448,15 +448,16 @@ async fn delete_cascades_run_to_alignments_and_artifacts() {
         .unwrap()
         .is_none());
 
-    // Deleting a non-existent row reports false rather than erroring.
+    // A delete of a row that does not exist reports false, and gives no error.
     assert!(!sequence_run::delete(s.pool(), 9999).await.unwrap());
     assert!(!alignment::delete(s.pool(), 9999).await.unwrap());
 }
 
 #[tokio::test]
 async fn set_sequence_run_reparents_an_alignment() {
-    // The merge primitive: an alignment's owning run can be changed (then the empty run deleted),
-    // and its artifacts travel with it (they are alignment-keyed).
+    // The primitive that a merge uses. The code can move an alignment to another run, and then
+    // delete the run that is now empty. The artifacts move with the alignment, because they key on
+    // it.
     let s = store().await;
     let b = sample(None);
     biosample::create(s.pool(), &b).await.unwrap();
@@ -491,7 +492,8 @@ async fn set_sequence_run_reparents_an_alignment() {
         .is_empty());
     assert_eq!(alignment::list_for_run(s.pool(), primary.id).await.unwrap().len(), 1);
 
-    // Deleting the now-empty secondary leaves the moved alignment + its artifact intact under primary.
+    // A delete of the secondary run, which is now empty, keeps the alignment that moved, and its
+    // artifact, under the primary run.
     assert!(sequence_run::delete(s.pool(), secondary.id).await.unwrap());
     assert!(alignment::get(s.pool(), aln.id).await.unwrap().is_some());
     assert!(artifact::get(s.pool(), aln.id, "coverage", "v1")
@@ -499,11 +501,11 @@ async fn set_sequence_run_reparents_an_alignment() {
         .unwrap()
         .is_some());
 
-    // Reparenting a non-existent alignment reports false.
+    // A move of an alignment that does not exist reports false.
     assert!(!alignment::set_sequence_run(s.pool(), 9999, primary.id).await.unwrap());
 }
 
-/// The selector behind `rebuild-signatures --stale-tree`: who was placed against a tree other than
+/// The selector behind `rebuild-signatures --stale-tree`: which subjects sit on a tree other than
 /// the active one.
 #[tokio::test]
 async fn stale_tree_selector_finds_subjects_placed_against_another_tree() {
@@ -559,7 +561,7 @@ async fn stale_tree_selector_finds_subjects_placed_against_another_tree() {
     );
     assert_eq!(with_unknown.len(), 3);
 
-    // The mt calls of these same subjects are untouched, so an mt sweep selects nobody by tag.
+    // The mt calls of these same subjects stay as they are, so an mt sweep selects nobody by tag.
     let mt = haplogroup_call::biosamples_placed_against_another_tree(s.pool(), DnaType::Mt, "mt:", "CURRENT", true)
         .await
         .unwrap();
@@ -645,9 +647,12 @@ async fn haplogroup_call_fingerprint_round_trips() {
         .is_none());
 }
 
-/// `member_counts` is a rewrite of `count_members_for_project` as one `GROUP BY`; the two must agree
-/// on every membership shape — M:N only, legacy home column only, both at once (must not double
-/// count), and a membership row whose subject has been deleted (must not count).
+/// `member_counts` rewrites `count_members_for_project` as one `GROUP BY`. The two must agree on
+/// every shape of membership.
+///
+/// There are four shapes. The M:N table alone. The legacy home column alone. Both at once, which
+/// must not count twice. And a membership row whose subject the code deleted, which must not count
+/// at all.
 #[tokio::test]
 async fn bulk_member_counts_match_the_per_project_count() {
     let s = store().await;
@@ -669,7 +674,7 @@ async fn bulk_member_counts_match_the_per_project_count() {
     // Legacy home column of p1 only.
     let b = sample(Some(p1.id));
     biosample::create(s.pool(), &b).await.unwrap();
-    // Both M:N and home for p1 — the UNION must count this once, not twice.
+    // This subject has both an M:N row and a home column for p1. The UNION must count it once.
     let c = sample(Some(p1.id));
     biosample::create(s.pool(), &c).await.unwrap();
     biosample_project::add(s.pool(), c.guid, p1.id, None, "2026-07-25")
@@ -695,8 +700,9 @@ async fn bulk_member_counts_match_the_per_project_count() {
         "a project with no members is absent, not zero"
     );
 
-    // Removing a subject drops its membership first (a foreign key forbids a dangling
-    // `biosample_project` row, which is why both count forms can join to `biosample` safely).
+    // A delete of a subject drops its membership first. A foreign key forbids a
+    // `biosample_project` row with no subject. That is why both count forms can join to
+    // `biosample` safely.
     biosample_project::remove(s.pool(), a.guid, p1.id).await.unwrap();
     biosample::delete(s.pool(), a.guid).await.unwrap();
     let counts: std::collections::HashMap<i64, i64> =
@@ -706,7 +712,8 @@ async fn bulk_member_counts_match_the_per_project_count() {
     assert_eq!(one, 2, "b and c remain");
 }
 
-/// The bulk artifact/alignment loaders must return exactly what a per-item loop would.
+/// The bulk loaders for artifacts and alignments must return exactly what a loop over one item at
+/// a time would return.
 #[tokio::test]
 async fn bulk_loaders_match_the_per_item_queries() {
     let s = store().await;
@@ -719,7 +726,7 @@ async fn bulk_loaders_match_the_per_item_queries() {
         let run = sequence_run::create(s.pool(), &NewSequenceRun::new(b.guid, "ILLUMINA", "WGS"))
             .await
             .unwrap();
-        // Two alignments on the middle subject, so grouping by subject is actually exercised.
+        // Two alignments on the middle subject, so the test drives the group by subject.
         for _ in 0..if i == 1 { 2 } else { 1 } {
             let aln = alignment::create(s.pool(), &NewAlignment::new(run.id, "chm13v2.0", "bwa"))
                 .await
@@ -743,7 +750,7 @@ async fn bulk_loaders_match_the_per_item_queries() {
         }
     }
 
-    // Alignments, grouped by owning subject.
+    // The alignments, grouped by the subject that owns them.
     let bulk = alignment::list_for_biosamples(s.pool(), &guids).await.unwrap();
     for g in &guids {
         let one = alignment::list_for_biosample(s.pool(), *g).await.unwrap();
@@ -771,9 +778,9 @@ async fn bulk_loaders_match_the_per_item_queries() {
     assert!(artifact::list_for_alignments(s.pool(), &[]).await.unwrap().is_empty());
 }
 
-/// Per-call evidence survives the round trip, and the set's schema tag reflects what was actually
-/// captured — not which importer ran. A `BASIC` set can never satisfy a quality gate, so a consumer
-/// has to be able to tell the two apart before it starts filtering on absent DP/GQ.
+/// The evidence of each call survives the round trip. The set's schema tag shows what the import
+/// captured, and not which importer ran. A `BASIC` set can never pass a quality gate. So a consumer
+/// must be able to tell the two apart, before it starts to filter on a DP or a GQ that is absent.
 #[tokio::test]
 async fn variant_call_evidence_round_trips_and_tags_the_schema() {
     use navigator_domain::variants::{
@@ -809,7 +816,7 @@ async fn variant_call_evidence_round_trips_and_tags_the_schema() {
             source_label: "big-y".into(),
             source_type: SourceType::TargetedNgs,
             reference_build: Some("GRCh38".into()),
-            // One call carries evidence, one does not — a real VCF mixes both.
+            // One call carries evidence and one does not, as a real VCF holds both.
             calls: vec![call(100, evidence.clone()), call(200, CallEvidence::default())],
             source_path: Some("/tmp/big-y.vcf.gz".into()),
         },
@@ -827,7 +834,7 @@ async fn variant_call_evidence_round_trips_and_tags_the_schema() {
     assert_eq!(read.calls[0].evidence, evidence, "every field survives the round trip");
     assert_eq!(read.calls[0].evidence.allele_fraction(), Some(0.95));
     assert!(read.calls[0].evidence.is_filtered());
-    // The evidence-free call stays evidence-free rather than reading back as zeros.
+    // The call with no evidence keeps none, and does not read back as zeros.
     assert!(read.calls[1].evidence.is_empty());
     assert_eq!(read.calls[1].evidence.dp, None);
 

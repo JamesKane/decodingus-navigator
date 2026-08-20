@@ -28,7 +28,8 @@ impl Row {
     }
 }
 
-/// Add a membership (idempotent on the `(guid, project_id)` PK). On re-add, the `role` is updated.
+/// Add a membership. It is idempotent on the `(guid, project_id)` primary key. A second add
+/// updates the `role`.
 pub async fn add(
     pool: &SqlitePool,
     guid: SampleGuid,
@@ -49,7 +50,7 @@ pub async fn add(
     Ok(())
 }
 
-/// Remove a membership. Returns whether a row was removed.
+/// Remove a membership. It returns whether it removed a row.
 pub async fn remove(pool: &SqlitePool, guid: SampleGuid, project_id: i64) -> Result<bool, StoreError> {
     let affected = sqlx::query("DELETE FROM biosample_project WHERE biosample_guid = ? AND project_id = ?")
         .bind(guid.0.to_string())
@@ -60,8 +61,8 @@ pub async fn remove(pool: &SqlitePool, guid: SampleGuid, project_id: i64) -> Res
     Ok(affected > 0)
 }
 
-/// Detach every subject from a project (used when deleting the project — the subjects themselves
-/// are first-class and survive). Returns the number of memberships removed.
+/// Detach every subject from a project. A delete of the project uses it. A subject is an entity in
+/// its own right, and it survives. It returns the count of memberships that it removed.
 pub async fn remove_all_for_project(pool: &SqlitePool, project_id: i64) -> Result<u64, StoreError> {
     let affected = sqlx::query("DELETE FROM biosample_project WHERE project_id = ?")
         .bind(project_id)
@@ -81,7 +82,7 @@ pub async fn list_projects_for(pool: &SqlitePool, guid: SampleGuid) -> Result<Ve
     Ok(ids)
 }
 
-/// Subject guids that belong to a project (via the membership table).
+/// The subject guids that belong to a project, through the membership table.
 pub async fn list_biosamples_for(pool: &SqlitePool, project_id: i64) -> Result<Vec<SampleGuid>, StoreError> {
     let rows: Vec<String> =
         sqlx::query_scalar("SELECT biosample_guid FROM biosample_project WHERE project_id = ? ORDER BY biosample_guid")
