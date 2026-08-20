@@ -1341,24 +1341,9 @@ pub enum Event {
     Cancelled,
 }
 
-/// Settle a finished alignment command into the event the UI should actually see.
-///
-/// Two things have to happen between a command failing and a user reading about it, and both are
-/// about not reporting the wrong thing:
-///
-/// 1. A **cancellation** is swallowed. It travels as an error so it can unwind the walk from deep
-///    inside a walker, but the user asked for it — surfacing "Error: cancelled" would report their
-///    own click back to them as a failure. The run's `AnalysisDone { cancelled }` already says so.
-/// 2. A **genuine** failure gets a file-level diagnosis attached, because:
-///
-/// The errors this upgrades are the ones that name a path but not the *right* path: the reader
-/// helpers report whichever path the failing call was handed, so a bad index, an unreadable
-/// reference or a privacy-denied file all surface as `io error on <the alignment>`. Running
-/// [`App::diagnose_alignment`] probes each of those files separately and says which one it is.
-///
-/// Errors with no file-level cause pass through untouched — if every preflight check passes, the
-/// failure is genuinely elsewhere (tree fetch, liftover, appview) and a clean bill of health would
-/// be worse than saying nothing.
+/// How a cancellation reads once it has been flattened to a string by an event.
+const CANCELLED_MESSAGE: &str = "cancelled";
+
 /// The token for whichever cancellable run is in flight, so `CancelAnalysis` can reach it.
 ///
 /// Replaces a single shared `AtomicBool` that each run reset to `false` at its own entry. Because
@@ -1369,9 +1354,6 @@ pub enum Event {
 ///
 /// The generation counter keeps a finishing run from clearing a *newer* run's registration — the
 /// same stale-write bug in a different costume.
-/// How a cancellation reads once it has been flattened to a string by an event.
-const CANCELLED_MESSAGE: &str = "cancelled";
-
 #[derive(Clone, Default)]
 struct CancelRegistry {
     current: Arc<Mutex<Option<(u64, CancelToken)>>>,
@@ -1404,6 +1386,24 @@ impl CancelRegistry {
     }
 }
 
+/// Settle a finished alignment command into the event the UI should actually see.
+///
+/// Two things have to happen between a command failing and a user reading about it, and both are
+/// about not reporting the wrong thing:
+///
+/// 1. A **cancellation** is swallowed. It travels as an error so it can unwind the walk from deep
+///    inside a walker, but the user asked for it — surfacing "Error: cancelled" would report their
+///    own click back to them as a failure. The run's `AnalysisDone { cancelled }` already says so.
+/// 2. A **genuine** failure gets a file-level diagnosis attached, because:
+///
+/// The errors this upgrades are the ones that name a path but not the *right* path: the reader
+/// helpers report whichever path the failing call was handed, so a bad index, an unreadable
+/// reference or a privacy-denied file all surface as `io error on <the alignment>`. Running
+/// [`App::diagnose_alignment`] probes each of those files separately and says which one it is.
+///
+/// Errors with no file-level cause pass through untouched — if every preflight check passes, the
+/// failure is genuinely elsewhere (tree fetch, liftover, appview) and a clean bill of health would
+/// be worse than saying nothing.
 async fn settle_alignment_command(app: &App, alignment_id: i64, event: Event) -> Event {
     let Event::Error(message) = event else {
         return event;

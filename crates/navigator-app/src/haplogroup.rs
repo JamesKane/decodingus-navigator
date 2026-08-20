@@ -2846,17 +2846,6 @@ impl App {
         Ok(None)
     }
 
-    /// A haplotree JSON, from the cache or from a download. The on-disk cache has a **7-day life**
-    /// (see [`TREE_CACHE_TTL`]). A fresh cache keeps the code off the network. A cache that is
-    /// stale or absent starts a download, which also refreshes the cache.
-    ///
-    /// If that download fails, but a stale copy exists, the code uses the stale copy and does not
-    /// fail. An unreachable AppView is one such failure. So the app still runs offline, on an older
-    /// tree.
-    ///
-    /// A server-side ETag or version would let the app revalidate with no full download. That is an
-    /// AppView backlog item.
-    ///
     /// Force a fresh pull of the haplotrees on the next placement. It clears the session memo AND
     /// deletes the on-disk tree caches. So the app takes up a corrected AppView tree, such as a
     /// polarity fix, with no restart. An observation-first profile then interprets against the new
@@ -2878,6 +2867,16 @@ impl App {
         Ok(removed)
     }
 
+    /// A haplotree JSON, from the cache or from a download. The on-disk cache has a **7-day life**
+    /// (see [`TREE_CACHE_TTL`]). A fresh cache keeps the code off the network. A cache that is
+    /// stale or absent starts a download, which also refreshes the cache.
+    ///
+    /// If that download fails, but a stale copy exists, the code uses the stale copy and does not
+    /// fail. An unreachable AppView is one such failure. So the app still runs offline, on an older
+    /// tree.
+    ///
+    /// A server-side ETag or version would let the app revalidate with no full download. That is an
+    /// AppView backlog item.
     async fn fetch_tree(&self, url: &str, cache_file: &str) -> Result<String, AppError> {
         // Session memo. The Y and mt haplotrees are 4–121 MB. One placement consults them many
         // times: for each alignment, for each vendor set, and for the polarity map. Without this
@@ -3088,13 +3087,6 @@ impl App {
         .map_err(Into::into)
     }
 
-    /// Estimate the donor's ancestry for an alignment by the allele-frequency likelihood.
-    ///
-    /// Load the AIMs panel that matches the build. Genotype the sample at its sites with the GL
-    /// caller. Score the binomial likelihood of each super-population. It stores the result, and
-    /// returns it to show. It needs a recorded BAM/CRAM, and a reference that the code can resolve,
-    /// for the CRAM and the genotype step.
-    ///
     /// Estimate autosomal ancestry from the subject's **consensus**, with no BAM genotyping.
     ///
     /// It reads the cached autosomal [`DiploidProfile`], which holds reconciled 0/1/2 dosages over
@@ -4549,14 +4541,6 @@ impl App {
         Ok(format!("f:{}|yt:{}", &file_hash[..16], &tree_hash[..16]))
     }
 
-    /// Assign a Y haplogroup to an alignment. Place the sample against the configured Y tree, call
-    /// the sample's base at each tree position on chrY, and rank by Kulczynski.
-    ///
-    /// The default tree is DecodingUs, which is our own, in native CHM13 coordinates, with no
-    /// liftover. It falls back to FTDNA when the AppView is unreachable. It needs a recorded
-    /// BAM/CRAM path. It skips the score step when the alignment file and the tree have not changed
-    /// since the last run (see [`Self::y_score_fingerprint`]).
-    ///
     /// Whether the app must score a subject for Y-DNA.
     ///
     /// A female has no Y chromosome. Y placement, the consensus, and the Y variant profile would
@@ -4573,6 +4557,13 @@ impl App {
         Ok(!matches!(sex.as_deref().map(str::trim), Some(s) if s.eq_ignore_ascii_case("female")))
     }
 
+    /// Assign a Y haplogroup to an alignment. Place the sample against the configured Y tree, call
+    /// the sample's base at each tree position on chrY, and rank by Kulczynski.
+    ///
+    /// The default tree is DecodingUs, which is our own, in native CHM13 coordinates, with no
+    /// liftover. It falls back to FTDNA when the AppView is unreachable. It needs a recorded
+    /// BAM/CRAM path. It skips the score step when the alignment file and the tree have not changed
+    /// since the last run (see [`Self::y_score_fingerprint`]).
     pub async fn assign_y_haplogroup(&self, alignment_id: i64) -> Result<HaploAssignment, AppError> {
         let bio = self.biosample_of_alignment(alignment_id).await.ok();
 
@@ -5057,11 +5048,6 @@ impl App {
         Ok(assemble_assignment(&tree, &calls))
     }
 
-    /// Like [`assign_haplogroup_from_alignment`], but it also returns the evidence at each SNP
-    /// along the lineage of the called terminal. That is the Derived, Ancestral, or NoCall state of
-    /// each mutation that defines a node. It is for an exact comparison, such as GRCh38 against a
-    /// lifted CHM13 call.
-    ///
     /// Full Y-haplogroup placement **report** for an alignment (gap §8). It holds the ranked
     /// candidate haplogroups, each with a score and a matched-against-expected count. It also holds
     /// the SNP evidence along the reported lineage, with the derived, ancestral, or no-call state
@@ -5082,6 +5068,10 @@ impl App {
         Ok((assignment, lineage))
     }
 
+    /// Like [`assign_haplogroup_from_alignment`], but it also returns the evidence at each SNP
+    /// along the lineage of the called terminal. That is the Derived, Ancestral, or NoCall state of
+    /// each mutation that defines a node. It is for an exact comparison, such as GRCh38 against a
+    /// lifted CHM13 call.
     pub async fn assign_haplogroup_detail(
         &self,
         alignment_id: i64,
@@ -5167,22 +5157,6 @@ impl App {
             }))
     }
 
-    /// Base-call an alignment at a parsed tree's positions on `contig`.
-    ///
-    /// `tree_source_build` names the build that the tree's positions are in. When that is not the
-    /// alignment build, the code lifts the positions through the chrY chain, queries them there,
-    /// and maps them back. `None` queries directly, as for a DecodingUs tree that is already in the
-    /// alignment's build, or for a direct mt or rCRS query.
-    ///
-    /// The cache holds the result (tree-position → base) as a versioned analysis artifact. Its key
-    /// is the queried **site set**, which is a hash of the tree's positions, plus the contig and
-    /// the lift source. The alignment's `source_sig`, its BAM/CRAM mtime and size, invalidates it.
-    ///
-    /// This is the one place where *every* genotype path walks the BAM: Y and mt placement, the
-    /// variant profile, and the genome consensus. So a **rebuild** of a profile reuses the cached
-    /// genotypes, and does not read the reads again. Only a changed file, or a changed tree site
-    /// set, forces a fresh walk.
-    ///
     /// Tree-locus base calls for one alignment, for the **genome-consensus placement**.
     ///
     /// It prefers the alignment's external sidecar GVCF, which needs no CRAM decode, when the
@@ -5218,6 +5192,21 @@ impl App {
         self.base_calls(aln.id, contig, tree, tree_source_build).await
     }
 
+    /// Base-call an alignment at a parsed tree's positions on `contig`.
+    ///
+    /// `tree_source_build` names the build that the tree's positions are in. When that is not the
+    /// alignment build, the code lifts the positions through the chrY chain, queries them there,
+    /// and maps them back. `None` queries directly, as for a DecodingUs tree that is already in the
+    /// alignment's build, or for a direct mt or rCRS query.
+    ///
+    /// The cache holds the result (tree-position → base) as a versioned analysis artifact. Its key
+    /// is the queried **site set**, which is a hash of the tree's positions, plus the contig and
+    /// the lift source. The alignment's `source_sig`, its BAM/CRAM mtime and size, invalidates it.
+    ///
+    /// This is the one place where *every* genotype path walks the BAM: Y and mt placement, the
+    /// variant profile, and the genome consensus. So a **rebuild** of a profile reuses the cached
+    /// genotypes, and does not read the reads again. Only a changed file, or a changed tree site
+    /// set, forces a fresh walk.
     async fn base_calls(
         &self,
         alignment_id: i64,

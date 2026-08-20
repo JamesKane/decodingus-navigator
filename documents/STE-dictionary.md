@@ -212,6 +212,40 @@ for f in glob.glob("crates/**/*.rs", recursive=True):
 
 `cargo fmt --all` before each commit. The pre-commit hook enforces it.
 
+### Two doc comments that ran together
+
+Some doc blocks hold the documentation of **two different items**. One function's doc sits
+physically on the next function, and the function it describes has none. The conversion finds these,
+because a block that changes topic in the middle is easy to see when you rewrite it.
+
+Do not repair one by hand while you convert. Note it, finish the file, and move every stranded doc
+in one commit of its own. A doc comment that moves to a different item changes the API
+documentation, and that is a different review from a change to the English.
+
+This query finds the candidates. It reports each multi-paragraph doc that a documented item carries,
+where the **next** item at the same indent has no doc at all:
+
+```python
+import re, glob
+ITEM = re.compile(r'^(\s*)(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?(?:const\s+)?'
+                  r'(?:fn|struct|enum|type|trait|static|const)\s+([A-Za-z_][A-Za-z0-9_]*)')
+```
+
+Read the first paragraph of each hit against the two item names. Most hits are a documented item
+followed by a private helper, and those are correct as they stand. A hit is real only when the first
+paragraph describes the *next* item. Of 64 candidates in this repo, 11 were real.
+
+Three shapes turn up, and each needs a different repair:
+
+- **A stranded doc.** The text describes a real item that has no doc. Move it there.
+- **Two summaries of one item.** Somebody rewrote a doc and kept both versions. Merge them.
+- **A doc for code that no longer exists.** Delete it. `haplogroup.rs` carried the doc of a
+  per-alignment ancestry estimator that the consensus path replaced. It documented nothing, and it
+  made the function below it read as though it did two jobs.
+
+The relocation must not lose a word. `git diff --numstat` proves that: for a pure move the insertion
+and deletion counts are equal, and every other difference must have a reason you can name.
+
 ### Where the work stands
 
 Converted to zero: `navigator-resource`, `navigator-store/src/sig_cache.rs`, and 31 of the 33 files

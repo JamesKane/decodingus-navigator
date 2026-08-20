@@ -1090,21 +1090,6 @@ fn tree_cache_is_fresh(path: &Path) -> bool {
     brief::cache_is_fresh(path, days)
 }
 
-/// Score a tree against the sample calls and attach the terminal's child-branch evidence.
-///
-/// The Kulczynski `score` ranks the candidates by proportional similarity, and it supplies the
-/// alternatives list. But two steps choose the *reported terminal*.
-///
-/// The first step takes the best-ranked candidate that the path-supported parsimony guard admits.
-/// The guard rejects a candidate whose lineage tunnels through a branch that the sample
-/// contradicts, which is the distal-Y paralog artifact.
-///
-/// The second step calls [`haplo::deepen_terminal`], which descends into any child that the sample
-/// clearly entered. This corrects an under-call at an **unsplit tree node**, where a half-ancestral
-/// SNP block scores below its parent.
-///
-/// The function moves the chosen node to the front, so every `ranked.first()` consumer gets it.
-/// See `documents/design/PangenomeExpansion.md`.
 /// Pool every source's vote into one consensus map by a `SourceType`-weighted majority.
 ///
 /// The key `K` is the SNP **name** for Y, which is portable across builds. For mt it is the rCRS
@@ -1147,6 +1132,21 @@ where
         .collect()
 }
 
+/// Score a tree against the sample calls and attach the terminal's child-branch evidence.
+///
+/// The Kulczynski `score` ranks the candidates by proportional similarity, and it supplies the
+/// alternatives list. But two steps choose the *reported terminal*.
+///
+/// The first step takes the best-ranked candidate that the path-supported parsimony guard admits.
+/// The guard rejects a candidate whose lineage tunnels through a branch that the sample
+/// contradicts, which is the distal-Y paralog artifact.
+///
+/// The second step calls [`haplo::deepen_terminal`], which descends into any child that the sample
+/// clearly entered. This corrects an under-call at an **unsplit tree node**, where a half-ancestral
+/// SNP block scores below its parent.
+///
+/// The function moves the chosen node to the front, so every `ranked.first()` consumer gets it.
+/// See `documents/design/PangenomeExpansion.md`.
 fn assemble_assignment(tree: &navigator_analysis::haplo::HaploTree, calls: &HashMap<i64, char>) -> HaploAssignment {
     use navigator_analysis::haplo;
     let mut ranked = haplo::score(tree, calls);
@@ -1497,7 +1497,6 @@ fn archaic_marker_dist_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ARCHAIC_DIST", "archaic_marker_dist", build, "bin")
 }
 
-/// Tier B: positions variable in the African outgroup, which let the code remove shared variants.
 /// Cache signature for a Tier B segment result: the alignment it came from, plus the genotype
 /// version of the caller. So a newer caller invalidates the result.
 pub(crate) fn archaic_segment_sig(alignment_id: i64, called_contigs: &[String]) -> String {
@@ -1534,6 +1533,7 @@ pub(crate) async fn called_diploid_contigs(
         .collect())
 }
 
+/// Tier B: positions variable in the African outgroup, which let the code remove shared variants.
 fn archaic_outgroup_path(build: ReferenceBuild) -> PathBuf {
     ancestry_asset_path("NAVIGATOR_ARCHAIC_OUTGROUP", "archaic_outgroup_af", build, "bin")
 }
@@ -1870,9 +1870,6 @@ fn load_genetic_map(build: ReferenceBuild, lengths: &[(&str, i32)]) -> GeneticMa
     }
 }
 
-/// Map a computed [`AncestryResult`] onto the shared federated wire record. The record takes the
-/// analysis method verbatim from the estimator that produced the result, and never infers it. So
-/// the published `analysisMethod` always matches the composition on the screen.
 /// How many outbox rows one [`App::drain_outbox`] pass tries.
 const OUTBOX_BATCH: i64 = 16;
 
@@ -2162,6 +2159,9 @@ pub struct PullOutcome {
     pub conflicts: usize,
 }
 
+/// Map a computed [`AncestryResult`] onto the shared federated wire record. The record takes the
+/// analysis method verbatim from the estimator that produced the result, and never infers it. So
+/// the published `analysisMethod` always matches the composition on the screen.
 fn population_breakdown_record(result: &AncestryResult) -> PopulationBreakdownRecord {
     let components = result
         .components
@@ -2607,8 +2607,6 @@ fn assignment_from_call(call: &navigator_domain::reconciliation::RunHaplogroupCa
 // navigator-domain, which the chip dosage and BISDNA QC paths also use.
 use navigator_domain::seq::complement_base;
 
-/// The build that a haplotree's positions are in, by contig. The FTDNA Y tree is GRCh38. mtDNA
-/// (`chrM`) is rCRS and stays a direct query with no chain, so it returns `None`.
 /// Whether a stored reference-build string means GRCh38, which is the FTDNA Y tree's native
 /// coordinate space. `None` means GRCh38, the vendor-Y-VCF import default. The FTDNA-provider Y
 /// consensus uses this to admit only GRCh38 vendor sets, because others do not match the GRCh38
@@ -2623,6 +2621,8 @@ fn is_grch38_build(build: &Option<String>) -> bool {
     }
 }
 
+/// The build that a haplotree's positions are in, by contig. The FTDNA Y tree is GRCh38. mtDNA
+/// (`chrM`) is rCRS and stays a direct query with no chain, so it returns `None`.
 fn tree_build_for_contig(contig: &str) -> Option<&'static str> {
     if contig.eq_ignore_ascii_case("chrY") {
         Some("GRCh38")
@@ -3040,15 +3040,14 @@ pub fn consensus_genotypes(profile: &DiploidProfile) -> Vec<SiteGenotype> {
         .collect()
 }
 
-/// Flatten a placement's branch SNP evidence into one observation for each SNP. The name dedupes
-/// them: a SNP defines one branch, but guard against a duplicate. `in_tree` is true for a SNP that
-/// defines a tree node.
-///
 /// Build one observation for each SNP of the multi-source consensus profile, from a placement's
-/// **lineage**. That lineage holds the root→terminal mutations that the sample carries. Do not use
-/// its child branches, which are the deeper splits that the descent did not take, and which are
-/// ancestral or no-call by construction. With `branches`, a single-source profile read as
-/// all-no-call even when the terminal placed cleanly.
+/// **lineage**. The name dedupes them: a SNP defines one branch, but guard against a duplicate.
+/// `in_tree` is true for a SNP that defines a tree node.
+///
+/// That lineage holds the root→terminal mutations that the sample carries. Do not use its child
+/// branches, which are the deeper splits that the descent did not take, and which are ancestral or
+/// no-call by construction. With `branches`, a single-source profile read as all-no-call even when
+/// the terminal placed cleanly.
 fn snp_obs_from_assignment(assignment: &HaploAssignment, in_tree: bool) -> Vec<YObsInput> {
     let mut by_name: std::collections::HashMap<String, YObsInput> = std::collections::HashMap::new();
     for snp in &assignment.lineage {
@@ -3281,8 +3280,6 @@ fn read_head(path: &Path) -> Result<String, AppError> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Group the genotypes of each site into a dosage array for each chromosome, sorted by position,
-/// for the IBD detector.
 /// Artifact kind for an alignment's cached IBD-panel genotypes.
 ///
 /// The `2` suffix retires every genotype cached before GRCh37/GRCh38 support landed (`3cf4956`,
@@ -3380,6 +3377,8 @@ fn detect_ibd(
     }
 }
 
+/// Group the genotypes of each site into a dosage array for each chromosome, sorted by position,
+/// for the IBD detector.
 fn group_chrom_genotypes(genotypes: &[SiteGenotype]) -> std::collections::HashMap<String, ChromosomeGenotypes> {
     let mut by_contig: BTreeMap<String, Vec<(i64, i32)>> = BTreeMap::new();
     for g in genotypes {

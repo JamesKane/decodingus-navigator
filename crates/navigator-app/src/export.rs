@@ -264,16 +264,8 @@ pub fn ancestry_html(a: &AncestryResult) -> String {
     )
 }
 
-// ---- mtDNA variants ----------------------------------------------------------
+// ---- descent and branch reports ----------------------------------------------
 
-/// The mtDNA variants against rCRS as TSV. Each row holds the position, the short notation, the
-/// region, the reference allele, the alternate allele, and the type.
-///
-/// The Y-DNA or mtDNA **descent report** as TSV, from the root to the terminal lineage. The file
-/// holds one row for each SNP that defines a node on the path. Each row also holds the call state
-/// of the subject and the observed base. The file has the same content as the descent grid on the
-/// screen, so a user can share it or compare it outside the app.
-///
 /// TSV for a [`BranchReport`]. The file holds one row for each marker that defines a node in the
 /// reported subtree. Each row holds the observed base of the sample, the call state, and the
 /// evidence. A user can share the file to check a placement or to send it to a researcher. A row
@@ -328,6 +320,10 @@ pub fn branch_report_tsv(report: &BranchReport) -> String {
     out
 }
 
+/// The Y-DNA or mtDNA **descent report** as TSV, from the root to the terminal lineage. The file
+/// holds one row for each SNP that defines a node on the path. Each row also holds the call state
+/// of the subject and the observed base. The file has the same content as the descent grid on the
+/// screen, so a user can share it or compare it outside the app.
 pub fn descent_tsv(report: &DescentReport) -> String {
     let dna = match report.dna {
         DnaType::Y => "Y-DNA",
@@ -528,6 +524,10 @@ pub fn block_tree_html(tree: &ProjectBlockTree, project: &str) -> String {
     )
 }
 
+// ---- mtDNA variants ----------------------------------------------------------
+
+/// The mtDNA variants against rCRS as TSV. Each row holds the position, the short notation, the
+/// region, the reference allele, the alternate allele, and the type.
 pub fn mtdna_variants_tsv(variants: &[MtVariant]) -> String {
     let mut out = String::from("# DUNavigator mtDNA variants vs rCRS (NC_012920.1)\n");
     out.push_str("position\tnotation\tregion\tref\talt\ttype\n");
