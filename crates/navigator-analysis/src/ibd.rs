@@ -1,12 +1,17 @@
-//! IBD (identity-by-descent) detection + relationship estimation — port of the Scala
-//! `ibd.engine` (PairwiseIbdDetector / GeneticMap / RelationshipEstimator). Pure math:
-//! the network matching layer (crypto/protocol/relay) is out of scope here.
+//! IBD detection, which is identity by descent, and the estimate of a relationship. This is the
+//! port of the Scala `ibd.engine`, which held PairwiseIbdDetector, GeneticMap and
+//! RelationshipEstimator. It is pure arithmetic. The network layer that matches two people, with
+//! its crypto, protocol and relay, is outside this module.
 //!
-//! Input is per-chromosome diploid dosage genotypes (0/1/2, -1 no-call) — exactly what
-//! [`crate::caller::genotype_sites`] produces. The detector classifies IBS at shared
-//! sites, finds high-IBS runs with a sliding window + error tolerance, converts spans to
-//! centiMorgans via a [`GeneticMap`], filters by length, and merges nearby segments.
-//! Total shared cM maps to a relationship category (Shared cM Project / ISOGG values).
+//! The input is diploid dosage genotypes, one set for each chromosome, at 0, 1 or 2, with -1 for a
+//! no-call. That is exactly what [`crate::caller::genotype_sites`] gives.
+//!
+//! The detector classifies the IBS at the shared sites. It finds the runs of high IBS with a window
+//! that slides, and it accepts some errors. It turns each span into centiMorgans, through a
+//! [`GeneticMap`]. It then filters by length, and it merges the segments that lie near each other.
+//!
+//! The total shared cM maps to a class of relationship, with the values of the Shared cM Project
+//! and of ISOGG.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -110,8 +115,9 @@ impl MatchSummary {
     }
 }
 
-/// Diploid dosage genotypes for one chromosome. `dosages`: 0 hom-ref, 1 het, 2 hom-alt,
-/// -1 no-call. `positions` must be sorted ascending and the same length as `dosages`.
+/// The diploid dosage genotypes of one chromosome. In `dosages`, 0 is hom-ref, 1 is het, 2 is
+/// hom-alt, and -1 is a no-call. `positions` must come in order, from the lowest up, and it must
+/// hold as many entries as `dosages`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChromosomeGenotypes {
     pub chromosome: String,
@@ -214,7 +220,7 @@ impl GeneticMap {
         bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("genetic map encode: {e}")))
     }
 
-    /// Build from per-chromosome `(name, positions, cm)` marker arrays.
+    /// Build from the `(name, positions, cm)` marker arrays of each chromosome.
     pub fn from_markers(markers: impl IntoIterator<Item = (String, Vec<i32>, Vec<f64>)>) -> Self {
         let maps = markers
             .into_iter()
@@ -322,7 +328,8 @@ impl PairwiseIbdDetector {
         out
     }
 
-    /// Sliding-window candidate segments: `(start_idx, end_idx, snp_count, ibs2_count)`.
+    /// The candidate segments, from a window that slides. Each one is
+    /// `(start_idx, end_idx, snp_count, ibs2_count)`.
     fn find_candidate_segments(&self, positions: &[i32], ibs: &[i8]) -> Vec<(usize, usize, usize, usize)> {
         let n = positions.len();
         if n < self.config.window_size {
@@ -499,8 +506,8 @@ mod tests {
 
     #[test]
     fn detects_a_long_identical_segment_but_not_a_discordant_region() {
-        // 300 SNPs at 50 kb spacing (15 Mb -> 15 cM at 1 cM/Mb). First 250 identical
-        // (IBS-2), last 50 opposite homozygotes (IBS-0).
+        // 300 SNPs, with 50 kb between them, which is 15 Mb, and 15 cM at 1 cM/Mb. The first 250
+        // are identical, at IBS-2. The last 50 are opposite homozygotes, at IBS-0.
         let n = 300;
         let s1 = chrom(n, 50_000, |i| (i % 3) as i8); // 0,1,2 cycling
         let s2 = chrom(n, 50_000, |i| if i < 250 { (i % 3) as i8 } else { 2 - (i % 3) as i8 });

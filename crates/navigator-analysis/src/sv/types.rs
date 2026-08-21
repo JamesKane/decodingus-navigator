@@ -1,4 +1,5 @@
-//! SV core types — port of the Scala `SvTypes` (SvType, SvCall, config, confidence).
+//! The core SV types. This is the port of the Scala `SvTypes`, which held SvType, SvCall, the
+//! configuration and the confidence.
 
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +46,8 @@ pub struct SvCall {
     pub genotype: String,
 }
 
-/// Confidence in [0,1] weighting PE / SR / depth evidence (mirrors `calculateConfidence`).
+/// The confidence, in [0,1]. It weighs the PE evidence, the SR evidence and the depth evidence. It
+/// has the same shape as `calculateConfidence`.
 pub fn calculate_confidence(call: &SvCall) -> f64 {
     let pe_weight = 0.3;
     let sr_weight = 0.4;
@@ -74,9 +76,12 @@ pub struct SvCallerConfig {
     pub min_split_read_support: u32,
     pub min_total_support: u32,
     pub min_quality: f64,
-    /// Ceiling on retained discordant pairs, and separately on retained split reads, for one walk.
-    /// A safety valve, not a filter: the point is that a pathological library can not take the whole
-    /// process — and in a batch, the other 147 samples — down with an OOM. See the default.
+    /// The upper limit on the discordant pairs that one walk keeps, and, apart from that, on the
+    /// split reads that it keeps.
+    ///
+    /// It is a safety valve, and not a filter. One library of an unusual shape must not take the
+    /// whole process down with an out-of-memory error. In a batch, that would take the other 147
+    /// samples with it. See the default.
     pub max_evidence_records: u64,
 }
 
@@ -93,10 +98,13 @@ impl Default for SvCallerConfig {
             min_split_read_support: 1,
             min_total_support: 3,
             min_quality: 10.0,
-            // Chosen against the real spread, not a round number: across 33 analysed alignments the
-            // discordant-pair counts run 0.05–15.6 M (split reads 0–1.1 M), so 32 M is ~2x the
-            // worst case actually observed and does not fire on any of them. What it does is put a
-            // ~2 GB ceiling on evidence that was previously bounded only by the file.
+            // This value comes from the real spread, and it is not a round number. Across 33
+            // alignments that somebody analysed, the discordant-pair counts run from 0.05M to
+            // 15.6M, and the split reads from 0 to 1.1M. So 32M is about 2x the worst case that
+            // anybody has seen, and it fires on none of them.
+            //
+            // What it does give is an upper limit of about 2 GB on evidence that the size of the
+            // file alone used to bound.
             max_evidence_records: 32_000_000,
         }
     }

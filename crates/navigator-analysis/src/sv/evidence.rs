@@ -1,12 +1,13 @@
-//! SV evidence models — port of the Scala `SvEvidence` (discordant pairs, split reads,
-//! depth segments, the evidence collection, and breakpoint clusters).
+//! The models of the SV evidence. This is the port of the Scala `SvEvidence`. It holds the
+//! discordant pairs, the split reads, the depth segments, the collection of the evidence, and the
+//! clusters of breakpoints.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::types::SvType;
 
-/// Why a read pair is considered discordant.
+/// The reason that a read pair counts as discordant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiscordantReason {
     InsertSizeOutlier,
@@ -16,11 +17,15 @@ pub enum DiscordantReason {
 
 /// A discordant read pair (potential SV breakpoint evidence).
 ///
-/// Contig names are `Arc<str>` rather than `String`, and there is no read name. A 30x WGS retains
-/// 3–16 M of these (measured across the workspace), and both choices are about that scale: the
-/// walker interns one `Arc` per contig and clones a pointer instead of allocating a name per
-/// record, and the read name — which nothing downstream ever read — cost an allocation and ~55
-/// bytes each to carry evidence that clustering identifies purely by position.
+/// A contig name is an `Arc<str>`, and not a `String`. There is also no read name. A 30x WGS keeps
+/// 3M to 16M of these, as a measurement over the workspace showed. Both choices come from that
+/// scale.
+///
+/// The walker interns one `Arc` for each contig, and it then clones a pointer. It does not allocate
+/// a name at each record.
+///
+/// The read name cost an allocation, and about 55 bytes, at each record. Nothing after the walker
+/// ever read it. The step that groups the evidence finds a breakpoint from the positions alone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscordantPair {
     pub chrom1: Arc<str>,
@@ -61,7 +66,8 @@ pub struct DepthSegment {
     pub sv_type: SvType,
 }
 
-/// All SV evidence gathered from a BAM. `depth_bins` maps contig -> per-bin read counts.
+/// All of the SV evidence that the walker collected from a BAM. `depth_bins` maps a contig to the
+/// read count of each bin.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SvEvidenceCollection {
     pub discordant_pairs: Vec<DiscordantPair>,
@@ -70,9 +76,12 @@ pub struct SvEvidenceCollection {
     pub sample_name: String,
     pub expected_insert_size: f64,
     pub insert_size_sd: f64,
-    /// Evidence seen but not retained, because `SvCallerConfig::max_evidence_records` was already
-    /// met. Zero in every normal run — see that field. Kept so the `total_*` counts below stay the
-    /// number of items *found*, which is what the walker's stats mean, capped or not.
+    /// The count of evidence items that the walker saw and did not keep, because the count had
+    /// already reached `SvCallerConfig::max_evidence_records`. It is zero in every usual run. See
+    /// that field.
+    ///
+    /// This field exists so that the `total_*` counts below stay the count of items that the walker
+    /// *found*. That is what the statistics of the walker mean, whether the cap fired or not.
     pub discordant_pairs_dropped: u64,
     pub split_reads_dropped: u64,
 }
@@ -95,7 +104,7 @@ impl SvEvidenceCollection {
     }
 }
 
-/// Grouped evidence supporting a single breakpoint.
+/// The evidence behind one breakpoint, in a group.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BreakpointCluster {
     pub chrom: String,
