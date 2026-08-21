@@ -1,5 +1,6 @@
-//! Print the SUPER-POP admixture (the prior the chromosome painter uses) for a dosage TSV against
-//! the super-pop panel — to check the painting's global-composition gate threshold.
+//! Print the SUPER-POP admixture of a dosage TSV, against the super-pop panel. That admixture is
+//! the earlier estimate that the chromosome painter uses. Read it to check the threshold of the
+//! painting's global-composition gate.
 //!   score_superpop_from_tsv <ancestry_panel.bin> <dosage.tsv>
 use navigator_analysis::ancestry::{estimate_admixture, AncestryPanel};
 use navigator_analysis::caller::SiteGenotype;

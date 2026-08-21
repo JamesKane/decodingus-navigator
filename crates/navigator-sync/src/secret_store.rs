@@ -1,21 +1,23 @@
 //! The one and only gateway to the OS keychain.
 //!
-//! Three things need durable secret storage — the OAuth [`Session`](crate::Session), the Ed25519
-//! [`DeviceKey`](crate::DeviceKey), and the X25519 [`ExchangeKey`](crate::ExchangeKey). Each used to
-//! call `keyring::Entry` directly, so "does this code path touch the real keychain?" had three
-//! answers and no single place to enforce one. It has one now: every read/write/delete funnels
-//! through [`get`], [`set`], and [`delete`] here.
+//! Three things need durable secret storage: the OAuth [`Session`](crate::Session), the Ed25519
+//! [`DeviceKey`](crate::DeviceKey), and the X25519 [`ExchangeKey`](crate::ExchangeKey). Each one
+//! used to call `keyring::Entry` directly. So the question "does this code path touch the real
+//! keychain?" had three answers, and no one place could control them. It has one place now: every
+//! read, write, and delete goes through [`get`], [`set`], and [`delete`] here.
 //!
-//! **The backend is in-memory unless a process explicitly opts in.** A test binary, a CI runner, a
-//! doctest, or an `examples/` probe therefore *cannot* reach the login keychain no matter what it
-//! constructs or in what order — the capability simply isn't switched on. The production binary
-//! turns it on once, at the top of `main`, via [`use_os_keychain`].
+//! **The backend is in memory, until a process asks for the real one.** So a test binary, a CI
+//! runner, a doctest, and an `examples/` probe *can not* reach the login keychain. That holds
+//! whatever they build, and in whatever order. The capability is off. The production binary turns
+//! it on once, at the top of `main`, with [`use_os_keychain`].
 //!
-//! This is the safe direction for the default to fail. Under the old opt-*out* scheme a test had to
-//! remember to call an escape hatch, and forgetting meant silently reading the user's real
-//! credentials under the production service name (and, on macOS, an interactive unlock prompt that
-//! hangs CI). Under this scheme forgetting means a session doesn't persist across restarts — loud,
-//! local to the one binary that owns `main`, and impossible to miss on first launch.
+//! This is the safe direction for the default to fail. Under the old opt-*out* scheme, a test had
+//! to remember to call an escape hatch. If it did not, it read the user's real credentials under
+//! the production service name, with no warning. On macOS it also raised an unlock prompt that
+//! hangs CI.
+//!
+//! Under this scheme, the same mistake means a session does not survive a restart. That is loud,
+//! it is local to the one binary that owns `main`, and nobody can miss it at the first launch.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,8 +27,8 @@ use keyring::Entry;
 
 use crate::error::SyncError;
 
-/// Off by default: everything is in-memory until [`use_os_keychain`] flips this. Only the shipped
-/// binary's `main` may flip it — never a test, never a library initializer.
+/// Off by default: everything stays in memory until [`use_os_keychain`] sets this. Only the `main`
+/// of the shipped binary may set it. A test must not, and a library initializer must not.
 static OS_KEYCHAIN: AtomicBool = AtomicBool::new(false);
 
 /// Process-global stand-in for the keychain: `(service, account) -> secret`.
@@ -35,10 +37,10 @@ fn mem() -> &'static Mutex<HashMap<(String, String), String>> {
     M.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Route secret storage to the real OS keychain. Call once from the production binary's `main`,
-/// before any `App` is constructed. Idempotent.
+/// Route secret storage to the real OS keychain. Call it once from the `main` of the production
+/// binary, before the code builds any `App`. It is idempotent.
 ///
-/// Nothing else may call this. A test that does is reaching for the developer's login keychain.
+/// Nothing else may call this. A test that calls it reaches for the developer's login keychain.
 pub fn use_os_keychain() {
     OS_KEYCHAIN.store(true, Ordering::Relaxed);
 }
@@ -64,7 +66,7 @@ pub(crate) fn get(service: &str, account: &str) -> Result<Option<String>, SyncEr
     }
 }
 
-/// Store `secret` under `(service, account)`, replacing any existing entry.
+/// Store `secret` under `(service, account)`. It replaces an entry that is already there.
 pub(crate) fn set(service: &str, account: &str, secret: &str) -> Result<(), SyncError> {
     if !os_keychain_enabled() {
         mem().lock().unwrap().insert(key(service, account), secret.to_string());
@@ -74,7 +76,8 @@ pub(crate) fn set(service: &str, account: &str, secret: &str) -> Result<(), Sync
     Ok(())
 }
 
-/// Remove the entry for `(service, account)`. Absent is success — delete is idempotent.
+/// Remove the entry for `(service, account)`. An absent entry counts as success, because the
+/// delete is idempotent.
 pub(crate) fn delete(service: &str, account: &str) -> Result<(), SyncError> {
     if !os_keychain_enabled() {
         mem().lock().unwrap().remove(&key(service, account));
@@ -90,8 +93,8 @@ pub(crate) fn delete(service: &str, account: &str) -> Result<(), SyncError> {
 mod tests {
     use super::*;
 
-    /// The load-bearing invariant of this module. If this ever fails, every test in the workspace
-    /// is reading and writing the developer's real login keychain.
+    /// The one rule that this module must keep. If this test ever fails, every test in the
+    /// workspace reads and writes the developer's real login keychain.
     #[test]
     fn os_keychain_is_off_unless_a_binary_opts_in() {
         assert!(

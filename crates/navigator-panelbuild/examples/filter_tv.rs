@@ -1,6 +1,9 @@
-//! Throwaway: emit a copy of the ancient AF panel keeping only TRANSVERSION sites (ref/alt not a
-//! transition A<->G or C<->T). aDNA post-mortem damage (cytosine deamination) corrupts transitions;
-//! if restricting to transversions collapses the WGS/chip disagreement, damage is the cause.
+//! A throwaway tool. It writes a copy of the ancient AF panel that holds the TRANSVERSION sites
+//! alone. At such a site the ref and alt are not a transition, which is A to G, or C to T.
+//!
+//! Post-mortem damage in aDNA, which is cytosine deamination, corrupts a transition. So if the
+//! transversions alone close the disagreement between the WGS answer and the chip answer, that
+//! damage is the cause.
 use navigator_analysis::ancestry::AncestryPanel;
 
 fn is_transition(r: char, a: char) -> bool {

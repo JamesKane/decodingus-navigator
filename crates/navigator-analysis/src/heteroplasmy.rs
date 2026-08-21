@@ -1,15 +1,18 @@
 //! mtDNA heteroplasmy detection (plan §4b reconciliation, phase 6).
 //!
-//! Unlike the haploid consensus caller — which collapses each position to a single
-//! base — heteroplasmy is the *coexistence* of two mitochondrial alleles in one
-//! individual. We detect it by scanning every chrM position's A/C/G/T pileup and
-//! flagging sites where a second allele is present above a noise floor: a minor-allele
-//! fraction in `[min_minor_fraction, 0.5]` backed by at least `min_minor_count` reads.
+//! The haploid consensus caller brings each position down to one base. Heteroplasmy is the
+//! opposite: two mitochondrial alleles that live together in one individual.
 //!
-//! This is a screening pass, not a clinical caller: it reports observed allele
-//! fractions so a curator can judge real heteroplasmy versus sequencing artefacts
-//! (NUMT contamination, strand bias, homopolymer noise). chrM is ~16.5 kb, so the
-//! whole contig is tallied in a single dense pass via the caller's `tally_region`.
+//! The code finds it with a scan over the A/C/G/T pileup at every chrM position. It flags a site
+//! where a second allele sits above a noise floor. That means a minor-allele fraction inside
+//! `[min_minor_fraction, 0.5]`, with `min_minor_count` reads behind it or more.
+//!
+//! This pass looks for candidates. It is not a clinical caller. It reports the observed allele
+//! fractions, so that a curator can judge real heteroplasmy against an artifact of the sequencing.
+//! Contamination from a NUMT, strand bias and homopolymer noise are such artifacts.
+//!
+//! chrM is about 16.5 kb, so the code tallies the whole contig in one dense pass, through
+//! `tally_region` in the caller.
 
 use std::path::Path;
 
@@ -18,36 +21,39 @@ use serde::{Deserialize, Serialize};
 use crate::caller::{self, HaploidCallerParams};
 use crate::error::AnalysisError;
 
-/// A position carrying two alleles above the noise floor.
+/// A position that holds two alleles above the noise floor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeteroplasmySite {
     /// 1-based position on the contig.
     pub position: i64,
-    /// Passing depth (reads clearing the quality filters) at this position.
+    /// The depth at this position that passes, which is the count of reads that clear the quality
+    /// filters.
     pub depth: u32,
     /// The dominant base.
     pub major_base: char,
-    /// Reads supporting the major base.
+    /// The count of reads behind the major base.
     pub major_count: u32,
     /// The second-most-common base.
     pub minor_base: char,
-    /// Reads supporting the minor base.
+    /// The count of reads behind the minor base.
     pub minor_count: u32,
-    /// `minor_count / depth` — the heteroplasmy level.
+    /// `minor_count / depth`. It is the level of the heteroplasmy.
     pub minor_fraction: f64,
 }
 
-/// Thresholds for calling a site heteroplasmic. Defaults are conservative screening
-/// values (gated by the §4c parity harness, like the rest of the caller).
+/// The thresholds that a site must meet before the code calls it heteroplasmic. The defaults are
+/// careful values, for a search over candidates. The parity harness of §4c gates them, as it gates
+/// the rest of the caller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HeteroplasmyParams {
-    /// Sites below this passing depth are skipped (too shallow to judge).
+    /// The code skips a site whose depth, over the reads that pass, is below this. Such a site is
+    /// too thin to judge.
     pub min_depth: u32,
     /// Minor-allele fraction must reach this to flag (the noise floor).
     pub min_minor_fraction: f64,
-    /// Minor allele must be backed by at least this many reads.
+    /// The minor allele needs this many reads behind it, or more.
     pub min_minor_count: u32,
-    /// Reads below this MAPQ are dropped.
+    /// The code drops a read below this MAPQ.
     pub min_mapping_quality: u8,
     /// Bases below this quality are not counted.
     pub min_base_quality: u8,
@@ -55,8 +61,9 @@ pub struct HeteroplasmyParams {
 
 impl Default for HeteroplasmyParams {
     fn default() -> Self {
-        // 3% noise floor with ≥3 supporting reads is a common screening default for
-        // mtDNA heteroplasmy on short-read data; depth 20 keeps fractions meaningful.
+        // A noise floor of 3%, with 3 reads behind the allele or more, is a common default for a
+        // search over mtDNA heteroplasmy candidates on short-read data. A depth of 20 keeps the
+        // fractions meaningful.
         HeteroplasmyParams {
             min_depth: 20,
             min_minor_fraction: 0.03,
@@ -84,8 +91,8 @@ fn top_two(counts: &[u32; 4]) -> ((usize, u32), (usize, u32)) {
     (first, second)
 }
 
-/// Scan every position on `contig` and return the heteroplasmic sites, ascending by
-/// position. Tallies the full contig in one pass (fine for chrM-sized contigs).
+/// Scan every position on `contig`, and return the heteroplasmic sites, from the lowest position
+/// up. It tallies the whole contig in one pass, which is correct for a contig the size of chrM.
 pub fn detect_heteroplasmy(
     bam_path: &Path,
     contig: &str,
@@ -93,8 +100,9 @@ pub fn detect_heteroplasmy(
     reference: Option<&Path>,
 ) -> Result<Vec<HeteroplasmySite>, AnalysisError> {
     let length = caller::read_contig_length(bam_path, contig, reference)?;
-    // Reuse the caller's pileup with matching quality gates; allele-fraction/min-depth
-    // gating here is heteroplasmy-specific, so the caller params stay permissive.
+    // Use the pileup of the caller again, with the same quality gates. The gates here, on the
+    // allele fraction and the minimum depth, belong to heteroplasmy alone. So the parameters of
+    // the caller stay open.
     let caller_params = HaploidCallerParams {
         min_depth: 1,
         min_mapping_quality: params.min_mapping_quality,

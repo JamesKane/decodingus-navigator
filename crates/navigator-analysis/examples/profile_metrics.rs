@@ -1,10 +1,14 @@
-//! Profiling harness for the unified quality-metrics walker's hot per-read loop.
+//! A profile harness for the hot loop of the unified quality-metrics walker, which runs at each
+//! read.
 //!
-//!   cargo build --release --example profile_metrics -p navigator-analysis
-//!   ./target/release/examples/profile_metrics <bam> <reference.fa> <contig>
+//! ```text
+//! cargo build --release --example profile_metrics -p navigator-analysis
+//! ./target/release/examples/profile_metrics <bam> <reference.fa> <contig>
+//! ```
 //!
-//! Times one contig in three passes (raw decode / +RecordBuf copy / +metrics) so the per-read
-//! cost splits out, and completes in ~a minute instead of walking the whole genome for hours.
+//! It times one contig in three passes: the raw decode, then that plus the `RecordBuf` copy, then
+//! that plus the metrics. The cost at each read then separates into its parts. It finishes in
+//! about a minute, and it does not walk the whole genome for hours.
 
 use std::path::Path;
 
@@ -24,7 +28,8 @@ fn main() {
     }
     let params = navigator_analysis::coverage::CallableLociParams::default();
 
-    // "FULL" → run the real production walker on the whole BAM with per-contig timestamps.
+    // "FULL" runs the real production walker over the whole BAM, and it prints a timestamp at
+    // each contig.
     if args[3].eq_ignore_ascii_case("full") {
         let start = std::time::Instant::now();
         let progress = move |done: usize, total: usize| {

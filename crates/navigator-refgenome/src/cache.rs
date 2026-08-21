@@ -7,22 +7,30 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::registry::Build;
 
-/// Write `bytes` to `path` **atomically**: write a uniquely-named sibling temp file, flush it to
-/// disk, then `rename` it over the target. `rename` is atomic on a POSIX filesystem, so a reader —
-/// or a concurrent/ crashing writer — never sees a torn, half-written, or head-of-new + tail-of-old
-/// file. This is the safe replacement for `std::fs::write` on **config** files (`reference_sources.json`,
-/// `settings.json`), which are written from spawned tasks that can race: a plain `fs::write` truncates
-/// then streams, so two racing writes interleave into a corrupt mix (the classic short-head/long-tail
-/// garbage). The parent dir is created if absent. A stale temp from a crashed write is harmless (never
-/// read; overwritten by name reuse or left as an obvious `*.tmp.*`).
+/// Write `bytes` to `path` **atomically**. It writes a temp file with a unique name, in the same
+/// directory, flushes it to disk, and then renames it over the target.
+///
+/// `rename` is atomic on a POSIX filesystem. So a reader never sees a file that is torn, half
+/// written, or made of a new head and an old tail. That holds while another writer runs at the same
+/// time, and it holds if a writer stops in the middle.
+///
+/// This is the safe replacement for `std::fs::write` on a **config** file, such as
+/// `reference_sources.json` or `settings.json`. Spawned tasks write those, and two tasks can write
+/// at the same time. A plain `fs::write` truncates the file and then streams into it. Two such
+/// writes then mix into a corrupt file: a short head from one, and a long tail from the other.
+///
+/// It creates the parent directory when that is absent. A temp file left by a write that stopped in
+/// the middle does no harm. Nothing reads it. A later write with the same name replaces it, or it
+/// stays on disk as a `*.tmp.*` that anyone can see.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // Unique temp name **in the same directory** (rename must stay on one filesystem). pid + a
-    // process-wide counter keeps two concurrent writers from sharing — and clobbering — a temp file.
+    // A unique temp name **in the same directory**, because a rename must stay on one file system.
+    // The pid, plus a counter for the whole process, keeps two writers that run at the same time
+    // apart. Neither one can use the other's temp file.
     let uniq = format!("{}.{}", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed));
     let tmp = path.with_extension(format!("tmp.{uniq}"));
     let res = (|| {
@@ -38,15 +46,19 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     res
 }
 
-/// Read a file that [`atomic_write`] may be replacing concurrently.
+/// Read a file while [`atomic_write`] can replace it at the same time.
 ///
-/// POSIX `rename` swaps a directory entry, so a reader opens either the old inode or the new one and
-/// **always succeeds**. Windows offers no such guarantee: while `MoveFileEx` replaces the target the
-/// name is briefly *delete-pending*, and opening a delete-pending file fails with
-/// `ERROR_ACCESS_DENIED`. A plain `fs::read` therefore fails spuriously whenever a writer happens to
-/// be mid-replace — and every caller here treats an unreadable config as "no config", so the user's
-/// reference overrides or settings would silently revert to defaults. Retry through that window; it
-/// lasts microseconds.
+/// A POSIX `rename` swaps a directory entry. So a reader opens the old inode or the new one, and
+/// **always succeeds**.
+///
+/// Windows gives no such guarantee. While `MoveFileEx` replaces the target, the name is
+/// *delete-pending* for a moment, and an open of a delete-pending file fails with
+/// `ERROR_ACCESS_DENIED`. So a plain `fs::read` fails for no good reason whenever a writer is in the
+/// middle of a replace.
+///
+/// Every caller here reads an unreadable config as "no config". So the user's reference overrides,
+/// or their settings, would go back to the defaults with no warning. Try again through that window.
+/// It lasts microseconds.
 ///
 /// A genuinely **missing** file still returns `NotFound` immediately: that is the ordinary
 /// no-config-yet case and must stay fast.
@@ -54,16 +66,17 @@ pub fn read_atomic(path: &Path) -> std::io::Result<Vec<u8>> {
     retry_while_replacing(|| std::fs::read(path))
 }
 
-/// Whether an error is Windows' transient "this path is being replaced right now" family:
-/// `ERROR_ACCESS_DENIED` (5, delete-pending) and the sharing violations (32/33). Unix produces none
-/// of these for renaming over, or opening, a file being replaced — so the retries are inert there.
+/// Whether an error belongs to the transient Windows family that means "another process replaces
+/// this path now". That family is `ERROR_ACCESS_DENIED` (5, delete-pending) and the two
+/// share-violation codes, 32 and 33. Unix gives none of these when a process renames over a file,
+/// or opens a file that another process replaces. So the second try does nothing there.
 fn is_replace_race(e: &std::io::Error) -> bool {
     matches!(e.raw_os_error(), Some(5) | Some(32) | Some(33)) || e.kind() == std::io::ErrorKind::PermissionDenied
 }
 
-/// Run `op`, retrying briefly while it fails with a [`is_replace_race`] error. Capped at ~0.4 s
-/// total: long enough to outlast any replace window, short enough that a genuine permission problem
-/// still surfaces promptly.
+/// Run `op`, and try again for a short time while it fails with an [`is_replace_race`] error. The
+/// cap is about 0.4 s in total. That is long enough to outlast any replace window, and short enough
+/// that a real permission problem still shows quickly.
 fn retry_while_replacing<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
     const ATTEMPTS: u32 = 25;
     let mut delay = std::time::Duration::from_micros(200);
@@ -115,7 +128,7 @@ pub fn regions_path(base: &Path, build: Build) -> PathBuf {
     base.join("regions").join(format!("{}.json", build.as_str()))
 }
 
-/// Age of a cached file in days (for TTL checks); `None` if it doesn't exist or its mtime is
+/// Age of a cached file in days (for TTL checks); `None` if it does not exist or its mtime is
 /// unreadable / in the future.
 pub fn age_days(path: &Path) -> Option<f64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
@@ -137,12 +150,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("atomicw_{}_{}", std::process::id(), "seq"));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("cfg.json");
-        // A long write then a SHORT write: the short must fully replace — no leftover tail (the exact
-        // corruption a non-atomic write leaves when the new content is shorter than the old).
+        // A long write, then a SHORT write. The short one must replace the file completely, and
+        // leave no tail. That tail is exactly what a write which is not atomic leaves behind, when
+        // the new content is shorter than the old.
         atomic_write(&path, b"{\"references\":{\"a\":1,\"b\":2,\"cccccccccc\":3}}").unwrap();
         atomic_write(&path, b"{\"x\":1}").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"x\":1}");
-        // The rename consumes the temp, so only the target remains — no stray `*.tmp.*` files.
+        // The rename consumes the temp file, so only the target stays. It leaves no `*.tmp.*`.
         let entries: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name())
@@ -153,9 +167,10 @@ mod tests {
 
     #[test]
     fn atomic_write_reads_are_never_torn_under_concurrency() {
-        // Many threads hammer the same path with different-length payloads. Every concurrent read
-        // must observe *exactly one* whole payload — never head-of-one + tail-of-another, which is
-        // what racing `fs::write` calls produce (issue #26).
+        // Many threads write the same path, fast, with payloads of different lengths. Every read
+        // that runs at the same time must see *exactly one* whole payload. It must never see the
+        // head of one and the tail of another, which is what `fs::write` calls give when they run
+        // together (issue #26).
         use std::sync::Arc;
         let dir = std::env::temp_dir().join(format!("atomicw_{}_conc", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -168,10 +183,12 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 for p in payloads.iter() {
                     atomic_write(&path, p.as_bytes()).unwrap();
-                    // `read_atomic`, not `fs::read`: on Windows the target is briefly delete-pending
-                    // mid-replace and a plain open fails with "Access is denied" (this test caught
-                    // exactly that on windows-msvc). The invariant under test is the *content* one —
-                    // whatever we read is one whole payload, never a splice of two.
+                    // Use `read_atomic`, and not `fs::read`. On Windows, a replace leaves the
+                    // target in a delete-pending state for a moment, and a plain open then fails
+                    // with `Access is denied`. This test caught exactly that on windows-msvc.
+                    //
+                    // The rule under test is about the *content*: what we read is one whole
+                    // payload, and never two payloads joined.
                     let got = String::from_utf8(read_atomic(&path).unwrap()).unwrap();
                     assert!(payloads.contains(&got), "torn read: {got:?}");
                 }
@@ -183,8 +200,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The retry must not turn the ordinary "no config yet" case into a stall: a missing file
-    /// reports `NotFound` on the first attempt, and a present one reads straight through.
+    /// The second try must not make the ordinary "no config yet" case slow. A file that is absent
+    /// gives `NotFound` on the first try, and a file that is present reads straight through.
     #[test]
     fn read_atomic_is_immediate_for_missing_and_present_files() {
         let dir = std::env::temp_dir().join(format!("atomicr_{}", std::process::id()));
@@ -221,7 +238,8 @@ mod tests {
 
     #[test]
     fn base_dir_honors_env_override() {
-        // Safe: this test only reads the var via base_dir; set+remove around the assertion.
+        // This is safe. The test reads the var through base_dir alone, and it sets and removes the
+        // var around the assertion.
         std::env::set_var("NAVIGATOR_REFGENOME_DIR", "/tmp/refcache");
         assert_eq!(base_dir(), Path::new("/tmp/refcache"));
         std::env::remove_var("NAVIGATOR_REFGENOME_DIR");

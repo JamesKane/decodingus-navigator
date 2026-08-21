@@ -1,12 +1,19 @@
-//! Real CompleteGenomics masterVar parse check (ignored by default; needs a local dump).
+//! A check of the parse of a real CompleteGenomics masterVar file. It carries `#[ignore]`, and it
+//! needs a local dump.
 //!
-//! Run against a real file (compressed or plain):
-//!   MASTERVAR_TSV=/path/to/var-GS00253-DNA_A01_200_37-ASM.tsv.bz2 \
-//!     cargo test -p navigator-analysis --test mastervar_real -- --ignored --nocapture
+//! Run it against a real file, compressed or plain:
 //!
-//! It streams the whole genome and prints the sample id, reference build, loci/SNP tallies, a
-//! per-contig call count, and a genotype-shape breakdown — enough to confirm the two-allele rows
-//! collapse sanely and the haploid contigs (chrY/chrM) come through as hemizygous.
+//! ```text
+//! MASTERVAR_TSV=/path/to/var-GS00253-DNA_A01_200_37-ASM.tsv.bz2 \
+//!   cargo test -p navigator-analysis --test mastervar_real -- --ignored --nocapture
+//! ```
+//!
+//! It streams the whole genome. It then prints the sample id and the reference build, the tallies
+//! of the loci and the SNPs, and the call count of each contig. Last, it prints a breakdown of the
+//! genotype shapes.
+//!
+//! That is enough to confirm two things. The rows that hold two alleles come together correctly.
+//! And the haploid contigs, chrY and chrM, come through as hemizygous.
 
 use std::collections::BTreeMap;
 
@@ -41,7 +48,7 @@ fn parse_real_master_var() {
     println!("per-contig: {per_contig:?}");
     println!("genotype shapes: {gt:?}");
 
-    // chrY / chrM must be hemizygous (genotype "1") — never diploid.
+    // chrY and chrM must both be hemizygous, at the genotype "1". Neither may be diploid.
     for c in out.calls.iter().filter(|c| c.contig == "chrY" || c.contig == "chrM") {
         assert_eq!(
             c.genotype.as_deref(),

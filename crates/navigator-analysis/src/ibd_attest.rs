@@ -1,22 +1,29 @@
 //! IBD segment-exchange payload + match attestation (gap §4 application layer).
 //!
-//! IBD detection needs **both** peers' genotypes, so over the encrypted edge channel each peer sends
-//! its dosages at the canonical IBD-panel sites ([`IbdSite`], an [`IbdExchangeMsg::Dosages`]); each
-//! then runs the symmetric [`crate::ibd::PairwiseIbdDetector`] locally → an identical
-//! [`crate::ibd::MatchSummary`]. Each peer signs an [`IbdAttestation`] over its computed summary and
-//! exchanges it; agreement = both signed attestations carry the same `summary_hash` (proof both
-//! computed the same result). Only panel dosages cross the wire — encrypted, never seen by the broker.
+//! IBD detection needs the genotypes of **both** peers. So over the encrypted edge channel each
+//! peer sends its dosages at the canonical sites of the IBD panel. Those are [`IbdSite`] values, in
+//! an [`IbdExchangeMsg::Dosages`].
 //!
-//! This module is pure: it defines the wire types, the canonical signing string, and the summary
-//! hash. Signing (the device key) and verification (`du_atproto::verify_did_key`) happen in the app.
+//! Each peer then runs the symmetric [`crate::ibd::PairwiseIbdDetector`] on its own machine. Both
+//! get the same [`crate::ibd::MatchSummary`]. Each peer signs an [`IbdAttestation`] over the
+//! summary that it computed, and the two exchange those. They agree when both signed attestations
+//! carry the same `summary_hash`, and that is proof that both computed the same result.
+//!
+//! The panel dosages are the only thing that crosses the wire. They go encrypted, and the broker
+//! never sees them.
+//!
+//! This module is pure. It gives the wire types, the canonical string that a peer signs, and the
+//! hash of a summary. The app does the signature, with the device key, and the verification,
+//! through `du_atproto::verify_did_key`.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::ibd::MatchSummary;
 
-/// One panel-site dosage on the wire — the minimal input the IBD detector consumes (the heavy
-/// [`crate::caller::SiteGenotype`] fields aren't sent). `dosage` is 0/1/2, or -1 for no-call.
+/// The dosage at one panel site, on the wire. It is the smallest input that the IBD detector
+/// reads. The heavy fields of a [`crate::caller::SiteGenotype`] do not go out. `dosage` is 0, 1 or
+/// 2, or -1 for a no-call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IbdSite {
     pub contig: String,
@@ -36,7 +43,8 @@ pub struct IbdAttestation {
     pub session_id: String,
     /// The attester's account DID.
     pub attesting_did: String,
-    /// Opaque references to each side's biosample (never an identifier — a guid/at-uri).
+    /// A reference to the biosample of each side, and it says nothing about that biosample. It is
+    /// never an identifier: it is a guid or an at-uri.
     pub attesting_sample_ref: Option<String>,
     pub partner_sample_ref: Option<String>,
     pub total_shared_cm: f64,
@@ -44,7 +52,8 @@ pub struct IbdAttestation {
     pub longest_segment_cm: f64,
     /// The relationship band (`RelationshipEstimate` debug name).
     pub relationship: String,
-    /// SHA-256 (base64) of the attester's match summary — the agreement fingerprint.
+    /// The SHA-256 of the match summary of the attester, in base64. It is the fingerprint that
+    /// shows whether the two peers agree.
     pub summary_hash: String,
     /// RFC3339 timestamp.
     pub attested_at: String,
@@ -84,8 +93,9 @@ impl IbdAttestation {
         }
     }
 
-    /// The canonical `\n`-joined message that gets signed/verified — every field except the signature
-    /// and the signing key (which carries the signature). Both peers build it byte-identically.
+    /// The canonical message that a peer signs, and that the other verifies. A `\n` joins its
+    /// parts. It holds every field except the signature, and except the key that signs, which
+    /// carries that signature. Both peers build it to the same bytes.
     pub fn canonical(&self) -> String {
         [
             self.match_request_uri.as_str(),
@@ -104,8 +114,9 @@ impl IbdAttestation {
     }
 }
 
-/// SHA-256 (lowercase hex) of a match summary's salient fields — the cross-peer agreement
-/// fingerprint. Deterministic so both peers, computing the same segments, get the same hash.
+/// The SHA-256 of the fields of a match summary that matter, in lower-case hex. It is the
+/// fingerprint that shows whether the two peers agree. It is deterministic, so two peers that
+/// compute the same segments get the same hash.
 pub fn summary_hash(s: &MatchSummary) -> String {
     let canon = format!(
         "{:.4}|{}|{:.4}|{:?}",
@@ -123,13 +134,15 @@ pub fn summary_hash(s: &MatchSummary) -> String {
 pub enum IbdExchangeMsg {
     /// The sender's panel dosages (`build` = the panel's reference build, e.g. `hs1`).
     Dosages { build: String, sites: Vec<IbdSite> },
-    /// The sender's signed match attestation (boxed — much larger than the other variant).
+    /// The signed match attestation of the sender. It sits in a `Box`, because it is much larger
+    /// than the other variant.
     Attest(Box<IbdAttestation>),
 }
 
 impl IbdExchangeMsg {
-    /// Gzipped JSON bytes for the channel. The dosage payload is large (a panel of sites), and the
-    /// relay caps an envelope at 1 MiB, so it's compressed (the dosage vector compresses well).
+    /// The JSON bytes for the channel, through gzip. The dosage payload is large, because it
+    /// holds a whole panel of sites, and the relay limits one envelope to 1 MiB. So the code
+    /// compresses it, and a vector of dosages compresses well.
     pub fn to_bytes(&self) -> Result<Vec<u8>, String> {
         use flate2::{write::GzEncoder, Compression};
         use std::io::Write;

@@ -1,9 +1,11 @@
 //! Run the reference-based archaic tract caller ([`archaic_match`]) on real cached calls.
 //!
-//! The unit tests prove the model behaves on synthetic runs; this is what shows whether it finds
-//! REAL tracts. Emits segments as JSON for `scripts/archaic-validation/compare_locations.py`, which
-//! scores them against an external callset and — critically — against the random-placement null the
-//! density caller failed.
+//! The unit tests show that the model behaves on a synthetic run. This tool shows whether it finds
+//! a REAL tract.
+//!
+//! It writes the segments as JSON, for `scripts/archaic-validation/compare_locations.py`. That
+//! script scores them against an external callset, and, most important, against the null from
+//! random placement that the density caller failed.
 //!
 //! ```sh
 //! cargo run --release -p navigator-analysis --example archaic_match_probe -- \
@@ -46,8 +48,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut observations: BTreeMap<String, Vec<SiteObs>> = BTreeMap::new();
     let mut lengths: Vec<(String, i32)> = Vec::new();
     for (contig, pos_map) in &by_contig {
-        // The reference base decides which diagnostic sites are informative at all, so it is read
-        // rather than assumed (see `observations_for_contig`).
+        // The reference base decides which diagnostic sites carry information at all. So the code
+        // reads it, and it does not assume it. See `observations_for_contig`.
         let seq = read_contig_sequence(&reference, contig)?;
         let obs = observations_for_contig(
             contig,
@@ -83,10 +85,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         GeneticMap::from_bytes(&std::fs::read(&a[3])?).map_err(|e| e.to_string())?
     };
 
-    // `ARCHAIC_RATIOS=2.0,2.5,3.04` sweeps the emission ratio in one process. It cannot be swept
-    // post-hoc like the three thresholds — it changes the emissions, so the HMM must be re-decoded —
-    // but the expensive part (reading the reference, walking the diagnostic sites) is per sample,
-    // not per ratio, so doing it here costs one pass instead of one per value.
+    // `ARCHAIC_RATIOS=2.0,2.5,3.04` sweeps the emission ratio inside one process. Nobody can sweep
+    // that ratio after the run, as they can the three thresholds, because it changes the emissions
+    // and the HMM must decode again.
+    //
+    // But the costly part happens once for each sample, and not once for each ratio. That part is
+    // the read of the reference, and the walk over the diagnostic sites. So a sweep here costs one
+    // pass, and not one pass at every value.
     if let Ok(spec) = std::env::var("ARCHAIC_RATIOS") {
         let mut out = serde_json::Map::new();
         for tok in spec.split(',').filter(|t| !t.trim().is_empty()) {

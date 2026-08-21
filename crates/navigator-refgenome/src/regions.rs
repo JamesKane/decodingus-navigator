@@ -1,10 +1,12 @@
-//! Genome-region metadata (gap §7): per-chromosome centromere, telomere caps, cytoband ideogram,
-//! and chrY pseudoautosomal regions, parsed from the authoritative UCSC `cytoBand` table and served
-//! through a 2-layer cache (see [`crate::gateway::ReferenceGateway::genome_regions`]). The data is
-//! coordinate context for QC / display — it does not feed variant placement.
+//! Genome-region metadata (gap §7). For each chromosome it gives the centromere, the telomere
+//! caps, the cytoband ideogram, and the chrY pseudoautosomal regions. It parses them from the
+//! authoritative UCSC `cytoBand` table, and serves them through a cache of two layers (see
+//! [`crate::gateway::ReferenceGateway::genome_regions`]).
 //!
-//! All intervals are **0-based half-open** `[start, end)` (UCSC/BED convention); query positions are
-//! 1-based and converted internally.
+//! The data is coordinate context, for QC and for display. It does not feed variant placement.
+//!
+//! Every interval is **0-based half-open**, as `[start, end)`, which is the UCSC and BED
+//! convention. A query position is 1-based, and the code converts it.
 
 use std::collections::BTreeMap;
 
@@ -47,7 +49,7 @@ pub struct ChromosomeRegions {
 }
 
 impl ChromosomeRegions {
-    /// The cytoband containing the 1-based `position`, if any.
+    /// The cytoband that holds the 1-based `position`, if there is one.
     pub fn cytoband_at(&self, position: i64) -> Option<&Cytoband> {
         let b = position - 1;
         self.cytobands.iter().find(|c| c.start <= b && b < c.end)
@@ -74,9 +76,12 @@ pub struct RegionAnnotation {
 }
 
 impl GenomeRegions {
-    /// Parse the UCSC `cytoBand` table (`chrom  start  end  name  gieStain`, 0-based half-open) into
-    /// per-chromosome regions: length (max end), centromere (merged `acen` bands), nominal 10kb
-    /// telomere caps, and the full band list. PAR is overlaid separately (not in cytoBand).
+    /// Parse the UCSC `cytoBand` table into the regions of each chromosome. The table columns are
+    /// `chrom  start  end  name  gieStain`, and it is 0-based half-open.
+    ///
+    /// The regions are the length, which is the maximum end, and the centromere, which merges the
+    /// `acen` bands. They also hold nominal 10kb telomere caps, and the full band list. PAR comes
+    /// from somewhere else, because cytoBand does not carry it.
     pub fn from_cytoband(build: &str, text: &str) -> Self {
         let mut bands: BTreeMap<String, Vec<Cytoband>> = BTreeMap::new();
         for line in text.lines() {
@@ -143,7 +148,7 @@ impl GenomeRegions {
         regions
     }
 
-    /// Overlay the chrY pseudoautosomal regions for the build (PAR isn't in cytoBand). Best-known
+    /// Overlay the chrY pseudoautosomal regions for the build (PAR is not in cytoBand). Best-known
     /// constants for the builds we resolve; other builds get none.
     fn overlay_par(&mut self, build: &str) {
         let par = crate::registry::canonical_build(build)
@@ -160,7 +165,7 @@ impl GenomeRegions {
         }
     }
 
-    /// The regions for `contig`, tolerating a `chr` prefix mismatch (`chr1` ↔ `1`).
+    /// The regions for `contig`. It accepts a `chr` prefix on one side only (`chr1` against `1`).
     pub fn chromosome(&self, contig: &str) -> Option<&ChromosomeRegions> {
         if let Some(c) = self.chromosomes.get(contig) {
             return Some(c);
@@ -174,7 +179,7 @@ impl GenomeRegions {
         self.chromosomes.get(&alt)
     }
 
-    /// Annotate a 1-based `position` on `contig` with its overlapping region context.
+    /// Annotate a 1-based `position` on `contig` with the region context that covers it.
     pub fn annotate(&self, contig: &str, position: i64) -> RegionAnnotation {
         let Some(c) = self.chromosome(contig) else {
             return RegionAnnotation::default();
@@ -190,8 +195,9 @@ impl GenomeRegions {
     }
 }
 
-/// chrY pseudoautosomal regions (0-based half-open) for a build. Well-documented constants for the
-/// builds we resolve; empty for others (rather than guess).
+/// The chrY pseudoautosomal regions for a build, 0-based half-open. These are well-documented
+/// constants for the builds that we resolve. For any other build the list is empty, because a
+/// guess would be worse.
 fn par_regions(build: Build) -> Vec<(i64, i64)> {
     match build.nuclear() {
         // CHM13v2.0 chrY PAR1 chrY:1–2,458,320 / PAR2 chrY:62,122,809–62,460,029.

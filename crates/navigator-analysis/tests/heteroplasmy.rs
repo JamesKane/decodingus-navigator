@@ -1,11 +1,18 @@
-//! Heteroplasmy-detection tests against the `diploid.bam` fixture (tests/fixtures).
+//! Tests of the heteroplasmy detection, against the `diploid.bam` fixture in tests/fixtures.
 //!
-//! That fixture is two haplotypes on chr1 at depth 20 (10 reads each):
-//!   H1 = ACGTACGAAC, H2 = AGGTTCGAAC
-//! so the per-position pileup carries two alleles only at pos2 (C/G) and pos5 (A/T);
-//! every other position is homozygous. With the default screening params (min_depth 20,
-//! minor fraction ≥ 0.03, ≥3 minor reads) detection must flag exactly those two sites,
-//! each at a 50% minor fraction.
+//! That fixture holds two haplotypes on chr1, at a depth of 20, with 10 reads for each:
+//!
+//! ```text
+//! H1 = ACGTACGAAC
+//! H2 = AGGTTCGAAC
+//! ```
+//!
+//! The pileup thereby carries two alleles at two positions alone: pos2, at C and G, and pos5, at A
+//! and T. Every other position is homozygous.
+//!
+//! The default parameters are a min_depth of 20, a minor fraction of 0.03 or more, and 3 minor
+//! reads or more. With those, the detection must flag exactly those two sites, and each one must
+//! show a minor fraction of 50%.
 
 use std::path::PathBuf;
 
@@ -47,7 +54,7 @@ fn detects_the_two_mixed_sites_on_the_diploid_fixture() {
 
 #[test]
 fn min_minor_count_suppresses_low_support() {
-    // Demanding more minor reads than the fixture supplies (10) yields nothing.
+    // A request for more minor reads than the fixture holds, which is 10, gives nothing.
     let strict = HeteroplasmyParams {
         min_minor_count: 11,
         ..HeteroplasmyParams::default()

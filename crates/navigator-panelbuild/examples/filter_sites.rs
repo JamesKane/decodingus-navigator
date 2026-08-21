@@ -1,8 +1,10 @@
-//! Apply an ascertainment floor to an already-built ancient AF panel: keep only sites whose CHM13
-//! (contig,pos) appears in a `contig<TAB>pos` set. Equivalent to rebuilding the panel with
-//! `ancient-panel --ascertain-sites` on the same inputs (the per-site frequencies are unchanged;
-//! only the site set is restricted), for when the source matrices aren't at hand but the full panel
-//! is. Usage: filter_sites <ancient.bin> <sites.tsv> <out.bin>
+//! Apply an ascertainment floor to an ancient AF panel that somebody already built. It keeps only
+//! the sites whose CHM13 (contig,pos) pair is in a `contig<TAB>pos` set.
+//!
+//! The result equals a new build of the panel with `ancient-panel --ascertain-sites` over the same
+//! inputs. The frequency at each site does not change, and only the set of sites gets smaller. Use
+//! it when you have the full panel but not the source matrices.
+//! Usage: filter_sites <ancient.bin> <sites.tsv> <out.bin>
 use navigator_analysis::ancestry::AncestryPanel;
 use std::collections::HashSet;
 

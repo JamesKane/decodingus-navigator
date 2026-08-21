@@ -1,13 +1,21 @@
-//! Whole-VCF liftover between reference builds — the GATK `LiftoverVcf` replacement (no external
-//! tools). Operates on raw VCF lines so INFO/FORMAT/sample columns pass through verbatim; only the
-//! parts liftover actually changes are rewritten: CHROM (contig-name normalized to the target),
-//! POS (via the UCSC chain), and on a reverse-strand (inverted) lift the REF/ALT alleles are
-//! reverse-complemented. REF/ALT-swap recovery reads the target reference base and, when the lifted
-//! REF no longer matches it, swaps REF↔ALT (flipping a biallelic single-sample GT). Records whose
-//! position doesn't map, whose multi-base REF straddles a chain break, or that can't be safely
-//! recovered are dropped and tallied. Output is coordinate-sorted (a lift can reorder/invert).
+//! Whole-VCF liftover between reference builds. This replaces GATK `LiftoverVcf`, and needs no
+//! external tool.
 //!
-//! Reuses the `du_bio` chain primitives and mirrors the drop-with-stats shape of
+//! It works on raw VCF lines, so the INFO, FORMAT, and sample columns pass through verbatim. It
+//! rewrites only the parts that a lift changes: CHROM, whose contig name it normalizes to the
+//! target; POS, through the UCSC chain; and, on a lift to the reverse strand, the REF and ALT
+//! alleles, which it reverse-complements.
+//!
+//! It can also recover a REF/ALT swap. It reads the target reference base, and when the lifted REF
+//! no longer equals that base, it swaps REF and ALT. On a biallelic record with one sample it also
+//! flips the GT.
+//!
+//! It drops a record, and counts it, in three cases. The position does not map. A multi-base REF
+//! crosses a chain break. Or the code can not recover the record safely.
+//!
+//! It sorts the output by coordinate, because a lift can change the order, or invert a region.
+//!
+//! It reuses the `du_bio` chain primitives, and it mirrors the drop-and-count shape of
 //! [`crate::gateway::ReferenceGateway::lift_hipstr_bed`].
 
 use std::collections::{HashMap, HashSet};
@@ -22,8 +30,8 @@ use crate::error::RefgenomeError;
 /// Options for [`lift_vcf`].
 #[derive(Debug, Clone, Default)]
 pub struct VcfLiftOpts {
-    /// Drop variants that land in the target chrY pseudoautosomal regions (PAR) — these are
-    /// X/Y-ambiguous on the target and usually unwanted in a Y-only lift.
+    /// Drop a variant that lands in a target chrY pseudoautosomal region (PAR). On the target such
+    /// a variant is ambiguous between X and Y, and a Y-only lift usually does not want it.
     pub filter_par: bool,
 }
 
@@ -36,13 +44,15 @@ pub struct VcfLiftStats {
     pub unmapped: usize,
     /// A multi-base REF whose endpoints lifted to different target contigs (straddled a break).
     pub split: usize,
-    /// The lifted REF matched neither the target base nor any ALT (couldn't recover).
+    /// The lifted REF matched neither the target base nor any ALT (could not recover).
     pub ref_mismatch: usize,
-    /// A REF/ALT swap was needed but couldn't be applied safely (multiallelic or multi-sample).
+    /// The record needed a REF/ALT swap, but the code could not apply one safely. That happens on
+    /// a multiallelic record, and on a record with more than one sample.
     pub swap_ambiguous: usize,
     /// Dropped in the target PAR (only when `filter_par`).
     pub par: usize,
-    /// An indel/complex allele on a reverse-strand (inverted) lift — not safely representable.
+    /// An indel, or a complex allele, on a lift to the reverse strand. The code can not represent
+    /// that safely.
     pub complex_reverse: usize,
 }
 
@@ -92,8 +102,9 @@ fn is_snv_allele(a: &str) -> bool {
             .all(|b| matches!(b.to_ascii_uppercase(), b'A' | b'C' | b'G' | b'T'))
 }
 
-/// Candidate names for a lifted (chain-query) contig in the **target** FASTA's naming style, in
-/// preference order — covers `chr` prefix presence and `chrM`/`MT`.
+/// The candidate names for a lifted contig, which the chain query gives, in the style that the
+/// **target** FASTA uses. They come in order of preference. They cover a `chr` prefix that is
+/// present or absent, and `chrM` against `MT`.
 fn target_contig_name(q_name: &str, target_names: &HashSet<String>) -> Option<String> {
     let bare = navigator_domain::contig::bare(q_name);
     let mut cands = vec![q_name.to_string(), bare.to_string(), format!("chr{bare}")];
@@ -103,8 +114,9 @@ fn target_contig_name(q_name: &str, target_names: &HashSet<String>) -> Option<St
     cands.into_iter().find(|c| target_names.contains(c))
 }
 
-/// Map a VCF CHROM to the chain's source (`t_name`) naming. T2T/UCSC chains use `chr`-prefixed
-/// names, so normalize bare NCBI names (`1`, `MT`) to `chr1` / `chrM`.
+/// Map a VCF CHROM to the style that the chain source (`t_name`) uses. A T2T or UCSC chain puts a
+/// `chr` prefix on a contig name. So normalize a bare NCBI name, such as `1` or `MT`, to `chr1` or
+/// `chrM`.
 fn to_chain_source_name(chrom: &str) -> String {
     if chrom.starts_with("chr") {
         return chrom.to_string();
@@ -115,8 +127,8 @@ fn to_chain_source_name(chrom: &str) -> String {
     }
 }
 
-/// Read the 1-based reference base at `contig:pos` from an indexed FASTA, uppercased. `None` if the
-/// contig/position can't be queried.
+/// Read the 1-based reference base at `contig:pos` from an indexed FASTA, in upper case. It gives
+/// `None` when the code can not query that contig or that position.
 fn ref_base_at(
     reader: &mut fasta::io::IndexedReader<fasta::io::BufReader<std::fs::File>>,
     contig: &str,
@@ -134,11 +146,14 @@ struct Lifted {
     line: String,
 }
 
-/// Lift every record in `in_vcf` from the source build to the target build, writing `out_vcf`
-/// (gzip when the path ends `.gz`). `lo` is the source→target chain (load it first via the
-/// gateway); `target_fa` is the indexed target FASTA (for REF/ALT-swap recovery + the contig set);
-/// `target_par` is the target chrY PAR intervals (0-based half-open) used only when
-/// `opts.filter_par`. `source_label`/`target_label` are stamped into the header provenance.
+/// Lift every record in `in_vcf` from the source build to the target build, and write `out_vcf`.
+/// The output is gzip when the path ends in `.gz`.
+///
+/// `lo` is the source→target chain, and the caller loads it first, through the gateway. `target_fa`
+/// is the indexed target FASTA, which supplies the contig set and the base for a REF/ALT-swap
+/// recovery. `target_par` holds the target chrY PAR intervals, 0-based half-open, and the code uses
+/// them only under `opts.filter_par`. The header provenance carries `source_label` and
+/// `target_label`.
 #[allow(clippy::too_many_arguments)]
 pub fn lift_vcf(
     lo: &Liftover,
@@ -150,7 +165,8 @@ pub fn lift_vcf(
     out_vcf: &Path,
     opts: VcfLiftOpts,
 ) -> Result<VcfLiftStats, RefgenomeError> {
-    // Target contig set + order (from the .fai) for naming normalization, ##contig rewrite, sort.
+    // The target contig set and its order, from the .fai. Three things need it: the name
+    // normalization, the ##contig rewrite, and the sort.
     let fai = read_fai(target_fa)?;
     let target_names: HashSet<String> = fai.iter().map(|(n, _)| n.clone()).collect();
     let contig_rank: HashMap<String, usize> = fai.iter().enumerate().map(|(i, (n, _))| (n.clone(), i)).collect();
@@ -301,7 +317,8 @@ fn lift_record(
         if let Some(tbase) = ref_base_at(fasta_reader, &target_contig, q_pos) {
             let tb = (tbase as char).to_string();
             if !new_ref.eq_ignore_ascii_case(&tb) {
-                // REF doesn't match the target base — try to recover by swapping with a matching ALT.
+                // REF is not the target base. Try to recover, with a swap for an ALT that
+                // matches.
                 if let Some(idx) = new_alts.iter().position(|a| a.eq_ignore_ascii_case(&tb)) {
                     if new_alts.len() != 1 {
                         stats.swap_ambiguous += 1; // multiallelic swap — ambiguous to relabel
@@ -344,7 +361,7 @@ fn lift_record(
 }
 
 /// Flip the allele indices of a biallelic single-sample genotype (0↔1) in the first sample column,
-/// after a REF/ALT swap. No-op when there's no FORMAT/sample (sites-only VCF).
+/// after a REF/ALT swap. No-op when there is no FORMAT/sample (sites-only VCF).
 fn flip_biallelic_gt(f: &mut [String]) {
     if f.len() < 10 {
         return; // no FORMAT + sample columns
@@ -448,8 +465,8 @@ mod tests {
         assert_eq!(het[9], "1|0");
     }
 
-    /// End-to-end: a reverse-strand (inverted) chain lift — REF/ALT reverse-complemented, REF/ALT
-    /// swapped to match the target reference base, and the single-sample GT flipped accordingly.
+    /// End to end: a chain lift to the reverse strand. The code reverse-complements REF and ALT,
+    /// swaps them to match the target reference base, and flips the GT of the one sample to match.
     #[test]
     fn lift_vcf_reverse_strand_revcomp_swap_and_gt_flip() {
         let dir = std::env::temp_dir().join(format!("dun-vcflift-{}", std::process::id()));
@@ -503,7 +520,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A position in a chain gap is dropped (unmapped), tallied, and not emitted.
+    /// The code drops a position that falls in a chain gap, because nothing maps it. It counts
+    /// that position, and writes no record for it.
     #[test]
     fn lift_vcf_drops_unmapped() {
         let dir = std::env::temp_dir().join(format!("dun-vcflift-unmapped-{}", std::process::id()));

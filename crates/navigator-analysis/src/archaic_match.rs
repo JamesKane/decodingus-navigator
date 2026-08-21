@@ -1,47 +1,51 @@
-//! Tier B, second attempt — archaic tracts by **matching the archaic genomes**, not by counting
-//! mutations.
+//! Tier B, the second try. It finds archaic tracts by a **match against the archaic genomes**,
+//! and not by a count of mutations.
 //!
 //! # Why this replaces the density caller
 //!
-//! [`crate::archaic_segments`] follows Skov 2018 (hmmix): strip variants Africans also carry, then
-//! look for regions dense in what remains. That method exists for people who do **not** have archaic
-//! reference genomes and must infer them indirectly. We have all four, and already ship
-//! [`ArchaicClassify`] — 2,031,406 sites where the archaics carry a derived allele.
+//! [`crate::archaic_segments`] follows Skov 2018 (hmmix). It removes the variants that Africans
+//! also carry, and then looks for a region that is dense in what stays. That method exists for a
+//! person who does **not** have archaic reference genomes, and who must infer them indirectly.
+//! This project has all four, and it already ships [`ArchaicClassify`], which holds 2,031,406
+//! sites where the archaics carry a derived allele.
 //!
-//! Measured on a real European against hmmix's own calls for the same person, the difference is not
-//! subtle. Both observables carry the same ~3x contrast, but they differ 30-fold in how much
-//! evidence one tract holds, and that is what decides whether a tract can be called at all:
+//! A measurement on a real European, against the hmmix calls for the same person, shows a large
+//! difference. Both observables carry the same contrast of about 3x. But they differ 30-fold in
+//! how much evidence one tract holds, and that is what decides whether the code can call a tract
+//! at all:
 //!
-//! | observable | evidence per 36 kb tract | sensitivity at 5 % false positives |
+//! | observable | evidence in a 36 kb tract | sensitivity at 5 % false positives |
 //! |---|---|---|
 //! | private-variant density | ~1 variant | 14.3 % |
 //! | archaic-allele matching (this) | ~30 sites | 95.1 % |
 //!
-//! Density does not reach 80 % sensitivity at **500 kb**; matching reaches 95 % at the real median
-//! tract of 36 kb. See `documents/design/ArchaicAncestry_Design.md` § *Why it failed*.
+//! Density does not get to 80 % sensitivity at **500 kb**. Matching gets to 95 % at the real
+//! median tract of 36 kb. See `documents/design/ArchaicAncestry_Design.md`, § *Why it failed*.
 //!
 //! # The model
 //!
-//! An introgressed tract is a haplotype inherited intact from an archaic ancestor, so it carries the
-//! archaic allele at a large share of the diagnostic sites it spans; elsewhere the subject carries
-//! them only at the background rate. That is a two-state HMM whose observation is one **bit per
-//! diagnostic site** — carried or not — with Bernoulli emissions, indexed **by site rather than by
-//! base pair**.
+//! An introgressed tract is a haplotype that came down whole from an archaic ancestor. So it
+//! carries the archaic allele at a large share of the diagnostic sites that it covers. Elsewhere
+//! the subject carries those alleles at the background rate alone.
 //!
-//! Indexing by site is what makes this robust where the density model was not. Diagnostic sites
-//! become the denominator, so their uneven density cancels out: the mutation-rate map the density
-//! model needed (and which no available proxy supplied — the best explained 38 % of a 14.6x
-//! overdispersion) is simply not required here.
+//! That is a two-state HMM. Its observation is one **bit at each diagnostic site**: the subject
+//! carries the allele, or does not. The emissions are Bernoulli. The index runs **over the sites
+//! and not over the base pairs**.
 //!
-//! Transitions stay recombination-scaled between consecutive sites, as in [`crate::roh`] and the
-//! chromosome painter.
+//! The index over sites is what makes this robust where the density model was not. The diagnostic
+//! sites become the denominator, so their uneven density cancels. The density model needed a map
+//! of the mutation rate, and no available proxy gave one. The best proxy explained 38 % of a 14.6x
+//! overdispersion. This model does not need that map at all.
 //!
-//! # Validation
+//! The transitions scale with recombination between one site and the next, as they do in
+//! [`crate::roh`] and in the chromosome painter.
 //!
-//! ## Genome-wide (the shipping configuration)
+//! # The checks
 //!
-//! Three Europeans called across all 22 autosomes and scored against hmmix's genome-wide callset for
-//! the same individuals:
+//! ## Across the genome, which is the configuration that ships
+//!
+//! Three Europeans, called across all 22 autosomes, and scored against the genome-wide hmmix
+//! callset for the same individuals:
 //!
 //! | | ours | hmmix | ratio | sensitivity | precision | null (max of 400 draws) |
 //! |---|---|---|---|---|---|---|
@@ -49,116 +53,137 @@
 //! | HG00102 | 83.9 Mb | 89.3 | 0.94 | 42.4 % | 45.1 % | 4.9 % |
 //! | HG00112 | 82.1 Mb | 91.0 | 0.90 | 42.9 % | 47.5 % | 5.1 % |
 //!
-//! All three sit above the *entire* random-placement null. Both sensitivity and precision are
-//! **better** genome-wide than on chr21+22 (40–43 % against 31.6 %, ~46 % against 34.9 %), so the
-//! two-chromosome figures below are conservative rather than optimistic — worth stating because the
-//! previous caller's design was burned by the opposite, extrapolating a chr21+22 target 6 % low.
+//! All three sit above the *entire* null from random placement. Both the sensitivity and the
+//! precision are **better** across the genome than they are on chr21 and chr22: 40 to 43 % against
+//! 31.6 %, and about 46 % against 34.9 %.
 //!
-//! ## chr21+22, with a train/test split
+//! The two-chromosome figures below are careful, and not optimistic. Say that here,
+//! because the opposite burned the design of the caller before this one. That design took a
+//! chr21+22 target and went outside the measured range, to a value 6 % too low.
 //!
-//! Scored against hmmix's own calls for the same individuals, 60 Europeans on chr21+22, split 30
-//! **train** / 30 **test** on a fixed seed. Thresholds were fitted on train only; every figure below
-//! is the held-out half. The split exists because the previous caller was tuned until a cohort
-//! statistic matched and the statistic was then reported as evidence.
+//! ## chr21 and chr22, with a split into train and test
+//!
+//! 60 Europeans on chr21 and chr22, scored against the hmmix calls for the same individuals. A
+//! fixed seed split them into 30 for **train** and 30 for **test**. The fit of the thresholds used
+//! the train half alone, and every figure below comes from the half that the fit did not see.
+//!
+//! The split exists because of what happened before. Somebody tuned the caller before this one
+//! until a cohort statistic agreed, and then reported that statistic as evidence.
 //!
 //! | | density caller | this, uncalibrated | this, calibrated |
 //! |---|---|---|---|
-//! | base-level F1 | — | 27.9 % | **34.5 %** |
+//! | base-level F1 | n/a | 27.9 % | **34.5 %** |
 //! | precision | 1.5 % | 20.2 % | **34.9 %** |
 //! | extent ratio ours/theirs | 1.45 | 2.23 | **0.98** |
-//! | per-individual extent `r` | −0.018 (p = 0.94) | +0.520 | **+0.710 (p < 0.0001)** |
+//! | extent `r` over the individuals | −0.018 (p = 0.94) | +0.520 | **+0.710 (p < 0.0001)** |
 //!
-//! The extent ratio of 0.98 is the one to notice: the caller is no longer systematically
-//! over-calling, which the emission-ratio sweep is what fixed.
+//! Look at the extent ratio of 0.98. The caller no longer calls too much everywhere, and the sweep
+//! over the emission ratio is what fixed that.
 //!
-//! On locations, all 20 individuals of an earlier cohort scored above their own random-placement
-//! null (mean 45.3 % sensitivity against a 7.1 % null); the density caller scored 2.1 % against a
-//! 5.0 % null, i.e. below chance.
+//! Now the locations. All 20 individuals of an earlier cohort scored above their own null from
+//! random placement, at a mean sensitivity of 45.3 % against a null of 7.1 %. The density caller
+//! scored 2.1 % against a null of 5.0 %, which is below chance.
 //!
-//! ## Cross-population: transfers per individual, but the reported number does not
+//! ## Across populations: the detection transfers, and the reported number does not
 //!
-//! Run on 30 East Asians with the parameters **frozen** at the European fit, nothing refitted:
+//! A run on 30 East Asians, with the parameters **frozen** at the European fit. The run fitted
+//! nothing again:
 //!
 //! | | Europe (fitted) | East Asia (new) |
 //! |---|---|---|
 //! | above own random-placement null | 60/60 | **30/30** |
 //! | sensitivity | 31.6 % | **31.6 %** |
 //! | precision | 32.2 % | **41.9 %** |
-//! | per-individual extent `r` | +0.620 | **+0.545** |
+//! | extent `r` over the individuals | +0.620 | **+0.545** |
 //!
-//! Detection transfers: identical sensitivity and *better* precision on a population the thresholds
-//! never saw, so the calibration learned archaic structure rather than European structure.
+//! The detection transfers. The sensitivity is the same, and the precision is *better*, on a
+//! population that the thresholds never saw. The calibration learned archaic structure, and not
+//! European structure.
 //!
-//! **But the reported extent orders the populations backwards.** The truth puts East Asian archaic
-//! extent at **1.217x** Europe's; our called extent is **0.937x**. A user would be told an East
-//! Asian carries *less* archaic ancestry than a European, which is the wrong way round and is the
-//! single reason this is still gated.
+//! **But the reported extent puts the two populations in the wrong order.** The truth puts the
+//! archaic extent of East Asia at **1.217x** that of Europe. The extent that this caller reports
+//! is **0.937x**. A user would read that an East Asian carries *less* archaic ancestry than a
+//! European. That is the wrong way round, and it is the one reason that this module stays gated.
 //!
-//! The cause is that reported extent is true positives *plus* false positives, and the false-positive
-//! load is population-dependent (precision 32.2 % against 41.9 %), so Europeans accumulate more
-//! spurious extent. Note that "detected sequence reproduces 1.22x" is **not** evidence to the
-//! contrary: detected = sensitivity x truth, and sensitivity is equal across the two populations, so
-//! that ratio matches by construction. It restates the invariance, it does not test the ordering.
+//! Here is the cause. The reported extent is the true positives *plus* the false positives. The
+//! load of false positives depends on the population, at a precision of 32.2 % against 41.9 %.
+//! Europeans then collect more extent that is not real.
 //!
-//! Ruled out as causes, each measured rather than argued: background contamination of `p_background`
-//! (carrying rates 11.9 % vs 12.2 %, and both states scale together), tract length (median 29 kb in
-//! both; East Asians simply have more tracts, 54 vs 46 per person), and panel ascertainment
-//! (in-tract contrast 2.99x vs 3.04x, ratio 1.014 — the panel is equally informative in both).
+//! One thing is **not** evidence against this: that the detected sequence reproduces the 1.22x
+//! ratio. The detected extent is the sensitivity times the truth, and the sensitivity is equal
+//! across the two populations. So that ratio agrees by construction. It repeats the invariance,
+//! and it does not test the order.
 //!
-//! ## How much of the "false positive" rate is really ours
+//! Three causes are out, and a measurement rules out each one. No argument does.
 //!
-//! Precision is measured against hmmix, but a call they did not make is not automatically wrong.
-//! An independent arbiter settles this without asking another caller: the Tier A panel records, per
-//! site, which of the four archaic genomes carries the derived allele, and **this caller never sees
-//! that** — it reads only a derived base and a lineage class. So per-genome concordance is evidence
-//! it cannot have been fitted to.
+//! Contamination of `p_background`: the rates at which the two populations carry the allele are
+//! 11.9 % against 12.2 %, and both states scale together. Tract length: the median is 29 kb in
+//! both, and East Asians only have more tracts, at 54 against 46 for each person. Panel
+//! ascertainment: the contrast inside a tract is 2.99x against 3.04x, a ratio of 1.014, so the
+//! panel carries equal information in both.
 //!
-//! Of the sites where a given archaic genome is derived, what fraction does the subject carry
-//! (best-matching genome):
+//! ## How much of the "false positive" rate belongs to this caller
+//!
+//! The precision counts against hmmix, but a call that hmmix did not make is not wrong by that
+//! fact alone. There is an independent arbiter, and it needs no second caller. The Tier A panel
+//! records, at each site, which of the four archaic genomes carries the derived allele. **This
+//! caller never sees that**: it reads a derived base and a lineage class alone. The concordance
+//! with each genome is evidence that nobody could have fitted it to.
+//!
+//! Of the sites where a given archaic genome is derived, this is the fraction that the subject
+//! carries, for the genome that matches best:
 //!
 //! | | true positive | false positive | background |
 //! |---|---|---|---|
 //! | Europe | 93.6 % | **81.3 %** | 59.0 % |
 //! | East Asia | 93.5 % | **72.9 %** | 45.5 % |
 //!
-//! Our "false positives" sit **64 % / 57 %** of the way from background to true positive. They are a
-//! mixture: real tracts hmmix missed, plus genuine noise, plus calls that are correctly placed but
-//! over-extended. So precision against hmmix **understates** this caller — though not enough to
-//! dismiss it, and F1 remains a usable objective.
+//! The "false positives" of this caller sit **64 %** and **57 %** of the way from the background
+//! to a true positive. They are a mixture: real tracts that hmmix missed, plus true noise, plus
+//! calls that sit in the correct place and reach too far. So the precision against hmmix
+//! **understates** this caller. That is not enough to dismiss the figure, and F1 stays a usable
+//! objective.
 //!
-//! Note the background rates differ by population (59.0 % against 45.5 %): Europeans carry
-//! archaic-derived alleles more often *outside* tracts. That is a candidate mechanism for the
-//! population-varying false-positive load, and hence for the ordering inversion above.
+//! Note the background rates in the two populations: 59.0 % against 45.5 %. Europeans carry an
+//! archaic-derived allele more often *outside* a tract. That is a candidate mechanism for the
+//! load of false positives that changes with the population, and so for the inverted order
+//! above.
 //!
-//! ## A concordance filter fixes precision, and exposes a harder limit
+//! ## A concordance filter fixes the precision, and shows a harder limit
 //!
-//! Scoring each called segment against the archaic genomes and dropping the poor matches raises
-//! **precision from 54 % to 90 %**. The filter is sound: with Denisova held out of it entirely, kept
-//! segments score 74.9 % on Denisova concordance against 21.5 % for dropped ones — a 3.5x separation
-//! on a genome the filter never saw.
+//! Score each called segment against the archaic genomes, and drop the poor matches. That raises
+//! the **precision from 54 % to 90 %**. The filter is sound. With Denisova held out of it
+//! completely, the segments that stay score 74.9 % on Denisova concordance, against 21.5 % for the
+//! segments that go. That is a separation of 3.5x on a genome that the filter never saw.
 //!
-//! It does **not** fix the population ordering, and tightening it makes the ordering worse. At 90 %
-//! precision the reported extent is mostly true positives, and it still orders the populations
-//! backwards, so the cause is no longer false positives. What remains is a difference in *recovery*:
-//! roughly 46 % of European truth against 38 % of East Asian.
+//! It does **not** fix the order of the populations, and a tighter filter makes that order worse.
+//! At 90 % precision the reported extent is mostly true positives. It still puts the populations
+//! in the wrong order, so false positives are no longer the cause. What remains is a difference in
+//! *recovery*: about 46 % of the European truth against 38 % of the East Asian truth.
 //!
-//! The reason is visible in the concordance itself. East Asian tracts match our archaic genomes less
-//! well than European ones (83.4 % against 89.2 %), and Denisova is the best match for **32.2 % of
-//! East Asian tracts against 11.2 % of European** ones. That 2.9x is the known Denisovan ancestry
-//! East Asians carry and Europeans essentially lack — the data reproduces it — but it also means our
-//! four sequenced archaic genomes **under-represent East Asian archaic diversity**. Any
-//! reference-based filter therefore under-calls East Asians, and holding Denisova out (the first
-//! design here) makes it markedly worse.
+//! The concordance itself shows the reason. East Asian tracts match our archaic genomes less well
+//! than European tracts do, at 83.4 % against 89.2 %. And Denisova is the best match for **32.2 %
+//! of the East Asian tracts, against 11.2 % of the European** ones.
 //!
-//! That is a limit of the approach, not a threshold to tune: it would take archaic genomes closer to
-//! the populations that introgressed into East Asia, which do not exist. **A cross-population
-//! comparable number is therefore not currently achievable this way** — the caller is defensible
-//! within a population and not between them.
+//! That 2.9x is the known Denisovan ancestry that East Asians carry and Europeans almost do not,
+//! and the data reproduces it. But it also means that our four sequenced archaic genomes
+//! **under-represent the archaic diversity of East Asia**. Any filter that uses those references
+//! under-calls East Asians. To hold Denisova out, which was the first design here, makes it much
+//! worse.
 //!
-//! **Still not enough to re-enable.** Beyond the ordering: precision is 34.9 % unfiltered on
-//! held-out Europeans, the cohort is **chr21+22 only**, and the reference callset is itself weakly
-//! supported (hmmix's own tracts are enriched just 1.84x for their own archaic SNPs), so agreement
-//! with it caps well below 100 % even for a correct caller — F1 alone cannot say when this is done.
+//! That is a limit of the approach, and not a threshold to tune. To fix it would need archaic
+//! genomes nearer to the populations that introgressed into East Asia, and those do not exist. **A
+//! number that you can compare across populations is not possible this way at present.** The
+//! caller is defensible inside one population, and not between two.
+//!
+//! **This is still not enough to turn the module on.** Beyond the order of the populations, there
+//! are three more reasons.
+//!
+//! The precision is 34.9 % without the filter, on held-out Europeans. The cohort is **chr21 and
+//! chr22 alone**. And the reference callset itself has weak support: the tracts of hmmix show an
+//! enrichment of only 1.84x for their own archaic SNPs. Agreement with that callset then stops
+//! well below 100 %, even for a caller that is correct. F1 alone can not tell you when this work
+//! reaches its end.
 
 use std::collections::BTreeMap;
 
@@ -169,19 +194,21 @@ use crate::archaic_segments::{ArchaicSegment, ArchaicSegmentResult, ArchaicSourc
 use crate::caller::SiteGenotype;
 use crate::ibd::GeneticMap;
 
-/// Bumped whenever a change would alter the segments this module produces.
+/// Raise this after a change that would alter the segments that this module makes.
 ///
-/// Persisted results are keyed on it (`archaic_segment_sig`), so a workspace holding output from an
-/// earlier method — notably the withdrawn private-variant density caller — re-derives instead of
-/// serving answers the current code would never produce.
+/// A stored result carries it as part of its key, in `archaic_segment_sig`. A workspace that holds
+/// output from an earlier method derives that output again. The private-variant density
+/// caller, which this project withdrew, is the case that matters. Without the key, such a
+/// workspace would serve answers that the current code would never make.
 pub const METHOD_VERSION: u32 = 1;
 
-/// Concordance a segment must reach to be kept — measured, from the threshold sweep where precision
-/// plateaus (54 % -> 90 % at 0.70, and no better above it while recall keeps falling).
+/// The concordance that a segment must reach before the code keeps it. This is a measured value,
+/// from the sweep over the threshold where the precision stops to rise. It goes from 54 % to 90 %
+/// at 0.70. Above 0.70 the precision gets no better, and the recall continues to fall.
 pub const MIN_CONCORDANCE: f64 = 0.70;
 
-/// Sites a genome needs in a segment before its concordance is trusted. Without a floor a genome
-/// called at a single site scores 1.0 and wins every segment.
+/// The count of sites that a genome needs in a segment before the code trusts its concordance.
+/// Without a floor, a genome with a call at one site alone scores 1.0 and wins every segment.
 pub const MIN_CONCORDANCE_SITES: usize = 3;
 
 /// One diagnostic site, reduced to what the HMM consumes.
@@ -193,37 +220,40 @@ pub struct SiteObs {
     pub class: DiagnosticClass,
 }
 
-/// Tuning knobs.
+/// The controls of this module.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MatchConfig {
     /// Rate at which a **non-introgressed** genome carries the archaic allele at a diagnostic site.
     /// `None` estimates it from the subject's own genome-wide rate, which absorbs coverage, call
     /// behaviour and ancestry.
     ///
-    /// Estimated rather than fixed because it is the denominator of the whole inference — but
-    /// estimated *directly*, not by EM. Unconstrained Baum-Welch on the previous caller diverged to
-    /// a degenerate fit (a 22x emission ratio and 9 kb tracts, calling 7x the truth), so parameters
-    /// here are measured, not fitted.
+    /// The code estimates this rate, and does not hold it fixed, because it is the denominator of
+    /// the whole inference. But it estimates it *directly*, and not by EM.
+    ///
+    /// Baum-Welch with no constraint, on the caller before this one, went to a degenerate fit. It
+    /// gave an emission ratio of 22x, tracts of 9 kb, and 7x the true extent. So a measurement
+    /// gives every parameter here, and nobody fits one.
     pub p_background: Option<f64>,
     /// Rate inside an introgressed tract. `None` derives it as `p_background * archaic_ratio`.
     pub p_archaic: Option<f64>,
-    /// Multiple of the background rate expected inside a tract when `p_archaic` is `None`.
-    /// Measured at 3.04x (39.5 % inside real tracts against 13.0 % elsewhere).
+    /// How many times the background rate the code expects inside a tract, when `p_archaic` is
+    /// `None`. A measurement gave 3.04x: 39.5 % inside a real tract, against 13.0 % elsewhere.
     pub archaic_ratio: f64,
-    /// Expected state switches per centimorgan.
+    /// The count of state switches that the model expects in one centimorgan.
     pub switches_per_cm: f64,
     /// Discard tracts whose mean posterior is below this.
     pub min_posterior: f64,
-    /// Minimum diagnostic sites in a tract. A tract resting on one or two sites is exactly the
-    /// failure mode of the density caller, restated in a new observable.
+    /// The smallest count of diagnostic sites in a tract. A tract that stands on one site or two
+    /// is exactly how the density caller failed, in a new observable.
     pub min_sites: usize,
     /// Discard tracts shorter than this.
     pub min_segment_bp: i64,
-    /// Minimum callable fraction for a site's window to be used at all.
+    /// The callable fraction that the window of a site needs before the code uses that site at
+    /// all.
     pub min_callable_fraction: f64,
-    /// Whether to attempt per-segment Neanderthal/Denisovan attribution. Default `false`, unchanged
-    /// from the density caller: the lineage signal has not been shown to work, and this module does
-    /// not by itself change that.
+    /// True to try a Neanderthal or Denisovan attribution at each segment. The default is
+    /// `false`, as it was for the density caller. Nobody has shown that the lineage signal works,
+    /// and this module alone does not change that.
     pub attribute_lineage: bool,
 }
 
@@ -232,25 +262,31 @@ impl Default for MatchConfig {
         MatchConfig {
             p_background: None,
             p_archaic: None,
-            // FITTED (not measured): the observed enrichment inside real tracts is 3.04x, but the
-            // model separates best at 4.5x. That is not a contradiction — 3.04x is the *average*
-            // over an external tract set that is itself only weakly supported, while the emission
-            // ratio is what makes the HMM selective enough to place boundaries. Fitted on 30
-            // Europeans, reported on 30 held-out ones; it is the parameter that removed the
-            // over-calling (extent ratio 2.23 -> 0.98).
+            // A fit gives this value, and no measurement does. The observed enrichment inside a
+            // real tract is 3.04x, but the model separates best at 4.5x. The two do not
+            // disagree.
+            // 3.04x is the *mean* over a tract set from outside this project, and that set itself
+            // has weak support. The emission ratio is instead what makes the HMM selective enough
+            // to place a boundary. The fit used 30 Europeans, and the report uses 30 held-out
+            // ones. This is the parameter that stopped the over-call, and it moved the extent
+            // ratio from 2.23 to 0.98.
             archaic_ratio: 4.5,
             switches_per_cm: 1.0,
-            // All three CALIBRATED on train, reported on held-out test (see the module docs).
-            // Objective was base-level F1: sensitivity alone is bought by calling more sequence, and
-            // the uncalibrated caller over-called 2.2x while still scoring 45 %.
+            // The calibration of all three used the train half, and the report uses the held-out
+            // test half. See the module documentation. The objective was the F1 at the base
+            // level. Sensitivity alone comes from a call over more sequence: the caller before
+            // the calibration called 2.2x too much extent, and it still scored 45 %.
             min_posterior: 0.98,
             min_sites: 16,
-            // 5 kb, though the grid's argmax preferred 10 kb. Within the plateau the two differ by
-            // 0.1 F1 points, the 5 kb floor is slightly BETTER on per-individual extent correlation
-            // (+0.710 vs +0.706), and it discards half as many real tracts (8 % of the truth under
-            // 5 kb against 16 % under 10 kb). An earlier sweep wanted 40 kb, which would have
-            // discarded 61 %; the design records the same trap once before at 50 kb. Structural
-            // exclusion of real tracts is not worth a tenth of a point.
+            // 5 kb, although the argmax over the grid took 10 kb. Inside the flat part of the
+            // curve the two differ by 0.1 F1 points. The 5 kb floor is a little BETTER on the
+            // correlation of the extent of each individual, at +0.710 against +0.706. And it
+            // throws away half as many real tracts: 8 % of the truth lies below 5 kb, against
+            // 16 % below 10 kb.
+            //
+            // An earlier sweep wanted 40 kb, which would have thrown away 61 %. The design
+            // records the same trap once before, at 50 kb. To exclude real tracts by
+            // construction is not worth a tenth of a point.
             min_segment_bp: 5_000,
             min_callable_fraction: 0.5,
             attribute_lineage: false,
@@ -260,16 +296,18 @@ impl Default for MatchConfig {
 
 /// Reduce one contig's diagnostic sites to observations.
 ///
-/// `ref_base` supplies the reference base at a position; sites where the archaic-derived allele
-/// **is** the reference base are dropped. At such a site every reference-matching genome trivially
-/// "carries" the derived allele, so it separates nothing and would dilute the contrast — and,
-/// because the caller emits only variant records, a no-call there means the subject *does* carry it,
-/// the opposite of what a no-call means everywhere else.
+/// `ref_base` gives the reference base at a position. The code drops a site where the
+/// archaic-derived allele **is** the reference base.
 ///
-/// A site with no variant record is hom-reference, hence **not** carrying. Restricting instead to
-/// sites where the subject happens to have a call is the trap that made an early version of this
-/// analysis report an 80 % carrying rate against a known 4.3 % background: it samples only sites
-/// where a variant already exists.
+/// There are two reasons. At such a site every genome that matches the reference holds the derived
+/// allele, which separates nothing and would weaken the contrast. And the caller emits a variant
+/// record alone, so a no-call there means that the subject *does* carry the allele. That is the
+/// opposite of what a no-call means everywhere else.
+///
+/// A site with no variant record is hom-reference, so the subject does **not** carry the allele
+/// there. Do not instead keep the sites where the subject happens to have a call. That is the trap
+/// that made an early version of this analysis report a rate of 80 %, against a known background
+/// of 4.3 %. It takes only the sites where a variant already exists.
 pub fn observations_for_contig(
     contig: &str,
     classify: &ArchaicClassify,
@@ -325,8 +363,9 @@ fn ln_sum_exp(a: f64, b: f64) -> f64 {
 
 /// Posterior probability of the archaic state at each observation.
 ///
-/// Log-space forward/backward with recombination-scaled transitions, as in [`crate::roh`]. Exposed
-/// so the decoding can be tested against hand-computed posteriors without constructing assets.
+/// This is forward-backward in log space, with the transitions scaled by recombination, as in
+/// [`crate::roh`]. It is public so that a test can check the decoding against a posterior computed
+/// by hand, and build no asset.
 pub fn posteriors(
     obs: &[SiteObs],
     contig: &str,
@@ -354,8 +393,9 @@ pub fn posteriors(
         (1.0 - (-switches_per_cm * cm.max(0.0)).exp()).clamp(1e-9, 0.5)
     };
 
-    // Prior: the stationary share of the archaic state, from the rates themselves rather than a
-    // tuned constant — with p_arch > p_bg the algebra puts it at a few percent, matching reality.
+    // The prior is the stationary share of the archaic state. It comes from the rates themselves,
+    // and it is not a tuned constant. With p_arch > p_bg, the algebra puts it at a few percent,
+    // which agrees with reality.
     let prior_arch = ((p_bg - (1.0 - p_arch) * 0.0) / p_arch).clamp(0.001, 0.5) * 0.1;
     let mut fwd = vec![[f64::NEG_INFINITY; 2]; n];
     let e0 = emit(0);
@@ -389,8 +429,9 @@ pub fn posteriors(
 
 /// Call archaic tracts for one subject by matching the archaic genomes.
 ///
-/// `observations` is per contig, already reduced by [`observations_for_contig`], so this function
-/// does no I/O and no asset decoding — it is the model, and is unit-testable as such.
+/// `observations` holds one entry for each contig, and [`observations_for_contig`] has already
+/// reduced them. This function does no I/O, and it decodes no asset. It is the model alone, and a
+/// unit test can cover it as such.
 pub fn call_from_observations(
     observations: &BTreeMap<String, Vec<SiteObs>>,
     gmap: &GeneticMap,
@@ -415,8 +456,8 @@ pub fn call_from_observations(
             },
         };
     }
-    // The genome-wide rate is dominated by non-archaic sequence (archaic tracts are a few percent
-    // of it), so it estimates the background directly.
+    // Sequence that is not archaic controls the genome-wide rate, because the archaic tracts are
+    // a few percent of the genome. That rate gives the background directly.
     let p_bg = cfg
         .p_background
         .unwrap_or((carried as f64 / total as f64).clamp(0.001, 0.5));
@@ -498,14 +539,17 @@ pub fn call_from_observations(
     ArchaicSegmentResult { segments, summary }
 }
 
-/// How well a segment matches each archaic genome: of the sites where a given archaic genome
-/// carries the derived allele, what fraction does the subject also carry. The best genome wins.
+/// How well a segment matches each archaic genome. Take the sites where a given archaic genome
+/// carries the derived allele, and ask what fraction of those the subject also carries. The genome
+/// with the highest fraction wins.
 ///
-/// Conditioning on the **genome**, not on the subject, is what makes this discriminate. The
-/// intuitive version — over the sites the subject carries, how many does an archaic genome share —
-/// scores ~100 % everywhere including background, because at an informative site some archaic
-/// carries the derived allele by construction. Read this way, background sits at the subject's
-/// genome-wide carrying rate and an inherited haplotype sits far above it.
+/// The condition is on the **genome**, and not on the subject, and that is what makes the measure
+/// separate anything. The other way is to take the sites that the subject carries, and ask how
+/// many an archaic genome shares. That scores about 100 % everywhere, and the background too,
+/// because at an informative site some archaic holds the derived allele by construction.
+///
+/// Read the measure the way this function reads it. The background then sits at the genome-wide
+/// rate of the subject, and a haplotype that came down from an ancestor sits far above that.
 ///
 /// Returns `None` when no genome has enough called sites in the span to judge.
 pub fn segment_concordance(
@@ -538,8 +582,9 @@ pub fn segment_concordance(
 
 /// Which sites of the Tier A panel the subject carries the archaic-derived allele at.
 ///
-/// A site with no variant record is hom-reference and therefore **not** a carrier; sites where the
-/// derived allele is the reference base are excluded upstream by the panel's own orientation.
+/// A site with no variant record is hom-reference, so the subject does **not** carry the allele
+/// there. The orientation of the panel itself removes the sites where the derived allele is the
+/// reference base, before the data reaches here.
 pub fn carried_panel_sites<'a>(
     panel: &'a ArchaicMarkerPanel,
     calls: &'a [SiteGenotype],
@@ -559,16 +604,19 @@ pub fn carried_panel_sites<'a>(
 
 /// Drop segments that do not look like an inherited archaic haplotype.
 ///
-/// This is the single largest quality lever measured: **precision 54 % -> 90 %** on real data. It
-/// works because it consults evidence the segment caller never sees — which archaic genome carries
-/// what — so it is genuinely new information rather than a re-reading of the same signal.
+/// This is the largest measured gain in quality: the **precision goes from 54 % to 90 %** on real
+/// data. It works because it reads evidence that the segment caller never sees, which is the
+/// question of which archaic genome carries what. That is truly new information, and not a second
+/// reading of the same signal.
 ///
-/// A segment with too few judgable sites is **kept**: absence of evidence is not evidence of a bad
-/// call, and dropping on it would silently penalise sparse regions.
+/// The code **keeps** a segment with too few sites to judge. The absence of evidence is not
+/// evidence of a bad call, and to drop such a segment would punish a sparse region where nobody
+/// looks.
 ///
-/// Note the population caveat in the module docs: East Asian tracts match the four sequenced archaic
-/// genomes less well than European ones, so this filter removes proportionally more of them. It
-/// improves precision everywhere and makes extent **less** comparable between populations.
+/// Read the note about the populations in the module documentation. East Asian tracts match the
+/// four sequenced archaic genomes less well than European tracts do, so this filter removes a
+/// larger share of them. It raises the precision everywhere, and it makes the extent **less**
+/// comparable between two populations.
 pub fn filter_by_concordance(
     result: ArchaicSegmentResult,
     panel: &ArchaicMarkerPanel,
@@ -641,8 +689,8 @@ mod tests {
             .collect()
     }
 
-    /// A run of carried sites against a background of non-carried ones is what a real tract looks
-    /// like, and is the thing this model exists to find.
+    /// A real tract looks like a run of carried sites, against a background of sites that the
+    /// subject does not carry. That is the thing that this model exists to find.
     #[test]
     fn finds_a_run_of_carried_sites() {
         let mut sites: Vec<(i64, bool)> = (0..60).map(|i| (10_000 + i * 500, false)).collect();
@@ -651,10 +699,10 @@ mod tests {
         }
         let mut m = BTreeMap::new();
         m.insert("chr21".to_string(), obs(&sites));
-        // Thresholds pinned rather than inherited: this test is about whether the model finds a
-        // run at all, and should not move when the calibrated defaults do. (It broke once when
-        // `min_posterior` rose to 0.98 and trimmed the run's edges — correct behaviour, wrong
-        // thing for this test to be sensitive to.)
+        // This test fixes the thresholds, and it does not take them from the defaults. It asks
+        // whether the model finds a run at all, and it must not move when a calibrated default
+        // moves. It broke once, when `min_posterior` rose to 0.98 and cut the edges off the run.
+        // That was correct behaviour, and this test must not react to it.
         let cfg = MatchConfig {
             p_background: Some(0.13),
             p_archaic: Some(0.40),
@@ -694,8 +742,8 @@ mod tests {
         );
     }
 
-    /// Scattered carried sites at the background rate must not accumulate into a tract — the
-    /// density caller's defining failure, restated in this observable.
+    /// Carried sites that lie apart, at the background rate, must not add up into a tract. That
+    /// is how the density caller failed, in this observable.
     #[test]
     fn scattered_background_carriers_do_not_form_a_tract() {
         // 13 % carried, evenly spread: exactly the background rate, no run.
@@ -720,7 +768,8 @@ mod tests {
     }
 
     /// A site whose derived allele IS the reference base separates nothing, and a no-call there
-    /// means the opposite of what it means elsewhere. Such sites must be dropped, not counted.
+    /// means the opposite of what it means elsewhere. The code must drop such a site, and must not
+    /// count it.
     #[test]
     fn observations_drop_sites_where_reference_is_derived() {
         let classify = ArchaicClassify {
@@ -780,10 +829,11 @@ mod tests {
         }
     }
 
-    /// Concordance must be read per ARCHAIC GENOME, not per carried site. The intuitive version —
-    /// over the sites the subject carries, how many does some archaic share — scores ~100 %
-    /// everywhere including background, because at an informative site some archaic is derived by
-    /// construction. That version was written first and separated nothing.
+    /// Read the concordance over each ARCHAIC GENOME, and not over each carried site. The other
+    /// way is to take the sites that the subject carries, and ask how many some archaic
+    /// shares. That scores about 100 % everywhere, and the background too, because at an
+    /// informative site some archaic is derived by construction. Somebody wrote that version
+    /// first, and it separated nothing.
     #[test]
     fn concordance_conditions_on_the_genome_not_the_subject() {
         use ArchaicCall::{HomAncestral as A, HomDerived as D};
@@ -814,9 +864,9 @@ mod tests {
         assert!((c - 0.75).abs() < 1e-9, "expected Altai's 0.75, got {c}");
     }
 
-    /// A segment with too few judgable sites must be KEPT. Absence of evidence is not evidence of a
-    /// bad call, and dropping on it would quietly penalise sparse regions — which are exactly the
-    /// regions where a caller most needs the benefit of the doubt.
+    /// The code must KEEP a segment with too few sites to judge. The absence of evidence is not
+    /// evidence of a bad call. To drop such a segment would punish a sparse region. Those are
+    /// exactly the regions where a caller most needs the doubt to go in its favour.
     #[test]
     fn filter_keeps_segments_it_cannot_judge() {
         let panel = ArchaicMarkerPanel {
@@ -908,8 +958,9 @@ mod tests {
         );
     }
 
-    /// A no-call is hom-reference, i.e. NOT carrying. Conditioning on "has a call" instead is what
-    /// made an early version of this analysis report ~80 % carrying against a 4.3 % background.
+    /// A no-call is hom-reference, so the subject does NOT carry the allele. A condition on "has
+    /// a call" instead is what made an early version of this analysis report about 80 %, against a
+    /// background of 4.3 %.
     #[test]
     fn a_missing_call_is_not_a_carrier() {
         let classify = ArchaicClassify {

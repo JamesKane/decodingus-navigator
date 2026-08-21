@@ -1,32 +1,44 @@
-//! FTDNA Y-STR convention layer — map the caller's HipSTR-locus repeat counts to FTDNA marker values.
+//! The layer that holds the FTDNA Y-STR convention. It maps the repeat count that the caller gives
+//! at a HipSTR locus to the value that an FTDNA marker holds.
 //!
-//! The HipSTR reference already names the loci (DYS393, DYS19/DYS394, …; see [`crate::strref`]), so
-//! the caller emits DYS names directly. What differs is the **counting convention**: FTDNA reports a
-//! per-marker value that is the caller's repeat count plus a fixed offset (0 for most, ±1–3 for some),
-//! and a set of markers whose HipSTR tract doesn't correspond 1:1 to the FTDNA marker (large tract
-//! mismatches, plus multi-copy/nested markers like DYS385/DYS464/DYS389II) which can't be mapped by a
-//! single offset.
+//! The HipSTR reference already names the loci, as DYS393, DYS19/DYS394 and so on. See
+//! [`crate::strref`]. So the caller emits a DYS name directly. What differs is the **convention
+//! for the count**.
 //!
-//! The offset table below was **calibrated against a 216-kit Big Y corpus** (FTDNA R1b project,
-//! CHM13-realigned `chrYM.cram` + each kit's FTDNA DYS CSV): per marker, the offset is the modal
-//! `ftdna − caller` difference across kits, kept only where it agrees across the corpus (≥70%, and
-//! ≥20 kits to be authoritative). The harness is `examples/str_calibrate.rs`. The calibration cross-
-//! validated build-independence: where the CHM13 corpus and the earlier 14-kit GRCh38 corpus overlap,
-//! the offsets match (DYS438 +2, DYS435 +2, DYS474 −3, DYS442 −3, DYS520 −2, DYS585 −3, DYS615 −2,
-//! DYS629 −3). Because offsets are build-independent, markers the CHM13 HipSTR liftover dropped
-//! (DYS19, DYS391, DYS426, DYS445, DYS461, DYS512, DYS549, DYS565, DYS567, DYS578, DYS589, DYS632 …)
-//! retain their GRCh38-corpus values — they still serve the GRCh38/BAM calling path, and will serve
-//! the CHM13 path once those loci are recovered in the lifted reference. Markers absent here report
-//! `Uncalibrated`. Re-run the harness over more kits to extend the table.
+//! FTDNA reports a value at each marker. That value is the repeat count of the caller, plus a
+//! fixed offset. The offset is 0 at most markers, and ±1 to 3 at some. There is also a set of
+//! markers whose HipSTR tract does not match the FTDNA marker 1:1. Those are the large tract
+//! mismatches, and the markers with more than one copy or with a nest inside, such as DYS385,
+//! DYS464 and DYS389II. No single offset can map one of those.
+//!
+//! The offset table below comes from a **calibration against a corpus of 216 Big Y kits**. That
+//! corpus is the FTDNA R1b project, with a `chrYM.cram` realigned to CHM13, and the FTDNA DYS CSV
+//! of each kit. At each marker the offset is the modal `ftdna − caller` difference across the
+//! kits. The table keeps it only where the corpus agrees, at 70% or more, and over 20 kits or
+//! more. The harness is `examples/str_calibrate.rs`.
+//!
+//! The calibration also checked that the offsets do not depend on the build. Where the CHM13
+//! corpus and the earlier corpus of 14 GRCh38 kits overlap, the offsets match: DYS438 +2, DYS435
+//! +2, DYS474 −3, DYS442 −3, DYS520 −2, DYS585 −3, DYS615 −2, DYS629 −3.
+//!
+//! The CHM13 HipSTR liftover dropped some markers: DYS19, DYS391, DYS426, DYS445, DYS461, DYS512,
+//! DYS549, DYS565, DYS567, DYS578, DYS589, DYS632 and more. Because an offset does not depend on
+//! the build, those markers keep the values of the GRCh38 corpus. They still serve the path that
+//! calls over a GRCh38 BAM. They will serve the CHM13 path too, once somebody recovers those loci
+//! in the lifted reference.
+//!
+//! A marker that this table does not hold reports `Uncalibrated`. Run the harness over more kits
+//! to extend the table.
 
 use crate::strcaller::{StrConfidence, StrGenotype};
 
 /// FTDNA value = caller repeat count + offset. Covers the calibrated single-copy markers (offset 0 =
 /// "reliable", ±1–3 = a real convention). Markers absent here are either in [`EXCLUDE`] or uncalibrated.
 static OFFSETS: &[(&str, i32)] = &[
-    // Reliable (offset 0). Most are CHM13 216-kit ≥100% agreement; a few (DYS388, DYS426, DYS445,
-    // DYS487, DYS494, DYS505, DYS549, DYS556, DYS565, DYS567, DYS577, DYS578) are GRCh38-corpus
-    // retentions for loci the CHM13 lift dropped or under-sampled.
+    // These are reliable, at an offset of 0. Most come from the 216-kit CHM13 corpus, at 100%
+    // agreement. A few come from the GRCh38 corpus, for loci that the CHM13 lift dropped, or
+    // sampled too little: DYS388, DYS426, DYS445, DYS487, DYS494, DYS505, DYS549, DYS556, DYS565,
+    // DYS567, DYS577 and DYS578.
     ("DYS388", 0),
     ("DYS390", 0),
     ("DYS392", 0),
@@ -87,9 +99,10 @@ static OFFSETS: &[(&str, i32)] = &[
     ("DYS645", 0),
     ("DYS714", 0),
     ("Y-GATA-A10", 0),
-    // Convention offsets (±1–3). DYS19/DYS391/DYS461/DYS512/DYS589/DYS632 are GRCh38-corpus
-    // retentions (dropped by the CHM13 lift); the rest are CHM13 216-kit. DYS460 was previously
-    // excluded but the larger corpus resolves it to a clean +1 (n=180, 98%).
+    // The offsets of the convention, at ±1 to 3. DYS19, DYS391, DYS461, DYS512, DYS589 and DYS632
+    // come from the GRCh38 corpus, because the CHM13 lift dropped them. The rest come from the
+    // 216-kit CHM13 corpus. The table once left DYS460 out. The larger corpus resolves it to a
+    // clean +1, at n=180 and 98%.
     ("DYS19", -1),
     ("DYS389I", 1),
     ("DYS391", -1),
@@ -121,9 +134,12 @@ static OFFSETS: &[(&str, i32)] = &[
     ("DYS642", 1),
 ];
 
-/// Markers whose HipSTR tract can't be mapped to the FTDNA value by a single offset: large tract
-/// mismatches and multi-copy/nested markers (DYS385/DYS464 split sub-loci, DYS389II nesting). Reported
-/// as `Excluded` — the enclosing-read caller doesn't yield a vendor-comparable value here (yet).
+/// The markers whose HipSTR tract no single offset can map to the FTDNA value. Those are the large
+/// tract mismatches, and the markers with more than one copy or with a nest inside. DYS385 and
+/// DYS464 split into sub-loci, and DYS389II holds a nest.
+///
+/// They report as `Excluded`. The enclosing-read caller does not yet give a value here that you
+/// can compare against a vendor.
 static EXCLUDE: &[&str] = &[
     // Multi-copy / nested (split sub-loci, never a single vendor-comparable value).
     "DYS385",
@@ -170,12 +186,14 @@ static EXCLUDE: &[&str] = &[
     "Y-GATA-H4",
 ];
 
-/// A handful of offsets are **build-dependent**: the CHM13 HipSTR liftover shifted these tract
-/// boundaries by one repeat unit, so the enclosing-read count differs by 1 between CHM13 and GRCh38.
-/// [`OFFSETS`] holds the CHM13 value (the primary corpus); this delta is *added* on the GRCh38 path.
-/// Verified by two independent GRCh38 corpora (a 14-kit set + kit 27520) agreeing against the 216-kit
-/// CHM13 corpus: DYS389I/DYS456/DYS525/DYS537/DYS539 are +1 on CHM13 but 0 on GRCh38; DYS714 is the
-/// reverse (0 on CHM13, +1 on GRCh38).
+/// A few offsets **do depend on the build**. The CHM13 HipSTR liftover moved these tract
+/// boundaries by one repeat unit, so the enclosing-read count differs by 1 between CHM13 and
+/// GRCh38. [`OFFSETS`] holds the CHM13 value, which is the primary corpus, and the code *adds*
+/// this delta on the GRCh38 path.
+///
+/// Two independent GRCh38 corpora confirmed this against the 216-kit CHM13 corpus: a 14-kit set,
+/// and kit 27520. DYS389I, DYS456, DYS525, DYS537 and DYS539 are +1 on CHM13 and 0 on GRCh38.
+/// DYS714 is the reverse: 0 on CHM13 and +1 on GRCh38.
 static GRCH38_DELTA: &[(&str, i32)] = &[
     ("DYS389I", -1),
     ("DYS456", -1),
@@ -185,8 +203,9 @@ static GRCH38_DELTA: &[(&str, i32)] = &[
     ("DYS714", 1),
 ];
 
-/// Which reference build the caller's repeat counts came from — selects the convention offset for the
-/// build-dependent markers (see [`GRCH38_DELTA`]). Default ([`StrBuild::Chm13`]) is the primary corpus.
+/// The reference build that the repeat counts of the caller came from. It selects the convention
+/// offset of the markers that depend on the build. See [`GRCH38_DELTA`]. The default,
+/// [`StrBuild::Chm13`], is the primary corpus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StrBuild {
     #[default]
@@ -214,16 +233,19 @@ pub enum MarkerStatus {
     Reliable,
     /// Calibrated with a fixed FTDNA convention offset (±1–3).
     ConventionOffset,
-    /// Tract mismatch / multi-copy / nested — no 1:1 mapping; value is the raw caller count.
+    /// The tract does not match, or the marker holds more than one copy, or it holds a nest.
+    /// There is no 1:1 mapping, and the value is the raw count of the caller.
     Excluded,
-    /// Not in the calibration table — value is the raw caller count, pending calibration.
+    /// The calibration table does not hold this marker. The value is the raw count of the caller,
+    /// and it waits for a calibration.
     Uncalibrated,
 }
 
 /// One marker called from sequence, expressed in the FTDNA convention.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CalledMarker {
-    /// FTDNA marker name (normalized — e.g. `DYS19`, not `DYS19/DYS394`).
+    /// The name of the FTDNA marker, in its normal form. That is `DYS19`, and not
+    /// `DYS19/DYS394`.
     pub marker: String,
     /// FTDNA-convention value (caller count + calibrated offset), or the raw count when not calibrated.
     pub value: i32,
@@ -232,9 +254,10 @@ pub struct CalledMarker {
     pub depth: u32,
 }
 
-/// Normalize a caller locus name (from the HipSTR BED) to its base FTDNA marker: take the first of a
-/// `/`-alias (`DYS19/DYS394` → `DYS19`), drop a `_N` copy suffix (`DYS385_1` → `DYS385`) and a `.N`
-/// partial suffix (`DYS389II.1` → `DYS389II`).
+/// Bring the locus name of the caller, which comes from the HipSTR BED, to its base FTDNA marker.
+/// It takes the first name of a `/` alias, so `DYS19/DYS394` gives `DYS19`. It drops a `_N` copy
+/// suffix, so `DYS385_1` gives `DYS385`. And it drops a `.N` partial suffix, so `DYS389II.1` gives
+/// `DYS389II`.
 pub fn normalize_marker(caller_name: &str) -> String {
     let n = caller_name.split('/').next().unwrap_or(caller_name);
     let n = n.split('_').next().unwrap_or(n);
@@ -255,9 +278,10 @@ pub fn to_ftdna(caller_name: &str, caller_copies: i32) -> CalledMarker {
     to_ftdna_build(caller_name, caller_copies, StrBuild::Chm13)
 }
 
-/// Map one caller locus + its repeat count to the FTDNA convention for a specific build: the marker
-/// name, the convention-adjusted value, and how trustworthy that mapping is. The build selects the
-/// offset for the build-dependent markers (see [`GRCH38_DELTA`]).
+/// Map one locus of the caller, and its repeat count, to the FTDNA convention of one build. It
+/// gives the marker name, the value after the convention offset, and how much you can trust that
+/// mapping. The build selects the offset of the markers that depend on it. See
+/// [`GRCH38_DELTA`].
 pub fn to_ftdna_build(caller_name: &str, caller_copies: i32, build: StrBuild) -> CalledMarker {
     let marker = normalize_marker(caller_name);
     let (value, status) = if EXCLUDE.contains(&marker.as_str()) {
@@ -294,9 +318,13 @@ pub fn called_markers(genotypes: &[StrGenotype]) -> Vec<CalledMarker> {
     called_markers_build(genotypes, StrBuild::Chm13)
 }
 
-/// Convert the caller's genotypes to FTDNA-convention marker calls for a specific build: single-copy
-/// (one allele), non-low-confidence loci, deduped per marker keeping the deepest. Multi-copy markers
-/// (two alleles) are skipped — they need the (excluded) aggregation/nesting conventions.
+/// Turn the genotypes of the caller into marker calls in the FTDNA convention, for one build.
+///
+/// It takes a locus with one copy, which holds one allele, and whose confidence is not low. Where
+/// two loci give the same marker, it keeps the one with the deepest coverage.
+///
+/// It skips a marker with more than one copy, which holds two alleles. Such a marker needs the
+/// conventions for aggregation and for a nest, and this module excludes those.
 pub fn called_markers_build(genotypes: &[StrGenotype], build: StrBuild) -> Vec<CalledMarker> {
     use std::collections::HashMap;
     let mut best: HashMap<String, CalledMarker> = HashMap::new();
@@ -357,7 +385,7 @@ mod tests {
         assert_eq!(to_ftdna("DYS714", 24).value, 24);
         let h = to_ftdna_build("DYS714", 24, StrBuild::Grch38);
         assert_eq!((h.value, h.status), (25, MarkerStatus::ConventionOffset));
-        // Build-independent marker is unaffected by build.
+        // A marker that does not depend on the build does not change with the build.
         assert_eq!(to_ftdna_build("DYS438", 10, StrBuild::Grch38).value, 12);
     }
 

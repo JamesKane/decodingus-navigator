@@ -1,7 +1,9 @@
-//! Persistent PDS-publish outbox (sync durability, gap §5). A publish enqueues a fully-built
-//! record; a background drain pushes it with exponential backoff. A transient/offline failure
-//! reschedules the row (so it isn't lost); a non-transient failure marks it `FAILED`; a success
-//! removes it (its outcome is logged in [`crate::sync_history`]).
+//! The durable PDS-publish outbox (sync durability, gap §5). A publish puts a complete record in
+//! the queue, and a background drain pushes it, with an exponential backoff.
+//!
+//! A transient or offline failure gives the row a new time, so nothing is lost. A failure that is
+//! not transient marks the row `FAILED`. A success removes the row, and
+//! [`crate::sync_history`] logs the outcome.
 
 use sqlx::SqlitePool;
 
@@ -37,9 +39,10 @@ pub struct NewOutboxEntry {
     pub payload: String,
 }
 
-/// Enqueue a publish. Re-publishing the same `(account_did, collection, entity_ref)` coalesces
-/// onto the existing row: the newest payload wins and the row is reset to `PENDING` with a cleared
-/// backoff/error, so a manual re-publish retries a previously-failed entry immediately.
+/// Put a publish in the queue. A second publish of the same `(account_did, collection,
+/// entity_ref)` joins the row that is already there. The newest payload wins, and the row goes back
+/// to `PENDING`, with its backoff and its error cleared. So a manual re-publish tries a failed
+/// entry again, immediately.
 pub async fn enqueue(pool: &SqlitePool, e: &NewOutboxEntry, now: &str) -> Result<(), StoreError> {
     sqlx::query(
         "INSERT INTO sync_outbox \
@@ -110,8 +113,9 @@ pub async fn reschedule(
     Ok(())
 }
 
-/// Mark a row terminally `FAILED` (a non-transient error — e.g. validation/auth). It is not
-/// auto-retried; a manual re-publish (which re-enqueues) resets it.
+/// Mark a row `FAILED`, which is final. The cause is an error that is not transient, such as a
+/// validation error or an auth error. The drain never tries it again. A manual re-publish puts it
+/// in the queue afresh, and resets it.
 pub async fn mark_failed(
     pool: &SqlitePool,
     id: i64,
@@ -140,7 +144,8 @@ pub async fn complete(pool: &SqlitePool, id: i64) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Count of rows still awaiting a successful push for `account_did` (drives the UI indicator).
+/// The count of rows that still wait for a successful push, for `account_did`. The UI indicator
+/// reads it.
 pub async fn pending_count(pool: &SqlitePool, account_did: &str) -> Result<i64, StoreError> {
     let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sync_outbox WHERE account_did = ? AND status = 'PENDING'")
         .bind(account_did)
@@ -149,7 +154,8 @@ pub async fn pending_count(pool: &SqlitePool, account_did: &str) -> Result<i64, 
     Ok(n)
 }
 
-/// All non-completed rows for `account_did` (PENDING + FAILED), newest first — for a sync detail view.
+/// Every row for `account_did` that is not complete, which is PENDING and FAILED, newest first.
+/// It feeds a sync detail view.
 pub async fn list(pool: &SqlitePool, account_did: &str) -> Result<Vec<OutboxEntry>, StoreError> {
     let rows = sqlx::query_as::<_, OutboxEntry>(
         "SELECT * FROM sync_outbox WHERE account_did = ? ORDER BY updated_at DESC, id DESC",
@@ -185,7 +191,7 @@ mod tests {
         enqueue(p, &entry("did:a", "alignment:2"), "2026-06-13T00:00:01Z")
             .await
             .unwrap();
-        // Re-publish alignment:1 with a new payload — coalesces onto the same row.
+        // A second publish of alignment:1, with a new payload, joins the same row.
         let mut again = entry("did:a", "alignment:1");
         again.payload = r#"{"a":2}"#.into();
         enqueue(p, &again, "2026-06-13T00:00:02Z").await.unwrap();
@@ -195,7 +201,7 @@ mod tests {
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0].entity_ref, "alignment:1"); // oldest created_at first
         assert_eq!(batch[0].payload, r#"{"a":2}"#); // newest payload won
-                                                    // A different account's queue is isolated.
+                                                    // Another account has its own queue.
         assert_eq!(pending_count(p, "did:b").await.unwrap(), 0);
     }
 
@@ -214,7 +220,7 @@ mod tests {
         // Not due yet → not returned, but still counts as pending.
         assert!(ready(p, "did:a", "2026-06-13T01:00:00Z", 10).await.unwrap().is_empty());
         assert_eq!(pending_count(p, "did:a").await.unwrap(), 1);
-        // Due → returned again with the bumped attempt count.
+        // The row is due, so it comes back with a higher try count.
         let due = ready(p, "did:a", "2026-06-13T03:00:00Z", 10).await.unwrap();
         assert_eq!(due[0].attempt_count, 1);
 

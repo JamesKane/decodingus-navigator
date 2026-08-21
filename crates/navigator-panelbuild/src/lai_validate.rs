@@ -1,35 +1,45 @@
-//! Numeric validation gates for the copying (chromosome-painter) local-ancestry model —
+//! Numeric check gates for the copying local-ancestry model, which is the chromosome painter
 //! [`navigator_analysis::lai::paint_copying_lai`].
 //!
-//! The painter's calibration knobs ([`CopyingLaiParams`]) were tuned by *looking* at one kit's
-//! painted chromosomes, which cannot distinguish "the smear is gone" from "the smear moved". This
-//! runs the shipping painter against ground truth we control and prints the numbers:
+//! Somebody calibrated the painter's knobs ([`CopyingLaiParams`]) by eye, on the painted
+//! chromosomes of one kit. The eye can not tell "the smear is gone" from "the smear moved". This
+//! tool runs the released painter against a truth that we control, and prints the numbers.
 //!
-//! 1. **Leave-one-out gate** — take a real reference individual (both of its haplotypes), remove
-//!    them from the reference so it cannot copy itself, paint, and score every site against the
-//!    individual's known population. A NW-European reference individual painted as Finnish is the
-//!    exact defect the recent recalibration commits were chasing, and here it is a number.
-//! 2. **Simulated-admixture gate** — splice held-out donor haplotypes from two (or more)
-//!    populations into a mosaic with exponential tract lengths for `g` generations, so the truth is
-//!    known *per site* including the breakpoints. Scores accuracy and composition error.
+//! There are two gates:
 //!
-//! Scoring is **phase-insensitive**: at each site the two called labels are matched to the two true
-//! labels as unordered multisets, so a phase switch between the sides is not counted as an ancestry
-//! error (phasing accuracy is a separate concern, exercised with `--phase`). Sites are weighted by
-//! the base-pair span they represent, so the reported composition matches what the painter draws.
+//! 1. The **leave-one-out gate**. Take a real reference individual, with both haplotypes, and
+//!    remove them from the reference. The painter can then not copy that individual from itself.
+//!    Paint, and score every site against the individual's known population.
 //!
-//! With `--sweep` the whole case set is re-run over a grid of knob values, one row per combination —
-//! the tuning loop the visual check was standing in for. Example:
+//!    A NW-European reference individual that comes back Finnish is the exact defect that the
+//!    recent recalibration commits went after. Here it is a number.
+//! 2. The **simulated-admixture gate**. Join held-out donor haplotypes from two populations, or
+//!    more, into a mosaic, with exponential tract lengths, for `g` generations. The truth is then
+//!    known at every site, and that includes the breakpoints. It scores the accuracy and the error
+//!    in the composition.
+//!
+//! The score **does not depend on phase**. At each site the code matches the two called labels to
+//! the two true labels as unordered multisets. So a phase switch between the sides does not count
+//! as an ancestry error. Phase accuracy is a separate matter, and `--phase` drives it.
+//!
+//! Each site carries a weight, which is the span in base pairs that it represents. So the reported
+//! composition equals what the painter draws.
+//!
+//! With `--sweep` the tool runs the whole case set again, over a grid of knob values, with one row
+//! for each combination. That loop is what the check by eye stood for. An example:
 //!
 //! ```text
 //! navigator-panelbuild validate-lai --replicates 3 \
 //!   --sweep "recomb_per_cm=0.05,0.1,0.3;max_ref_haps=30,50,100" --tsv sweep.tsv
 //! ```
 //!
-//! Caveat worth keeping in mind when reading the output: the reference panel unions 1000G and HGDP,
-//! which carry **duplicate labels** for the same population (`SRD`/`Sardinian`, `FRN`/`French`, …).
-//! A call landing on the sibling label is a labelling artefact, not an ancestry error, so the report
-//! carries a "group" accuracy column that merges the known duplicates alongside the raw fine one.
+//! Keep one caveat in mind as you read the output. The reference panel joins 1000G with HGDP.
+//! Those two give the same population **two labels**, such as `SRD` with `Sardinian`, or `FRN`
+//! with `French`.
+//!
+//! A call that lands on the second label is an artefact of the labels, and not an ancestry error.
+//! So the report also carries a "group" accuracy column, which merges the known pairs, beside the
+//! raw fine column.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -46,18 +56,19 @@ use rayon::prelude::*;
 
 #[derive(Parser)]
 pub struct LaiValidateArgs {
-    /// Phased-haplotype reference to validate (`ancestry_haps_<build>.bin`).
+    /// The phased-haplotype reference to check (`ancestry_haps_<build>.bin`).
     #[arg(long, default_value = "~/.decodingus/ancestry/ancestry_haps_chm13v2.0.bin")]
     haps: PathBuf,
-    /// Genetic map asset (`genetic_map_<build>.bin`). Falls back to a uniform 1 cM/Mb map, which
-    /// changes the answers — the copying model's switch costs are in cM.
+    /// The genetic map asset (`genetic_map_<build>.bin`). Without it the tool falls back to a
+    /// uniform 1 cM/Mb map, and that changes the answers. The switch costs of the copying model are
+    /// in cM.
     #[arg(long, default_value = "~/.decodingus/ancestry/genetic_map_chm13v2.0.bin")]
     map: PathBuf,
     /// Populations to hold out and paint, comma-separated; `all` uses every population with at
     /// least `--min-individuals` individuals in the reference.
     #[arg(long, default_value = "GBR,CEU,FIN,TSI,IBS,YRI,CHB,PJL")]
     pops: String,
-    /// Individuals held out and painted per population.
+    /// How many individuals the tool holds out and paints, for each population.
     #[arg(long, default_value_t = 3)]
     replicates: usize,
     /// A population needs this many individuals to be testable (one is always held out).
@@ -66,34 +77,41 @@ pub struct LaiValidateArgs {
     /// Restrict to these contigs (comma-separated, e.g. `chr1,chr2`). Default: the whole panel.
     #[arg(long)]
     contigs: Option<String>,
-    /// Keep only every N-th reference site before painting — the marker-density knob. Sweep it
-    /// (`--sweep "thin=1,2,4,8"` is not a painter knob, so pass repeated runs) to measure how much
-    /// of the painter's accuracy is density-limited rather than model-limited.
+    /// Keep one reference site in every N before the paint. This is the marker-density knob. Sweep
+    /// it with repeated runs, because `thin` is not a painter knob and `--sweep "thin=1,2,4,8"`
+    /// will not work. It shows how much of the painter's accuracy the density holds back, and how
+    /// much the model holds back.
     #[arg(long, default_value_t = 1)]
     thin: usize,
-    /// Simulated admixture cases, comma-separated `POP+POP[+POP]` (e.g. `GBR+YRI,CEU+CHB`).
-    /// Sources are mixed in equal proportions; empty disables the gate.
+    /// The simulated admixture cases, separated by commas, as `POP+POP[+POP]`, such as
+    /// `GBR+YRI,CEU+CHB`. The mix gives each source an equal part. An empty value turns the gate
+    /// off.
     #[arg(long, default_value = "")]
     admixed: String,
     /// Generations since admixture for the simulated mosaics (higher → shorter true tracts).
     #[arg(long, default_value_t = 8)]
     generations: usize,
-    /// Donor individuals per source population in an admixture case (all of them are held out).
+    /// How many donor individuals each source population gives in an admixture case. The tool
+    /// holds out every one of them.
     #[arg(long, default_value_t = 4)]
     donors: usize,
-    /// Run the production phaser first (statistical phasing of the collapsed genotypes) instead of
-    /// feeding the true haplotype sides. Measures the end-to-end path; much slower.
+    /// Run the production phaser first, which phases the collapsed genotypes statistically. Then
+    /// the tool does not give the painter the true haplotype sides. It measures the path from end
+    /// to end, and it is much slower.
     #[arg(long)]
     phase: bool,
-    /// Genome-wide composition prior handed to the painter — the app passes the `estimate_admixture`
-    /// result, which for a single-population sample is its own continent. `truth` mimics that;
-    /// `flat` spreads the prior evenly over all super-populations and `none` passes an empty prior,
-    /// both of which disable the gate's help and so measure whether the *copying model itself* gets
-    /// the continent right (with `truth`, super% is ≈100% by construction).
+    /// The genome-wide composition estimate that the tool gives the painter. The app gives the
+    /// `estimate_admixture` result, which for a sample from one population is that sample's own
+    /// continent.
+    ///
+    /// `truth` copies that. `flat` spreads the estimate evenly over every super-population, and
+    /// `none` gives an empty one. Each of those two turns off the help that the gate supplies, so
+    /// they measure whether the *copying model itself* finds the correct continent. With `truth`,
+    /// super% is near 100% by construction.
     #[arg(long, default_value = "truth")]
     prior: PriorMode,
-    /// Populations counted as drifted isolates for the over-call metric (the failure mode the
-    /// recalibration commits were chasing).
+    /// The populations that count as drifted isolates, for the over-call metric. That is the
+    /// failure mode which the recalibration commits went after.
     #[arg(
         long,
         default_value = "FIN,RUS,SRD,BSQ,ORC,Russian,Sardinian,Basque,Orcadian,Adygei,Kalash"
@@ -103,14 +121,14 @@ pub struct LaiValidateArgs {
     /// switch_per_cm, min_ref_haps, max_ref_haps, min_segment_cm, min_ancestry.
     #[arg(long)]
     sweep: Option<String>,
-    /// Write the per-case (or per-sweep-row) numbers here as TSV.
+    /// Write the numbers of each case here, as TSV. In a sweep, write the numbers of each row.
     #[arg(long)]
     tsv: Option<PathBuf>,
-    /// RNG seed — a run is fully reproducible given the seed.
+    /// The RNG seed. With the same seed, a run gives the same numbers again.
     #[arg(long, default_value_t = 42)]
     seed: u64,
 
-    // ── Painter knobs (default = the shipping `CopyingLaiParams::default()`) ──
+    // ── The painter knobs. The default is the released `CopyingLaiParams::default()`. ──
     #[arg(long)]
     mismatch: Option<f64>,
     #[arg(long)]
@@ -129,20 +147,20 @@ pub struct LaiValidateArgs {
     size_normalize: Option<f64>,
 }
 
-/// Where the painter's genome-wide composition prior comes from in a validation run.
+/// Where the painter's genome-wide composition estimate comes from, in a check run.
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum PriorMode {
-    /// The case's true super-population mix (what a working `estimate_admixture` would return).
+    /// The true super-population mix of the case. A correct `estimate_admixture` would return it.
     Truth,
     /// Even weight on every super-population the reference carries.
     Flat,
-    /// No prior at all — the global-composition gate is disabled.
+    /// No estimate at all, which turns the global-composition gate off.
     None,
 }
 
 impl LaiValidateArgs {
-    /// The painter parameters this run starts from: the shipping defaults with any CLI override
-    /// applied (so a validation run always describes a configuration the app could actually have).
+    /// The painter parameters that this run starts from: the released defaults, with any CLI
+    /// override on top. So a check run always describes a configuration that the app could have.
     fn base_params(&self) -> CopyingLaiParams {
         let d = CopyingLaiParams::default();
         CopyingLaiParams {
@@ -158,9 +176,9 @@ impl LaiValidateArgs {
     }
 }
 
-/// Deterministic, dependency-free PRNG (xorshift64*) — the same one the ancient-panel validator
-/// uses. Reproducibility matters more than statistical quality: a validation run must give the same
-/// numbers twice.
+/// A deterministic PRNG (xorshift64*) that needs no other crate. The ancient-panel checker uses the
+/// same one. To repeat a run matters more than statistical quality here: a check run must give the
+/// same numbers twice.
 struct Rng(u64);
 
 impl Rng {
@@ -187,9 +205,9 @@ impl Rng {
     }
 }
 
-/// 1000G and HGDP label the same population differently; a call landing on the sibling label is a
-/// labelling artefact of the unioned panel, not an ancestry error. Reported as a separate "group"
-/// accuracy so both readings are visible. Maps a code to its canonical group.
+/// 1000G and HGDP give the same population two different labels. A call that lands on the second
+/// one is an artefact of the joined panel, and not an ancestry error. The report gives a separate
+/// "group" accuracy, so a reader sees both numbers. This maps a code to its canonical group.
 const GROUP_ALIASES: [(&str, &str); 12] = [
     ("Sardinian", "SRD"),
     ("Basque", "BSQ"),
@@ -205,11 +223,12 @@ const GROUP_ALIASES: [(&str, &str); 12] = [
     ("Mandenka", "GWD"),
 ];
 
-/// Regional clusters — the granularity between a fine population and a whole continent. Fine calls
-/// scatter across the populations *within* a cluster (a real British genome comes back CEU/GBR/FRN
-/// in varying mixtures), so the cluster is the level at which a call may actually be reportable;
-/// `region%` measures whether that is true. Codes with no defensible cluster fall back to their
-/// super-population.
+/// The regional clusters, which sit between a fine population and a whole continent.
+///
+/// A fine call scatters across the populations *inside* a cluster. A real British genome comes back
+/// as a mix of CEU, GBR, and FRN, and that mix changes. So the cluster is the level at which a call
+/// may have a value to a reader, and `region%` measures whether it does. A code with no cluster
+/// that we can defend falls back to its super-population.
 const REGIONS: [(&str, &str); 20] = [
     // NW Europe
     ("GBR", "NWE"),
@@ -264,8 +283,8 @@ struct Individual {
     pop: usize,
 }
 
-/// A validation case: the haplotypes to withhold from the reference, the two sides to paint, and
-/// the true population label at every selected site on each side.
+/// One check case. It holds three things. The haplotypes to keep out of the reference. The two
+/// sides to paint. And the true population label at every selected site, on each side.
 struct Case {
     label: String,
     kind: &'static str,
@@ -285,9 +304,9 @@ struct CaseMetrics {
     super_acc: f64,
     /// Called fine-label composition (over called sites), for the mis-call breakdown.
     called: BTreeMap<String, f64>,
-    /// Accuracy a painter that picked uniformly among the labels it actually used would score —
-    /// the line `fine%` has to clear to mean anything. Fine accuracy near it says the copying model
-    /// is not resolving sub-populations at all, however clean the segments look.
+    /// The accuracy that a painter would score if it chose evenly among the labels that it used.
+    /// `fine%` must go above that line to mean anything. A fine accuracy near it says that the
+    /// copying model separates no sub-population at all, whatever the segments look like.
     chance: f64,
     /// Weight fraction of sides covered by any segment (should be ≈1).
     covered: f64,
@@ -295,9 +314,10 @@ struct CaseMetrics {
     mean_segment_mb: f64,
     /// Mean absolute error of the called super-population composition vs the truth, in points.
     composition_err: f64,
-    /// Is the true population the single largest called label? This — not per-site accuracy — is
-    /// what the UI's per-side population list claims, so it is scored separately: a configuration
-    /// can raise per-site accuracy while pushing the true population out of the top of the list.
+    /// Is the true population the largest called label? That, and not the accuracy at each site, is
+    /// what the UI's population list claims for each side. So it gets its own score. A
+    /// configuration can raise the accuracy at each site, and still push the true population off
+    /// the top of the list.
     top1: f64,
     /// …and is it anywhere in the top three called labels?
     top3: f64,
@@ -392,7 +412,8 @@ fn run_all(
         .collect()
 }
 
-/// The genome-wide composition prior the app would hand the painter, per [`PriorMode`].
+/// The genome-wide composition estimate that the app would give the painter, for each
+/// [`PriorMode`].
 fn build_prior(case: &Case, reference: &HaplotypeReference, mode: PriorMode) -> Vec<(String, f64)> {
     let mut prior: BTreeMap<String, f64> = BTreeMap::new();
     match mode {
@@ -474,8 +495,9 @@ fn run_case(
     score(case, &segments, reference, sel, weights)
 }
 
-/// Score painted segments against the case's per-site truth. Phase-insensitive: the two called
-/// labels at a site are matched to the two true labels as unordered multisets.
+/// Score the painted segments against the truth of the case at each site. The score does not depend
+/// on phase: the code matches the two called labels at a site to the two true labels, as unordered
+/// multisets.
 fn score(
     case: &Case,
     segments: &[AncestrySegment],
@@ -483,8 +505,8 @@ fn score(
     sel: &[usize],
     weights: &[f64],
 ) -> CaseMetrics {
-    // Positions of the selected sites per contig, with their index into `sel` — for mapping a
-    // segment's [start, end] back onto sites.
+    // The positions of the selected sites in each contig, with the index of each one into `sel`.
+    // They map a segment's [start, end] back onto the sites.
     let mut by_contig: HashMap<&str, Vec<(i64, usize)>> = HashMap::new();
     for (i, &c) in sel.iter().enumerate() {
         by_contig
@@ -602,8 +624,11 @@ fn score(
     }
 }
 
-/// How many of the two called labels match the two true labels as unordered multisets (0, 1 or 2),
-/// after mapping both through `canon` (identity for fine, group/super roll-up otherwise).
+/// How many of the two called labels match the two true labels, as unordered multisets. The answer
+/// is 0, 1, or 2.
+///
+/// Both sets go through `canon` first. That is the identity for a fine label, and a roll-up to a
+/// group or to a super-population in every other case.
 fn unordered_hits(called: [Option<&str>; 2], truth: [&str; 2], canon: fn(&str) -> &str) -> f64 {
     let mut remaining = vec![canon(truth[0]), canon(truth[1])];
     let mut hits = 0.0;
@@ -619,8 +644,9 @@ fn unordered_hits(called: [Option<&str>; 2], truth: [&str; 2], canon: fn(&str) -
 
 // ── Case construction ────────────────────────────────────────────────────────────────────────
 
-/// Reference haplotypes come in per-sample consecutive pairs (the builder pushes both sides of each
-/// sample in order); pair them back into individuals, keeping only pairs that agree on population.
+/// The reference haplotypes arrive as a pair for each sample, one beside the other, because the
+/// builder writes both sides of a sample in order. This joins them back into individuals. It keeps
+/// a pair only when the two sides agree on the population.
 fn individuals(reference: &HaplotypeReference) -> Vec<Individual> {
     (0..reference.n_haplotypes / 2)
         .filter_map(|i| {
@@ -641,7 +667,7 @@ fn build_cases(
     sel: &[usize],
     map: &GeneticMap,
 ) -> Result<Vec<Case>> {
-    // Individuals per population code.
+    // The individuals under each population code.
     let mut by_pop: BTreeMap<&str, Vec<Individual>> = BTreeMap::new();
     for ind in individuals {
         by_pop
@@ -677,7 +703,7 @@ fn build_cases(
             );
             continue;
         }
-        // Evenly spaced picks so replicates aren't all neighbours in the panel's sample order.
+        // Evenly spaced picks so replicates are not all neighbours in the panel's sample order.
         let step = (pool.len() / args.replicates.max(1)).max(1);
         for r in 0..args.replicates.min(pool.len()) {
             let ind = pool[(r * step) % pool.len()];
@@ -707,7 +733,8 @@ fn build_cases(
                 pools.clear();
                 break;
             };
-            // Donors are held out wholesale, so a source needs donors + spare individuals.
+            // The tool holds out every donor. So a source needs its donors, and spare individuals
+            // as well.
             let donors: Vec<Individual> = pool.iter().take(args.donors).copied().collect();
             anyhow::ensure!(!donors.is_empty(), "{src} has no individuals to donate");
             pools.push((src, donors));
@@ -720,9 +747,9 @@ fn build_cases(
     Ok(cases)
 }
 
-/// Splice donor haplotypes into a two-sided mosaic with exponential tract lengths for
-/// `generations` generations of recombination (crossover rate `g` per Morgan = `g/100` per cM), so
-/// the true ancestry — and its breakpoints — are known at every site.
+/// Join donor haplotypes into a mosaic with two sides, with exponential tract lengths, over
+/// `generations` generations of recombination. The crossover rate is `g` in each Morgan, which is
+/// `g/100` in each cM. The true ancestry is then known at every site, and so are its breakpoints.
 fn simulate_admixed(
     spec: &str,
     pools: &[(&str, Vec<Individual>)],
@@ -784,9 +811,9 @@ fn pick_donor(rng: &mut Rng, donors: &[Individual]) -> usize {
     }
 }
 
-// ── Reporting ────────────────────────────────────────────────────────────────────────────────
+// ── The report ───────────────────────────────────────────────────────────────────────────────
 
-/// Aggregate numbers across all cases — the headline row a sweep compares configurations on.
+/// The totals across every case. A sweep compares two configurations on this row.
 struct Summary {
     fine: f64,
     top1: f64,
@@ -796,8 +823,8 @@ struct Summary {
     region: f64,
     super_: f64,
     composition_err: f64,
-    /// Weighted share of calls that landed on a drifted-isolate population when the truth was not
-    /// one — the "Finnish/Sardinian over-call" failure mode, as a number.
+    /// The weighted share of calls that landed on a drifted-isolate population, where the truth was
+    /// not one. This is the "Finnish or Sardinian over-call" failure mode, as a number.
     isolate_overcall: f64,
     segments: f64,
     covered: f64,
@@ -938,8 +965,9 @@ fn report_sweep(rows: &[(CopyingLaiParams, Summary)]) {
             s.isolate_overcall * 100.0
         );
     }
-    // Ranked on lift over chance, not raw accuracy: a knob that makes the painter use fewer labels
-    // raises fine% by shrinking the space it can be wrong in, which is not an improvement.
+    // The rank goes on the gain over chance, and not on the raw accuracy. A knob that makes the
+    // painter use fewer labels raises fine%, because it makes the space of wrong answers smaller.
+    // That is not an improvement.
     if let Some((best, s)) = rows
         .iter()
         .max_by(|a, b| (a.1.fine - a.1.chance).total_cmp(&(b.1.fine - b.1.chance)))
@@ -1039,8 +1067,9 @@ fn load_reference(path: &Path) -> Result<HaplotypeReference> {
     Ok(reference)
 }
 
-/// The real genetic map if present — the copying model's switch costs are in cM, so a uniform
-/// fallback quietly changes every number here; say so loudly rather than reporting it as truth.
+/// The real genetic map, when there is one. The switch costs of the copying model are in cM, so a
+/// uniform fallback changes every number here, and gives no warning. Say so loudly, and do not
+/// report the result as the truth.
 fn load_map(path: &Path, reference: &HaplotypeReference) -> GeneticMap {
     let mut lengths: BTreeMap<&str, i32> = BTreeMap::new();
     for s in &reference.sites {
@@ -1077,9 +1106,9 @@ fn contig_count(reference: &HaplotypeReference, sel: &[usize]) -> usize {
         .len()
 }
 
-/// Base-pair weight of each selected site: half the distance to each neighbour within its contig,
-/// so a sparse region doesn't count the same as a dense one and the reported composition matches
-/// the painted (bp-proportioned) chromosomes.
+/// The base-pair weight of each selected site, which is half the distance to each neighbour inside
+/// its contig. A sparse region then does not count as much as a dense one. The reported composition
+/// also matches the painted chromosomes, which go by base pairs.
 fn site_weights(reference: &HaplotypeReference, sel: &[usize]) -> Vec<f64> {
     let pos = |i: usize| reference.sites[sel[i]].position as f64;
     let contig = |i: usize| reference.sites[sel[i]].contig.as_str();
@@ -1110,8 +1139,8 @@ fn case_summary(cases: &[Case]) -> String {
         .join(", ")
 }
 
-/// Expand a `name=v1,v2;name2=v3,v4` sweep spec into the cartesian product of parameter sets,
-/// starting from `base` (so unswept knobs keep their configured value).
+/// Expand a `name=v1,v2;name2=v3,v4` sweep spec into the cartesian product of the parameter sets.
+/// It starts from `base`, so a knob that the sweep does not name keeps its configured value.
 fn expand_grid(base: &CopyingLaiParams, spec: &str) -> Result<Vec<CopyingLaiParams>> {
     let mut grid = vec![base.clone()];
     for axis in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {

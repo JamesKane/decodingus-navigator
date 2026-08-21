@@ -1,19 +1,22 @@
-//! `impl App` methods for the **matching ledger** — the durable state behind federated-IBD
-//! discovery and consent.
+//! `impl App` methods for the **matching ledger**. The ledger is the durable state behind
+//! federated-IBD discovery and consent.
 //!
-//! The pieces this coordinates already existed: the AppView's candidate engine
-//! ([`App::ibd_suggestions`]), the blind introduction broker ([`App::ibd_introduce`]), the
-//! consent round-trip and encrypted channel (`ibd_exchange.rs`), and the stored result
-//! (`navigator_store::ibd_exchange`). What was missing is the thread between them — every
-//! in-flight request lived in UI memory, so a restart forgot that we had asked anyone anything.
+//! The parts that this module coordinates already existed. They are the candidate engine of the
+//! AppView ([`App::ibd_suggestions`]) and the blind introduction broker
+//! ([`App::ibd_introduce`]). They are also the consent messages with the encrypted channel
+//! (`ibd_exchange.rs`), and the stored result (`navigator_store::ibd_exchange`).
 //!
-//! [`App::refresh_matching`] is the single reconcile: it adopts what the broker reports, advances
-//! rows the broker has moved on, and never overwrites a decision we made locally.
+//! The connection between these parts was absent. Each open request stayed in the memory of the
+//! UI. So after a restart, the app did not know that it had sent a request to anybody.
+//!
+//! [`App::refresh_matching`] is the one reconcile. It adopts the state that the broker reports. It
+//! advances a row when the broker moves that row forward. It never writes over a decision that the
+//! user made on this machine.
 
 use super::*;
 
-/// Region tag an attestation is filed under, derived from the exchange purpose
-/// (`ibd.ibd_discovery_index.match_region_type` is `AUTOSOMAL`/`X`/`Y`/`MT`).
+/// The region tag of an attestation. The code takes the tag from the purpose of the exchange. The
+/// field `ibd.ibd_discovery_index.match_region_type` holds `AUTOSOMAL`, `X`, `Y`, or `MT`.
 fn region_type_for(purpose: &str) -> &str {
     match purpose {
         "IBD_Y" => "Y",
@@ -77,16 +80,18 @@ impl App {
 
     /// Reconcile the ledger with the broker, then return the full list.
     ///
-    /// Three passes, in order of increasing knowledge:
-    /// 1. `/exchange/incoming` — inbound requests we have not seen. Adopted with
-    ///    `insert_if_absent`, so a request we already declined stays declined even though the
-    ///    broker keeps listing it.
-    /// 2. `/exchange/pending` — mutual consent happened: the partner DID and session id are now
-    ///    known. Advances anything not already terminal (a completed exchange stays completed).
-    /// 3. Stored results — a completed exchange marks its request `EXCHANGED`.
+    /// There are three passes. Each pass knows more than the pass before it.
+    /// 1. `/exchange/incoming` gives the requests that arrived and that the app did not see. The
+    ///    app adopts each one with `insert_if_absent`. So a request that the user declined stays
+    ///    declined, and the broker can continue to list it.
+    /// 2. `/exchange/pending` shows that both parties agreed. The partner DID and the session id
+    ///    are now known. This pass advances each row that is not yet in a final state. A complete
+    ///    exchange keeps its state.
+    /// 3. The stored results set the request of a complete exchange to `EXCHANGED`.
     ///
-    /// A pass that fails does not abort the others: a broker hiccup should degrade the view, not
-    /// empty it. The first error is returned once the local state is consistent.
+    /// A pass that fails does not stop the other passes. A short broker fault must make the view
+    /// less complete, but it must not empty the view. The method returns the first error after the
+    /// local state is consistent.
     pub async fn refresh_matching(&self) -> Result<Vec<MatchingEntry>, AppError> {
         let mut first_err: Option<AppError> = None;
 
@@ -111,8 +116,9 @@ impl App {
         match self.exchange_pending().await {
             Ok(pending) => {
                 for info in pending {
-                    // An unknown session means the request was opened on another device (or the
-                    // ledger predates it) — adopt it so the session is still runnable here.
+                    // An unknown session shows that another device opened the request. The
+                    // ledger can also be older than the request. Adopt the session, so the user
+                    // can still run it on this machine.
                     let existing = navigator_store::ibd_request::get(self.store.pool(), &info.request_uri).await?;
                     let mut row = existing.unwrap_or_else(|| {
                         new_row(
@@ -158,11 +164,11 @@ impl App {
         }
     }
 
-    /// Ask to be introduced to a candidate and record the conversation.
+    /// Ask the broker for an introduction to a candidate, and record the conversation.
     ///
-    /// Carries both AppView sample handles into the ledger: `target_sample_guid` (ours) and
-    /// `suggested_sample_guid` (theirs) are the only two identifiers an attestation can be filed
-    /// under, and the suggestion is the one place we ever see them.
+    /// The method puts both AppView sample handles in the ledger. `target_sample_guid` is our
+    /// handle and `suggested_sample_guid` is the handle of the partner. An attestation can use only
+    /// these two identifiers. The suggestion is the one place where the app sees them.
     pub async fn request_introduction(
         &self,
         suggestion: &IbdSuggestion,
@@ -182,9 +188,9 @@ impl App {
         self.matching_entry(&intro.request_uri).await
     }
 
-    /// Consent to (or decline) an inbound request, recording our decision durably. The decision is
-    /// written whatever the broker says next — re-polling must never resurrect a request we
-    /// turned down.
+    /// Agree to a request that arrived, or decline it, and write the decision to the store. The
+    /// app writes the decision, and a later report from the broker does not change it. A new poll
+    /// must never return a request that the user declined.
     pub async fn matching_consent(
         &self,
         request_uri: &str,
@@ -236,9 +242,9 @@ impl App {
         Ok(())
     }
 
-    /// Record the AppView sample handles for a conversation that did not come from a suggestion
-    /// (or whose suggestion predated the AppView returning our own handle). Without both, a
-    /// completed comparison cannot be attested.
+    /// Record the AppView sample handles of a conversation that has no suggestion. A suggestion
+    /// can also be older than the AppView change that added our own handle. The app needs both
+    /// handles. Without them, it can not attest a complete comparison.
     pub async fn set_matching_sample_refs(
         &self,
         request_uri: &str,
@@ -259,8 +265,8 @@ impl App {
         Ok(())
     }
 
-    /// Record that an exchange attempt failed, so the row reads as `FAILED` with the reason rather
-    /// than sitting at `READY` forever.
+    /// Record a failed try of an exchange. The row then shows `FAILED` with the reason. Without
+    /// this record, the row stays at `READY` for all time.
     pub async fn record_matching_failure(&self, request_uri: &str, err: &str) -> Result<(), AppError> {
         let Some(mut row) = navigator_store::ibd_request::get(self.store.pool(), request_uri).await? else {
             return Ok(());
@@ -272,15 +278,17 @@ impl App {
         Ok(())
     }
 
-    /// Drop a conversation from the local ledger. The broker keeps its own record, so a still-live
-    /// request can reappear on the next refresh — this forgets, it does not cancel.
+    /// Remove a conversation from the local ledger. The broker keeps its own record. So an open
+    /// request can come back at the next refresh. This method removes a local row. It does not
+    /// cancel the request.
     pub async fn forget_matching_request(&self, request_uri: &str) -> Result<(), AppError> {
         navigator_store::ibd_request::delete(self.store.pool(), request_uri).await?;
         Ok(())
     }
 
-    /// Mark a conversation complete once its exchange result is stored, adopting the request if the
-    /// ledger has never seen it (a session opened on another device, or one predating the ledger).
+    /// Mark a conversation as complete after the app stores the result of its exchange. If the
+    /// ledger has no row for the request, the method adds one. Another device can open a session,
+    /// and a session can also be older than the ledger.
     pub(crate) async fn mark_matching_exchanged(
         &self,
         guid: SampleGuid,
@@ -309,8 +317,9 @@ impl App {
             .ok_or_else(|| AppError::AppView(format!("no matching request {request_uri}")))
     }
 
-    /// Tell the AppView to stop suggesting a candidate (`POST /api/v1/ibd/dismiss`). The dismissal
-    /// is kept server-side across recomputes, so it survives without any local mirror.
+    /// Tell the AppView to remove a candidate from its suggestions (`POST /api/v1/ibd/dismiss`).
+    /// The server keeps this decision when it calculates the candidates again. So the app needs no
+    /// local copy of the decision.
     pub async fn ibd_dismiss(&self, suggested_sample_guid: &str) -> Result<(), AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let key = self.ensure_device_key().await?;
@@ -326,13 +335,15 @@ impl App {
         Ok(())
     }
 
-    /// Report a completed comparison to the AppView (`POST /api/v1/ibd/attest`) — the step that
-    /// turns a private, edge-computed match into a discovery signal. Only coarse totals travel:
-    /// two opaque sample handles, a region tag, cM and segment count. Never coordinates, never
-    /// genotypes.
+    /// Report a complete comparison to the AppView (`POST /api/v1/ibd/attest`). This step changes
+    /// a private match, which the device calculated, into a discovery signal.
     ///
-    /// The signed `cm` is formatted `{:.1}` to match the AppView's own canonical string byte for
-    /// byte; a mismatch there fails signature verification, not parsing.
+    /// Only approximate totals cross the network. They are two opaque sample handles, a region tag,
+    /// the cM value, and the count of segments. A coordinate never crosses. A genotype never
+    /// crosses.
+    ///
+    /// The code formats the signed `cm` value as `{:.1}`, which gives the same canonical string as
+    /// the AppView. A difference here fails the signature check. It does not fail the parser.
     pub async fn ibd_attest(
         &self,
         request_uri: &str,
@@ -365,14 +376,15 @@ impl App {
         Ok(())
     }
 
-    /// Attest a completed exchange if — and only if — it is attestable: both parties agreed on the
-    /// summary, and we know both AppView sample handles.
+    /// Attest a complete exchange, but only when the app can attest it. Two conditions apply. Both
+    /// parties must agree on the summary, and the app must know both AppView sample handles.
     ///
-    /// Agreement is the gate because the AppView confirms an edge only when both parties report a
-    /// compatible total; filing a one-sided figure from a comparison our partner disputes would put
-    /// a claim on the discovery graph that our own run says is wrong. Handles are missing whenever
-    /// the conversation did not come from a suggestion (a direct request never names them), so this
-    /// is a no-op rather than an error.
+    /// Agreement is a condition because the AppView confirms an edge only when both parties report
+    /// a compatible total. The partner can dispute a comparison. A total from such a comparison
+    /// puts a claim on the discovery graph that our own run says is wrong.
+    ///
+    /// The handles are absent when the conversation has no suggestion, because a direct request
+    /// never names them. In that case the method does nothing and gives no error.
     pub(crate) async fn attest_exchange_if_possible(&self, request_uri: &str) -> Result<bool, AppError> {
         let entry = self.matching_entry(request_uri).await?;
         let (Some(mine), Some(theirs)) = (entry.my_sample_ref.clone(), entry.partner_sample_ref.clone()) else {
@@ -419,8 +431,9 @@ mod tests {
         assert_eq!(region_type_for("GENEALOGY_PII"), "AUTOSOMAL");
     }
 
-    /// Cross-repo contract: these strings are signed, and the AppView rebuilds them byte for byte
-    /// (`du_db::ibd::messages`). A drift here fails as a signature rejection, not a parse error.
+    /// A contract between two repositories. The device key signs these strings, and the AppView
+    /// makes the same strings in `du_db::ibd::messages`. A change on one side only fails as a
+    /// rejected signature. It does not fail as a parse error.
     #[test]
     fn canonical_dismiss_and_attest_messages() {
         let did = "did:plc:abc123";

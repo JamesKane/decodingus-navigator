@@ -1,15 +1,21 @@
-//! `impl App` methods for **peer direct messages** (social roadmap 3a) — a thin DM layer over the
-//! generic D1 encrypted exchange (`ibd_exchange.rs` + `navigator_sync::exchange`). The crypto,
-//! discovery, consent, and relay are reused unchanged; this adds the DM `purpose`, persistence of the
-//! established session key (so a conversation is async + survives restart), and the per-message
-//! store. The AppView only ever relays ciphertext — message plaintext never leaves the device.
+//! `impl App` methods for **peer direct messages** (social roadmap 3a).
+//!
+//! This module is a thin DM layer on the generic D1 encrypted exchange, which is `ibd_exchange.rs`
+//! and `navigator_sync::exchange`. It uses the cryptography, the discovery, the consent, and the
+//! relay of that exchange without a change.
+//!
+//! This module adds three parts: the DM `purpose`, storage for the session key, and a store for
+//! each message. Storage of the session key makes a conversation asynchronous, and the conversation
+//! continues after a restart. The AppView relays only ciphertext. The plaintext of a message never
+//! leaves the device.
 use super::*;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 
-/// Exchange `purpose` tag for a peer DM (the AppView titles its consent notification from this; IBD
-/// requests use `IBD_*`, so filtering on it keeps the DM inbox separate from the IBD tab).
+/// The exchange `purpose` tag for a peer DM. The AppView makes the title of its consent
+/// notification from this tag. An IBD request uses a tag that starts with `IBD_`. So a filter on
+/// the tag keeps the DM inbox separate from the IBD tab.
 pub const DM_PURPOSE: &str = "GENEALOGY_PII";
 
 impl App {
@@ -19,7 +25,8 @@ impl App {
         self.exchange_request(partner_did, DM_PURPOSE, None).await
     }
 
-    /// Inbound DM requests awaiting our consent (symmetric-blind; DM-purpose only).
+    /// The DM requests that arrived and that need our consent. The view is symmetric-blind, and it
+    /// holds only requests with the DM purpose.
     pub async fn dm_incoming(&self) -> Result<Vec<IncomingRequest>, AppError> {
         Ok(self
             .exchange_incoming()
@@ -29,8 +36,9 @@ impl App {
             .collect())
     }
 
-    /// Consent-ready DM sessions (both parties consented) that we have not yet connected — i.e. no
-    /// persisted conversation/key yet. DM-purpose only.
+    /// The DM sessions that both parties agreed to, but that we did not connect. These sessions
+    /// have no conversation and no key in the store. The list holds only sessions with the DM
+    /// purpose.
     pub async fn dm_ready(&self) -> Result<Vec<ExchangeSessionInfo>, AppError> {
         let mut out = Vec::new();
         for info in self.exchange_pending().await? {
@@ -52,10 +60,14 @@ impl App {
         self.exchange_consent(request_uri, given).await
     }
 
-    /// Connect a consent-ready DM session: run the X3DH-lite handshake (both peers must be online for
-    /// this one step) and persist the derived session key + partner, so all later send/receive is
-    /// async and restart-safe. Idempotent — re-connecting refreshes the key without resetting the
-    /// conversation's seq counters.
+    /// Connect a DM session that both parties agreed to.
+    ///
+    /// The function does the X3DH-lite handshake. Both peers must be online for this one step. It
+    /// then writes the derived session key and the partner to the store. So each later send and
+    /// receive is asynchronous, and it continues after a restart.
+    ///
+    /// A second call is safe. It makes a new key, and the seq counters of the conversation keep
+    /// their values.
     pub async fn dm_connect(&self, info: &ExchangeSessionInfo) -> Result<(), AppError> {
         let did = self.require_account()?;
         let session = self.open_exchange_session(info).await?;
@@ -93,8 +105,8 @@ impl App {
         Ok(navigator_store::dm::messages(self.store.pool(), session_id).await?)
     }
 
-    /// Encrypt + relay a message on an established conversation, persisting it locally. Returns the
-    /// seq it was sent under.
+    /// Encrypt a message, relay it on an open conversation, and write it to the local store. The
+    /// function returns the seq of the message.
     pub async fn dm_send(&self, session_id: &str, text: &str) -> Result<i64, AppError> {
         let convo = self.dm_conversation_or_err(session_id).await?;
         let session = self.rebuild_session(&convo)?;
@@ -107,8 +119,8 @@ impl App {
         Ok(seq)
     }
 
-    /// Pull, decrypt, persist, and ack any messages waiting on a conversation. Returns the count of
-    /// newly-stored (non-duplicate) messages.
+    /// Read, decrypt, store, and acknowledge each message that a conversation holds. The function
+    /// returns the count of new messages. It does not count a duplicate message.
     pub async fn dm_sync(&self, session_id: &str) -> Result<usize, AppError> {
         let did = self.require_account()?;
         let convo = self.dm_conversation_or_err(session_id).await?;
@@ -118,12 +130,13 @@ impl App {
             let Ok(parsed) = exchange::Envelope::from_blob(&env.blob) else {
                 continue;
             };
-            // A leftover handshake (seq 0) can't decrypt as data — ack and drop it.
+            // An old handshake has seq 0, and the code can not decrypt it as data. Acknowledge
+            // the handshake and remove it.
             if matches!(parsed, exchange::Envelope::Handshake { .. }) {
                 let _ = self.exchange_relay_ack(env.id).await;
                 continue;
             }
-            // AAD binds the sender's routing: from = the partner (sender), to = us.
+            // The AAD binds the route of the sender. `from` is the partner, and `to` is us.
             let aad = exchange::relay_aad(session_id, &env.from_did, &did, env.seq);
             let Ok(pt) = exchange::open(&session.key, &aad, &parsed) else {
                 continue; // not for this session key / tampered — leave un-acked
@@ -182,7 +195,8 @@ mod tests {
         let back: [u8; 32] = STANDARD.decode(&stored).unwrap().try_into().unwrap();
         assert_eq!(key, back);
 
-        // And it actually works as an AES session key: seal here, open with the rebuilt key.
+        // The value also works as an AES session key. Seal the data here, then open the data with
+        // the key that the code makes again.
         let aad = exchange::relay_aad("sess", "did:plc:a", "did:plc:b", 1);
         let blob = exchange::seal(&key, &aad, b"hello").and_then(|e| e.to_blob()).unwrap();
         let parsed = exchange::Envelope::from_blob(&blob).unwrap();

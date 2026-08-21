@@ -160,7 +160,7 @@ pub(crate) struct Layout {
 /// The ticks are computed rather than spaced evenly, because evenly spaced would be wrong: each
 /// block spends one row on its name, so a fixed pixels-per-SNP scale drifts by a row per generation.
 /// Walking the lineage and placing each graduation inside the block that contains it keeps the axis
-/// honest — the ticks come out *nearly* regular, and where they don't, the irregularity is real.
+/// honest — the ticks come out *nearly* regular, and where they do not, the irregularity is real.
 fn ruler_ticks(blocks: &[Block], placed: &[Placed], row_h: f32, pad: f32) -> Vec<Tick> {
     // Cumulative mutations to the bottom of each block, so "deepest" means most mutations, not most
     // generations — a long slow branch outranks several short ones.
@@ -220,7 +220,7 @@ fn lines_for(b: &Block) -> usize {
 ///
 /// The test is the *fold*, not whether men sit on it. A collapsed run is by construction more than
 /// one branch, so its height is a sum across the tree above the cohort rather than one branch's
-/// elapsed time — the one place where height-as-time doesn't hold. A root that was never collapsed
+/// elapsed time — the one place where height-as-time does not hold. A root that was never collapsed
 /// is a single genuine branch and stays in the canvas at full height like any other.
 ///
 /// Men parked on the backbone (shallow kits, typically) keep their roster: the breadcrumb selects

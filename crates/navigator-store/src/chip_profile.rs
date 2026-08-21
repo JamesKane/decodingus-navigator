@@ -1,4 +1,4 @@
-//! Chip-profile queries: a subject's genotyping-array QC summaries (one row per import).
+//! Chip-profile queries: the genotyping-array QC summaries of a subject, one row for each import.
 
 use du_domain::ids::SampleGuid;
 use navigator_domain::chipprofile::{ChipProfile, ChipSummary, NewChipProfile};
@@ -85,7 +85,7 @@ pub async fn create(pool: &SqlitePool, new: &NewChipProfile) -> Result<ChipProfi
     })
 }
 
-/// Delete a chip profile (no child rows). Returns whether the row was removed.
+/// Delete a chip profile, which has no child rows. It returns whether it removed the row.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     let affected = sqlx::query("DELETE FROM chip_profile WHERE id = ?")
         .bind(id)

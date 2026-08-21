@@ -1,11 +1,19 @@
-//! Isolated end-to-end check: a real CompleteGenomics masterVar → autosomal consensus → ancestry,
-//! entirely on an **in-memory** workspace (nothing touches the user's `~/.decodingus/navigator-rs.db`).
-//! The read-only ancestry / IBD-panel assets are still read from `~/.decodingus/ancestry` (or the
-//! `NAVIGATOR_*` overrides), so this only runs where those assets are installed.
+//! A separate end-to-end check. It reads a real CompleteGenomics masterVar file, makes the
+//! autosomal consensus, and then estimates the ancestry.
 //!
-//! Ignored by default (needs the local dump + assets). Run:
-//!   MASTERVAR_TSV=/path/to/var-GS00253-DNA_A01_200_37-ASM.tsv.bz2 \
-//!     cargo test -p navigator-app --test mastervar_autosomal_real -- --ignored --nocapture
+//! The test uses an **in-memory** workspace. It does not touch the `~/.decodingus/navigator-rs.db`
+//! file of the user.
+//!
+//! The test still reads the ancestry assets and the IBD-panel assets from `~/.decodingus/ancestry`,
+//! or from the path in a `NAVIGATOR_*` variable. It reads and does not write them. So the test runs
+//! only on a machine that holds those assets.
+//!
+//! The test has the `ignore` mark, because it needs the local dump and the assets. To run it:
+//!
+//! ```bash
+//! MASTERVAR_TSV=/path/to/var-GS00253-DNA_A01_200_37-ASM.tsv.bz2 \
+//!   cargo test -p navigator-app --test mastervar_autosomal_real -- --ignored --nocapture
+//! ```
 
 use std::path::Path;
 use std::time::Instant;
@@ -83,8 +91,9 @@ async fn mastervar_feeds_autosomal_and_ancestry() {
                 }
             }
         }
-        // Don't fail the whole check if an ancestry asset is absent — the autosomal consensus (the
-        // thing this PR wires up) already proved the masterVar feeds the pipeline.
+        // An absent ancestry asset must not fail the full check. The autosomal consensus is the
+        // part that this change adds, and it already shows that the masterVar file reaches the
+        // pipeline.
         Err(e) => println!("[{:>7.1?}] ancestry skipped: {e}", t.elapsed()),
     }
 }

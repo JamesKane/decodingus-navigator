@@ -1,12 +1,16 @@
-//! Library / instrument inference from an alignment — a Rust port of the Scala
-//! `LibraryStatsProcessor`. The header probe ([`crate::probe`]) only reads `@RG PL/PM`, which
-//! many vendor BAMs (FGC/YSEQ/Dante…) leave sparse; the instrument serial that identifies the
-//! physical sequencer (and, via the crowd-sourced AppView map, the lab) lives in the **read
-//! names**. This scans a bounded prefix of records, classifies each read's platform from its
-//! qname, extracts the instrument + flowcell, and reports the most-frequent of each plus the
-//! `@RG SM/LB/PU` tags.
+//! Infer the library and the instrument from an alignment. This is the Rust port of the Scala
+//! `LibraryStatsProcessor`.
 //!
-//! The `instrument_id` is the key datum for resolving the sequencing facility (roadmap D8).
+//! The header probe ([`crate::probe`]) reads `@RG PL` and `@RG PM` alone, and many vendor BAMs
+//! leave those thin. FGC, YSEQ and Dante are examples. The serial of the instrument names the
+//! physical sequencer, and, through the AppView map that the community builds, the lab. That
+//! serial lives in the **read names**.
+//!
+//! This code scans a bounded prefix of the records. At each read it takes the platform from the
+//! qname, and it takes out the instrument and the flowcell. It then reports the most common of
+//! each, and the `@RG SM`, `LB` and `PU` tags.
+//!
+//! The `instrument_id` is the key datum that resolves the sequencing facility. See roadmap D8.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -16,8 +20,8 @@ use noodles::sam::header::record::value::map::read_group;
 use crate::error::AnalysisError;
 use crate::reader::open_seq;
 
-/// Default cap on records scanned — enough to settle the most-frequent instrument without
-/// reading a whole multi-GB file.
+/// The default limit on how many records the scan reads. It is enough to settle which instrument
+/// is the most common, and it does not read a whole file of some GB.
 pub const DEFAULT_MAX_READS: usize = 10_000;
 
 /// What the read-name scan + `@RG` tags inferred. Every field is best-effort (`None`/`Unknown`).
@@ -39,8 +43,8 @@ pub struct LibraryStats {
     pub instrument_model: Option<String>,
     /// Most-frequent flowcell id from read names.
     pub flowcell_id: Option<String>,
-    /// `PAIRED` if the scanned reads carry the SAM segmented (0x1) flag, else `SINGLE`; `None`
-    /// when no primary reads were scanned.
+    /// `PAIRED` when the scanned reads carry the SAM segmented flag, which is 0x1. Else `SINGLE`.
+    /// It is `None` when the scan read no primary record.
     pub library_layout: Option<String>,
     /// Most-frequent read chemistry/mode inferred from the read names: `SHORT` / `HIFI` / `CLR` /
     /// `ONT_SIMPLEX` / `ONT_DUPLEX`. The only edge signal that tells HiFi from CLR (both PacBio);
@@ -123,7 +127,8 @@ pub fn scan_library_stats(
         _ => None,
     };
 
-    // Majority vote: PAIRED if most scanned reads are segmented (handles a few stray flags).
+    // A majority vote. It gives PAIRED when most of the scanned reads carry the segmented flag.
+    // It thereby survives a few stray flags.
     let library_layout = (read_count > 0).then(|| {
         if segmented_count * 2 >= read_count {
             "PAIRED"
@@ -147,10 +152,17 @@ pub fn scan_library_stats(
     })
 }
 
-/// Classify a read's chemistry/mode from its name + already-detected platform. PacBio splits on the
-/// movie-name suffix — a `/ccs` segment **is** HiFi (CCS), anything else is CLR (continuous/subread).
-/// Nanopore is simplex unless the name is a dorado duplex pair (two read ids joined by `;`). Short-
-/// read platforms are `SHORT`. `None` when the platform is unknown (contributes no vote).
+/// Take the chemistry and mode of a read, from its name and from the platform that the code
+/// already found.
+///
+/// PacBio splits on the suffix of the movie name. A `/ccs` segment **is** HiFi, which is CCS.
+/// Anything else is CLR, which is continuous, or a subread.
+///
+/// Nanopore is simplex, unless the name holds a duplex pair from dorado, which is two read ids with
+/// a `;` between them.
+///
+/// A short-read platform gives `SHORT`. The result is `None` when the code does not know the
+/// platform, and that adds no vote.
 fn detect_read_type_from_qname(qname: &str, platform: &str) -> Option<&'static str> {
     match platform {
         "PacBio" => Some(if qname.rsplit('/').next() == Some("ccs") {
@@ -180,8 +192,9 @@ fn val<T: AsRef<[u8]>>(v: &T) -> String {
 /// Classify a read's platform from its name. Mirrors the Scala heuristics (MGI prefixes /
 /// colon-shaped Illumina / UUID Nanopore / `m#####` PacBio); `Unknown` when nothing matches.
 fn detect_platform_from_qname(qname: &str) -> &'static str {
-    // MGI: a V300/E100/CL100/G400/G99 instrument prefix, or a colon-delimited name whose first
-    // field starts V/E/CL/G with a flowcell field starting "L".
+    // MGI. The name starts with a V300, E100, CL100, G400 or G99 instrument prefix. Or it has
+    // colons between its fields, its first field starts with V, E, CL or G, and its flowcell field
+    // starts with "L".
     if qname.len() > 15 {
         let prefix = qname.get(0..5).unwrap_or("").to_ascii_uppercase();
         if ["V300", "E100", "CL100", "G400", "G99"]
@@ -229,7 +242,7 @@ fn is_illumina_qname(q: &str) -> bool {
         .any(|w| num(w[0]) && alnum(w[1]) && w[2].len() == 1 && num(w[2]) && num(w[3]) && num(w[4]) && num(w[5]))
 }
 
-/// A leading UUID (`8-4-4-4-12` hex) — Oxford Nanopore.
+/// A UUID at the start of the name, in the `8-4-4-4-12` hex form. That marks Oxford Nanopore.
 fn is_nanopore_uuid(q: &str) -> bool {
     let b = q.as_bytes();
     if b.len() < 36 {

@@ -1,12 +1,17 @@
-//! Score a candidate MODERN ancestry asset (fine-admixture + optional PCA) against a subject's
-//! CHM13-oriented dosages — the offline validation harness for the panel-depth sweep
-//! (documents/design/ancient-ancestry-rebuild.md; sibling of `qpadm_from_tsv`). Reads a dosage TSV
-//! (`[rsid\t]contig\tpos\tdosage`, dosage 0/1/2, -1 = no-call — e.g. from the `genotype_bed`
-//! example or a chip resolver), matches it to each candidate asset by (contig,pos), runs
-//! `estimate_fine_admixture`, and prints the breakdown + the number of sites actually used (the
-//! quantity the sweep is trying to grow). Point it at a 20k/100k/200k candidate to see whether the
-//! extra depth moves the estimate and where it saturates; run it on the same subject's WGS and chip
-//! dosages to check WGS-vs-chip stability.
+//! Score a candidate MODERN ancestry asset, which is a fine-admixture panel and an optional PCA,
+//! against a subject's CHM13-oriented dosages. This is the offline check harness for the sweep over
+//! panel depth (documents/design/ancient-ancestry-rebuild.md). It is the companion of
+//! `qpadm_from_tsv`.
+//!
+//! It reads a dosage TSV in the form `[rsid\t]contig\tpos\tdosage`, where a dosage is 0, 1, or 2,
+//! and -1 is a no-call. The `genotype_bed` example, or a chip resolver, can produce one. It matches
+//! that file to each candidate asset by (contig,pos), runs `estimate_fine_admixture`, and prints
+//! the breakdown with the count of sites that it used. That count is the quantity that the sweep
+//! must grow.
+//!
+//! Point it at a 20k, 100k, or 200k candidate. That shows whether the extra depth changes the
+//! estimate, and where it stops. Run it on the same subject's WGS dosages and chip dosages, to check
+//! that the two agree.
 //!   score_modern_from_tsv <fine_panel.bin> <dosage.tsv> [pca.bin]
 use navigator_analysis::ancestry::{estimate_fine_admixture, project_pca, AncestryPanel, PcaLoadings};
 use navigator_analysis::caller::SiteGenotype;
@@ -40,9 +45,10 @@ fn main() -> anyhow::Result<()> {
         dosage.insert((c.to_string(), p), d);
     }
 
-    // Build genotypes over the fine panel's sites (estimate_admixture keys by (contig,pos) and reads
-    // the panel's per-pop alt frequency, so dosage must already be CHM13/panel-oriented — which the
-    // genotype_bed / resolve_chip producers guarantee).
+    // Build the genotypes over the fine panel's sites. `estimate_admixture` keys by (contig,pos),
+    // and reads the alt frequency of each population from the panel. So the caller must orient a
+    // dosage to CHM13 and to the panel first. The `genotype_bed` and `resolve_chip` producers
+    // promise that.
     let gts: Vec<SiteGenotype> = fine
         .sites
         .iter()

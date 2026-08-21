@@ -22,8 +22,8 @@ fn infers_male_from_low_x_coverage() {
 
 #[test]
 fn cram_sex_inference_matches_bam() {
-    // CRAM has no per-reference counts in the index, so this exercises the record-scan
-    // fallback; same reads as sex.bam, so the result must match.
+    // The index of a CRAM holds no count for each reference. So this test covers the fallback that
+    // scans the records. It holds the same reads as sex.bam, so the result must match.
     let dir = fixtures();
     let bam = infer_from_bam(&dir.join("sex.bam"), None).unwrap();
     let cram = infer_from_bam(&dir.join("sex.cram"), Some(&dir.join("sexref.fa"))).unwrap();

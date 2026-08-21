@@ -5,9 +5,10 @@ use super::*;
 impl App {
     // ---- IBD Phase 2: encrypted edge-to-edge exchange (D1 substrate) -------
     //
-    // The AppView brokers discovery/consent + relays opaque ciphertext (never decrypts). These
-    // wrap the `/api/v1/exchange/*` endpoints; the crypto (X25519/X3DH-lite/AES-GCM) lives in
-    // `navigator_sync::exchange`. All calls are device-key-signed (no per-call OAuth).
+    // The AppView is the broker for discovery and consent. It also relays opaque ciphertext, and
+    // it never decrypts that ciphertext. These methods wrap the `/api/v1/exchange/*` endpoints.
+    // The cryptography, which is X25519, X3DH-lite, and AES-GCM, is in
+    // `navigator_sync::exchange`. The device key signs each call, and no call uses OAuth.
 
     /// The signed-in account's X25519 identity key (load-or-generate), with its public half
     /// published to the AppView (`POST /exchange/key`, idempotent upsert) so partners can fetch it.
@@ -24,8 +25,8 @@ impl App {
         Ok(ik)
     }
 
-    /// Fetch a peer's published X25519 public key (STANDARD base64), or `None` if they haven't
-    /// published one. Public read — no signature.
+    /// Read the X25519 public key that a peer published, in STANDARD base64. The method returns
+    /// `None` when the peer published no key. This read is public and needs no signature.
     pub async fn fetch_exchange_key(&self, did: &str) -> Result<Option<String>, AppError> {
         let url = self.appview_url("exchange/key");
         let resp = self
@@ -46,11 +47,15 @@ impl App {
         Ok(v.get("x25519_pub").and_then(|x| x.as_str()).map(str::to_string))
     }
 
-    /// Open an exchange request to a specific partner DID — the direct counterpart to the
-    /// suggestion-mediated [`ibd_introduce`] (`POST /api/v1/exchange/request`). Generates an opaque
-    /// request URI, signs the canonical request message, and posts it. The partner discovers it via
-    /// [`exchange_incoming`] (symmetric-blind) and consents; on mutual consent a session opens. Returns
-    /// the request URI to track. `scope` carries an optional project scope (team-ACL-gated server-side).
+    /// Open an exchange request to one partner DID (`POST /api/v1/exchange/request`). This method
+    /// is the direct form of [`ibd_introduce`], which works through a suggestion.
+    ///
+    /// The method makes an opaque request URI, signs the canonical request message, and sends it.
+    /// The partner finds the request with [`exchange_incoming`], which is symmetric-blind, and then
+    /// agrees. After both parties agree, a session opens.
+    ///
+    /// The method returns the request URI, and the caller uses it to track the request. `scope` can
+    /// carry a project scope, and the server gates that scope with the team ACL.
     pub async fn exchange_request(
         &self,
         partner_did: &str,
@@ -103,7 +108,8 @@ impl App {
         })
     }
 
-    /// Poll for inbound (symmetric-blind) exchange requests awaiting this account's consent.
+    /// Poll for the exchange requests that arrived and that need the consent of this account. The
+    /// view is symmetric-blind.
     pub async fn exchange_incoming(&self) -> Result<Vec<IncomingRequest>, AppError> {
         let v = self.exchange_get_poll("exchange/incoming", &[]).await?;
         Ok(v.get("items")
@@ -169,8 +175,9 @@ impl App {
             .unwrap_or_default())
     }
 
-    /// Relay an opaque ciphertext `blob` to `to_did` in a session. The signed hash binds the blob to
-    /// its routing (the broker stores ciphertext only). Returns the broker envelope id.
+    /// Relay an opaque ciphertext `blob` to `to_did` in a session. The signed hash binds the blob
+    /// to its route. The broker stores only ciphertext. The method returns the envelope id of the
+    /// broker.
     pub async fn exchange_relay(&self, session_id: &str, to_did: &str, seq: i32, blob: &str) -> Result<i64, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
@@ -225,11 +232,15 @@ impl App {
         self.appview_post("exchange/ack", body).await.map(|_| ())
     }
 
-    /// Establish a shared session key for a consent-ready session: publish/load our identity key,
-    /// fetch the partner's, exchange ephemeral keys via the relay (handshake, seq 0), and derive the
-    /// X3DH-lite session key. Polls the relay up to ~15s for the partner's handshake. The returned
-    /// [`EstablishedSession`] then seals/opens payloads. (Live-only — needs a running AppView + the
-    /// partner edge online to complete the handshake.)
+    /// Make a shared session key for a session that both parties agreed to.
+    ///
+    /// The method publishes or reads our identity key, then reads the identity key of the partner.
+    /// The two edges exchange short-life keys through the relay, as a handshake at seq 0. The
+    /// method then derives the X3DH-lite session key. It polls the relay for up to 15 seconds for
+    /// the handshake of the partner.
+    ///
+    /// The [`EstablishedSession`] value then seals a payload and opens a payload. This method needs
+    /// a live AppView and a partner edge that is online, so a test can not run it offline.
     pub async fn open_exchange_session(&self, info: &ExchangeSessionInfo) -> Result<EstablishedSession, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let ik = self.ensure_exchange_key().await?;
@@ -241,7 +252,8 @@ impl App {
         let hs = exchange::Envelope::handshake(&ek).to_blob().map_err(AppError::Sync)?;
         self.exchange_relay(&info.session_id, &info.partner_did, 0, &hs).await?;
 
-        // Wait for the partner's handshake (seq 0 / a Handshake envelope), acking just it.
+        // Wait for the handshake of the partner, which is seq 0 in a Handshake envelope.
+        // Acknowledge only that envelope.
         let mut their_ek: Option<String> = None;
         for _ in 0..15 {
             for env in self.exchange_relay_pull(&info.session_id).await? {
@@ -290,8 +302,9 @@ impl App {
             .await
     }
 
-    /// Pull + decrypt + ack the data payloads waiting on an established session (returns plaintexts
-    /// in pull order). Non-data / undecryptable envelopes are left un-acked.
+    /// Read, decrypt, and acknowledge each data payload on an open session. The method returns the
+    /// plaintexts in the order of the read. It does not acknowledge an envelope that holds no data,
+    /// or an envelope that it can not decrypt.
     pub async fn exchange_receive(&self, session: &EstablishedSession) -> Result<Vec<Vec<u8>>, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let mut out = Vec::new();
@@ -299,7 +312,7 @@ impl App {
             let Ok(parsed) = exchange::Envelope::from_blob(&env.blob) else {
                 continue;
             };
-            // AAD binds the sender's routing: from = the partner (sender), to = us.
+            // The AAD binds the route of the sender. `from` is the partner, and `to` is us.
             let aad = exchange::relay_aad(&session.session_id, &env.from_did, &did, env.seq);
             if let Ok(pt) = exchange::open(&session.key, &aad, &parsed) {
                 out.push(pt);
@@ -309,12 +322,19 @@ impl App {
         Ok(out)
     }
 
-    /// Run a **federated IBD exchange** over an established session (gap §4): send our IBD-panel
-    /// dosages, receive the partner's, detect IBD locally (both peers run the symmetric detector →
-    /// identical summary), then exchange + verify signed [`IbdAttestation`]s. `agreed` ⇒ the partner's
-    /// signature verified and both summary hashes match. Only panel dosages cross the wire (encrypted;
-    /// the broker never sees them). `my_source` supplies our dosages; the refs are opaque biosample
-    /// pointers carried in the attestation. Live-only — needs the partner edge online.
+    /// Do a **federated IBD exchange** on an open session (gap §4).
+    ///
+    /// The method sends the dosages of our IBD panel and receives the dosages of the partner. It
+    /// then finds the IBD segments on this machine. Both peers run the same symmetric detector, so
+    /// both get the same summary. The two edges then exchange signed [`IbdAttestation`] values and
+    /// check them.
+    ///
+    /// The `agreed` field is true when the signature of the partner is correct and the two summary
+    /// hashes are the same.
+    ///
+    /// Only the panel dosages cross the network. The code encrypts them, and the broker never sees
+    /// them. `my_source` gives our dosages. The refs are opaque pointers to a biosample, and the
+    /// attestation carries them. The method needs the partner edge online.
     pub async fn exchange_ibd(
         &self,
         session: &EstablishedSession,
@@ -337,8 +357,9 @@ impl App {
             .await
     }
 
-    /// The dosage-level core of [`exchange_ibd`] — takes the panel dosages directly (e.g. from a
-    /// consensus profile, or synthetic vectors in tests) rather than resolving an [`IbdSource`].
+    /// The core of [`exchange_ibd`] at the dosage level. This method takes the panel dosages
+    /// directly and does not read an [`IbdSource`]. The dosages can come from a consensus profile,
+    /// or from a test vector.
     pub async fn exchange_ibd_with_dosages(
         &self,
         session: &EstablishedSession,
@@ -351,8 +372,9 @@ impl App {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let dev = self.ensure_device_key().await?;
 
-        // Fit the relay's 1 MiB envelope: decimate a large panel (both peers apply the same
-        // position-based rule, so the intersection is preserved). Detect on the decimated set we send.
+        // Make the data fit the 1 MiB envelope of the relay. For a large panel, the code removes
+        // sites. Both peers use the same rule, which depends on the position, so the two sets still
+        // intersect. The detector uses the smaller set that the code sends.
         let my_sites = decimate_for_exchange(my_sites);
 
         // 1. Send our dosages (the IBD panel is on CHM13 / hs1).
@@ -363,7 +385,7 @@ impl App {
         self.exchange_send(session, 1, &dos.to_bytes().map_err(AppError::Import)?)
             .await?;
 
-        // 2. Receive the partner's dosages (buffering any attestation that arrives early).
+        // 2. Receive the dosages of the partner. Keep an attestation that arrives too early.
         let mut partner_sites: Option<Vec<IbdSite>> = None;
         let mut partner_att: Option<IbdAttestation> = None;
         for _ in 0..EXCHANGE_POLL_ROUNDS {
@@ -382,7 +404,8 @@ impl App {
         let partner_sites = partner_sites
             .ok_or_else(|| AppError::AppView("partner IBD dosages not received (peer offline?)".into()))?;
 
-        // 3. Detect IBD locally (symmetric — the partner computes the same summary).
+        // 3. Find the IBD segments on this machine. The detector is symmetric, so the partner
+        //    calculates the same summary.
         let comparison = detect_ibd_sites(&my_sites, &partner_sites, ReferenceBuild::Chm13v2, config);
 
         // 4. Sign our attestation over the computed summary.
@@ -421,7 +444,7 @@ impl App {
         let partner_att =
             partner_att.ok_or_else(|| AppError::AppView("partner attestation not received (peer offline?)".into()))?;
 
-        // 7. Verify the partner's signature + summary-hash agreement.
+        // 7. Check the signature of the partner and compare the two summary hashes.
         let sig_ok = du_atproto::verify_did_key(
             &partner_att.signing_public_key,
             partner_att.canonical().as_bytes(),
@@ -468,8 +491,8 @@ impl App {
             .map(|c| IbdSource::Chip(c.id)))
     }
 
-    /// The subject's IBD-panel dosages from its best source (panel-restricted — only the canonical IBD
-    /// sites, not the whole genome, so that's all that can leave the device).
+    /// The IBD-panel dosages of the subject, from its best source. The set holds only the
+    /// canonical IBD sites and not the full genome. So no other site can leave the device.
     pub async fn ibd_dosages_for_subject(&self, guid: SampleGuid) -> Result<Vec<SiteGenotype>, AppError> {
         let source = self.best_ibd_source_for_subject(guid).await?.ok_or_else(|| {
             AppError::Import("no IBD-capable data for this subject (need an alignment or a chip profile)".into())
@@ -507,8 +530,9 @@ impl App {
             )
             .await?;
         self.record_ibd_exchange(guid, session, request_uri, &result).await?;
-        // Advance the ledger before either publish: the comparison is done and persisted, so the
-        // conversation is complete whether or not the network steps below succeed.
+        // Advance the ledger before the two publish steps. The comparison is complete and in the
+        // store. So the conversation is complete, and a failure in the network steps below does
+        // not change that.
         self.mark_matching_exchanged(guid, session, request_uri).await?;
         // Best-effort: publish our attestation to the PDS (skipped for did:key; never fails the exchange).
         let _ = self.publish_ibd_attestation(&result.my_attestation).await;
@@ -557,8 +581,10 @@ impl App {
         Ok(navigator_store::ibd_exchange::list_for_biosample(self.store.pool(), guid).await?)
     }
 
-    /// Publish a signed attestation to the PDS (the AppView indexes it via Jetstream). No-op for a
-    /// did:key local identity (self-certifying, no repo to write). Idempotent via a session-derived rkey.
+    /// Publish a signed attestation to the PDS. The AppView then indexes it through Jetstream.
+    ///
+    /// The method does nothing for a local did:key identity. Such an identity certifies itself and
+    /// has no repository to write to. The rkey comes from the session, so a second call is safe.
     pub async fn publish_ibd_attestation(&self, att: &IbdAttestation) -> Result<(), AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         if did.starts_with("did:key:") {
@@ -578,18 +604,23 @@ impl App {
         Ok(())
     }
 
-    /// Issue a device-key-signed `exchange-poll` GET to an `/api/v1/<path>` endpoint, with `extra`
-    /// query params appended. Shared by incoming / pending / relay-pull — the exchange endpoints
-    /// all sign the same canonical poll string, so this is the only thing they add over
-    /// [`App::appview_get_signed`].
+    /// Send an `exchange-poll` GET to an `/api/v1/<path>` endpoint with a device-key signature, and
+    /// add the `extra` query parameters.
+    ///
+    /// Three callers use this method: the poll for requests that arrived, the poll for open
+    /// sessions, and the relay read. Each exchange endpoint signs the same canonical poll string.
+    /// That string is the only part that this method adds to [`App::appview_get_signed`].
     async fn exchange_get_poll(&self, path: &str, extra: &[(&str, &str)]) -> Result<serde_json::Value, AppError> {
         self.appview_get_signed(path, exchange::messages::poll, extra).await
     }
 
-    /// Enqueue the anchor records every child record references: the subject's biosample summary
-    /// and each of its sequence runs, at their **deterministic** rkeys so the at:// URIs resolve.
-    /// Idempotent — the outbox coalesces per `entity_ref` and re-publishing overwrites in place — so
-    /// child publishes call this freely to guarantee there's always a biosample to tie back to.
+    /// Put the anchor records in the queue. Each child record points to these anchors. The anchors
+    /// are the biosample summary of the subject and each of its sequence runs. They use **fixed**
+    /// rkeys, so the at:// URIs resolve.
+    ///
+    /// A second call is safe. The outbox joins the rows with the same `entity_ref`, and a second
+    /// publish replaces the record. So a child publish can always call this method, and a biosample
+    /// always exists for the child to point to.
     async fn ensure_subject_anchor(&self, did: &str, biosample_guid: SampleGuid) -> Result<(), AppError> {
         // Sequence runs first (the biosample record links to them).
         for run in self.list_sequence_runs(biosample_guid).await? {
@@ -614,9 +645,10 @@ impl App {
         .await
     }
 
-    /// Publish the alignment's coverage summary to the signed-in account's PDS (with
-    /// refresh-on-expiry and retry/backoff via [`AsyncSync`]). Anchors the subject first so the
-    /// record's biosample/sequence-run refs resolve.
+    /// Publish the coverage summary of the alignment to the PDS of the active account.
+    /// [`AsyncSync`] refreshes an expired token and tries again after a failure, with a longer
+    /// delay each time. The method publishes the subject anchors first, so the biosample ref and
+    /// the sequence-run ref of the record resolve.
     pub async fn publish_coverage(&self, alignment_id: i64) -> Result<(), AppError> {
         let did = self.require_account()?; // auth check before touching the DB
         let guid = self.biosample_of_alignment(alignment_id).await?;
@@ -626,25 +658,32 @@ impl App {
             "coverage",
             &format!("alignment:{alignment_id}"),
             NS_ALIGNMENT,
-            // Deterministic rkey → the idempotent put path (never a fresh create), so re-publishing
-            // or two concurrent drains converge on one record instead of duplicating.
+            // A fixed rkey selects the put path, which is safe to repeat. The code never calls
+            // create here. So a second publish, or two drains at the same time, give one record
+            // and not two.
             Some(&alignment_rkey(alignment_id)),
             value,
         )
         .await
     }
 
-    /// Publish a subject's **consensus** ancestry estimate to the signed-in account's PDS — one
-    /// populationBreakdown record per method (ADMIXTURE / PCA_PROJECTION_GMM / FINE_ADMIXTURE /
-    /// G25_NMONTE), each linked to the biosample. Subject-level (the breakdown is computed from the
-    /// pooled autosomal consensus, not per alignment), so one authoritative record set per subject
-    /// rather than a conflicting set per sequencing run. The researcher opt-in act for the ancestry
-    /// section — anonymized population proportions only.
+    /// Publish the **consensus** ancestry estimate of a subject to the PDS of the active account.
+    ///
+    /// The method writes one populationBreakdown record for each method. The methods are ADMIXTURE,
+    /// PCA_PROJECTION_GMM, FINE_ADMIXTURE, and G25_NMONTE. Each record links to the biosample.
+    ///
+    /// The estimate belongs to the subject, not to one alignment, because the code calculates the
+    /// breakdown from the pooled autosomal consensus. So each subject has one record set with
+    /// authority. A set for each sequence run would give records that disagree.
+    ///
+    /// This is the action that a researcher opts in to for the ancestry section. Only anonymous
+    /// population proportions cross the network.
     pub async fn publish_ancestry(&self, biosample_guid: SampleGuid) -> Result<(), AppError> {
         let did = self.require_account()?; // auth check before touching the DB
         self.ensure_subject_anchor(&did, biosample_guid).await?; // the breakdown links back to it
         let biosample_ref = biosample_at_uri(&did, biosample_guid);
-        // One outbox row per method, keyed by subject+method so re-publishing coalesces per estimate.
+        // One outbox row for each method. The key is the subject and the method, so a second
+        // publish joins the rows of one estimate.
         for r in &self.consensus_ancestry_results(biosample_guid).await? {
             let value =
                 serde_json::to_value(population_breakdown_record(r).with_biosample_ref(Some(biosample_ref.clone())))?;
@@ -655,9 +694,10 @@ impl App {
         Ok(())
     }
 
-    /// Publish the anonymized biosample summary (sex, haplogroups) **and its sequence runs** to the
-    /// signed-in account's PDS — the subject anchor every derived record ties back to. Deterministic
-    /// rkeys make it idempotent (a re-publish overwrites rather than duplicating).
+    /// Publish the anonymous biosample summary, which holds the sex and the haplogroups, **and its
+    /// sequence runs** to the PDS of the active account. These records are the subject anchor, and
+    /// each derived record points to them. The method uses a fixed rkey, so a second publish
+    /// replaces the records and does not add a copy.
     pub async fn publish_biosample(&self, biosample_guid: SampleGuid) -> Result<(), AppError> {
         let did = self.require_account()?; // auth check before touching the DB
         self.ensure_subject_anchor(&did, biosample_guid).await

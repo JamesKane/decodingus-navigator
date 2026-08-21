@@ -1,10 +1,11 @@
-//! Callable-region mask from a BED file — restricts variant calls to reliable regions
-//! (e.g. the Poznik/1KG callable-Y mask, `b38_sites.bed`). Without it, a whole-chrY
-//! de-novo sweep is dominated by palindrome/heterochromatin/repeat artifacts.
+//! The mask of the callable regions, from a BED file. It holds the variant calls to the regions
+//! that the code can trust, such as the callable-Y mask of Poznik and 1KG, in `b38_sites.bed`.
+//! Without it, artifacts from a palindrome, from heterochromatin and from a repeat control a
+//! de-novo sweep over the whole chrY.
 //!
-//! BED is 0-based, half-open `[start, end)`; our positions are 1-based. Intervals for the
-//! requested contig are loaded, sorted, and coalesced so [`RegionMask::contains`] is a
-//! binary search.
+//! BED is 0-based and half-open, as `[start, end)`. The positions in this project are 1-based.
+//! The code loads the intervals of the contig that the caller asked for, sorts them, and joins the
+//! ones that touch. [`RegionMask::contains`] is then a binary search.
 
 use std::io::BufRead;
 use std::path::Path;
@@ -20,9 +21,10 @@ pub struct RegionMask {
 }
 
 impl RegionMask {
-    /// Load the intervals for `contig` from a BED file (other contigs ignored). A gzip- or
-    /// BGZF-compressed BED is transparently decompressed (detected by content), so large bundled
-    /// masks can ship compressed — including multi-block bgzipped files.
+    /// Load the intervals of `contig` from a BED file. It ignores every other contig. It also
+    /// decompresses a BED that came through gzip or BGZF, and the caller sees no difference. It
+    /// finds the compression from the content of the file. A large mask that ships with the app
+    /// can then stay compressed, and that includes a bgzipped file of more than one block.
     pub fn from_bed(path: &Path, contig: &str) -> Result<Self, AnalysisError> {
         let reader = crate::gzio::open_maybe_gz(path).map_err(|e| AnalysisError::io(path, e))?;
         let mut intervals = Vec::new();
@@ -61,8 +63,9 @@ impl RegionMask {
         RegionMask { intervals: merged }
     }
 
-    /// The coalesced `[start, end)` intervals, for callers that need to transform them (lifting a
-    /// mask to another build, say) rather than only query membership.
+    /// The `[start, end)` intervals, after the code joined the ones that touch. Use this when a
+    /// caller must change them, for example to lift a mask to another build. Membership is not the
+    /// only question you can ask.
     pub fn intervals(&self) -> &[(i64, i64)] {
         &self.intervals
     }
@@ -95,26 +98,33 @@ impl RegionMask {
     }
 }
 
-/// The structural class of a chrY region — for *down-weighting* (not dropping) Y calls by how
-/// reliably short reads map there. Each class carries a **quality modifier** in `(0, 1]` (a port of
-/// the Scala `YRegionAnnotator` ladder): unique / X-degenerate sequence is full weight (no class,
-/// modifier 1.0); paralog-prone and repeat zones get progressively lower weight. A position not in
-/// any class is treated as unique (modifier 1.0).
+/// The structural class of a chrY region. It gives a Y call *less weight*, and it does not drop
+/// that call. The weight follows how well a short read maps there.
+///
+/// Each class carries a **quality modifier** in `(0, 1]`. That ladder is the port of the Scala
+/// `YRegionAnnotator`. Unique sequence, and X-degenerate sequence, carry the full weight: they have
+/// no class, and their modifier is 1.0. A zone that is prone to a paralog carries less weight, and
+/// so does a repeat zone. The more difficult the zone, the less it carries. A position in no class
+/// counts as unique, at a modifier of 1.0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum YRegionClass {
-    /// Pseudoautosomal region (recombines with X) — modifier 0.5.
+    /// A pseudoautosomal region, which recombines with X. The modifier is 0.5.
     Par,
-    /// Palindrome / inverted repeat (gene-conversion + mapping risk) — modifier 0.4.
+    /// A palindrome or an inverted repeat. Gene conversion and a wrong mapping are both a risk.
+    /// The modifier is 0.4.
     Palindrome,
-    /// X-transposed region (~99% X-identical, contamination risk) — modifier 0.3.
+    /// An X-transposed region. It is about 99% the same as X, so contamination is a risk. The
+    /// modifier is 0.3.
     Xtr,
-    /// Ampliconic block — near-identical repeat copies, high paralog risk — modifier 0.3.
+    /// An ampliconic block. Its repeat copies are almost the same, so a paralog is a large risk.
+    /// The modifier is 0.3.
     Amplicon,
-    /// Short-tandem-repeat region (recLOH / stutter risk) — modifier 0.25.
+    /// A short-tandem-repeat region. recLOH and stutter are both a risk. The modifier is 0.25.
     Str,
-    /// Centromeric region (nearly unmappable) — modifier 0.1.
+    /// A centromeric region. Almost nothing maps there. The modifier is 0.1.
     Centromere,
-    /// Yq12 heterochromatin / AZF-DYZ satellite (unmappable) — modifier 0.1. (Was `AzfDyz`.)
+    /// Yq12 heterochromatin, and the AZF-DYZ satellite. Nothing maps there. The modifier is 0.1.
+    /// The old name of this was `AzfDyz`.
     #[serde(alias = "AzfDyz")]
     Heterochromatin,
 }
@@ -132,8 +142,9 @@ impl YRegionClass {
         }
     }
 
-    /// Quality modifier in `(0, 1]`: how much a call here counts in haplogroup concordance scoring
-    /// (lower = more paralog-/mapping-suspect). Unique sequence (no class) is 1.0.
+    /// The quality modifier, in `(0, 1]`. It says how much a call here counts when the code scores
+    /// the concordance of a haplogroup. A lower value means more doubt about a paralog or a
+    /// mapping. Unique sequence, which has no class, is 1.0.
     pub fn modifier(self) -> f64 {
         match self {
             YRegionClass::Par => 0.5,
@@ -145,26 +156,30 @@ impl YRegionClass {
     }
 }
 
-/// CHM13v2.0 chrY PAR1 (`chrY:1–2,458,320`), as a 0-based half-open interval. The pseudoautosomal
-/// regions recombine with X, so Y-SNP placement never lives here — flagged for QC, not dropped.
+/// PAR1 of chrY in CHM13v2.0, at `chrY:1–2,458,320`, as a 0-based half-open interval. A
+/// pseudoautosomal region recombines with X, so a Y-SNP placement never sits here. The code flags
+/// such a position for QC, and it does not drop it.
 const CHM13_PAR1: (i64, i64) = (0, 2_458_320);
 /// CHM13v2.0 chrY PAR2 (`chrY:62,122,809–62,460,029`), 0-based half-open.
 const CHM13_PAR2: (i64, i64) = (62_122_808, 62_460_029);
-/// CHM13v2.0 chrY Yq12 heterochromatin bound (`chrY:26,637,971–62,122,809`), 0-based half-open —
-/// the validated constant carried over from the Scala port (mostly satellite, unmappable).
+/// The bound of the Yq12 heterochromatin on chrY in CHM13v2.0, at `chrY:26,637,971–62,122,809`,
+/// 0-based and half-open. This constant came over from the Scala port, and a check confirmed it.
+/// The region is mostly satellite, and nothing maps there.
 const CHM13_YQ12_HET: (i64, i64) = (26_637_970, 62_122_809);
 
-/// Per-build chrY PAR + heterochromatin bounds, 0-based half-open.
+/// The chrY PAR and heterochromatin bounds of each build, 0-based and half-open.
 ///
-/// These are **not lifted** — they are taken natively per build, because they are precisely
-/// documented for each assembly and because a chain is least trustworthy exactly here: the
-/// pseudoautosomal regions are shared with chrX and Yq12 is satellite, so a lift through either is
-/// as likely to be wrong as absent. The palindromes and amplicons *are* lifted, since they sit in
-/// male-specific euchromatin where the chain is reliable.
+/// The code does **not lift** these. It takes them from each build natively, for two reasons. Each
+/// assembly documents them exactly. And a chain is least reliable in exactly these places: chrX
+/// shares a pseudoautosomal region, and Yq12 is satellite. A lift through either one is as likely
+/// to be wrong as it is to be absent.
 ///
-/// GRCh38 (GCA_000001405.15): PAR1 `chrY:10,001–2,781,479`, PAR2 `chrY:56,887,903–57,217,415`;
-/// the male-specific euchromatin ends and the heterochromatic arm begins at ~26.6 Mb, running to
-/// the end of the assembly.
+/// The palindromes and the amplicons *do* go through a lift. They sit in the euchromatin that only
+/// males have, and the chain is reliable there.
+///
+/// GRCh38 (GCA_000001405.15) has PAR1 at `chrY:10,001–2,781,479`, and PAR2 at
+/// `chrY:56,887,903–57,217,415`. The euchromatin that only males have ends at about 26.6 Mb. The
+/// heterochromatic arm begins there, and it goes to the end of the assembly.
 const GRCH38_PAR1: (i64, i64) = (10_000, 2_781_479);
 const GRCH38_PAR2: (i64, i64) = (56_887_902, 57_217_415);
 const GRCH38_YQ12_HET: (i64, i64) = (26_600_000, 57_227_415);
@@ -207,10 +222,12 @@ pub fn y_landmarks(build: &str) -> Option<YLandmarks> {
     }
 }
 
-/// Curated CHM13 chrY structural regions with quality modifiers, for down-weighting calls in
-/// paralog-prone / unmappable zones. [`classify`](Self::classify) returns the **most-impactful**
-/// (lowest-modifier) class containing a position; [`quality_modifier`](Self::quality_modifier)
-/// returns its modifier (1.0 for unique sequence).
+/// The curated structural regions of chrY on CHM13, with a quality modifier at each one. They give
+/// less weight to a call in a zone that is prone to a paralog, or where nothing maps.
+///
+/// [`classify`](Self::classify) returns the class that matters most at a position, which is the
+/// class with the lowest modifier. [`quality_modifier`](Self::quality_modifier) returns the
+/// modifier of that class, and 1.0 for unique sequence.
 #[derive(Debug, Clone)]
 pub struct YStructuralRegions {
     par: RegionMask,
@@ -221,9 +238,10 @@ pub struct YStructuralRegions {
 }
 
 impl YStructuralRegions {
-    /// Load from the three CHM13 chrY BEDs (amplicons, inverted-repeats/palindromes, AZF/DYZ),
-    /// adding the hardcoded CHM13 PAR1/PAR2 and Yq12-heterochromatin constants (the AZF/DYZ BED
-    /// covers the satellite arrays; the constant fills the broader heterochromatic q-arm).
+    /// Load from the three chrY BEDs of CHM13: the amplicons, the inverted repeats and
+    /// palindromes, and AZF/DYZ. It then adds the CHM13 PAR1, PAR2 and Yq12-heterochromatin
+    /// constants that this file holds. The AZF/DYZ BED covers the satellite arrays, and the
+    /// constant fills the wider heterochromatic q-arm.
     pub fn from_beds(amplicon: &Path, palindrome: &Path, azf_dyz: &Path) -> Result<Self, AnalysisError> {
         Ok(Self::from_masks(
             RegionMask::from_intervals(vec![CHM13_PAR1, CHM13_PAR2]),
@@ -233,19 +251,21 @@ impl YStructuralRegions {
         ))
     }
 
-    /// The palindrome and amplicon masks, for lifting to another build. PAR and heterochromatin are
-    /// deliberately not exposed for that purpose — see [`y_landmarks`].
+    /// The palindrome mask and the amplicon mask, for a lift to another build. This does not give
+    /// out the PAR mask or the heterochromatin mask for that purpose, and that is deliberate. See
+    /// [`y_landmarks`].
     pub fn structural_masks(&self) -> (&RegionMask, &RegionMask) {
         (&self.palindrome, &self.amplicon)
     }
 
-    /// The AZF/DYZ + heterochromatin mask, for lifting the satellite-array intervals.
+    /// The AZF/DYZ and heterochromatin mask, for a lift of the satellite-array intervals.
     pub fn heterochromatin_mask(&self) -> &RegionMask {
         &self.heterochromatin
     }
 
-    /// Build from explicit masks (the seam the BED loader + unit tests share). XTR/STR/centromere
-    /// masks aren't sourced yet — those tiers exist in [`YRegionClass`] for when their data lands.
+    /// Build from masks that the caller gives. The BED loader and the unit tests share this seam.
+    /// Nobody has found a source for the XTR, STR and centromere masks yet. Those tiers exist in
+    /// [`YRegionClass`], ready for the day that their data arrives.
     pub fn from_masks(
         par: RegionMask,
         palindrome: RegionMask,
@@ -260,11 +280,14 @@ impl YStructuralRegions {
         }
     }
 
-    /// The most-impactful (lowest-modifier) structural class containing the 1-based `position`, or
-    /// `None` if it is in unique (reliably-mappable / X-degenerate) sequence.
+    /// The structural class that matters most at the 1-based `position`, which is the class with
+    /// the lowest modifier. It is `None` when that position sits in unique sequence, which is
+    /// sequence that maps reliably, or that is X-degenerate.
     pub fn classify(&self, position: i64) -> Option<YRegionClass> {
-        // Checked in ascending-modifier (most-impactful-first) order so overlaps resolve to the
-        // strongest down-weight (e.g. an amplicon inside the heterochromatic arm → Heterochromatin).
+        // The checks run from the lowest modifier up, so the class that matters most comes first.
+        // Where two classes overlap, the result is then the one that takes the most weight
+        // away.
+        // An amplicon inside the heterochromatic arm gives Heterochromatin.
         if self.heterochromatin.contains(position) {
             Some(YRegionClass::Heterochromatin)
         } else if self.amplicon.contains(position) {
@@ -289,8 +312,9 @@ impl YStructuralRegions {
 mod y_landmark_tests {
     use super::*;
 
-    /// PAR and heterochromatin are per-build constants rather than lifted, so a wrong one silently
-    /// mis-masks a whole assembly. Pin the documented coordinates.
+    /// The PAR and heterochromatin bounds are a constant of each build, and no lift makes them. A
+    /// wrong one then masks a whole assembly wrongly, and nobody sees it. This test holds the
+    /// documented coordinates.
     #[test]
     fn each_build_carries_its_own_chry_geometry() {
         let l = y_landmarks("hs1").expect("CHM13");
@@ -363,7 +387,8 @@ mod tests {
         let path = dir.join("m.bed.gz");
         let mut enc =
             flate2::write::GzEncoder::new(std::fs::File::create(&path).unwrap(), flate2::Compression::default());
-        // chrX ignored; two chrY intervals, one of them coalescing.
+        // The loader ignores chrX. There are two chrY intervals, and the code joins one of them
+        // to its neighbour.
         enc.write_all(b"chrY\t100\t200\nchrX\t0\t50\nchrY\t150\t260\n").unwrap();
         enc.finish().unwrap();
         let m = RegionMask::from_bed(&path, "chrY").unwrap();
@@ -374,9 +399,10 @@ mod tests {
 
     #[test]
     fn reads_multiblock_bgzf_bed_without_truncation() {
-        // A bgzipped BED is a concatenation of independent gzip members. The old GzDecoder
-        // path stopped after the first member and silently dropped every later interval;
-        // this guards that all members are read (via MultiGzDecoder in gzio::open_maybe_gz).
+        // A bgzipped BED is a chain of independent gzip members. The GzDecoder path before this
+        // one stopped after the first member, and it dropped every later interval where nobody saw
+        // it. This test holds that the code reads every member, through MultiGzDecoder in
+        // gzio::open_maybe_gz.
         use std::io::Write;
         let dir = std::env::temp_dir().join(format!("dun-maskbgzf-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -415,8 +441,9 @@ mod tests {
 
     #[test]
     fn y_structural_classifies_most_impactful_first() {
-        // Disjoint synthetic regions (the BED loader keys on chrY; a chrX line is ignored). The
-        // production constructor also bakes in CHM13 PAR1/PAR2 + the Yq12 heterochromatin bound.
+        // Synthetic regions that do not overlap. The BED loader keys on chrY, and it ignores a
+        // chrX line. The constructor that production uses also holds the CHM13 PAR1 and PAR2, and
+        // the Yq12 heterochromatin bound.
         let dir = std::env::temp_dir().join(format!("dun-ymask-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let write = |name: &str, body: &str| {

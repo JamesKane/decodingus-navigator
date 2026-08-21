@@ -1,8 +1,9 @@
-//! Dump the Tier B callability mask as BED, so what the segment caller can and cannot see is
-//! checkable against an external callset rather than assumed.
+//! Write out the Tier B callability mask as a BED file. Somebody can then check what the segment
+//! caller can see, and what it can not, against an external callset. Nobody has to assume it.
 //!
-//! Windows below `min_frac` of `window_bp` callable are excluded by the caller itself, so the same
-//! threshold is applied here — the output is the territory a segment could actually be called in.
+//! The caller itself removes a window whose callable fraction is below `min_frac` of `window_bp`.
+//! This tool applies the same threshold. So its output is the territory where a segment could get
+//! a call.
 //!
 //! ```sh
 //! cargo run --release -p navigator-analysis --example archaic_callable_dump -- \

@@ -1,14 +1,19 @@
-//! Workspace **chores** — the periodic batch jobs that keep a workspace current.
+//! Workspace **chores**. A chore is a batch job that keeps a workspace current, and the user runs
+//! it from time to time.
 //!
-//! These existed only as CLI subcommands (`private-y --project`, `rebuild-signatures --stale-tree`,
-//! `publish-origins`), each noted in its own design doc as wanting a GUI trigger, and each noted as
-//! wanting *the same answer* rather than a third bespoke button. This module is that answer: the
-//! chores are named, surveyed and driven from one place, so the CLI and the GUI run identical code
-//! and a fourth chore is a table entry rather than a new surface.
+//! Each chore was a CLI subcommand only. They are `private-y --project`,
+//! `rebuild-signatures --stale-tree`, and `publish-origins`. The design document of each chore
+//! asked for a trigger in the GUI. Each document also asked for *one* answer, not a third separate
+//! button.
 //!
-//! **Surveying is deliberately on demand.** Two of the three cost real work to measure — one walks
-//! every alignment, another fetches and parses a multi-MB haplotree — so nothing here runs off a
-//! render path. The UI asks once, when a user asks it to.
+//! This module is that answer. It names each chore, surveys them, and runs them from one place.
+//! The CLI and the GUI then run the same code. A fourth chore is a new row in a table, and not a
+//! new screen.
+//!
+//! **The survey runs only at the request of the user, by design.** Two of the three chores cost
+//! real work to measure. One walks each alignment, and another reads and parses a haplotree of many
+//! MB. So no code here runs during a paint. The UI asks one time, when the user presses the
+//! button.
 
 use super::*;
 use crate::fastpath::{chr_m_gvcf_for_alignment, chr_y_gvcf_for_alignment};
@@ -17,11 +22,12 @@ use crate::fastpath::{chr_m_gvcf_for_alignment, chr_y_gvcf_for_alignment};
 /// cohort views need, re-place anything a new tree invalidated, then publish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum Chore {
-    /// Compute and cache each subject's private-Y bucket. Nothing cross-subject — shared unnamed
-    /// variants, candidate branches — can mean anything until this has been walked once.
+    /// Calculate the private-Y group of each subject and write it to the cache. A result that
+    /// covers more than one subject is not correct before this walk runs one time. Such results are
+    /// the unnamed variants that subjects share, and the candidate branches.
     PrivateY,
-    /// Re-place subjects whose calls were scored against a superseded haplotree, or whose derived
-    /// consensus names a branch this tree no longer carries.
+    /// Place a subject again when an old haplotree scored its calls. Also place a subject again
+    /// when its consensus names a branch that this tree no longer holds.
     StaleTree,
     /// Publish MDKA ancestral origins for the subjects the consent predicate allows.
     PublishOrigins,
@@ -46,10 +52,11 @@ pub struct ChoreSurvey {
     pub chore: Chore,
     /// Items the chore would act on.
     pub due: usize,
-    /// Items it would consider — `due` of `total` is what makes "0 due" readable as "nothing to
-    /// do" rather than "nothing found".
+    /// The items that the chore would examine. The pair `due` of `total` lets the user read "0
+    /// due" as "there is no work". Without `total`, that text can also mean "the survey found
+    /// nothing".
     pub total: usize,
-    /// Why the chore cannot run at all (not signed in, no tree). `Some` disables it.
+    /// Why the chore can not run at all (not signed in, no tree). `Some` disables it.
     pub blocked: Option<String>,
 }
 
@@ -59,26 +66,32 @@ pub struct ChoreOutcome {
     pub done: usize,
     pub skipped: usize,
     pub failed: usize,
-    /// One line for the status bar — chore-specific, since "12 done" means different things.
+    /// One line of text for the status bar. Each chore writes its own text, because "12 done"
+    /// refers to a different item in each chore.
     pub summary: String,
 }
 
-/// What [`App::replace_against_current_tree`] did for one subject. Per-alignment call failures are
-/// counted rather than raised: an alignment whose file is gone is a superseded vendor download, not
-/// a reason to leave the subject un-replaced.
+/// The work that [`App::replace_against_current_tree`] did for one subject.
+///
+/// The code counts a call failure of one alignment. It does not stop on that failure. An alignment
+/// with an absent file is an old vendor download. It is not a reason to leave the subject in its
+/// earlier place.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct TreeReplace {
     pub calls_replaced: usize,
     pub calls_failed: usize,
-    /// Alignments skipped because their file is gone. Kept apart from `calls_failed` so a workspace
-    /// whose vendor downloads have been cleaned out does not report a wall of errors for the one
-    /// outcome that is expected and harmless.
+    /// The count of alignments that the chore skipped, because the file of each one is absent.
+    ///
+    /// This count is separate from `calls_failed`. A user can remove the old vendor downloads of a
+    /// workspace. That workspace must not then report many errors for a result that is normal and
+    /// harmless.
     pub calls_skipped: usize,
     pub profiles_rebuilt: usize,
 }
 
 impl TreeReplace {
-    /// Tally one per-alignment call, sorting "its file is gone" out of the failures.
+    /// Count the call of one alignment. Put an absent file in its own group, and not with the
+    /// failures.
     fn record(&mut self, outcome: Result<(), AppError>) {
         match outcome {
             Ok(()) => self.calls_replaced += 1,
@@ -88,21 +101,23 @@ impl TreeReplace {
     }
 }
 
-/// Per-subject result of a private-Y refresh.
+/// The result of a private-Y refresh, for one subject.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PrivateYRefresh {
     pub computed: usize,
     pub skipped: usize,
     pub failed: usize,
-    /// Alignments whose file is gone — a superseded vendor download, not a computation failure.
-    /// Counted apart so a missing file never reads as an error.
+    /// The count of alignments with an absent file. Such a file is an old vendor download. It is
+    /// not a fault in the calculation. The count is separate, so an absent file never looks like an
+    /// error.
     pub missing_file: usize,
     pub novel: usize,
 }
 
 impl App {
-    /// Survey every chore. Runs the real selectors, so it costs what the chores cost to *decide*
-    /// (not to do) — call it from a button, never from a paint.
+    /// Survey each chore. The method runs the real selectors. So it costs the work that a chore
+    /// needs to *decide*, and not the work to do that chore. Call this method from a button. Never
+    /// call it during a paint.
     pub async fn maintenance_survey(&self) -> Result<Vec<ChoreSurvey>, AppError> {
         let mut out = Vec::with_capacity(Chore::ALL.len());
 
@@ -121,8 +136,9 @@ impl App {
             blocked: None,
         });
 
-        // Stale placements: two independent symptoms, unioned. Neither subsumes the other — a
-        // consensus is derived and persisted separately, so it rots while every call beneath it
+        // An old placement has two separate symptoms, and the code joins the two sets. One set
+        // does not hold the other. The app derives a consensus and stores it separately. So a
+        // consensus becomes old while each call below it
         // stays current.
         let stale = match self.stale_tree_targets(false).await {
             Ok(v) => ChoreSurvey {
@@ -131,7 +147,7 @@ impl App {
                 total: self.list_all_biosamples().await?.len(),
                 blocked: None,
             },
-            // No tree cached yet, or it could not be parsed: report the reason rather than zero.
+            // The cache holds no tree, or the parser refused it. Report the reason, not zero.
             Err(e) => ChoreSurvey {
                 chore: Chore::StaleTree,
                 due: 0,
@@ -141,7 +157,7 @@ impl App {
         };
         out.push(stale);
 
-        // Publishing needs an account: without one there is nowhere to publish to.
+        // A publish needs an account. Without an account there is no destination.
         let publishable = mdka::publishable(self.store.pool(), Lineage::Y.as_str()).await?.len();
         out.push(ChoreSurvey {
             chore: Chore::PublishOrigins,
@@ -153,11 +169,15 @@ impl App {
         Ok(out)
     }
 
-    /// Subjects due for re-placement: those whose *source calls* carry another tree's fingerprint,
-    /// unioned with those whose *derived consensus* names a branch this tree does not carry.
+    /// The subjects that need a new placement. The method joins two sets.
     ///
-    /// `include_unknown` also takes calls that predate the fingerprint field — 80% of them, mostly
-    /// BAM re-walks — so it is opt-in rather than the default.
+    /// In the first set, the *source calls* of a subject carry the fingerprint of another tree. In
+    /// the second set, the *derived consensus* of a subject names a branch that this tree does not
+    /// hold.
+    ///
+    /// `include_unknown` adds the calls that are older than the fingerprint field. Those calls are
+    /// 80% of the total, and most of them are BAM walks. So the user must select this option, and
+    /// it is not the default.
     pub async fn stale_tree_targets(&self, include_unknown: bool) -> Result<Vec<SampleGuid>, AppError> {
         let by_fingerprint = self.subjects_placed_against_another_tree(include_unknown).await?;
         let off_tree = self.subjects_labelled_off_tree().await?;
@@ -168,41 +188,51 @@ impl App {
         Ok(v)
     }
 
-    /// Re-place one subject against the current tree: its per-alignment Y/mt calls first, then the
-    /// pooled profiles built from them.
+    /// Place one subject against the current tree again. The method scores the Y calls and the mt
+    /// calls of each alignment first. It then builds the pooled profiles from those calls.
     ///
-    /// The per-alignment step is the half that was missing. Rebuilding only the profiles refreshes
-    /// `consensus_profile` while leaving every `haplogroup_call` row untouched, so a call carrying a
-    /// name from an older tree survives every sweep — `1087` held `aln:903` reading
-    /// `CP086569.2:27785335 G->A` against a current `aln:864` of `R-BY66248`, which is what the Y
-    /// card reported as "sources diverge below root". Worse, the sweep selects subjects *by* those
-    /// call fingerprints ([`Self::stale_tree_targets`]), so a subject it never corrected stayed due
-    /// forever and the count never fell.
+    /// The step for each alignment was the half that was absent. A rebuild of only the profiles
+    /// refreshes `consensus_profile` and changes no `haplogroup_call` row. So a call with a name
+    /// from an older tree stays after each sweep.
     ///
-    /// Order matters: the calls are the profile's input, so re-placing them after the build would
-    /// leave the profile a version behind. Each step is best-effort and independent — an alignment
-    /// whose file is gone must not stop the rest of the subject from being brought current.
+    /// Subject `1087` showed this fault. Its `aln:903` row read `CP086569.2:27785335 G->A`, and its
+    /// current `aln:864` row read `R-BY66248`. The Y card then reported "sources diverge below
+    /// root".
     ///
-    /// Re-scoring is guarded by the alignment's own fingerprint (file hash + tree hash), so a
-    /// subject already current costs a fingerprint comparison rather than a walk. When the tree
-    /// genuinely changed, doing that work *is* the chore.
+    /// The fault was worse than one wrong card. The sweep selects a subject *by* those call
+    /// fingerprints, in [`Self::stale_tree_targets`]. So a subject that the sweep never corrected
+    /// stayed in the list for all time, and the count never became smaller.
+    ///
+    /// The order of the two steps matters. The calls are the input of the profile. A new placement
+    /// after the build leaves the profile one version behind.
+    ///
+    /// Each step is independent, and a failure in one step does not stop the others. An alignment
+    /// with an absent file must not stop the work on the rest of the subject.
+    ///
+    /// The fingerprint of the alignment, which is the file hash with the tree hash, guards the new
+    /// score. So a subject that is already current costs one comparison and not a walk. When the
+    /// tree did change, that walk *is* the chore.
     pub async fn replace_against_current_tree(&self, guid: SampleGuid) -> Result<TreeReplace, AppError> {
         let mut r = TreeReplace::default();
         for aln in self.list_alignments_for_biosample(guid).await.unwrap_or_default() {
-            // Fast-path (sidecar GVCF) calls first, and only then the CRAM-walk assignment.
+            // Do the fast-path calls, which come from a sidecar GVCF, first. Do the CRAM-walk
+            // assignment after them.
             //
-            // These are the `external`-provenance rows, but "external" here means the pipeline's
-            // caller, not an authority we merely relay: `assign_y_from_gvcf` places the GVCF's
-            // calls against *our* tree, so the stored name is only as current as the tree cached
-            // the day it was imported — `altai363p` carried `chrY:5216846A>C [Node721]` from one.
-            // They are ours to re-derive. Skipping them would leave the very rows the internal
-            // assignment defers to (see `has_preferred_external_call`) as the only stale ones left,
-            // which is the case that prompted this.
-            // Prefer the recorded paths; fall back to locating the GVCFs beside the alignment.
-            // The fallback is what makes this work on the existing corpus at all — every alignment
-            // imported before the paths were recorded has none, so keying solely on the record
-            // would have fixed only future imports and left the subjects that prompted this
-            // permanently stale.
+            // These rows have `external` provenance. Here "external" names the caller of the
+            // pipeline. It does not name an authority that the app only relays.
+            // `assign_y_from_gvcf` places the calls of the GVCF against *our* tree. So the stored
+            // name is only as current as the tree in the cache on the day of the import. Subject
+            // `altai363p` carried `chrY:5216846A>C [Node721]` from such an import.
+            //
+            // The app must derive these rows again. Without this step, the internal assignment
+            // defers to those rows, in `has_preferred_external_call`, and they stay the only old
+            // rows in the workspace. That case caused this code.
+            //
+            // Use the recorded paths first. If there are none, look for the GVCF files beside the
+            // alignment. This second step is necessary for the corpus that exists today. Each
+            // alignment from before the recorded-path change has no path. A key on the record
+            // alone corrects only a future import, and it leaves the subjects that caused this
+            // change old for all time.
             let recorded = self.recorded_sidecars(aln.id).await.ok().flatten();
             let y_gvcf = recorded
                 .as_ref()
@@ -212,8 +242,9 @@ impl App {
                 .as_ref()
                 .and_then(|s| s.chr_m_gvcf.clone())
                 .or_else(|| chr_m_gvcf_for_alignment(&aln));
-            // A GVCF that has since gone (superseded vendor download, unmounted volume) is skipped
-            // rather than counted against the subject.
+            // The code skips a GVCF that is no longer on disk. The cause is an old vendor
+            // download or a volume that the user removed. The code does not count it against the
+            // subject.
             for outcome in [
                 match y_gvcf.filter(|p| p.is_file()) {
                     Some(p) => Some(self.assign_y_from_gvcf(aln.id, &p).await.map(|_| ())),
@@ -229,9 +260,9 @@ impl App {
             {
                 r.record(outcome);
             }
-            // The CRAM-walk assignments. An alignment whose file has been removed since import
-            // reports `AlignmentFileMissing` here and is skipped — the sidecar calls above may still
-            // have re-placed the subject perfectly well without it.
+            // The CRAM-walk assignments. An alignment with a file that the user removed after
+            // the import gives `AlignmentFileMissing` here, and the code skips it. The sidecar
+            // calls above can still place the subject correctly without that alignment.
             for outcome in [
                 self.assign_y_haplogroup(aln.id).await.map(|_| ()),
                 self.assign_mtdna_haplogroup_from_alignment(aln.id).await.map(|_| ()),
@@ -239,21 +270,23 @@ impl App {
                 r.record(outcome);
             }
         }
-        // Both arms rebuild regardless: a source-less lineage just yields an empty profile, and a
-        // subject can be stale on one arm while current on the other.
+        // The code rebuilds both lineages in each case. A lineage with no source gives an empty
+        // profile. A subject can also be old on one lineage and current on the other.
         self.build_y_profile(guid).await?;
         self.build_mt_profile(guid).await?;
         r.profiles_rebuilt = 2;
         Ok(r)
     }
 
-    /// Refresh one subject's private-Y: every alignment, or — when there is none — every
-    /// non-chip variant set.
+    /// Refresh the private-Y of one subject. The method uses each alignment. When the subject has
+    /// no alignment, it uses each variant set that is not a chip.
     ///
-    /// The variant-set arm is not a fallback for tidiness: most members of a real Y project have no
-    /// alignment at all, and until it existed they had no private-Y, which is what made candidate
-    /// branches inert. Lifted out of the CLI so the GUI runs the same code rather than a second
-    /// implementation that drifts.
+    /// The variant-set path is necessary, and it is not only for a clean design. Most members of a
+    /// real Y project have no alignment. Before this path, those members had no private-Y, and that
+    /// gap made each candidate branch inert.
+    ///
+    /// This code came out of the CLI, so the GUI runs the same code. A second copy would become
+    /// different over time.
     pub async fn refresh_private_y(&self, guid: SampleGuid, force: bool) -> Result<PrivateYRefresh, AppError> {
         let mut r = PrivateYRefresh::default();
         let alignments = self.list_alignments_for_biosample(guid).await.unwrap_or_default();
@@ -276,8 +309,8 @@ impl App {
             return Ok(r);
         }
         for a in &alignments {
-            // A row whose file is gone is not a computation failure — reporting it as one buries
-            // the real errors.
+            // A row with an absent file is not a fault in the calculation. A report of it as a
+            // fault hides the real errors.
             if !a.bam_path.as_deref().is_some_and(|p| std::path::Path::new(p).exists()) {
                 r.missing_file += 1;
                 continue;

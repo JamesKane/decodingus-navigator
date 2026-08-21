@@ -5,22 +5,29 @@ use super::*;
 impl App {
     // ---- publish -----------------------------------------------------------
 
-    /// Build the alignment (coverage) record JSON for an alignment — the shared
-    /// `com.decodingus.atmosphere.alignment` contract the AppView ingests (floats as strings).
-    /// Links back to the subject's biosample + sequence-run records via their deterministic at://
-    /// URIs in `did`'s repo, so the AppView can tie this coverage summary to its subject.
+    /// Build the JSON of the alignment record, which holds the coverage. The record follows the
+    /// shared `com.decodingus.atmosphere.alignment` contract that the AppView reads, and each float
+    /// is a string.
+    ///
+    /// The record links to the biosample record and the sequence-run records of the subject. It
+    /// uses their fixed at:// URIs in the repository of `did`. So the AppView can join this
+    /// coverage summary to its subject.
     pub(crate) async fn coverage_record(&self, did: &str, alignment_id: i64) -> Result<serde_json::Value, AppError> {
         let cov = self
             .cached_coverage(alignment_id)
             .await?
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("coverage for alignment {alignment_id}"))))?;
         let aln = self.alignment_or_err(alignment_id).await?;
-        // A whole-genome-labeled alignment whose reads are actually Y-scoped — a chrY-only extract,
-        // or a Y test (Big Y / Y Elite) that came in mislabeled WGS — must not publish a coverage
-        // summary. The AppView files an `alignment` record under whole-genome statistics, so its
-        // near-zero autosomal depth and callable footprint would skew the aggregate WGS coverage
-        // distributions. Genuine Y-targeted tests are exempt: their test type is published, so the
-        // AppView cohorts their Y coverage separately from WGS.
+        // An alignment can carry the label of a whole genome while its reads cover only the Y
+        // chromosome. The file can be a chrY extract, or a Y test such as Big Y or Y Elite with a
+        // wrong WGS label. The app must not publish a coverage summary for such an alignment.
+        //
+        // The AppView files an `alignment` record under the statistics of a whole genome. The
+        // autosomal depth and the callable area of these files are almost zero. Those values move
+        // the WGS coverage distribution of the full cohort.
+        //
+        // A true Y test does not have this problem. The app publishes its test type, so the AppView
+        // puts its Y coverage in a group that is separate from WGS.
         let is_wgs = matches!(
             sequence_run::get(self.store.pool(), aln.sequence_run_id)
                 .await?
@@ -62,20 +69,24 @@ impl App {
         Ok(serde_json::to_value(&record)?)
     }
 
-    /// The subject's persisted **consensus** ancestry estimates ([`CONSENSUS_SOURCE_ID`]) — one per
-    /// method (ADMIXTURE / FINE_ADMIXTURE), newest-first. Ancestry is estimated from the pooled
-    /// autosomal consensus (not per alignment), so this is the subject's authoritative breakdown.
-    /// Empty until the consensus ancestry has been estimated.
+    /// The stored **consensus** ancestry estimates of the subject ([`CONSENSUS_SOURCE_ID`]). There
+    /// is one estimate for each method, which is ADMIXTURE or FINE_ADMIXTURE, and the newest comes
+    /// first.
     ///
-    /// Two filters guard what leaves the machine, because federating a wrong breakdown is far worse
-    /// than showing one locally — a PDS record outlives the bug that produced it.
+    /// The code estimates the ancestry from the pooled autosomal consensus, and not from one
+    /// alignment. So this list is the breakdown of the subject with authority. The list is empty
+    /// until an estimate runs.
     ///
-    /// * `RETIRED_METHODS` are **never** published, flag or no flag. The PCA-centroid ancient
-    ///   estimators produced fabricated breakdowns; the estimators are gone, but rows they persisted
-    ///   still sit in databases written before the rebuild. This makes sure a build that can no
-    ///   longer *produce* those numbers can't *publish* them either.
-    /// * The current ancient method (`ANCIENT_ADMIXTURE`) is published only while ancient ancestry
-    ///   is enabled ([`crate::ANCIENT_ANCESTRY_ENABLED`]), keeping that flag a true kill switch.
+    /// Two filters control what leaves the machine. A wrong breakdown on the network is much worse
+    /// than a wrong breakdown on the screen. A PDS record stays after the app corrects the fault.
+    ///
+    /// * The app **never** publishes a method in `RETIRED_METHODS`, with a flag or without one. The
+    ///   ancient estimators that used a PCA centroid gave incorrect breakdowns. Those estimators are
+    ///   gone, but a database from before the rebuild still holds their rows. This filter makes sure
+    ///   that a build which can no longer *make* those numbers can not *publish* them.
+    /// * The app publishes the current ancient method, `ANCIENT_ADMIXTURE`, only while ancient
+    ///   ancestry is on, in [`crate::ANCIENT_ANCESTRY_ENABLED`]. That flag is then a true switch to
+    ///   stop the feature.
     pub(crate) async fn consensus_ancestry_results(
         &self,
         biosample_guid: SampleGuid,
@@ -92,9 +103,11 @@ impl App {
             .collect())
     }
 
-    /// The populationBreakdown record JSON for each consensus ancestry estimate of a subject (one
-    /// per method), linked to the biosample — the shared `com.decodingus.atmosphere.populationBreakdown`
-    /// contract the AppView ingests (floats as strings). Empty if none computed.
+    /// The JSON of a populationBreakdown record for each consensus ancestry estimate of a subject.
+    /// There is one record for each method, and each record links to the biosample.
+    ///
+    /// The record follows the shared `com.decodingus.atmosphere.populationBreakdown` contract that
+    /// the AppView reads, and each float is a string. The list is empty when no estimate exists.
     async fn consensus_ancestry_records(
         &self,
         did: &str,
@@ -111,8 +124,9 @@ impl App {
             .collect()
     }
 
-    /// Build the anonymized biosample record JSON — sex, center, and best-effort Y/mt
-    /// haplogroup calls. Donor identifiers / accession / description are never carried.
+    /// Build the JSON of the anonymous biosample record. It holds the sex, the center, and the Y
+    /// and mt haplogroup calls when they exist. The record never holds a donor identifier, an
+    /// accession, or a description.
     pub(crate) async fn biosample_record(
         &self,
         did: &str,
@@ -124,10 +138,15 @@ impl App {
         let y = self.consensus_haplogroup(biosample_guid, DnaType::Y).await?;
         let mt = self.consensus_haplogroup(biosample_guid, DnaType::Mt).await?;
         let runs = self.list_sequence_runs(biosample_guid).await?;
-        // External identifiers (vendor kits + public catalog ids), a pure field rename onto the wire
-        // shape. Published plaintext — the AppView keeps vendor ids off every public surface via its
-        // `is_public` namespace policy; catalog ids (PGP/IGSR/ENA…) are already public. This is the
-        // deterministic dedup anchor the AppView keys a re-published donor on.
+        // The external identifiers, which are the vendor kits and the public catalog ids. This
+        // step only renames the fields for the wire format.
+        //
+        // The app publishes these values as plaintext. The `is_public` namespace policy of the
+        // AppView keeps a vendor id off each public screen. A catalog id from PGP, IGSR, or ENA is
+        // already public.
+        //
+        // These identifiers are the fixed anchor that the AppView uses to find a duplicate when a
+        // user publishes the same donor again.
         let external_ids = self
             .external_ids(biosample_guid)
             .await?
@@ -145,11 +164,16 @@ impl App {
         Ok(serde_json::to_value(&record)?)
     }
 
-    /// Build a sequence-run characterization record JSON (platform/instrument/test — no files).
-    /// `instrument_id` (the sequencer serial inferred from read names) is published so the AppView
-    /// can grow its crowd-sourced instrument→lab map (`fed.sequencerun.instrument_id` → the
-    /// `instrument_observation`→proposal→accept consensus). It identifies the physical sequencer,
-    /// not the donor — no PII, consistent with the anonymized fed-record posture.
+    /// Build the JSON of a sequence-run record. It holds the platform, the instrument, and the
+    /// test. It holds no file.
+    ///
+    /// The app publishes `instrument_id`, which is the serial number of the sequencer that the code
+    /// deduces from the read names. The AppView uses that value to build its map from an instrument
+    /// to a laboratory. The path is `fed.sequencerun.instrument_id`, then an
+    /// `instrument_observation`, then a proposal, and then the accepted consensus.
+    ///
+    /// The value names the physical sequencer. It does not name the donor. It holds no personal
+    /// data, and it follows the rule for each anonymous federated record.
     pub(crate) async fn sequence_run_record(
         &self,
         did: &str,
@@ -167,18 +191,26 @@ impl App {
             run.mean_insert_size,
             Utc::now().to_rfc3339(),
         )
-        // Publish the known lab so the AppView can display it (and learn the instrument→lab map —
-        // many serials, e.g. PacBio, aren't in its dataset). See [`SequenceRun::sequencing_facility`].
+        // Publish the laboratory when the app knows it. The AppView then shows it, and the
+        // AppView also learns the map from an instrument to a laboratory. Its dataset holds no
+        // entry for many serial numbers, such as the PacBio numbers. See
+        // [`SequenceRun::sequencing_facility`].
         .with_facility(run.sequencing_facility.clone())
-        // Exact sequenced yield + read chemistry back the standardized DTC test label the AppView
-        // renders/groups by (`du_domain::testprofile`). Both `Option`al — older records omit them.
+        // The exact yield and the read chemistry support the standard DTC test label. The AppView
+        // draws that label and groups by it, in `du_domain::testprofile`. Both fields are
+        // `Option`, because an older record holds neither.
         .with_read_profile(run.total_bases, run.read_type.clone());
         Ok(serde_json::to_value(&record)?)
     }
 
-    /// Best-effort consensus haplogroup for a subject arm, for the federated biosample record:
-    /// manual override > genome-level placed terminal > per-run label reconciliation (all via
-    /// [`haplogroup_consensus`](Self::haplogroup_consensus)). `None` when nothing has been called.
+    /// The consensus haplogroup of one lineage of a subject, for the federated biosample record.
+    ///
+    /// The method takes the first value that exists, in this order. First, a manual value from the
+    /// user. Second, the terminal node of the genome-level placement. Third, the reconciled label
+    /// of each run.
+    ///
+    /// [`haplogroup_consensus`](Self::haplogroup_consensus) gives all three values. The method
+    /// returns `None` when no call exists.
     async fn consensus_haplogroup(
         &self,
         biosample_guid: SampleGuid,
@@ -192,22 +224,30 @@ impl App {
 
     /// Build the private-variants record JSON to publish for an alignment/contig.
     ///
-    /// **chrY** publishes only the *filtered, publishable* private-Y set — the whole-chrY de-novo
-    /// calls after backbone subtraction, callable masking, structural-region filtering, and the
-    /// strict novel-marker [`PublishGate`] — tagged as unverified singleton candidates. It never
-    /// publishes the raw de-novo flood (CHM13's Y is haplogroup J; an R sample's J-vs-R divergence
-    /// plus paralog mismaps would otherwise drown AppView curators in non-viable SNPs).
+    /// For **chrY**, the method publishes only the private-Y set that passed each filter.
     ///
-    /// Other contigs (chrM) publish their raw de-novo calls — a small, well-behaved rCRS-relative
-    /// set that needs no tree-relative filtering.
+    /// That set holds the de-novo calls across chrY after four steps. The code removes the backbone
+    /// variants, applies the callable mask, removes the structural regions, and applies the strict
+    /// novel-marker [`PublishGate`]. Each published variant carries the mark of a single unverified
+    /// candidate.
+    ///
+    /// The method never publishes the full de-novo set for chrY. The Y chromosome of CHM13 belongs
+    /// to haplogroup J. Take a sample in haplogroup R. The difference between J and R, and the
+    /// reads that map to the wrong paralog, give many SNPs that no curator can use.
+    ///
+    /// For another contig, such as chrM, the method publishes the raw de-novo calls. That set is
+    /// small, it behaves well, and it is relative to rCRS. It needs no filter against a tree.
     pub(crate) async fn variants_record(&self, alignment_id: i64, contig: &str) -> Result<serde_json::Value, AppError> {
         let variants = if navigator_analysis::contig::is_chr_y(contig) {
             let bucket = self.private_y_variants_self_masked(alignment_id).await?;
-            // QC gate: if the filtered novel count is implausibly high (contamination / low coverage /
-            // reference-build mismatch — e.g. a GRCh38 alignment, whose chrY reference is far noisier
-            // and whose shared-lineage variants the hs1-native tree can't fully resolve), the whole
-            // set is suspect. Publish nothing rather than flood curators with candidates from a sample
-            // we've already flagged; the variants still show in the in-app DISPLAY under the banner.
+            // A quality gate. A count of new variants that is too high shows a problem with the
+            // sample. The causes are contamination, low coverage, and a wrong reference build. A
+            // GRCh38 alignment is one example: its chrY reference holds more noise, and the
+            // hs1-native tree can not resolve each of its shared-lineage variants.
+            //
+            // In that case the full set is doubtful, and the app publishes nothing. A curator must
+            // not receive many candidates from a sample that the app already marked. The app still
+            // shows those variants on the screen, below the warning banner.
             if let Some(warn) = bucket.qc_banner() {
                 eprintln!("private-variants publish skipped for alignment {alignment_id}: {warn}");
                 Vec::new()
@@ -259,9 +299,11 @@ impl App {
         Ok(client.create_record(NS_ALIGNMENT, value, None).await?)
     }
 
-    /// Publish a subject's **consensus** ancestry estimates (one populationBreakdown per method)
-    /// using an explicit `client` (the testable core; production callers use
-    /// [`publish_ancestry`](Self::publish_ancestry)). Returns a ref per record.
+    /// Publish the **consensus** ancestry estimates of a subject with the `client` that the caller
+    /// gives. The method writes one populationBreakdown record for each method.
+    ///
+    /// This function is the core, and a test can call it directly. In the app, callers use
+    /// [`publish_ancestry`](Self::publish_ancestry). The method returns one ref for each record.
     pub async fn publish_ancestry_with(
         &self,
         client: &PdsClient,
@@ -298,11 +340,14 @@ impl App {
             .await?)
     }
 
-    /// Build an ancestral-origin record for one MDKA row, or `None` when it must not be published.
+    /// Build an ancestral-origin record for one MDKA row. The method returns `None` when the app
+    /// must not publish that row.
     ///
-    /// Every field gate lives in [`AncestralOriginRecord::build`] — this only supplies the join
-    /// keys. The lineage is mapped to the AppView's `Y_DNA`/`MT_DNA` spelling; `Auto` is not
-    /// published at all, having no tree to hang from.
+    /// [`AncestralOriginRecord::build`] holds the gate for each field. This method only gives the
+    /// join keys.
+    ///
+    /// The method changes the lineage name to the form that the AppView uses, which is `Y_DNA` or
+    /// `MT_DNA`. It never publishes an `Auto` lineage, because that lineage has no tree.
     pub(crate) async fn ancestral_origin_record(
         &self,
         did: &str,
@@ -343,11 +388,12 @@ impl App {
             .map_err(AppError::from)
     }
 
-    /// Publish one MDKA's ancestral origin using an explicit `client`. `Ok(None)` means the row was
-    /// refused by a gate — a normal outcome, not an error.
+    /// Publish the ancestral origin of one MDKA with the `client` that the caller gives. A result
+    /// of `Ok(None)` shows that a gate refused the row. That result is normal and is not an error.
     ///
-    /// Uses `putRecord` at a deterministic rkey, so correcting an MDKA and re-running overwrites
-    /// that ancestor's record rather than accumulating duplicates of the same man.
+    /// The method calls `putRecord` at a fixed rkey. So a user can correct an MDKA and run the
+    /// method again, and the new record replaces the record of that ancestor. The repository does
+    /// not collect duplicates of one man.
     pub async fn publish_ancestral_origin_with(
         &self,
         client: &PdsClient,
@@ -364,15 +410,19 @@ impl App {
 
     /// Publish the ancestral origins of every subject this workspace may publish for.
     ///
-    /// Enqueues rather than posting directly: the outbox retries, survives being offline, and maps
-    /// a deterministic rkey onto `putRecord`, so re-running after correcting an MDKA overwrites
-    /// that ancestor's record instead of accumulating duplicates. That makes the batch resumable by
-    /// construction — running it twice is a no-op on the AppView.
+    /// The method puts each record in the outbox. It does not send a record directly. The outbox
+    /// tries again after a failure, it continues after an offline period, and it maps a fixed rkey
+    /// onto `putRecord`.
     ///
-    /// `dry_run` builds and gates everything but enqueues nothing, so the counts can be inspected
-    /// before any genealogy leaves the machine. The consent predicate is in
-    /// [`navigator_store::mdka::publishable`]; the field gates are in
-    /// [`AncestralOriginRecord::build`].
+    /// So a user can correct an MDKA and run the batch again, and the new record replaces the
+    /// record of that ancestor. The repository does not collect duplicates. For this reason the
+    /// batch is always safe to run again, and a second run changes nothing on the AppView.
+    ///
+    /// With `dry_run`, the method builds each record and applies each gate, but it adds nothing to
+    /// the outbox. A user can then read the counts before any genealogy leaves the machine.
+    ///
+    /// [`navigator_store::mdka::publishable`] holds the consent test.
+    /// [`AncestralOriginRecord::build`] holds the gate for each field.
     pub async fn publish_ancestral_origins(
         &self,
         lineage: Lineage,
@@ -389,8 +439,8 @@ impl App {
                 report.refused += 1;
                 continue;
             };
-            // What the gates actually let through, so a dry run reports coverage rather than a
-            // bare total.
+            // The count of rows that pass each gate. A dry run then reports the coverage, and not
+            // only a total.
             if value.get("originPlace").is_some() {
                 report.with_place += 1;
             } else if value.get("originCountry").is_some() {
@@ -425,10 +475,14 @@ impl App {
     }
 }
 
-/// Fold a [`CoverageResult`]'s two per-contig views (samtools-style stats +
-/// callable-state counts) into the shared lexicon's `contigs[]`, paired by contig
-/// name — the same join `export::coverage_tsv` uses. Contigs present in the stats
-/// but missing callable counts (shouldn't happen) fall back to zeros.
+/// Join the two views that a [`CoverageResult`] holds for each contig, and write the result to the
+/// `contigs[]` field of the shared lexicon.
+///
+/// The two views are the statistics in the samtools form and the counts of each callable state. The
+/// key of the join is the contig name. `export::coverage_tsv` uses the same join.
+///
+/// A contig can appear in the statistics with no callable count. That state must not occur, and the
+/// function then writes zeros.
 fn contig_metrics(cov: &CoverageResult) -> Vec<ContigMetrics> {
     cov.contig_coverage_stats
         .iter()
@@ -474,8 +528,8 @@ mod tests {
         }
     }
 
-    /// chrY carrying millions of reads, autosomes/chrX only a trace of mismapped ones — the
-    /// Y-only-extract shape.
+    /// The shape of a chrY extract. The chrY contig holds millions of reads. Each autosome and the
+    /// X chromosome hold only a few reads that map to the wrong place.
     fn y_scoped_coverage() -> CoverageResult {
         CoverageResult {
             contig_coverage_stats: vec![cstat("chrY", 3_000_000), cstat("chr1", 30), cstat("chrX", 12)],
@@ -498,8 +552,8 @@ mod tests {
         .id
     }
 
-    /// A WGS-labeled but Y-scoped alignment must not publish a coverage summary — it would poison
-    /// the AppView's whole-genome statistics.
+    /// An alignment with a WGS label that holds only Y reads must not publish a coverage summary.
+    /// Such a summary makes the whole-genome statistics of the AppView incorrect.
     #[tokio::test]
     async fn wgs_y_scoped_coverage_is_withheld() {
         let app = App::new(Store::open_in_memory().await.unwrap());
@@ -511,8 +565,8 @@ mod tests {
         assert!(matches!(err, AppError::Conflict(_)), "expected Conflict, got {err:?}");
     }
 
-    /// A Y-targeted test (Big Y) with the *same* Y-scoped shape publishes normally — its Y coverage
-    /// is expected and the AppView cohorts it apart from WGS.
+    /// A Y test, such as Big Y, has the *same* shape and publishes as usual. Its Y coverage is
+    /// correct, and the AppView puts it in a group that is separate from WGS.
     #[tokio::test]
     async fn y_targeted_coverage_still_publishes() {
         let app = App::new(Store::open_in_memory().await.unwrap());

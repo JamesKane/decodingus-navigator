@@ -1,12 +1,19 @@
-//! Test-type identification — Rust port of the Scala `TestType` catalog + `TestTypeInference`.
+//! Find out which test made an alignment. This is the Rust port of the Scala `TestType` catalog
+//! and its `TestTypeInference`.
 //!
-//! The header probe ([`crate::probe`]) only knows *platform* (PacBio→HiFi, Illumina→WGS, …). It
-//! can't tell a **targeted** test (FTDNA Big Y, Full Genomes Y Elite, YSEQ, an mtFull run) from a
-//! whole-genome one — those look the same in the SAM header. The Scala app distinguished them by
-//! **coverage shape**: a Big Y BAM has reads piled on chrY with the autosomes near-empty; an mtFull
-//! run piles on chrM. We reproduce that cheaply from the **BAI index** (per-reference mapped-record
-//! counts, O(contigs) — the same fast path [`crate::sex`] uses), normalized to a coverage proxy, and
-//! combine it with the platform + an optional vendor hint to pick a test-type code.
+//! The header probe ([`crate::probe`]) knows the *platform* alone: PacBio gives HiFi, Illumina
+//! gives WGS, and so on. It can not separate a **targeted** test from a whole-genome one, because
+//! the two look the same in a SAM header. An FTDNA Big Y, a Full Genomes Y Elite, a YSEQ test and
+//! an mtFull run are all targeted.
+//!
+//! The Scala app separated them by the **shape of the coverage**. A Big Y BAM piles its reads on
+//! chrY, and its autosomes are almost empty. An mtFull run piles them on chrM.
+//!
+//! This module gets that shape at low cost, from the **BAI index**. That index holds the count of
+//! mapped records of each reference, at O(contigs), and it is the same fast path that
+//! [`crate::sex`] uses. The code normalizes those counts to a coverage proxy. It then puts that
+//! together with the platform, and with a vendor hint when there is one, and takes a test-type
+//! code.
 
 use std::path::Path;
 
@@ -15,12 +22,14 @@ use noodles::csi::binning_index::ReferenceSequence as _;
 
 use crate::contig;
 
-// Test-type codes are the canonical `navigator_domain::testtype` catalog strings — display names,
-// target region, and the UI picker live there. This module only decides *which* code a BAM's
-// coverage shape implies, emitting those code literals (validated against the catalog by a test).
+// A test-type code is one of the canonical strings of the `navigator_domain::testtype` catalog.
+// The display name, the target region and the UI picker all live there. This module decides
+// *which* code the coverage shape of a BAM implies, and nothing more. It writes those code
+// literals out, and a test checks them against the catalog.
 
-/// Per-chromosome-group coverage proxies (reads × read-length ÷ group length), the same estimate
-/// the Scala `ChromosomeCoverageStats` used. `None` group ⇒ no such contig in the reference.
+/// The coverage proxy of each chromosome group, as reads × read length ÷ group length. That is the
+/// same estimate that the Scala `ChromosomeCoverageStats` used. A group of `None` means that the
+/// reference holds no such contig.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CoverageProfile {
     pub autosome_depth: f64,
@@ -30,15 +39,21 @@ pub struct CoverageProfile {
     pub has_autosomes: bool,
 }
 
-/// Scala `ASSUMED_READ_LENGTH` — coverage estimate when the true mean read length is unknown.
+/// The `ASSUMED_READ_LENGTH` of the Scala code. The estimate uses it when nobody knows the true
+/// mean read length.
 const ASSUMED_READ_LENGTH: u64 = 150;
 
-// Coverage thresholds. The Scala used absolute cutoffs (`yCov>1 && autoCov<1`), but real Big Y
-// BAMs aligned to the whole genome carry ~1-2× off-target autosomal reads (a real FTDNA Big Y here
-// measured Y 51× / autosome 1.8×), which the absolute test mislabels as low-pass WGS. We instead key
-// targeted-Y off the **Y:autosome enrichment ratio** — read-length-independent, so it also survives
-// the long-read coverage underestimate — and require autosomes essentially absent for targeted-MT
-// (mtDNA is naturally high-copy, so a WGS sample shows huge mt depth without being an mtFull test).
+// The coverage thresholds. The Scala code used absolute cutoffs, at `yCov>1 && autoCov<1`. But a
+// real Big Y BAM that somebody aligned to the whole genome carries 1 to 2x of autosomal reads that
+// are off target. A real FTDNA Big Y here measured Y at 51x and the autosomes at 1.8x. The
+// absolute test reads that as a low-pass WGS run.
+//
+// This code instead keys a targeted-Y test off the **enrichment ratio of Y against the
+// autosomes**. That ratio does not depend on the read length, so it also survives the low coverage
+// estimate that a long read gives.
+//
+// For a targeted-MT test it needs the autosomes to be almost absent. mtDNA is naturally
+// high-copy. So a WGS sample shows a very large mt depth, and it is not an mtFull test.
 const Y_PRESENT: f64 = 1.0; // Y depth floor below which we don't call targeted-Y at all
 const Y_ENRICH: f64 = 5.0; // Y:autosome ratio that marks a Y-targeted capture
 const MT_PRESENT: f64 = 10.0;
@@ -47,10 +62,14 @@ const LONG_READ_LEN: u64 = 1000;
 const WES_AUTOSOME_DEPTH: f64 = 50.0;
 const LOW_PASS_AUTOSOME_DEPTH: f64 = 5.0;
 
-/// Build a [`CoverageProfile`] from a BAM's BAI index (no read scan). `mean_read_length` refines
-/// the estimate when known (e.g. from `library_stats`); else [`ASSUMED_READ_LENGTH`]. Returns `None`
-/// when the index is absent/unreadable (e.g. CRAM — `.crai` carries no per-reference counts), so the
-/// caller keeps the header/platform result.
+/// Build a [`CoverageProfile`] from the BAI index of a BAM. It scans no read.
+///
+/// `mean_read_length` makes the estimate better when somebody knows it, for example from
+/// `library_stats`. Without it the code uses [`ASSUMED_READ_LENGTH`].
+///
+/// It returns `None` when the index is absent, or when the code can not read it. A CRAM is one
+/// such case, because a `.crai` holds no count of each reference. The caller then keeps the result
+/// from the header and the platform.
 pub fn coverage_profile_from_bai(bam_path: &Path, mean_read_length: Option<u64>) -> Option<CoverageProfile> {
     let header = crate::reader::read_header(bam_path, None).ok()?;
     let bai_path = bam_path.with_extension("bam.bai");
@@ -100,14 +119,15 @@ pub fn coverage_profile_from_bai(bam_path: &Path, mean_read_length: Option<u64>)
 /// Map a free-text vendor hint to a specific targeted-Y test code (else the honest generic).
 fn targeted_y_for_vendor(vendor_hint: Option<&str>) -> &'static str {
     match vendor_hint.map(|v| v.to_lowercase()) {
-        // FTDNA only sells Big Y, but the *generation* (500 vs 700) isn't in the vendor token —
-        // it comes from the `@RG LB` label ([`crate::probe`], passed as `big_y_label`) or, on older
-        // headers that omit it, from the callable-chrY footprint resolved after analysis. Stay
-        // generic here so neither generation is guessed from the vendor name alone.
+        // FTDNA sells Big Y alone. But the vendor token does not carry the *generation*, which is
+        // 500 or 700. That comes from the `@RG LB` label, which [`crate::probe`] reads and passes
+        // in as `big_y_label`. On an older header that leaves that label out, it comes instead
+        // from the callable-chrY footprint, which the code resolves after the analysis. So stay
+        // generic here, and do not guess a generation from the vendor name alone.
         Some(v) if v.contains("ftdna") || v.contains("familytreedna") => "TARGETED_Y",
         Some(v) if v.contains("full genomes") || v.contains("fullgenomes") => "Y_ELITE",
         Some(v) if v.contains("yseq") => "Y_PRIME",
-        // An unknown vendor isn't mislabeled to a specific product.
+        // An unknown vendor is not mislabeled to a specific product.
         _ => "TARGETED_Y",
     }
 }
@@ -128,10 +148,12 @@ fn wgs_for_platform(platform: Option<&str>, mean_read_length: Option<u64>) -> &'
     }
 }
 
-/// Infer the test type from coverage shape + platform + vendor hint (Scala `inferFromCoverage`).
+/// Infer the test type from the coverage shape, the platform and the vendor hint. This is the
+/// Scala `inferFromCoverage`.
 ///
-/// With no coverage profile (CRAM / unindexed), falls back to the platform-only WGS guess — the
-/// pre-existing probe behavior. Returns `None` only when nothing at all is known.
+/// With no coverage profile it falls back to the WGS guess from the platform alone. That happens
+/// for a CRAM, and for a file with no index. The probe behaved that way before this code. It
+/// returns `None` only when the code knows nothing at all.
 pub fn infer_test_type(
     profile: Option<&CoverageProfile>,
     platform: Option<&str>,
@@ -139,8 +161,8 @@ pub fn infer_test_type(
     mean_read_length: Option<u64>,
     big_y_label: Option<&str>,
 ) -> Option<String> {
-    // An explicit FTDNA Big Y generation from the header (`@RG LB`) is authoritative — it's FTDNA's
-    // own product label, so it overrides the coverage-shape guess entirely.
+    // An FTDNA Big Y generation that the header states, in `@RG LB`, is authoritative. It is the
+    // own product label of FTDNA, so it wins over the guess from the coverage shape.
     if let Some(code) = big_y_label {
         return Some(code.to_string());
     }
@@ -151,7 +173,8 @@ pub fn infer_test_type(
 
     // "Autosomal coverage present" = depth above the floor AND autosomal contigs exist at all.
     let has_autosome = p.has_autosomes && p.autosome_depth > AUTOSOME_PRESENT;
-    // Y:autosome enrichment — the targeted-Y signal. No autosomes (Y-only reference) ⇒ infinite.
+    // The enrichment of Y against the autosomes. That is the signal of a targeted-Y test. With no
+    // autosome at all, on a Y-only reference, it is infinite.
     let y_ratio = if p.autosome_depth > 0.0 {
         p.y_depth / p.autosome_depth
     } else {
@@ -161,8 +184,9 @@ pub fn infer_test_type(
     // Targeted-Y: Y meaningfully covered AND strongly enriched over the autosomes (off-target
     // autosomal reads are normal), or a Y-only reference (no autosomal contigs).
     let targeted_y = p.y_depth > Y_PRESENT && (!has_autosome || y_ratio > Y_ENRICH);
-    // Targeted-MT: only mtDNA covered — autosomes essentially absent and no Y (mtDNA is naturally
-    // high-copy, so a WGS sample shows huge mt depth without being an mtFull test).
+    // A targeted-MT test covers mtDNA alone. The autosomes are almost absent, and there is no Y.
+    // mtDNA is naturally high-copy. So a WGS sample shows a very large mt depth, and it is not an
+    // mtFull test.
     let targeted_mt = !targeted_y && p.mt_depth > MT_PRESENT && !has_autosome && p.y_depth <= Y_PRESENT;
 
     let code = if targeted_y {
@@ -170,7 +194,7 @@ pub fn infer_test_type(
     } else if targeted_mt {
         "MT_FULL_SEQUENCE"
     } else if has_autosome && p.y_depth <= Y_PRESENT && p.autosome_depth > WES_AUTOSOME_DEPTH {
-        // Very high autosomal depth with no Y signal — exome capture.
+        // A very high autosomal depth, with no Y signal. That is an exome capture.
         "WES"
     } else if has_autosome && p.autosome_depth < LOW_PASS_AUTOSOME_DEPTH {
         "WGS_LOW_PASS"
@@ -195,10 +219,10 @@ mod tests {
 
     #[test]
     fn targeted_y_maps_vendor_or_generic() {
-        // Y-only reference (no autosomes) — clean targeted-Y.
+        // A Y-only reference, with no autosome. That is a clean targeted-Y test.
         let p = prof(0.0, 35.0, 0.0, false);
-        // FTDNA without a generation label stays generic — 500 vs 700 isn't in the vendor token
-        // (the header `@RG LB` or the callable-chrY footprint decides it).
+        // An FTDNA test with no generation label stays generic. The vendor token does not say 500
+        // or 700. The header `@RG LB`, or the callable-chrY footprint, decides that.
         assert_eq!(
             infer_test_type(Some(&p), Some("ILLUMINA"), Some("FamilyTreeDNA"), None, None).as_deref(),
             Some("TARGETED_Y")
@@ -232,7 +256,8 @@ mod tests {
 
     #[test]
     fn explicit_big_y_label_overrides_coverage_shape() {
-        // Even a WGS-looking coverage shape yields the header's Big Y generation when @RG LB said so.
+        // The header wins. Even a coverage shape that looks like WGS gives the Big Y generation
+        // of the header, when `@RG LB` states one.
         let wgs_shape = prof(30.0, 15.0, 1000.0, true);
         assert_eq!(
             infer_test_type(Some(&wgs_shape), Some("ILLUMINA"), None, None, Some("BIG_Y_700")).as_deref(),
@@ -242,8 +267,9 @@ mod tests {
 
     #[test]
     fn targeted_y_by_enrichment_with_offtarget_autosomes() {
-        // Real Full Genomes Y Elite shape (B6564_Kane.bam): Y 51× over autosome 1.8× off-target —
-        // absolute "autosome<1" would mislabel this WGS_LOW_PASS; the 28× enrichment marks it.
+        // The shape of a real Full Genomes Y Elite run, from B6564_Kane.bam. Y is at 51x, over
+        // autosomes at 1.8x that are off target. An absolute test of "autosome<1" would read this
+        // as WGS_LOW_PASS. The enrichment of 28x marks it correctly.
         let p = prof(1.84, 51.0, 7.0, true);
         assert_eq!(
             infer_test_type(Some(&p), None, Some("Full Genomes"), None, None).as_deref(),
@@ -273,7 +299,8 @@ mod tests {
             infer_test_type(Some(&male), Some("ILLUMINA"), None, None, None).as_deref(),
             Some("WGS")
         );
-        // Female WGS: y≈0, mt high — the autosome-present guard keeps it WGS, not targeted-MT.
+        // A female WGS run. Y is near 0, and mt is high. The guard that needs the autosomes to be
+        // present keeps this as WGS, and not as targeted-MT.
         let female = prof(30.0, 0.02, 1200.0, true);
         assert_eq!(
             infer_test_type(Some(&female), Some("ILLUMINA"), None, None, None).as_deref(),
@@ -312,8 +339,8 @@ mod tests {
 
     #[test]
     fn every_emitted_code_is_in_the_domain_catalog() {
-        // The codes we emit must be recognized by the canonical catalog (else the UI picker /
-        // display_name would show a raw code). Exercise every branch's output.
+        // The canonical catalog must know every code that this module writes. Else the UI picker,
+        // and display_name, would show a raw code. This test covers the output of every branch.
         let shapes = [
             (prof(0.0, 35.0, 0.0, false), Some("FamilyTreeDNA")),
             (prof(0.0, 35.0, 0.0, false), Some("Full Genomes")),

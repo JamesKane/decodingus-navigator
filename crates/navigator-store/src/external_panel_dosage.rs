@@ -1,7 +1,9 @@
-//! Per-source autosomal 1240K panel dosages from a trusted external caller (a GATK4 / 1240K
-//! EIGENSTRAT call set). One row per (biosample, source_label). `dosages` is opaque JSON (the app's
-//! resolved `Vec<SiteGenotype>`, CHM13-oriented); the store just persists and lists it so the
-//! autosomal consensus can pool it with no CRAM decode. See migration `0037`.
+//! The autosomal 1240K panel dosages of each source, from a trusted external caller. Such a caller
+//! is a GATK4 or 1240K EIGENSTRAT call set. Each (biosample, source_label) pair has one row.
+//!
+//! `dosages` is opaque JSON: the app's resolved `Vec<SiteGenotype>`, oriented to CHM13. The store
+//! keeps it and lists it, and nothing more, so the autosomal consensus can pool it with no CRAM
+//! decode. See migration `0037`.
 
 use du_domain::ids::SampleGuid;
 use sqlx::SqlitePool;
@@ -54,8 +56,8 @@ pub async fn list_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<V
     Ok(rows)
 }
 
-/// Remove all external panel-dosage rows for a biosample (e.g. clearing a subject's analysis).
-/// Returns the number removed.
+/// Remove every external panel-dosage row of a biosample, as when a user clears a subject's
+/// analysis. It returns the count that it removed.
 pub async fn delete_for_biosample(pool: &SqlitePool, guid: SampleGuid) -> Result<u64, StoreError> {
     let affected = sqlx::query("DELETE FROM external_panel_dosage WHERE biosample_guid = ?")
         .bind(guid.0.to_string())

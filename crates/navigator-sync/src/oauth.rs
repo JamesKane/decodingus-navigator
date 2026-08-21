@@ -1,12 +1,14 @@
-//! AT Proto OAuth for a **public/native client** (plan §7): PKCE only (no client
-//! assertion), a loopback redirect, and tokens in the OS keychain. Reuses the shared
-//! `du-atproto` primitives — the same handshake as the decodingus web client, swapping
-//! the confidential `par_form`/`token_form` for the `_public` (PKCE-only) builders and
-//! catching the redirect on a local `127.0.0.1` server instead of a web route.
+//! AT Proto OAuth for a **public/native client** (plan §7). It uses PKCE alone, with no client
+//! assertion, a loopback redirect, and tokens in the OS keychain.
 //!
-//! The interactive [`login`] needs a live PDS (an env-gated integration test drives it
-//! against the test PDS); the local pieces — callback parsing, the loopback server,
-//! redirect URIs — are unit-tested here.
+//! It reuses the shared `du-atproto` primitives, and the handshake is the same as the one in the
+//! decodingus web client. It makes two changes. It takes the `_public` builders, which use PKCE
+//! alone, in place of the confidential `par_form` and `token_form`. And it takes the redirect on a
+//! local `127.0.0.1` server, and not on a web route.
+//!
+//! The interactive [`login`] needs a live PDS, and an integration test behind an env gate drives
+//! it against the test PDS. The local parts have unit tests here: the callback parser, the
+//! loopback server, and the redirect URIs.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -26,8 +28,9 @@ use crate::tokens::Session;
 pub enum ClientId {
     /// A hosted `client-metadata.json` URL the authorization server fetches (production).
     Hosted(String),
-    /// The atproto **loopback** dev client — no hosted document; the `client_id` is
-    /// derived from the loopback redirect URI at runtime (`http://localhost?redirect_uri=…`).
+    /// The atproto **loopback** dev client. It has no hosted document. The code builds the
+    /// `client_id` from the loopback redirect URI at run time, as
+    /// `http://localhost?redirect_uri=…`.
     Loopback,
 }
 
@@ -116,7 +119,7 @@ pub fn parse_callback_query(target: &str) -> CallbackParams {
     params
 }
 
-/// Minimal percent-decode (`+` -> space, `%XX` -> byte) for redirect query values.
+/// A small percent-decode (`+` to space, `%XX` to a byte) for a redirect query value.
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -158,7 +161,7 @@ impl LoopbackServer {
         self.listener.local_addr().map(|a| a.port()).unwrap_or(0)
     }
 
-    /// Block until the redirect arrives, parse its query, and reply with a closing page.
+    /// Block until the redirect arrives, parse its query, and reply with a page that closes.
     pub fn wait(self) -> Result<CallbackParams, SyncError> {
         let (mut stream, _) = self.listener.accept()?;
         let mut request_line = String::new();
@@ -179,11 +182,14 @@ impl LoopbackServer {
     }
 }
 
-/// POST a form with a DPoP proof, retrying once with the server-supplied nonce (the
-/// AT Proto `use_dpop_nonce` dance). The proof's `htu` is the server's **canonical**
-/// endpoint (from metadata), which can differ from the transport `post_url` you connect
-/// over (e.g. a local container reached by IP but validating against its https issuer).
-/// Returns the JSON body on success.
+/// POST a form with a DPoP proof. On a failure it tries once more, with the nonce that the server
+/// supplied. That is the AT Proto `use_dpop_nonce` exchange.
+///
+/// The proof's `htu` is the server's **canonical** endpoint, from its metadata. That can be
+/// different from the transport `post_url` that you connect over. An example is a local container
+/// that you reach by IP, but that checks against its https issuer.
+///
+/// It returns the JSON body on success.
 async fn post_with_dpop(
     http: &reqwest::Client,
     key: &EcKey,
@@ -223,8 +229,8 @@ async fn post_with_dpop(
     }
 }
 
-/// The server's error body (usually `{"error":"invalid_grant",...}`), trimmed to keep the message
-/// readable — it's the difference between "your session expired, re-sign-in" and a real fault.
+/// The server's error body, which is usually `{"error":"invalid_grant",...}`, trimmed to keep the
+/// message readable. It separates "your session expired, sign in again" from a real fault.
 fn truncate_body(body: &str) -> String {
     let b = body.trim();
     if b.len() > 200 {
@@ -258,9 +264,9 @@ pub async fn login_default(http: &reqwest::Client, config: &OAuthConfig, handle:
     login(http, &Resolver::new(), config, handle).await
 }
 
-/// Run the full public-client OAuth login for `handle` (a handle or DID): resolve →
-/// discover → PAR → browser authorize → loopback callback → token exchange. Returns the
-/// authenticated [`Session`] (the caller persists it via `TokenStore`).
+/// Run the full public-client OAuth login for `handle`, which is a handle or a DID. The steps are:
+/// resolve, discover, PAR, authorize in the browser, take the loopback callback, and exchange the
+/// token. It returns the authenticated [`Session`], and the caller stores it with `TokenStore`.
 pub async fn login(
     http: &reqwest::Client,
     resolver: &Resolver,
@@ -304,7 +310,7 @@ pub async fn login(
 
     open_browser(&authorize_url(&meta.authorization_endpoint, &client_id, request_uri));
 
-    // Wait for the redirect on the loopback server (blocking accept off the runtime).
+    // Wait for the redirect on the loopback server. The accept blocks, off the runtime.
     let params = tokio::task::spawn_blocking(move || server.wait())
         .await
         .map_err(|e| SyncError::Oauth(format!("callback task failed: {e}")))??;
@@ -348,11 +354,14 @@ pub async fn login(
     })
 }
 
-/// Refresh-token grant (plan §7: rotation — the old code discarded the refresh token).
-/// Re-discovers the auth server from the session's PDS and exchanges the stored refresh
-/// token for a new access token, DPoP-bound to the **same** key (so resource tokens stay
-/// valid). Returns a new [`Session`]; the refresh token is rotated when the server issues
-/// a new one, otherwise the existing one is carried forward.
+/// The refresh-token grant (plan §7, rotation: the old code threw the refresh token away).
+///
+/// It discovers the auth server again from the session's PDS, and exchanges the stored refresh
+/// token for a new access token. That token is DPoP-bound to the **same** key, so a resource token
+/// stays valid.
+///
+/// It returns a new [`Session`]. When the server issues a new refresh token, that one replaces the
+/// old. If not, the session carries the existing one forward.
 pub async fn refresh(http: &reqwest::Client, session: &Session) -> Result<Session, SyncError> {
     if session.refresh_token.is_empty() {
         return Err(SyncError::Oauth("session has no refresh token".into()));
@@ -436,7 +445,7 @@ mod tests {
     /// Live discovery + public-client PAR (DPoP + use_dpop_nonce) against a local atproto
     /// PDS container (see documents/atmosphere/13-Local-PDS-Testing.md). Exercises this
     /// crate's `post_with_dpop` (canonical htu vs transport URL) and loopback client_id.
-    /// The full browser→token loop needs HTTPS at the canonical host, so it's a manual smoke.
+    /// The full browser→token loop needs HTTPS at the canonical host, so it is a manual smoke.
     #[tokio::test]
     #[ignore = "requires PDS_TEST_URL (local atproto PDS container)"]
     async fn discovery_and_par_against_live_pds() {
@@ -449,7 +458,8 @@ mod tests {
         let pds = pds.trim_end_matches('/').to_string();
         let http = reqwest::Client::new();
 
-        // Fetch metadata from the reachable base (not the https issuer a container won't terminate).
+        // Fetch the metadata from the base that you can reach. Do not use the https issuer, which
+        // a container does not answer.
         let meta: AuthServerMetadata = http
             .get(format!("{pds}/.well-known/oauth-authorization-server"))
             .send()

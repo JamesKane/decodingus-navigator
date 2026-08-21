@@ -1,14 +1,16 @@
 //! Build an ancestry reference panel from the 1000 Genomes-on-CHM13 VCFs.
 //!
-//! The VCFs (`1KGP.CHM13v2.0.chr*.recalibrated.snp_indel.pass.withafinfo.vcf.gz`) carry
-//! per-super-population allele counts in INFO (`AC_<POP>_unrel`/`AN_<POP>_unrel` for
-//! AFR/AMR/EAS/EUR/SAS), so per-population alt-allele frequency = `AC/AN` straight from INFO —
-//! no per-sample genotype parsing. We keep biallelic SNPs where every population has data,
-//! score each by Nei's Fst across the five populations, and emit the top-`max-sites` (above
-//! `min-fst`) as a [`navigator_analysis::ancestry::AncestryPanel`] (bincode), plus a TSV for
-//! inspection.
+//! The VCFs are `1KGP.CHM13v2.0.chr*.recalibrated.snp_indel.pass.withafinfo.vcf.gz`. Each one
+//! carries the allele counts of every super-population in INFO, as `AC_<POP>_unrel` and
+//! `AN_<POP>_unrel`, for AFR, AMR, EAS, EUR, and SAS. So the alt-allele frequency of a population
+//! is `AC/AN`, straight from INFO, and nothing has to parse a genotype.
 //!
-//! Fetch the VCFs to a local mirror first (multi-GB; see documents/chm13-reference-resources.md):
+//! The builder keeps a biallelic SNP where every population has data. It scores each one by Nei's
+//! Fst across the five populations. It then writes the best `max-sites` of those above `min-fst`,
+//! as a bincode [`navigator_analysis::ancestry::AncestryPanel`], with a TSV to read.
+//!
+//! Fetch the VCFs to a local mirror first. They run to many GB; see
+//! documents/chm13-reference-resources.md.
 //!   aws s3 cp --no-sign-request --recursive \
 //!     s3://human-pangenomics/T2T/CHM13/assemblies/variants/1000_Genomes_Project/chm13v2.0/unrelated_samples_2504/allele_freq/ <dir>
 
@@ -46,8 +48,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Build the AIMs panel (per-super-pop allele frequencies at high-Fst sites) from the
-    /// sites-only AF VCFs.
+    /// Build the AIMs panel from the sites-only AF VCFs. The panel holds the allele frequency of
+    /// each super-population, at the sites with a high Fst.
     Panel(PanelArgs),
     /// Build PCA loadings from a genotype matrix (bcftools query output) + sample/pop metadata.
     Pca(pca::PcaArgs),
@@ -58,12 +60,12 @@ enum Cmd {
     HapPanel(hap_panel::HapPanelArgs),
     /// Build the ancient deep-source (WHG/ANF/Steppe) AF panel from the AADR genotype matrix.
     AncientPanel(pca::AncientPanelArgs),
-    /// Run the ancient panel's validation gates (simulate reference individuals, check the fit).
-    /// The ancient asset must not be published until this passes.
+    /// Run the check gates of the ancient panel. They simulate reference individuals and test the
+    /// fit. Nobody may publish the ancient asset until this passes.
     ValidateAncient(validate_ancient::ValidateAncientArgs),
-    /// Score the chromosome painter (copying LAI) against known truth: hold reference individuals
-    /// out of the panel, paint them, and report per-site accuracy — with `--sweep` to calibrate the
-    /// painter's knobs numerically instead of by eye.
+    /// Score the chromosome painter, which is the copying LAI, against a known truth. It holds
+    /// reference individuals out of the panel, paints them, and reports the accuracy at each site.
+    /// With `--sweep` it calibrates the painter's knobs by number, and not by eye.
     ValidateLai(lai_validate::LaiValidateArgs),
     /// Build the IBD genetic-map asset from a CHM13-lifted recombination map.
     GeneticMap(genetic_map::GeneticMapArgs),
@@ -73,14 +75,17 @@ enum Cmd {
     /// Stage 3 of the archaic panel (CHM13): re-join the lifted coordinates, orient against the
     /// CHM13 reference, apply the African-outgroup filter, and write `archaic_markers_<build>.bin`.
     ArchaicPanel(archaic::ArchaicPanelArgs),
-    /// Build the archaic percentile reference: score every 1kGP sample through the same marker
-    /// count the app runs, grouped per population, so a subject's count has a cohort to sit in.
+    /// Build the archaic percentile reference. It scores every 1kGP sample through the same marker
+    /// count that the app runs, in a group for each population. A subject's count then has a cohort
+    /// to sit in.
     ArchaicDist(archaic_dist::ArchaicDistArgs),
     /// Tier B asset 2: the African-outgroup position track used to strip shared variants.
     ArchaicOutgroup(archaic_tierb::ArchaicOutgroupArgs),
-    /// Tier B asset 3: genome-wide archaic diagnostic sites for labelling called segments.
+    /// Tier B asset 3: the genome-wide archaic diagnostic sites, which give a label to a called
+    /// segment.
     ArchaicClassify(archaic_tierb::ArchaicClassifyArgs),
-    /// Tier B callability mask: callable bases per window, from the archaic FilterBed intersection.
+    /// The Tier B callability mask: the count of callable bases in each window, from the
+    /// intersection of the archaic FilterBed masks.
     ArchaicCallable(archaic_tierb::ArchaicCallableArgs),
     /// Build the chip-compatible IBD panel (multi-build, palindrome-free) from a sites table.
     IbdPanel(ibd_panel::IbdPanelArgs),
@@ -105,7 +110,7 @@ struct PanelArgs {
     /// Restrict to these chromosomes (comma-separated, e.g. `chr1,chr2`); default all.
     #[arg(long)]
     chroms: Option<String>,
-    /// Also write an inspection TSV (contig, pos, ref, alt, fst, per-pop AF).
+    /// Also write a TSV to read: contig, pos, ref, alt, fst, and the AF of each population.
     #[arg(long)]
     sites_tsv: Option<PathBuf>,
 }
@@ -121,7 +126,7 @@ struct Candidate {
     fst: f64,
 }
 
-// Min-heap ordering by Fst (so the smallest Fst is popped when the heap overflows).
+// A min-heap order by Fst, so the heap drops the smallest Fst when it is full.
 impl PartialEq for Candidate {
     fn eq(&self, other: &Self) -> bool {
         self.fst == other.fst
@@ -229,7 +234,8 @@ fn build_panel(args: PanelArgs) -> Result<()> {
     Ok(())
 }
 
-/// Per-chromosome VCF files in `dir`, optionally restricted to `chroms` (by filename token).
+/// The VCF file of each chromosome in `dir`. `chroms` can limit the set, and the match uses a
+/// token of the file name.
 fn vcf_files(dir: &Path, chroms: Option<&[String]>) -> Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = fs::read_dir(dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -247,7 +253,7 @@ fn vcf_files(dir: &Path, chroms: Option<&[String]>) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// Scan one VCF, pushing eligible high-Fst SNP sites into the bounded heap. Returns
+/// Scan one VCF, and put each high-Fst SNP site that qualifies into the bounded heap. It returns
 /// `(sites_with_full_population_data, sites_above_min_fst)`.
 fn scan_file(
     path: &Path,
@@ -283,8 +289,8 @@ fn scan_file(
     Ok((seen, kept))
 }
 
-/// Parse a VCF data line into a [`Candidate`], or `None` if it's not a biallelic SNP with full
-/// per-population allele-count data.
+/// Parse a VCF data line into a [`Candidate`]. It gives `None` when the line is not a biallelic
+/// SNP, or when a population has no allele-count data.
 fn parse_record(line: &str) -> Option<Candidate> {
     let mut f = line.split('\t');
     let contig = f.next()?;
@@ -320,8 +326,8 @@ fn single_base(s: &str) -> Option<char> {
     matches!(c, 'A' | 'C' | 'G' | 'T').then_some(c)
 }
 
-/// Per-population alt-allele frequency from `AC_<POP>_unrel`/`AN_<POP>_unrel` in INFO. Returns
-/// `None` unless every population has `AN > 0` and a parseable `AC`.
+/// The alt-allele frequency of each population, from `AC_<POP>_unrel` and `AN_<POP>_unrel` in
+/// INFO. It returns `None` unless every population has `AN > 0` and an `AC` that parses.
 fn parse_info_freqs(info: &str, pops: &[&str]) -> Option<Vec<f32>> {
     let map: HashMap<&str, &str> = info.split(';').filter_map(|kv| kv.split_once('=')).collect();
     let mut freqs = Vec::with_capacity(pops.len());

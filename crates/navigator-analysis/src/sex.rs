@@ -1,11 +1,14 @@
-//! Sex inference — Rust port of the Scala `SexInference`. Infers biological sex from
-//! the chrX:autosome coverage ratio: males (XY) sit near 0.5×, females (XX) near 1.0×.
-//! Drives per-contig ploidy for variant calling.
+//! Sex inference. It is the Rust port of the Scala `SexInference`. It infers the biological sex
+//! from the coverage ratio of chrX against the autosomes. A male, at XY, sits near 0.5x. A female,
+//! at XX, sits near 1.0x. The result sets the ploidy of each contig for the variant caller.
 //!
-//! For BAM, uses the **BAI index metadata** (per-reference aligned-record counts) — the
-//! Scala fast path — so it is O(contigs), not a read scan; an unindexed BAM is an error.
-//! CRAM indexes (`.crai`) carry no per-reference counts, so CRAM falls back to a single
-//! record scan tallying mapped reads per chromosome (O(reads), `reference` required).
+//! For a BAM it uses the metadata of the **BAI index**, which holds the count of aligned records
+//! of each reference. That was the fast path in Scala too, so this costs O(contigs), and it is not
+//! a scan over the reads. A BAM with no index gives an error.
+//!
+//! A CRAM index, which is a `.crai`, holds no count of each reference. So a CRAM falls back to one
+//! scan over the records, and that tallies the mapped reads of each chromosome. It costs O(reads),
+//! and it needs `reference`.
 
 use std::path::Path;
 
@@ -38,7 +41,7 @@ pub enum Confidence {
 pub struct SexInferenceResult {
     pub inferred_sex: InferredSex,
     pub x_autosome_ratio: f64,
-    /// Autosome reads per 100 bp (the Scala "coverage" proxy).
+    /// The count of autosome reads in 100 bp. Scala used this as its "coverage" proxy.
     pub autosome_mean_coverage: f64,
     pub x_coverage: f64,
     pub confidence: Confidence,
@@ -49,11 +52,13 @@ const MALE_RATIO_THRESHOLD: f64 = 0.65;
 const FEMALE_RATIO_THRESHOLD: f64 = 0.85;
 const MIN_AUTOSOME_COVERAGE: f64 = 5.0;
 
-/// Per-chromosome-class accumulators: (autosome reads, autosome length, chrX reads, chrX length).
+/// The accumulator of each chromosome class: (autosome reads, autosome length, chrX reads, chrX
+/// length).
 type Tally = (u64, u64, u64, Option<u64>);
 
-/// Infer sex from an indexed BAM or CRAM by comparing chrX to autosome read density.
-/// `reference` is required for CRAM (the record-scan fallback decodes it).
+/// Infer the sex from an indexed BAM or CRAM. It compares the read density of chrX against that of
+/// the autosomes. A CRAM needs `reference`, because the fallback that scans the records decodes
+/// it.
 pub fn infer_from_bam(bam_path: &Path, reference: Option<&Path>) -> Result<SexInferenceResult, AnalysisError> {
     let tally = match reader::detect_format(bam_path) {
         Format::Bam => tally_via_bai(bam_path)?,
@@ -62,10 +67,12 @@ pub fn infer_from_bam(bam_path: &Path, reference: Option<&Path>) -> Result<SexIn
     result_from_tally(tally)
 }
 
-/// Turn a per-class read/length tally `(autosome_reads, autosome_length, x_reads, x_length)`
-/// into the inferred-sex result (reads-per-100bp → chrX:autosome ratio → classification).
-/// Shared by every tally source (BAI fast path, CRAM scan, and the parallel walker's summed
-/// per-contig counts).
+/// Turn the read and length tally of each class, as
+/// `(autosome_reads, autosome_length, x_reads, x_length)`, into the inferred sex. It goes from
+/// reads in 100 bp, to the ratio of chrX against the autosomes, to a class.
+///
+/// Every source of a tally shares it. Those are the fast path over the BAI, the scan of a CRAM,
+/// and the counts of each contig that the parallel walker adds up.
 pub(crate) fn result_from_tally(tally: Tally) -> Result<SexInferenceResult, AnalysisError> {
     let (autosome_reads, autosome_length, x_reads, x_length) = tally;
 
@@ -83,7 +90,7 @@ pub(crate) fn result_from_tally(tally: Tally) -> Result<SexInferenceResult, Anal
         ));
     }
 
-    // Reads per 100 bp, then the chrX:autosome ratio.
+    // The count of reads in 100 bp, and then the ratio of chrX against the autosomes.
     let autosome_coverage = autosome_reads as f64 / autosome_length as f64 * 100.0;
     let x_coverage = x_reads as f64 / x_length as f64 * 100.0;
     let ratio = if autosome_coverage > 0.0 {
@@ -102,10 +109,12 @@ pub(crate) fn result_from_tally(tally: Tally) -> Result<SexInferenceResult, Anal
     })
 }
 
-/// Per-chromosome-class read tally over a record stream, shared by the standalone CRAM
-/// scan and the fused [`crate::unified`] walker (which already touches every record, so it
-/// tallies sex directly rather than depending on BAI). Build with [`SexState::new`] from
-/// the header, feed every record via [`SexState::accept`], then [`SexState::finish`].
+/// The read tally of each chromosome class, over a stream of records. Two callers share it: the
+/// separate CRAM scan, and the fused [`crate::unified`] walker. That walker already touches every
+/// record, so it tallies the sex directly, and it does not need the BAI.
+///
+/// Build it with [`SexState::new`] from the header. Give every record to
+/// [`SexState::accept`]. Then call [`SexState::finish`].
 pub(crate) struct SexState {
     /// ref_id -> class: 0 = other, 1 = autosome, 2 = chrX.
     class: Vec<u8>,
@@ -163,7 +172,8 @@ impl SexState {
     }
 }
 
-/// BAM fast path: per-reference mapped-record counts from the BAI metadata (O(contigs)).
+/// The fast path for a BAM. It takes the count of mapped records of each reference from the BAI
+/// metadata, and it costs O(contigs).
 fn tally_via_bai(bam_path: &Path) -> Result<Tally, AnalysisError> {
     let header = reader::read_header(bam_path, None)?;
     let bai_path = bam_path.with_extension("bam.bai");
@@ -190,8 +200,9 @@ fn tally_via_bai(bam_path: &Path) -> Result<Tally, AnalysisError> {
     Ok((autosome_reads, autosome_length, x_reads, x_length))
 }
 
-/// CRAM fallback: a single record scan tallying mapped reads per chromosome class (CRAI
-/// has no per-reference counts). Lengths come from the header; reads from `reference_sequence_id`.
+/// The fallback for a CRAM. It makes one scan over the records, and it tallies the mapped reads of
+/// each chromosome class. A CRAI holds no count of each reference. The lengths come from the
+/// header, and the reads come from `reference_sequence_id`.
 fn tally_via_scan(bam_path: &Path, reference: Option<&Path>) -> Result<Tally, AnalysisError> {
     let (header, mut reader) = reader::open_seq(bam_path, reference)?;
     let mut state = SexState::new(&header);
@@ -230,25 +241,35 @@ pub fn determine_sex(ratio: f64, autosome_coverage: f64) -> (InferredSex, Confid
     }
 }
 
-/// Minimum chrY reads before an alignment can be judged Y-scoped — guards against calling a
-/// near-empty file "male" off a handful of stray reads.
+/// The count of chrY reads that an alignment needs before the code may call it Y-scoped. It
+/// prevents a call of "male" on a file that is almost empty, from a few stray reads.
 const Y_SCOPED_MIN_Y_READS: u64 = 1_000;
-/// chrY reads must exceed this multiple of the autosome + chrX read count for an alignment to
-/// count as Y-scoped. A whole-genome male carries ~100× MORE autosome than chrY reads (the
-/// autosomes are ~40× the sequence and diploid), so a genuine Y-only extract — chrY in the
-/// millions, autosomes a few dozen mismapped reads — clears this by orders of magnitude while
-/// WGS and genuine females never approach it.
+/// The chrY reads must be this many times the count of autosome plus chrX reads, or more, before
+/// an alignment counts as Y-scoped.
+///
+/// A whole-genome male carries about 100 times MORE autosome reads than chrY reads. The autosomes
+/// hold about 40 times the sequence, and they are diploid. A true Y-only extract has chrY in the
+/// millions, and a few dozen autosome reads that the aligner put in the wrong place. So it clears
+/// this threshold by orders of magnitude. A WGS run, and a true female, never come near
+/// it.
 const Y_SCOPED_DOMINANCE: u64 = 8;
 
-/// Does this alignment's per-contig read distribution look **Y-scoped** — chrY carrying
-/// essentially all the reads while the autosomes and chrX hold only a trace of mismapped ones?
-/// That is the shape of a Y-only extract (e.g. GRCh38 chrY reads realigned to hs1) or a Y-Elite /
-/// Big Y capture. The chrX:autosome ratio [`determine_sex`] relies on is meaningless for such data
-/// and can read as **female** — which would silently disable the entire Y pipeline (the Y
-/// haplogroup step skips females *before* it ever downloads the tree). A `true` here means the
-/// donor sequenced his Y, so callers should treat him as male regardless of the ratio.
+/// Does the read distribution of this alignment, over its contigs, look **Y-scoped**? In that
+/// shape, chrY holds almost all of the reads. The autosomes and chrX hold only a trace of reads
+/// that the aligner put in the wrong place.
 ///
-/// The discriminator is read *counts*, not depth: pass `(contig_name, mapped_reads)` per contig.
+/// That is the shape of a Y-only extract, such as GRCh38 chrY reads that somebody realigned to
+/// hs1. It is also the shape of a Y-Elite or Big Y capture.
+///
+/// [`determine_sex`] uses the ratio of chrX against the autosomes, and that ratio says nothing
+/// about such data. It can read as **female**, which would turn the whole Y pipeline off, and
+/// nobody would see it. The Y haplogroup step skips a female *before* it downloads the tree.
+///
+/// A `true` here means that the donor sequenced his Y. So a caller must take him as male, whatever
+/// the ratio says.
+///
+/// This looks at the *count* of reads, and not at the depth. Give it a `(contig_name,
+/// mapped_reads)` pair for each contig.
 pub fn is_y_scoped<'a>(per_contig_reads: impl IntoIterator<Item = (&'a str, u64)>) -> bool {
     let (mut y_reads, mut other_reads) = (0u64, 0u64);
     for (name, reads) in per_contig_reads {
@@ -324,7 +345,8 @@ mod tests {
             ("chrX", 5_000_000),
             ("chrY", 3_000_000)
         ]));
-        // Female WGS: chrY only a trace of mismapping → not Y-scoped.
+        // A female WGS run. chrY holds only a trace of reads that went to the wrong place, so
+        // this is not Y-scoped.
         assert!(!is_y_scoped([
             ("chr1", 200_000_000),
             ("chrX", 10_000_000),

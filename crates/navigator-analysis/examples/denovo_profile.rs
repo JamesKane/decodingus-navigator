@@ -1,5 +1,6 @@
-//! Standalone de-novo caller profiling harness — runs [`caller::call_denovo`] on one contig
-//! of a BAM/CRAM with no async/test wrapper, so a sampling profiler sees only the hot path.
+//! A profile harness for the de-novo caller, on its own. It runs [`caller::call_denovo`] over one
+//! contig of a BAM or a CRAM. There is no async wrapper and no test wrapper, so a profiler that
+//! samples sees the hot path alone.
 //!
 //! ```sh
 //! BAM=/Users/jkane/Genomics/WGS229/WGS229.bwa-mem.chm13v2.cram \

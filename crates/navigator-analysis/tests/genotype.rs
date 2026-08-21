@@ -19,7 +19,8 @@ fn chr1_reference() -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     let fa = dir.join("chr1.fa");
     std::fs::write(&fa, b">chr1\nACGTACGTAC\n").unwrap();
-    // .fai: name, length, offset-of-first-base, bases-per-line, bytes-per-line.
+    // The `.fai` fields: the name, the length, the offset of the first base, the bases in a line,
+    // and the bytes in a line.
     std::fs::write(dir.join("chr1.fa.fai"), b"chr1\t10\t6\t10\t11\n").unwrap();
     fa
 }
@@ -93,7 +94,8 @@ fn denovo_diploid_calls_het_and_hom_alt_then_writes_vcf() {
     )
     .unwrap();
 
-    // Only the variant sites are emitted (the 7 hom-ref positions are not), in position order.
+    // The code emits the variant sites alone, in position order. It does not emit the 7 hom-ref
+    // positions.
     let by_pos = |p: i64| calls.iter().find(|c| c.position == p).cloned();
     assert_eq!(
         calls.len(),
@@ -152,9 +154,10 @@ fn denovo_diploid_calls_a_heterozygous_deletion() {
 
 #[test]
 fn call_indels_at_confirms_a_present_deletion() {
-    // indel_multi.bam (chrM): 8 reads carry the 2 bp deletion at anchor pos 5 (VCF REF=ACG, ALT=A),
-    // 6 carry a 3 bp deletion, and there are NO reference-spanning reads. Targeting the 2 bp deletion
-    // as a tree indel locus, the sample clearly carries it → the derived sentinel.
+    // indel_multi.bam, on chrM. 8 reads carry the 2 bp deletion at the anchor position 5. There
+    // the VCF REF is ACG, and the ALT is A. 6 reads carry a 3 bp deletion. NO read covers the
+    // reference there. With the 2 bp deletion as the target tree indel locus, the sample clearly
+    // carries it, so the result is the derived sentinel.
     let dir = fixtures();
     let calls = call_indels_at(
         &dir.join("indel_multi.bam"),
@@ -186,7 +189,8 @@ fn call_indels_at_is_additive_only_no_ancestral_call() {
 
 #[test]
 fn call_indels_at_without_reference_is_empty() {
-    // No reference → can't left-normalize or know deleted bases → indels are skipped (SNPs unaffected).
+    // With no reference, the code can not left-normalize, and it can not know the deleted bases.
+    // So it skips every indel. A SNP does not change.
     let dir = fixtures();
     let calls = call_indels_at(
         &dir.join("indel_multi.bam"),
@@ -203,7 +207,7 @@ fn call_indels_at_without_reference_is_empty() {
 fn denovo_diploid_calls_a_multiallelic_snv() {
     // snv_multi.bam (chr1): 10 reads carry G at pos 2, 10 carry T (ref C) → compound het 1/2.
     let dir = fixtures();
-    // A private chr1 reference dir (distinct from chr1_reference()'s, so parallel tests don't race).
+    // A private chr1 reference dir (distinct from chr1_reference()'s, so parallel tests do not race).
     let refdir = std::env::temp_dir().join(format!("dun-snvmulti-ref-{}", std::process::id()));
     std::fs::create_dir_all(&refdir).unwrap();
     let reference = refdir.join("chr1.fa");
@@ -233,9 +237,10 @@ fn denovo_diploid_calls_a_multiallelic_snv() {
 
 #[test]
 fn denovo_diploid_calls_a_multiallelic_indel() {
-    // indel_multi.bam (chrM): 8 reads delete ref pos 6-7 (2 bp) + 6 reads delete pos 6-8 (3 bp),
-    // both left-normalizing to emit pos 5. ref ACGTAC… → REF=ACGT, ALTs AT (2 bp del) and A (3 bp
-    // del), a compound het 1/2.
+    // indel_multi.bam, on chrM. 8 reads delete the reference positions 6 and 7, which is 2 bp. 6
+    // reads delete positions 6 to 8, which is 3 bp. Both left-normalize to the emit position 5.
+    // The reference reads ACGTAC…, so REF is ACGT, and the two ALTs are AT for the 2 bp deletion
+    // and A for the 3 bp one. That is a compound het, 1/2.
     let dir = fixtures();
     let calls = call_denovo_diploid(
         &dir.join("indel_multi.bam"),

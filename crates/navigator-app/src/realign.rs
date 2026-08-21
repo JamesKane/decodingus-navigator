@@ -1,22 +1,23 @@
-//! Registering a realigned alignment — stage D of the realignment module.
+//! This module registers a realigned alignment. It is stage D of the realignment module.
 //!
-//! Stage C leaves a sorted, duplicate-marked CRAM on disk. That file is not yet an *alignment* as
-//! far as the workspace is concerned; this is where it becomes one, so every existing analysis can
-//! run against it without knowing it was produced rather than imported.
+//! Stage C writes a CRAM file to disk. The code sorts that file and marks its duplicates. The
+//! workspace does not yet hold it as an *alignment*. This module makes it one. Each analysis can
+//! then run against it, and no analysis needs to know that the app made the file.
 //!
-//! ## Additive, always
+//! ## This module only adds
 //!
-//! The realigned row is inserted under the **same `SequenceRun`** as its source — the same physical
-//! library, only mapped differently — and the source is left exactly as it was. That mirrors how
-//! the sidecar fast path stayed additive, and it is the property that makes realignment safe to
-//! offer: nothing a user already had can be lost by trying it, and a realigned alignment can be
-//! deleted and rebuilt from a source that never changed.
+//! The code inserts the realigned row under the **same `SequenceRun`** as its source. That run is
+//! the same physical library with a different map. The code does not change the source row.
+//!
+//! The sidecar fast path behaves in the same way, and this behaviour makes a realignment safe to
+//! offer. A user can not lose data when they try it. A user can also delete a realigned alignment
+//! and build it again from a source that did not change.
 //!
 //! ## The reference is part of the file
 //!
-//! A CRAM cannot be read without the reference it was compressed against, so `reference_path` is
-//! recorded on the row rather than resolved by convention later. An alignment whose reference has
-//! moved is unreadable, and the row is the only place that knows which one it was.
+//! A reader can not open a CRAM file without the reference that compressed it. So the row holds
+//! `reference_path`, and no later code finds that path by a rule. A reader can not open an
+//! alignment whose reference moved, and the row is the only record of that reference.
 
 use std::path::{Path, PathBuf};
 
@@ -27,24 +28,26 @@ use navigator_store::alignment;
 use crate::error::AppError;
 use crate::{sha256_file_async, App};
 
-/// What produced a derived alignment, recorded in `Alignment::derivation`.
+/// The process that made a derived alignment. `Alignment::derivation` holds this value.
 ///
-/// Spelled `realign:<backend>-<preset>` so the row says both *that* it was realigned and *how* —
-/// a re-run under a different backend or preset is a different artifact, and support questions
-/// start with which one produced a given file.
+/// The format is `realign:<backend>-<preset>`. So the row shows *that* the app realigned the
+/// alignment, and it also shows *how*.
+///
+/// A second run with another backend, or another preset, gives a different file. A support question
+/// starts with the process that made the file.
 pub fn derivation_tag(backend: &str, preset: &str) -> String {
     format!("realign:{backend}-{preset}")
 }
 
 impl App {
-    /// Register the output of a realignment as a new alignment derived from `source_id`.
+    /// Add the output of a realignment as a new alignment that comes from `source_id`.
     ///
-    /// `cram` is stage C's output and `reference` the FASTA it was compressed against — both are
-    /// required, because a CRAM without its reference is unreadable rather than merely awkward.
+    /// `cram` is the output of stage C. `reference` is the FASTA file that compressed it. The
+    /// method needs both values. Without its reference, no reader can open a CRAM file.
     ///
-    /// `backend` and `preset` are taken separately rather than as a ready-made derivation string
-    /// so the recorded format stays authoritative here; a caller cannot invent its own spelling
-    /// that later queries then fail to recognise.
+    /// The method takes `backend` and `preset` as two values, and not as one derivation string.
+    /// This module then controls the format. A caller can not write its own format, which a later
+    /// query would not recognize.
     pub async fn register_realigned_alignment(
         &self,
         source_id: i64,
@@ -56,9 +59,9 @@ impl App {
     ) -> Result<Alignment, AppError> {
         let source = self.alignment_or_err(source_id).await?;
 
-        // Realigning to the build a sample is already on produces a second copy of the same
-        // information at hours of cost. The design calls for refusing it; doing so here rather
-        // than in the UI means the CLI and any future caller are covered by the same rule.
+        // A realignment to the build that a sample already uses gives a second copy of the same
+        // data, and it costs many hours. The design refuses that work. This check is in the app
+        // layer and not in the UI. So the CLI and each later caller follow the same rule.
         if builds_match(&source.reference_build, reference_build) {
             return Err(AppError::Import(format!(
                 "alignment #{source_id} is already on {}; realigning it to the same build would \
@@ -74,13 +77,14 @@ impl App {
             });
         }
 
-        // Hash now rather than lazily. The file was just written, so it is in the page cache and
-        // this is nearly free; leaving it for the first analysis would pay the read twice.
+        // Calculate the hash now, and not at the first use. The code wrote the file a moment ago,
+        // so the page cache holds it and the read costs almost nothing. A hash at the first
+        // analysis reads the file a second time.
         let content_sha256 = sha256_file_async(cram.to_path_buf()).await?;
 
         let created = self
             .record_alignment(NewAlignment {
-                // The same library — only the mapping changed.
+                // The library is the same. Only the mapping changed.
                 sequence_run_id: source.sequence_run_id,
                 reference_build: reference_build.to_string(),
                 aligner: backend.to_string(),
@@ -97,10 +101,10 @@ impl App {
         Ok(created)
     }
 
-    /// The alignments derived from `source_id`, if any.
+    /// The alignments that come from `source_id`, when the workspace holds any.
     ///
-    /// The UI asks this before offering "Realign": a sample that has already been realigned should
-    /// be told so rather than silently given a second copy.
+    /// The UI calls this method before it offers the "Realign" action. The app must tell a user
+    /// that a sample already has a realignment. It must not make a second copy with no message.
     pub async fn derived_alignments(&self, source_id: i64) -> Result<Vec<Alignment>, AppError> {
         let source = self.alignment_or_err(source_id).await?;
         let siblings = alignment::list_for_run(self.store.pool(), source.sequence_run_id).await?;
@@ -110,12 +114,13 @@ impl App {
             .collect())
     }
 
-    /// The subject an alignment belongs to, via its sequencing run.
+    /// The subject of an alignment. The method finds it through the sequence run.
     ///
-    /// The UI needs this to say whose realignment is running. Without it the running card matched on
-    /// alignment id alone, and a page showing subject A during a job on subject B told A their
-    /// genome was being rebuilt — the ownership question has to be answered where the mapping from
-    /// alignment to subject actually lives.
+    /// The UI needs this value to name the subject of a realignment.
+    ///
+    /// Before this method, the progress card compared the alignment id alone. A page that showed
+    /// subject A during a job on subject B then told subject A that the app rebuilt their genome.
+    /// The code that maps an alignment to a subject must answer this question.
     pub async fn subject_of_alignment(&self, id: i64) -> Result<Option<SampleGuid>, AppError> {
         let Some(aln) = alignment::get(self.store.pool(), id).await? else {
             return Ok(None);
@@ -127,7 +132,7 @@ impl App {
         )
     }
 
-    /// The alignment `id` was derived from, or `None` when it is an original.
+    /// The alignment that gave `id`, or `None` when `id` is an original alignment.
     pub async fn derivation_source(&self, id: i64) -> Result<Option<Alignment>, AppError> {
         let aln = self.alignment_or_err(id).await?;
         match aln.derived_from_alignment_id {
@@ -136,16 +141,20 @@ impl App {
         }
     }
 
-    /// The alignments in `project_id` that a realignment to `target_build` would actually act on.
+    /// The alignments in `project_id` that a realignment to `target_build` would act on.
     ///
-    /// Computed up front rather than discovered while running, because the honest thing to tell
-    /// someone before a job measured in *days* is how many samples it covers. Skips what would be
-    /// refused anyway — anything already on the target build, anything already realigned, and
-    /// anything with no file to read — so the count is the real one rather than an upper bound.
+    /// The method finds them before the job starts. It does not find them during the job. A job of
+    /// this size can run for *days*, and the app must tell the user how many samples it covers.
+    ///
+    /// The method skips each alignment that the job would refuse. Those are an alignment on the
+    /// target build, an alignment with a realignment already, and an alignment with no file. So the
+    /// count is the true count and not a maximum.
     pub async fn realignable_in_project(&self, project_id: i64, target_build: &str) -> Result<Vec<i64>, AppError> {
-        // One query for the whole project rather than one per member — the same idiom
-        // `project_report` uses on this very tab. Measured on a 2,504-member project: 2.7 ms for the
-        // grouped query against 17.7 ms for the per-member loop, and this runs twice per batch.
+        // One query covers the full project. The code does not send one query for each member.
+        // `project_report` uses the same method on this tab.
+        //
+        // A measurement on a project with 2,504 members gave 2.7 ms for the grouped query and
+        // 17.7 ms for the loop. This code runs two times in each batch.
         let guids: Vec<_> = self
             .list_biosamples(project_id)
             .await?
@@ -154,9 +163,9 @@ impl App {
             .collect();
         let rows = navigator_store::alignment::list_for_biosamples(self.store.pool(), &guids).await?;
 
-        // Grouped by subject, not flattened: the rule's "already realigned" condition asks whether
-        // anything *in that subject's own set* was derived from a given alignment, so it has to see
-        // one subject's alignments at a time.
+        // The code groups the rows by subject and does not make one flat list. The "already
+        // realigned" condition asks whether an alignment *in the set of that subject* comes from a
+        // given alignment. So the rule must read the alignments of one subject together.
         let mut by_subject: std::collections::HashMap<_, Vec<Alignment>> = std::collections::HashMap::new();
         for (guid, alignment) in rows {
             by_subject.entry(guid).or_default().push(alignment);
@@ -171,20 +180,22 @@ impl App {
         Ok(out)
     }
 
-    /// The cached FASTA for `build`, if it has already been fetched.
+    /// The FASTA file for `build` in the cache, when the app already downloaded it.
     ///
-    /// Public because the realignment job needs the reference *before* it starts: mapping to a
-    /// build whose FASTA is not cached would otherwise stall at the index stage while gigabytes
-    /// download, with nothing on screen explaining the wait.
+    /// This method is public because the realignment job needs the reference *before* it starts.
+    /// Without the check, a map to a build with no FASTA file in the cache stops at the index
+    /// stage. The download of some GB then runs, and the screen gives the user no reason for the
+    /// wait.
     pub fn cached_reference_path(&self, build: &str) -> Option<PathBuf> {
         self.gateway.cached_reference(build)
     }
 
-    /// Where stage C should write, for a realignment of `source_id` to `build`.
+    /// The path where stage C writes, for a realignment of `source_id` to `build`.
     ///
-    /// Derived files live beside the workspace rather than next to the vendor's original: the
-    /// source directory may be read-only, on removable media, or somewhere the user does not
-    /// expect Navigator to write tens of GB.
+    /// A derived file goes beside the workspace. It does not go beside the original file of the
+    /// vendor. There are three reasons. A source directory can refuse a write. It can be on
+    /// removable media. It can also be in a place where the user does not expect tens of GB from
+    /// Navigator.
     pub fn realigned_output_path(&self, source_id: i64, build: &str) -> PathBuf {
         navigator_domain::paths::decodingus_dir()
             .join("realigned")
@@ -192,45 +203,52 @@ impl App {
     }
 }
 
-/// The build realignment targets when nothing says otherwise — the complete assembly, which is the
-/// only reason the module exists.
+/// The default target build of a realignment. It is the complete assembly, and that assembly is the
+/// only reason for this module.
 pub const DEFAULT_TARGET_BUILD: &str = "chm13v2.0";
 
-/// Whether `build` is the realignment target — the complete assembly.
+/// Shows whether `build` is the target of a realignment, which is the complete assembly.
 ///
-/// `pub` so the UI can ask the question rather than spelling out its own comparison. Both Advanced
-/// realign cards used to do the latter, with `eq_ignore_ascii_case` and no trim, which is a subtly
-/// different rule from the one the job enforces.
+/// The function is `pub`, so the UI calls it and writes no comparison of its own. Both realign
+/// cards of Advanced mode wrote their own comparison before. They used `eq_ignore_ascii_case` and
+/// removed no space, and that rule is not the rule of the job.
 pub fn is_target_build(build: &str) -> bool {
     builds_match(build, DEFAULT_TARGET_BUILD)
 }
 
-/// Which of one subject's `alignments` a realignment to `target_build` would actually act on.
+/// The alignments of one subject that a realignment to `target_build` would act on.
 ///
-/// Takes the whole list rather than one alignment because two of the four conditions are about the
-/// *set*: an alignment is skipped if something in the list was already derived from it. Ordered as
-/// the input is.
+/// The function takes the full list and not one alignment. Two of the four conditions are about the
+/// *set*. The function skips an alignment when another item in the list comes from it. The output
+/// keeps the order of the input.
 ///
-/// Shared by the project-wide count and the Simple-mode single-subject offer, so that the two
-/// cannot drift apart. If they disagreed, a user would be told a batch covers a sample it then
-/// silently skips — or be offered four hours of work that the job itself would refuse.
+/// The project-wide count and the single-subject offer of Simple mode both call this function. So
+/// the two can not become different.
+///
+/// A difference between them has two effects. The app can tell a user that a batch covers a sample,
+/// and then skip that sample with no message. The app can also offer four hours of work that the
+/// job then refuses.
 pub(crate) fn realignable_for_subject(alignments: &[Alignment], target_build: &str) -> Vec<i64> {
     alignments
         .iter()
         .filter(|a| a.bam_path.is_some() && !a.is_derived())
         .filter(|a| !builds_match(&a.reference_build, target_build))
-        // Already realigned by an earlier run: its output is sitting in this same list.
+        // An earlier run already realigned this alignment, and its output is in this same
+        // list.
         .filter(|a| !alignments.iter().any(|d| d.derived_from_alignment_id == Some(a.id)))
         .map(|a| a.id)
         .collect()
 }
 
-/// Whether two build names refer to the same reference for this purpose.
+/// Shows whether two build names name the same reference, for this purpose.
 ///
-/// Compared case-insensitively on the recorded strings, after trimming. Deliberately *not*
-/// normalised through a `canonical_build`: `chm13v2.0` and `chm13v2.0_maskedY_rCRS` share
-/// coordinates but differ in chrM and in PAR masking, so realigning between them is a real
-/// operation rather than a no-op.
+/// The function removes the space at each end and then compares the two stored strings. It ignores
+/// the case of a letter.
+///
+/// The function does *not* pass the names through `canonical_build`, by design. The builds
+/// `chm13v2.0` and `chm13v2.0_maskedY_rCRS` use the same coordinates. But their chrM contigs are
+/// different, and their PAR masks are different. So a realignment between the two does real
+/// work.
 fn builds_match(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
 }
@@ -252,8 +270,9 @@ mod tests {
         assert!(!builds_match("GRCh38", "chm13v2.0"));
     }
 
-    /// The masked variant shares CHM13's coordinates but differs in chrM and PAR masking, so
-    /// moving between them is a real realignment and must not be refused as a no-op.
+    /// The masked build uses the CHM13 coordinates. But its chrM contig and its PAR mask are
+    /// different. So a realignment between the two does real work, and the app must not refuse
+    /// it.
     #[test]
     fn the_masked_chm13_variant_is_a_different_build() {
         assert!(!builds_match("chm13v2.0", "chm13v2.0_maskedY_rCRS"));
@@ -289,15 +308,17 @@ mod tests {
         assert!(realignable_for_subject(&[aln(1, "GRCh38", true, Some(9))], "chm13v2.0").is_empty());
     }
 
-    /// The set-level condition: once its realigned output sits beside it, the source is done. Without
-    /// this the offer would reappear after a four-hour job and invite an identical second one.
+    /// The condition on the set. When the realigned output is beside the source, the work on that
+    /// source is complete. Without this rule, the offer returns after a four-hour job, and the user
+    /// starts the same job again.
     #[test]
     fn a_source_that_has_already_been_realigned_is_not_offered_again() {
         let list = [aln(1, "GRCh38", true, None), aln(2, "chm13v2.0", true, Some(1))];
         assert!(realignable_for_subject(&list, "chm13v2.0").is_empty());
     }
 
-    /// A subject holding several originals gets each of them, in input order — the caller picks.
+    /// For a subject with more than one original alignment, the function returns each of them, in
+    /// the order of the input. The caller then selects one.
     #[test]
     fn every_qualifying_original_is_returned_in_order() {
         let list = [
@@ -308,8 +329,9 @@ mod tests {
         assert_eq!(realignable_for_subject(&list, "chm13v2.0"), vec![5, 8]);
     }
 
-    /// The masked CHM13 variant is a different build, so it is still worth realigning to plain
-    /// CHM13 — the same distinction `builds_match` draws above, reaching the rule that uses it.
+    /// The masked CHM13 build is a different build. So a realignment to plain CHM13 still gives a
+    /// result. `builds_match` above makes the same distinction, and this test covers the rule that
+    /// calls it.
     #[test]
     fn the_masked_variant_is_still_realignable_to_plain_chm13() {
         let list = [aln(1, "chm13v2.0_maskedY_rCRS", true, None)];
@@ -321,8 +343,8 @@ mod tests {
         assert!(is_target_build("chm13v2.0"));
         assert!(is_target_build(" CHM13v2.0 "));
         assert!(!is_target_build("GRCh38"));
-        // The masked variant is a different reference, so a subject holding only that one has not
-        // yet had their Y read against plain CHM13.
+        // The masked build is a different reference. So the app did not yet read the Y chromosome
+        // of a subject with only that build against plain CHM13.
         assert!(!is_target_build("chm13v2.0_maskedY_rCRS"));
     }
 }

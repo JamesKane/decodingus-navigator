@@ -1,6 +1,9 @@
-//! Asset integrity manifest (ancestry-ibd-asset-wiring, cross-cutting). `navigator-panelbuild`
-//! writes `ancestry_manifest_<build>.json` listing each built `.bin`'s SHA-256; the app verifies a
-//! loaded asset against it and refuses a mismatch — a cheap integrity guard for CDN-delivered assets.
+//! The manifest that holds the integrity of each asset. See the ancestry-ibd asset design, which
+//! this crosses.
+//!
+//! `navigator-panelbuild` writes `ancestry_manifest_<build>.json`. That file lists the SHA-256 of
+//! each `.bin` that the build made. The app checks a loaded asset against it, and it refuses one
+//! that does not match. That guard costs little, and it covers an asset that came over a CDN.
 
 use std::collections::BTreeMap;
 
@@ -8,8 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AnalysisError;
 
-/// Lowercase-hex SHA-256 of `bytes`. Re-exported from the shared `du-bio` helper so existing
-/// `manifest::sha256_hex` callers (e.g. `navigator-panelbuild`) keep working.
+/// The SHA-256 of `bytes`, in lower-case hex. It comes from the shared helper in `du-bio`, and
+/// this module exports it again, so that a caller of `manifest::sha256_hex` still compiles.
+/// `navigator-panelbuild` is such a caller.
 pub use du_bio::hash::sha256_hex;
 
 /// One asset's integrity record.
@@ -19,7 +23,8 @@ pub struct AssetEntry {
     pub bytes: u64,
 }
 
-/// Per-build asset manifest: asset filename (on-disk name) → integrity record.
+/// The asset manifest of one build. It maps the file name of an asset, as it sits on disk, to its
+/// integrity record.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetManifest {
     pub build: String,
@@ -49,8 +54,9 @@ impl AssetManifest {
         );
     }
 
-    /// Verify `bytes` for `filename`. `Ok` when the manifest has no entry for the file (advisory —
-    /// unlisted assets aren't gated) or the digest matches; `Err(expected, got)` on a mismatch.
+    /// Check `bytes` for `filename`. It gives `Ok` in two cases. The manifest holds no entry for
+    /// that file: this check is advisory, and it gates nothing that the manifest does not list. Or
+    /// the digest matches. It gives `Err(expected, got)` when the two differ.
     pub fn verify(&self, filename: &str, bytes: &[u8]) -> Result<(), (String, String)> {
         if let Some(e) = self.assets.get(filename) {
             let got = sha256_hex(bytes);
@@ -75,7 +81,8 @@ mod tests {
         };
         m.insert("ancestry_panel_chm13v2.0.bin", b"hello");
         assert_eq!(m.assets["ancestry_panel_chm13v2.0.bin"].bytes, 5);
-        // Matching bytes verify; tampered bytes are rejected; unlisted files pass (advisory).
+        // Bytes that match pass the check. Bytes that somebody changed do not. A file that the
+        // manifest does not list passes, because the check is advisory.
         assert!(m.verify("ancestry_panel_chm13v2.0.bin", b"hello").is_ok());
         assert!(m.verify("ancestry_panel_chm13v2.0.bin", b"hELLo").is_err());
         assert!(m.verify("not_listed.bin", b"anything").is_ok());

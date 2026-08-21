@@ -1,29 +1,35 @@
-//! The one way Navigator talks to the AppView's `/api/v1/*` Edge API.
+//! The one way that Navigator speaks to the `/api/v1/*` Edge API of the AppView.
 //!
-//! Three clients grew here independently — IBD exchange, social, recruitment — and each arrived at
-//! the same two shapes: an unauthenticated-looking POST whose body carries the device-key
-//! signature, and a replay-guarded signed GET whose `did`/`ts`/`sig` ride on the query string. The
-//! IBD and social versions were byte-for-byte identical, and the remaining one-off calls in
-//! `sync.rs` / `matching.rs` open-coded the same thing a fourth and fifth time. They are all this
-//! module now, so the error mapping, the signing-query layout, and the non-2xx classification are
-//! decided once.
+//! Three clients grew here separately: IBD exchange, social, and recruitment. Each client made the
+//! same two request shapes.
 //!
-//! What travels: a DID, a timestamp, a signature, and whatever the caller chose to send. Never
-//! genotypes, never coordinates.
+//! The first shape is a POST. The body of the POST holds the device-key signature, so the request
+//! looks unauthenticated. The second shape is a signed GET with a replay guard. Its `did`, `ts`,
+//! and `sig` values go on the query string.
+//!
+//! The IBD version and the social version were the same code. The single calls in `sync.rs` and
+//! `matching.rs` wrote the same request a fourth time and a fifth time. All of this code is now in
+//! this module. So the error map, the layout of the signature query, and the class of a non-2xx
+//! response have one definition.
+//!
+//! These values cross the network: a DID, a timestamp, a signature, and the content that the caller
+//! chose to send. A genotype never crosses. A coordinate never crosses.
 
 use super::*;
 
-/// A transport failure (connection refused, timeout, TLS) on an AppView call.
+/// A transport failure on a call to the AppView. Examples are a refused connection, a timeout, and
+/// a TLS fault.
 ///
-/// The AppView is reached with a bare `reqwest` client rather than through the sync engine, but a
-/// network failure means the same thing either way, so it lands in the same error variant the PDS
-/// paths use and the offline indicator already understands.
+/// A plain `reqwest` client makes these calls. The calls do not go through the sync engine. But a
+/// network failure has the same result on both paths. So this function returns the error variant
+/// that the PDS paths use, and the offline indicator already knows that variant.
 pub(crate) fn transport(e: reqwest::Error) -> AppError {
     AppError::Sync(navigator_sync::SyncError::from(e))
 }
 
-/// Classify a non-2xx AppView response into a user-facing [`AppError::AppView`]. Consumes `resp` to
-/// read the body (so capture the status first at the call site if it is also needed).
+/// Change a non-2xx response from the AppView into an [`AppError::AppView`] for the user. The
+/// function consumes `resp` to read the body. So the caller must keep the status first, if the
+/// caller also needs it.
 pub(crate) async fn status_error(api: &str, resp: reqwest::Response) -> AppError {
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
@@ -44,12 +50,13 @@ impl App {
         format!("{}/api/v1/{path}", decodingus_appview_url())
     }
 
-    /// POST a JSON body to an `/api/v1/<path>` endpoint and return the decoded response.
+    /// Send a JSON body to an `/api/v1/<path>` endpoint with POST, and return the decoded
+    /// response.
     ///
-    /// The signature (and the DID it is over) belongs in `body` — these endpoints authenticate the
-    /// device key per call, not the HTTP request — so this deliberately takes an already-signed
-    /// body rather than signing on the caller's behalf: the canonical string differs per endpoint
-    /// and only the caller knows it.
+    /// The signature and the DID for that signature belong in `body`. These endpoints authenticate
+    /// the device key for each call. They do not authenticate the HTTP request. For this reason the
+    /// function takes a body that the caller signed. It does not sign the body, because the
+    /// canonical string is different at each endpoint and only the caller knows it.
     pub(crate) async fn appview_post(
         &self,
         path: &str,
@@ -69,11 +76,13 @@ impl App {
         resp.json().await.map_err(transport)
     }
 
-    /// Device-key-signed GET to an `/api/v1/<path>` endpoint, decoded into `T`.
+    /// Send a GET to an `/api/v1/<path>` endpoint with a device-key signature, and decode the
+    /// response into `T`.
     ///
-    /// `build_msg(did, ts)` produces the canonical string to sign — the one thing that varies
-    /// between a poll, a thread read, and an exchange pull. `did`/`ts`/`sig` plus `extra` go on the
-    /// query; the timestamp is what makes the signature replay-guarded.
+    /// `build_msg(did, ts)` makes the canonical string for the signature. That string is the only
+    /// difference between a poll, a thread read, and an exchange pull. The `did`, `ts`, and `sig`
+    /// values go on the query, together with `extra`. The timestamp gives the signature its replay
+    /// guard.
     pub(crate) async fn appview_get_signed<T, F>(
         &self,
         path: &str,

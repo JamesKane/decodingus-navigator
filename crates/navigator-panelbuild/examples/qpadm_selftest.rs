@@ -1,10 +1,15 @@
-//! qpAdm control (documents/design/ancient-ancestry-rebuild.md §7): can the *real* panel + outgroups
-//! recover a KNOWN European mixture drawn from the panel's own source frequencies? This isolates the
-//! estimator/outgroup adequacy from any target-side data batch effect — no BAM is genotyped.
+//! A qpAdm control (documents/design/ancient-ancestry-rebuild.md §7). It asks whether the *real*
+//! panel, with its outgroups, recovers a KNOWN European mixture that a draw from the panel's own
+//! source frequencies produced.
 //!
-//! For each site, target frequency = Σ wᵢ·sourceᵢ(site) with a known w, drawn as a diploid genome.
-//! qpadm_fit must return ~w, feasible, not rejected. If it can't recover a self-consistent mixture,
-//! the outgroups don't resolve WHG/ANF/Steppe (a construction problem, not a target problem).
+//! That separates the quality of the estimator and the outgroups from any batch effect in the
+//! target data, because the tool genotypes no BAM.
+//!
+//! At each site the target frequency is Σ wᵢ·sourceᵢ(site), for a known w, drawn as a diploid
+//! genome. `qpadm_fit` must return a w near that one, and the fit must be feasible and accepted.
+//!
+//! If it can not recover a mixture that is consistent with itself, the outgroups do not separate
+//! WHG, ANF, and Steppe. That is a problem in the construction, and not in the target.
 //!   qpadm_selftest <qpadm_panel.bin>
 use navigator_analysis::ancestry::{qpadm_fit, AncestryPanel, F4_BLOCK_BP};
 use navigator_analysis::caller::SiteGenotype;

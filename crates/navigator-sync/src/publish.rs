@@ -1,9 +1,11 @@
 //! Authenticated PDS writes (`com.atproto.repo`) for a logged-in account.
 //!
-//! Resource requests use the DPoP-bound access token: `Authorization: DPoP <token>` plus
-//! a DPoP proof whose `ath` is the access-token hash, with the same `use_dpop_nonce`
-//! retry as the OAuth endpoints. A `Bearer` mode (a plain `createAccount` session token,
-//! no DPoP) exists so repo CRUD can be exercised live without a browser-minted token.
+//! A resource request uses the DPoP-bound access token. It sends `Authorization: DPoP <token>`,
+//! plus a DPoP proof whose `ath` is the hash of the access token. It makes the same
+//! `use_dpop_nonce` second try as the OAuth endpoints do.
+//!
+//! There is also a `Bearer` mode, which uses a plain `createAccount` session token and no DPoP.
+//! With it a test can drive repo CRUD live, and needs no token from a browser.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -19,9 +21,10 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Build a reqwest client, optionally trusting a dev CA (`NAVIGATOR_DEV_CA`, a PEM path)
-/// and pinning a host→IP (`NAVIGATOR_DEV_RESOLVE`, `host:ip`) so a TLS-proxied local PDS
-/// at its canonical `https://` name is reachable without `/etc/hosts` (PDS doc §6.2).
+/// Build a reqwest client. It can accept a dev CA, from `NAVIGATOR_DEV_CA`, which is a path to a
+/// PEM. It can also fix a host to an IP, from `NAVIGATOR_DEV_RESOLVE`, in the form `host:ip`. A
+/// local PDS behind a TLS proxy is then reachable at its canonical `https://` name, and nobody has
+/// to edit `/etc/hosts` (PDS doc §6.2).
 pub fn dev_http_client() -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
     if let Some(ca) = std::env::var("NAVIGATOR_DEV_CA").ok().filter(|s| !s.is_empty()) {
@@ -55,7 +58,7 @@ impl RecordRef {
     }
 }
 
-/// One record returned by `listRecords` during a PULL — its at-uri, CID, and value.
+/// One record that `listRecords` returns during a PULL: its at-uri, its CID, and its value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteRecord {
     pub uri: String,
@@ -107,13 +110,14 @@ impl PdsClient {
         })
     }
 
-    /// The account DID these records are written under (the repo owner) — used to build the
-    /// deterministic at:// URIs child records reference.
+    /// The account DID that owns the repo, and that these records go under. The code builds the
+    /// deterministic at:// URIs from it, and a child record then references those.
     pub fn did(&self) -> &str {
         &self.did
     }
 
-    /// Bearer-auth client (no DPoP) — for repo CRUD against a `createAccount` session.
+    /// The Bearer-auth client, which uses no DPoP. It is for repo CRUD against a `createAccount`
+    /// session.
     pub fn bearer(http: reqwest::Client, pds_base: &str, did: &str, token: &str) -> Self {
         PdsClient {
             http,
@@ -123,7 +127,7 @@ impl PdsClient {
         }
     }
 
-    /// `com.atproto.repo.createRecord` — put `record` into `collection` (optional `rkey`).
+    /// `com.atproto.repo.createRecord`: put `record` into `collection`. `rkey` is optional.
     pub async fn create_record(
         &self,
         collection: &str,
@@ -141,8 +145,8 @@ impl PdsClient {
         Ok(RecordRef { uri, cid })
     }
 
-    /// `com.atproto.repo.putRecord` — upsert `record` at a known `rkey` (the idempotent update path:
-    /// re-publishing an entity overwrites its existing record instead of creating a duplicate).
+    /// `com.atproto.repo.putRecord`: upsert `record` at a known `rkey`. This is the idempotent
+    /// update path. A second publish of an entity overwrites its record, and makes no duplicate.
     pub async fn put_record(
         &self,
         collection: &str,
@@ -160,8 +164,8 @@ impl PdsClient {
         Ok(RecordRef { uri, cid })
     }
 
-    /// `com.atproto.repo.listRecords` — one page of a repo's records in `collection` (public read).
-    /// Returns the records + the next cursor (None when exhausted).
+    /// `com.atproto.repo.listRecords`: one page of a repo's records in `collection`, as a public
+    /// read. It returns the records and the next cursor, and the cursor is `None` at the end.
     pub async fn list_records(
         &self,
         collection: &str,
@@ -200,15 +204,16 @@ impl PdsClient {
         Ok((records, next))
     }
 
-    /// `com.atproto.repo.deleteRecord` — remove the record at `rkey` from `collection`. Idempotent
-    /// on the server (deleting an absent record is a no-op). Used to prune orphaned duplicates.
+    /// `com.atproto.repo.deleteRecord`: remove the record at `rkey` from `collection`. The server
+    /// makes it idempotent, and a delete of an absent record does nothing. The app uses it to prune
+    /// an orphan duplicate.
     pub async fn delete_record(&self, collection: &str, rkey: &str) -> Result<(), SyncError> {
         let body = serde_json::json!({ "repo": self.did, "collection": collection, "rkey": rkey });
         self.post("com.atproto.repo.deleteRecord", &body).await?;
         Ok(())
     }
 
-    /// `com.atproto.repo.getRecord` — read a record's value (public read).
+    /// `com.atproto.repo.getRecord`: read a record's value, as a public read.
     pub async fn get_record(&self, collection: &str, rkey: &str) -> Result<serde_json::Value, SyncError> {
         let url = format!("{}/xrpc/com.atproto.repo.getRecord", self.pds_base);
         let resp = self
@@ -275,9 +280,10 @@ impl PdsClient {
     }
 }
 
-/// Classify a non-2xx XRPC response: 401 → [`SyncError::Unauthorized`] (drives refresh),
-/// 5xx → [`SyncError::Server`] (transient), anything else → an `Oauth` error carrying the
-/// PDS's reason body. Reading the body consumes `resp`, so the status is captured first.
+/// Classify an XRPC response that is not 2xx. A 401 gives [`SyncError::Unauthorized`], which
+/// starts a refresh. A 5xx gives [`SyncError::Server`], which is transient. Anything else gives an
+/// `Oauth` error that holds the PDS's reason body. A read of the body consumes `resp`, so the code
+/// takes the status first.
 async fn xrpc_error(nsid: &str, resp: reqwest::Response) -> SyncError {
     let status = resp.status();
     if status.as_u16() == 401 {
@@ -331,10 +337,11 @@ mod tests {
         assert_eq!(r.rkey(), "3kabc");
     }
 
-    /// Live repo CRUD against a local PDS: create a throwaway account, write a record via
-    /// Bearer auth, read it back. Proves the XRPC write/read path against a real PDS
-    /// (the DPoP-bound variant uses the same code with a DPoP proof; the OAuth DPoP path
-    /// is proven by the PAR test + dpop_proof's `ath`). Set PDS_TEST_URL to run.
+    /// Live repo CRUD against a local PDS. Create an account to throw away, write a record with
+    /// Bearer auth, and read it back. That proves the XRPC write and read path against a real PDS.
+    ///
+    /// The DPoP-bound form runs the same code with a DPoP proof. The PAR test, and the `ath` of
+    /// `dpop_proof`, prove the OAuth DPoP path. Set PDS_TEST_URL to run this.
     #[tokio::test]
     #[ignore = "requires PDS_TEST_URL (local atproto PDS container)"]
     async fn create_and_read_record_against_live_pds() {
@@ -345,8 +352,9 @@ mod tests {
         let pds = pds.trim_end_matches('/').to_string();
         let http = reqwest::Client::new();
 
-        // Throwaway account (unique handle under the PDS host).
-        // Short unique suffix (low digits of the nanos clock) — handle labels are length-limited.
+        // An account to throw away, with its own handle under the PDS host.
+        // A short unique suffix, from the low digits of the nanosecond clock. A handle label has a
+        // length limit.
         let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() % 1_000_000_000;
         let handle = format!("nav{n}.pds.test");
         let acct: serde_json::Value = http
@@ -362,8 +370,8 @@ mod tests {
         let jwt = acct["accessJwt"].as_str().expect("accessJwt");
 
         let client = PdsClient::bearer(http, &pds, did, jwt);
-        // Publish the real typed alignment (coverage) record from the shared contract
-        // (floats as strings — atproto DAG-CBOR rejects floats).
+        // Publish the real typed alignment (coverage) record from the shared contract. A float
+        // goes out as a string, because atproto DAG-CBOR refuses a float.
         let rec = du_domain::fed::AlignmentRecord::new(
             "chm13v2.0",
             Some("bwa-mem2".into()),

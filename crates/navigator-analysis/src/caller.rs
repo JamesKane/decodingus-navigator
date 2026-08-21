@@ -1,28 +1,31 @@
-//! Purpose-built **haploid** variant caller (plan §4b) — the GATK replacement for
-//! Y/mtDNA. There is no pure-code Scala caller to port: the legacy app shelled out to
-//! GATK `HaplotypeCaller --sample-ploidy 1` (force-call at tree sites) and `Mutect2
-//! --mitochondria` / haploid `HaplotypeCaller` (de-novo discovery), then subtracted
-//! known tree positions to get private variants. This module reproduces both modes by
-//! **pileup-consensus calling**, which is tractable precisely because Y and mtDNA are
-//! haploid (ploidy 1) — no diploid local reassembly.
+//! A **haploid** variant caller built for this purpose (plan §4b). It replaces GATK for the Y
+//! chromosome and the mtDNA.
 //!
-//! Two modes:
-//! 1. [`force_call_sites`] — genotype-given-alleles at known tree `Site`s (haplogroup
-//!    assignment): pileup, take the consensus base, report whether it is the site's
-//!    ref or alt allele.
-//! 2. [`call_denovo`] — walk the contig, emit positions whose consensus base differs
-//!    from the reference (the candidate private variants). [`subtract_known`] removes
-//!    known tree positions to yield the private set.
+//! There is no pure-code Scala caller to port. The legacy app called out to GATK
+//! `HaplotypeCaller --sample-ploidy 1`, which force-calls at the tree sites, and to `Mutect2
+//! --mitochondria` or a haploid `HaplotypeCaller`, which discovers de-novo. It then subtracted
+//! the known tree positions to get the private variants. This module does both of those modes by
+//! a **consensus call over a pileup**. That method works here because the Y and the mtDNA are
+//! haploid, at ploidy 1, so it needs no diploid local reassembly.
 //!
-//! **v1 is SNP-only** (plan §4b): indels/homopolymers are where naive pileup calling
-//! diverges from GATK (light local realignment is the planned mitigation), so indel
-//! alleles are skipped here and treated as advisory until the §4c parity harness
-//! validates them. Defaults are starting points the harness will tune.
+//! There are two modes:
+//! 1. [`force_call_sites`] gives a genotype at each known tree `Site`, from alleles that the
+//!    caller already has. This is for haplogroup assignment. It makes a pileup, takes the
+//!    consensus base, and reports whether that base is the ref allele or the alt allele of the
+//!    site.
+//! 2. [`call_denovo`] walks the contig and emits each position whose consensus base is different
+//!    from the reference. Those are the candidate private variants. [`subtract_known`] then
+//!    removes the known tree positions to give the private set.
 //!
-//! Memory: de-novo processes the contig in overlapping chunks (`denovo_chunk`), so the
-//! dense per-position tally is bounded by the chunk, not the contig length. Both-side
-//! context overlap keeps realignment windows that straddle a chunk boundary fully
-//! visible. Force-call tallies only the target sites (sparse), cheap regardless of size.
+//! **v1 handles a SNP alone** (plan §4b). An indel or a homopolymer is where a simple pileup call
+//! moves away from GATK, and light local realignment is the planned answer. So this module skips
+//! an indel allele, and it treats such an allele as advisory until the parity harness of §4c
+//! checks it. The defaults are start points, and the harness will tune them.
+//!
+//! On memory: the de-novo path walks the contig in chunks that overlap (`denovo_chunk`). The
+//! chunk, and not the length of the contig, thereby bounds the dense tally at each position. Context overlaps on both sides, so a realignment window that crosses a chunk boundary
+//! stays fully visible. The force-call path tallies the target sites alone, which is sparse and
+//! costs little at any size.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -41,30 +44,36 @@ use crate::reader;
 use crate::realign;
 use crate::reassembly;
 
-/// Algorithm version for de-novo caller artifacts; bump on output-affecting changes
-/// (e.g. the local-realignment addition bumped this to -2; the local-reassembly resolver to -3).
+/// The algorithm version of a de-novo caller artifact. Raise it after a change that alters the
+/// output. The local realignment raised it to -2, and the local-reassembly resolver to -3.
 pub const DENOVO_VERSION: &str = "haploid-denovo-3";
 
 /// Algorithm version for site-genotype (panel) artifacts.
 pub const GENOTYPE_VERSION: &str = "genotype-1";
 
-/// Parameters for haploid calling. Defaults are v1 starting points (gated by §4c).
+/// The parameters of a haploid call. The defaults are the v1 start points, and §4c gates them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HaploidCallerParams {
-    /// Minimum passing depth (reads clearing the quality filters) to make any call.
+    /// The smallest depth of reads that pass, which are the reads that clear the quality
+    /// filters, before the caller makes any call.
     pub min_depth: u32,
-    /// Reads below this MAPQ are dropped entirely.
+    /// The caller drops a read below this MAPQ.
     pub min_mapping_quality: u8,
     /// Bases below this quality are not counted.
     pub min_base_quality: u8,
-    /// The consensus base must be at least this fraction of passing depth to call.
+    /// The consensus base must hold at least this fraction of the depth that passes, before the
+    /// caller makes a call.
     pub min_allele_fraction: f64,
-    /// Allele-balance (paralog) filter for haploid sites. A true Y/mt-haploid site is
-    /// near-monoallelic; a substantial *second* allele signals paralog/mismapping (two loci
-    /// piled together) and the site is dropped. Tripped only when the second-most-common
-    /// allele has both at least `min_paralog_minor_reads` reads AND a fraction strictly above
-    /// `max_minor_allele_fraction` — a lone discordant read (sequencing error) does not trip
-    /// it. Set the fraction `>= 1.0` to disable. See PangenomeExpansion.md (Phase 1).
+    /// The allele-balance filter, which finds a paralog, at a haploid site. A true haploid site
+    /// on the Y or the mtDNA carries almost one allele alone. A large *second* allele shows a
+    /// paralog, or a read that the aligner put in the wrong place, which piles two loci together.
+    /// The caller drops such a site.
+    ///
+    /// The filter fires only when the second most common allele meets two conditions. It has
+    /// `min_paralog_minor_reads` reads or more, AND its fraction is above
+    /// `max_minor_allele_fraction`. One read that disagrees, which is a sequencing error, does
+    /// not fire it. Set the fraction to `1.0` or more to turn the filter off. See
+    /// PangenomeExpansion.md, Phase 1.
     pub max_minor_allele_fraction: f64,
     /// Minimum second-allele read count for the paralog filter to engage (guards low depth).
     pub min_paralog_minor_reads: u32,
@@ -74,15 +83,17 @@ pub struct HaploidCallerParams {
     pub realign_min_indel_reads: u32,
     /// Padding (bp) added around indel-evidence runs to form a realignment window.
     pub realign_pad: i64,
-    /// De-novo emit chunk size (bp). The contig is processed in chunks so memory is
-    /// bounded; a chunk holds dense arrays for `chunk + 2*overlap` positions.
+    /// The chunk size, in bp, of the de-novo pass. The caller walks the contig in chunks to hold
+    /// the memory down. One chunk holds dense arrays for `chunk + 2*overlap` positions.
     pub denovo_chunk: usize,
-    /// Context overlap (bp) processed on each side of a chunk, so realignment windows
-    /// straddling a chunk boundary are still fully seen. Must exceed `realign_pad`.
+    /// The context overlap, in bp, that the caller walks on each side of a chunk. A realignment
+    /// window that crosses a chunk boundary then stays fully visible. It must be more than
+    /// `realign_pad`.
     pub denovo_overlap: usize,
-    /// Escalate positions the paralog gate would drop to the local-reassembly resolver
-    /// ([`crate::reassembly`]) instead of discarding them — recovers misaligned-ref haploid SNVs
-    /// (private-Y Option B). Off leaves the pileup-only behaviour unchanged.
+    /// Send a position that the paralog gate would drop to the local-reassembly resolver,
+    /// [`crate::reassembly`], and do not throw it away. This recovers a haploid SNV where the
+    /// reference alignment is wrong, which is Option B of the private-Y work. When this is off,
+    /// the caller keeps its pileup-only behaviour.
     pub reassembly: bool,
     /// Half-width (bp) of the window extracted around a reassembly candidate. Must be ≤
     /// `denovo_overlap` so a boundary window stays inside the processed chunk.
@@ -143,9 +154,9 @@ pub struct GenotypeCall {
     pub allele_fraction: f64, // alt_depth / depth
 }
 
-/// A diploid/haploid genotype at a known site (genotype-likelihood model). `dosage` is
-/// the alt-allele count (0..=ploidy), or -1 for a no-call — the encoding the
-/// population/ancestry/IBD paths consume.
+/// A diploid or haploid genotype at a known site, from the genotype-likelihood model. `dosage` is
+/// the count of the alt allele, from 0 to the ploidy, or -1 for a no-call. That is the encoding
+/// that the population, ancestry and IBD paths read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SiteGenotype {
     pub name: String,
@@ -160,12 +171,14 @@ pub struct SiteGenotype {
     pub ref_depth: u32,
     pub alt_depth: u32,
     pub pls: Vec<u8>,
-    /// Explicit VCF genotype string (e.g. `"1/2"`) for multiallelic sites. When `None`, the
-    /// genotype is derived from `dosage` (biallelic). Additive — old cached blobs decode to `None`.
+    /// The VCF genotype string, such as `"1/2"`, for a site with more than two alleles. When it
+    /// is `None`, the genotype comes from `dosage`, and the site has two alleles. This field is
+    /// additive, so an old cached blob decodes to `None`.
     #[serde(default)]
     pub gt: Option<String>,
-    /// Per-allele read depths `[ref, alt1, alt2, …]` for multiallelic sites; `None` → biallelic
-    /// (use `ref_depth`/`alt_depth`).
+    /// The read depth of each allele, `[ref, alt1, alt2, …]`, at a site with more than two
+    /// alleles. `None` means that the site has two alleles, and you read `ref_depth` and
+    /// `alt_depth`.
     #[serde(default)]
     pub allele_depths: Option<Vec<u32>>,
 }
@@ -180,9 +193,10 @@ pub struct VariantCall {
     pub depth: u32,     // passing depth
     pub alt_depth: u32, // reads supporting the consensus alt
     pub allele_fraction: f64,
-    /// Phred-scaled confidence, set by the local-reassembly resolver ([`crate::reassembly`]) for
-    /// calls it recovered; `None` for the plain pileup/gVCF paths. Additive — old cached blobs
-    /// decode to `None`.
+    /// The confidence, on the Phred scale. The local-reassembly resolver
+    /// ([`crate::reassembly`]) sets it on a call that it recovered. It is `None` on the plain
+    /// pileup path and the gVCF path. This field is additive, so an old cached blob decodes to
+    /// `None`.
     #[serde(default)]
     pub quality: Option<f64>,
 }
@@ -212,11 +226,12 @@ fn consensus(counts: &[u32; 4]) -> (usize, u32) {
     (bi, best)
 }
 
-/// Allele-balance / paralog filter for a haploid pileup. A true haploid site is near-
-/// monoallelic; when the second-most-common allele carries both enough reads
-/// (`min_paralog_minor_reads`) and enough fraction (strictly above `max_minor_allele_fraction`)
-/// the site looks bi-allelic — a paralog/mismapping artifact — and the caller should drop it.
-/// A single discordant read (likely sequencing error) does not trip it.
+/// The allele-balance filter, which finds a paralog, over a haploid pileup. A true haploid site
+/// carries almost one allele alone. The site looks like it has two alleles when the second most
+/// common allele has enough reads (`min_paralog_minor_reads`) and a large enough fraction (above
+/// `max_minor_allele_fraction`). That is an artifact of a paralog, or of a read in the wrong
+/// place. The caller must drop such a site. One read that disagrees, which is probably a
+/// sequencing error, does not fire the filter.
 fn is_paralogous(counts: &[u32; 4], depth: u32, params: &HaploidCallerParams) -> bool {
     if depth == 0 {
         return false;
@@ -253,8 +268,8 @@ pub(crate) fn contig_length(header: &noodles::sam::Header, contig: &str) -> Opti
         .map(|(_, map)| map.length().get())
 }
 
-/// Resolve a contig's length by opening the alignment header at `bam_path`. `reference` is
-/// required for CRAM.
+/// Find the length of a contig. It reads the alignment header at `bam_path`. A CRAM file needs
+/// `reference`.
 pub(crate) fn read_contig_length(
     bam_path: &Path,
     contig: &str,
@@ -264,8 +279,9 @@ pub(crate) fn read_contig_length(
     contig_length(&header, contig).ok_or_else(|| AnalysisError::Message(format!("contig {contig} not in BAM header")))
 }
 
-/// Load a contig's full reference sequence in one indexed-FASTA query (shared read-only across the
-/// caller's chunks — each chunk slices its own window instead of re-querying).
+/// Load the full reference sequence of a contig, in one query against an indexed FASTA. The
+/// chunks of the caller share it read-only. Each chunk takes a slice for its own window, and it
+/// does not run the query again.
 fn load_contig_sequence(reference_path: &Path, contig: &str, length: usize) -> Result<Vec<u8>, AnalysisError> {
     let mut fasta_reader = fasta::io::indexed_reader::Builder::default()
         .build_from_path(reference_path)
@@ -281,8 +297,9 @@ fn load_contig_sequence(reference_path: &Path, contig: &str, length: usize) -> R
         .to_vec())
 }
 
-/// The contig (reference-sequence) names in the alignment header. `reference` is required
-/// for CRAM. Used to skip lifted positions that land on contigs the alignment lacks.
+/// The names of the contigs, which are the reference sequences, in the alignment header. A CRAM
+/// file needs `reference`. The caller uses this to skip a lifted position that lands on a contig
+/// that the alignment does not hold.
 pub fn header_contig_names(bam_path: &Path, reference: Option<&Path>) -> Result<Vec<String>, AnalysisError> {
     let header = reader::read_header(bam_path, reference)?;
     Ok(header
@@ -369,10 +386,12 @@ fn tally_targets(
     Ok((length, counts))
 }
 
-/// Call the consensus base at each 1-based `target` position on `contig` (haploid
-/// genotyping for haplogroup assignment). A position is called only when it clears
-/// `min_depth` passing reads and the consensus base is at least `min_allele_fraction` of
-/// that depth; uncalled positions are simply absent. Returns position → uppercase base.
+/// Call the consensus base at each 1-based `target` position on `contig`. This is the haploid
+/// genotype for a haplogroup assignment.
+///
+/// A position gets a call only when it clears `min_depth` reads that pass, and when the consensus
+/// base holds at least `min_allele_fraction` of that depth. A position with no call is absent
+/// from the result. Returns a map from a position to an uppercase base.
 pub fn call_bases_at(
     bam_path: &Path,
     contig: &str,
@@ -400,10 +419,12 @@ pub fn call_bases_at(
     Ok(calls)
 }
 
-/// Diagnostic: the raw passing A/C/G/T read tally at each `target` (1-based) — the evidence
-/// **behind** [`call_bases_at`]'s consensus pick, before the depth / allele-fraction / paralog
-/// filters. Returns 1-based position → `[A, C, G, T]` counts (absent = no passing read covered it).
-/// For "what do the reads actually show at this tree SNP" logging.
+/// A diagnostic. It gives the raw A/C/G/T tally of the reads that pass, at each 1-based
+/// `target`. That is the evidence **behind** the consensus that [`call_bases_at`] takes, before
+/// the depth filter, the allele-fraction filter and the paralog filter.
+///
+/// Returns a map from a 1-based position to `[A, C, G, T]` counts. A position is absent when no
+/// read that passes covered it. Use it to log what the reads show at a tree SNP.
 pub fn tally_at(
     bam_path: &Path,
     contig: &str,
@@ -415,9 +436,11 @@ pub fn tally_at(
     Ok(counts.into_iter().map(|(pos0, c)| ((pos0 + 1) as i64, c)).collect())
 }
 
-/// The expected indel allele for a tree locus given its (VCF left-anchored) ancestral/derived
-/// alleles: an insertion of the trailing bases (`A`→`ATT` ⇒ Ins("TT")) or a deletion of the length
-/// difference (`TA`→`T` ⇒ Del(1)). `None` for a SNP or a complex/non-left-anchored allele.
+/// The indel allele that a tree locus expects, from its ancestral and derived alleles in the
+/// left-anchored VCF form. It is one of two things. It is an insertion of the bases at the end,
+/// where `A`→`ATT` gives Ins("TT"). Or it is a deletion of the difference in length, where
+/// `TA`→`T` gives Del(1). It is `None` for a SNP, and for an allele that is complex or not
+/// left-anchored.
 fn expected_indel_allele(ancestral: &str, derived: &str) -> Option<IndelAllele> {
     let (a, d) = (ancestral.as_bytes(), derived.as_bytes());
     if d.len() > a.len() && d.starts_with(a) {
@@ -429,9 +452,10 @@ fn expected_indel_allele(ancestral: &str, derived: &str) -> Option<IndelAllele> 
     }
 }
 
-/// Walk one read's CIGAR from `start` (1-based), collecting each indel event as
-/// `(anchor 1-based, allele)` — deletion anchor = first deleted ref base; insertion anchor = the ref
-/// base the insertion precedes. Returns the events plus the read's inclusive reference end.
+/// Walk the CIGAR of one read from `start`, which is 1-based, and collect each indel event as
+/// `(anchor 1-based, allele)`. The anchor of a deletion is the first deleted ref base. The anchor
+/// of an insertion is the ref base that comes after the insertion. Returns the events, and the
+/// inclusive reference end of the read.
 fn read_indel_events(record: &RecordBuf, start: i64) -> (Vec<(i64, IndelAllele)>, i64) {
     let seq = record.sequence();
     let mut ref_pos = start;
@@ -463,21 +487,28 @@ fn read_indel_events(record: &RecordBuf, start: i64) -> (Vec<(i64, IndelAllele)>
     (events, ref_pos - 1)
 }
 
-/// Targeted genotyping of tree **indel** loci. Each target is `(pos, ancestral, derived)` in VCF
-/// left-anchored form (`pos` = the anchor base; e.g. `A`→`ATT` insertion, `TA`→`T` deletion). For
-/// each locus, reads spanning it are examined: a read carrying the matching insertion/deletion
-/// (after left-normalization into the reference repeat) supports the derived allele.
+/// Genotype the **indel** loci of a tree, at given targets. Each target is
+/// `(pos, ancestral, derived)`, in the left-anchored VCF form, where `pos` is the anchor base.
+/// `A`→`ATT` is an insertion, and `TA`→`T` is a deletion. At each locus the code examines the
+/// reads that cover it. A read that carries the matching insertion or deletion, after
+/// left-normalization into the reference repeat, supports the derived allele.
 ///
-/// **Additive-only**: a locus with a clear derived majority over `min_depth` is emitted as
-/// [`haplo::INDEL_DERIVED`] at `pos`; everything else — no indel support, low depth, or reads that
-/// merely *span* the site cleanly — is left as **no-call**, never an ancestral contradiction. Indel
-/// genotyping around homopolymers/STRs is noisy enough that a "clean-spanning" read is often just the
-/// aligner's alternate representation of the same indel; calling those ancestral would spuriously
-/// contradict sparse nodes (a d==0 node picking up one false ancestral trips the confident-divergence
-/// guard and vetoes the whole lineage). So indels only ever *confirm* a branch, matching the intent:
-/// cover the many indel-defined DecodingUs branches when the sample carries them. Requires a
-/// `reference` (to left-normalize + know deleted bases); returns empty without one, or when the
-/// contig isn't in the FASTA.
+/// **This function only adds.** A locus with a clear derived majority over `min_depth` comes out
+/// as [`haplo::INDEL_DERIVED`] at `pos`. Everything else stays a **no-call**, and it never becomes
+/// an ancestral contradiction. That covers a locus with no indel support, a locus with low depth,
+/// and reads that only *cover* the site cleanly.
+///
+/// The reason is noise. Take an indel genotype around a homopolymer or an STR. A read that
+/// covers the site cleanly is often the alternate form that the aligner chose for the same indel.
+/// To call those ancestral would contradict a thin node for no reason. A node at
+/// d == 0 that takes one false ancestral fires the confident-divergence guard, and that vetoes
+/// the whole lineage.
+///
+/// So an indel only ever *confirms* a branch. That matches the intent: cover the many DecodingUs
+/// branches that an indel defines, when the sample carries them.
+///
+/// This needs a `reference`, to left-normalize and to know the deleted bases. It returns an empty
+/// result without one, and also when the FASTA does not hold the contig.
 pub fn call_indels_at(
     bam_path: &Path,
     contig: &str,
@@ -522,8 +553,10 @@ pub fn call_indels_at(
     ptargets.sort_by_key(|t| t.pos);
     let positions: Vec<i64> = ptargets.iter().map(|t| t.pos).collect();
 
-    // Single contig-wide pass (as the SNP tally does): walk every read once, and for each target the
-    // read spans, accumulate matched (carries the indel) vs ref-spanning (spans it cleanly) support.
+    // One pass over the whole contig, as the SNP tally does. Walk every read once. At each
+    // target that the read covers, add up two kinds of support. One is a match, where the read
+    // carries the indel. The other is a clean cover, where the read covers the target and shows
+    // the reference there.
     let (header, mut reader) = reader::open_indexed(bam_path, Some(reference))?;
     let region: Region = contig
         .parse()
@@ -573,8 +606,9 @@ pub fn call_indels_at(
     Ok(out)
 }
 
-/// Dense A/C/G/T tally + per-position indel evidence for the 1-based inclusive region
-/// `[lo, hi]`, indexed by `pos - lo` (the chunked de-novo path).
+/// A dense A/C/G/T tally, and the indel evidence at each position, over the 1-based inclusive
+/// region `[lo, hi]`. The index is `pos - lo`. The de-novo path, which works in chunks, uses
+/// this.
 pub(crate) fn tally_region(
     bam_path: &Path,
     contig: &str,
@@ -647,11 +681,16 @@ pub(crate) fn tally_region(
     Ok((counts, indel))
 }
 
-/// Record one read's passing `(base, qual)` at each of `targets` (sorted, 1-based) that it covers,
-/// in a **single** CIGAR walk from the alignment start. Targets in a deletion/skip/insertion/clip,
-/// past the read, below `min_base_quality`, or non-ACGT are skipped. This is the multi-target
-/// generalization of a per-site probe — one walk feeds many sites, so a long read shared by several
-/// nearby panel sites is decoded + walked once instead of once per site.
+/// Record the `(base, qual)` of one read, where it passes, at each of the `targets` that the read
+/// covers. `targets` comes in sorted order, and its positions are 1-based. The function does this
+/// in a **single** CIGAR walk from the start of the alignment.
+///
+/// The walk skips a target in a deletion, a ref skip, an insertion or a clip. It also skips a
+/// target that is past the read, one below `min_base_quality`, and one whose base is not ACGT.
+///
+/// This is the many-target form of a probe at one site. One walk feeds many sites. Some nearby
+/// panel sites share a long read, and the code decodes and walks that read once, not once for
+/// each site.
 fn collect_bases(record: &RecordBuf, targets: &[i64], min_base_quality: u8, obs: &mut HashMap<i64, Vec<(u8, u8)>>) {
     let Some(start) = record.alignment_start() else { return };
     let start = start.get() as i64;
@@ -687,7 +726,7 @@ fn collect_bases(record: &RecordBuf, targets: &[i64], min_base_quality: u8, obs:
             ref_pos = end;
             query_off += len as usize;
         } else if cr {
-            // Deletion / ref-skip — targets inside the gap carry no base.
+            // A deletion or a ref skip. A target inside the gap carries no base.
             let end = ref_pos + len;
             while ti < targets.len() && targets[ti] < end {
                 ti += 1;
@@ -699,15 +738,20 @@ fn collect_bases(record: &RecordBuf, targets: &[i64], min_base_quality: u8, obs:
     }
 }
 
-/// Per-target-site passing `(base, qual)` observations (ACGT bases clearing the quality filters),
-/// keyed by 1-based position — the input the genotype-likelihood model needs.
+/// The `(base, qual)` observations that pass at each target site, keyed by a 1-based position.
+/// Those are the ACGT bases that clear the quality filters. This is the input that the
+/// genotype-likelihood model needs.
 ///
-/// The targets are grouped into contiguous runs (split only where the gap between adjacent sites
-/// exceeds a read length), and each run is fetched with a **single** streaming index query. So we
-/// seek straight to the regions that hold targets — never scanning the whole contig — and decode
-/// each read once (a point query per site re-fetches + re-converts the long HiFi reads that span
-/// several nearby sites). Within a run, [`collect_bases`] distributes each read's bases to every
-/// target it covers in one CIGAR walk.
+/// The code puts the targets into runs that touch each other. It splits a run only where the gap
+/// between two adjacent sites is more than one read length. It then gets each run with a
+/// **single** streaming query against the index.
+///
+/// The code then seeks straight to the regions that hold targets, and it never scans the whole
+/// contig. It also decodes each read once. A point query at each site would fetch and convert
+/// the long HiFi reads again, and one such read covers some nearby sites.
+///
+/// Inside a run, [`collect_bases`] gives the bases of each read to every target that the read
+/// covers, in one CIGAR walk.
 fn tally_site_observations(
     bam_path: &Path,
     contig: &str,
@@ -721,8 +765,9 @@ fn tally_site_observations(
         return Ok(HashMap::new());
     }
 
-    // Split into runs where consecutive sites are within MAX_GAP — beyond a read length no read can
-    // span the gap, so splitting there is free (no shared reads lost) and skips read-free spans.
+    // Split into runs whose consecutive sites lie within MAX_GAP. Past one read length, no read
+    // can cover the gap. A split there costs nothing, because no shared read goes away, and it
+    // skips the spans that hold no read.
     const MAX_GAP: i64 = 50_000;
 
     let (header, mut reader) = reader::open_indexed(bam_path, reference)?;
@@ -751,9 +796,10 @@ fn tally_site_observations(
     Ok(obs)
 }
 
-/// Genotype known SNP sites on `contig` at the given `ploidy` (1 = haploid Y/MT/male-X,
-/// 2 = autosome / female-X) using the genotype-likelihood model — the panel-genotyping
-/// path the population / ancestry / IBD analyses consume. Non-SNP sites are skipped.
+/// Genotype the known SNP sites on `contig`, at the given `ploidy`, with the
+/// genotype-likelihood model. A ploidy of 1 is a haploid Y, MT or male X. A ploidy of 2 is an
+/// autosome or a female X. This is the panel-genotype path that the population, ancestry and IBD
+/// analyses read. The code skips a site that is not a SNP.
 pub fn genotype_sites(
     bam_path: &Path,
     contig: &str,
@@ -813,10 +859,12 @@ pub fn genotype_sites(
     Ok(out)
 }
 
-/// Genotype `sites` across **every** contig they span, one contig per rayon task. The panel-genotyping
-/// entry point for whole-genome panels (the per-contig [`genotype_sites`] is independent + IO-bound on
-/// its own index region, so contigs parallelize cleanly). Results are concatenated (order across
-/// contigs is unspecified — downstream consumers key by site, not order).
+/// Genotype `sites` across **every** contig that they cover, with one rayon task for each contig.
+/// This is the entry point for a whole-genome panel. [`genotype_sites`] works on one contig, and
+/// it is independent and IO-bound on its own index region, so the contigs parallelize cleanly.
+///
+/// The code joins the results together. The order across the contigs is not defined, because a
+/// later step keys on the site and not on the order.
 pub fn genotype_sites_all_contigs(
     bam_path: &Path,
     sites: &[Site],
@@ -831,9 +879,9 @@ pub fn genotype_sites_all_contigs(
         .collect::<std::collections::BTreeSet<&str>>()
         .into_iter()
         .collect();
-    // Run on a decode-safe pool rather than rayon's global pool (2 MiB stacks): each task decodes
-    // CRAM records, which recurse deeply on CRAM 3.1 and would otherwise overflow + abort. See
-    // [`reader::decode_pool`].
+    // Run on a pool that is safe for a decode, and not on the global rayon pool, whose stacks are
+    // 2 MiB. Each task decodes CRAM records. Those recurse deeply on CRAM 3.1, and the stack would
+    // overflow and abort. See [`reader::decode_pool`].
     let pool = crate::reader::decode_pool(contigs.len().max(1).min(crate::unified::analysis_thread_count()))?;
     let per_contig: Result<Vec<Vec<SiteGenotype>>, AnalysisError> = pool.install(|| {
         contigs
@@ -847,15 +895,24 @@ pub fn genotype_sites_all_contigs(
     Ok(per_contig?.into_iter().flatten().collect())
 }
 
-/// Reconcile per-alignment force-call genotypes at a shared site set into one **consensus** diploid
-/// genotype per site — the subject-level joint genotype across a person's WGS runs. Each input is
-/// one alignment's [`SiteGenotype`]s at the *union* of variant sites (all on the same reference
-/// build, so `(contig, position, ref, alt)` align). Per site, a depth-weighted vote over the dosage
-/// classes {0,1,2}: an alignment whose depth is below `min_depth` is its no-call (excluded), so a
-/// site absent-as-hom-ref in one run is a real vote (resolving "run A het vs run B hom-ref") while a
-/// genuinely uncovered run abstains. Only **variant** consensus sites (het/hom-alt) are returned;
-/// hom-ref / no-call consensus is not a variant. Depth/AD are summed and GQ is the max over the
-/// supporting alignments; PLs are dropped (the per-run likelihoods don't compose into one PL here).
+/// Reconcile the force-call genotypes of each alignment, over a shared set of sites, into one
+/// **consensus** diploid genotype at each site. That is the joint genotype of the subject, across
+/// the WGS runs of that person.
+///
+/// Each input holds the [`SiteGenotype`] values of one alignment, at the *union* of the variant
+/// sites. All of them are on the same reference build, so `(contig, position, ref, alt)` line
+/// up.
+///
+/// At each site the code holds a vote over the dosage classes {0,1,2}, weighted by depth. An
+/// alignment whose depth is below `min_depth` casts its no-call, and the vote leaves it out. A
+/// site that one run shows as hom-ref, and that is absent from the list, is then a real vote.
+/// That resolves the case where run A is het and run B is hom-ref. A run that truly did not cover
+/// the site abstains.
+///
+/// The result holds the **variant** consensus sites alone, which are het and hom-alt. A hom-ref
+/// or no-call consensus is not a variant. The code sums the depth and the AD, and it takes the
+/// maximum GQ over the alignments that support the call. It drops the PLs, because the
+/// likelihoods of the separate runs do not combine into one PL here.
 pub fn reconcile_site_genotypes(per_alignment: &[Vec<SiteGenotype>], min_depth: u32) -> Vec<SiteGenotype> {
     use std::collections::BTreeMap;
     struct Acc {
@@ -885,8 +942,8 @@ pub fn reconcile_site_genotypes(per_alignment: &[Vec<SiteGenotype>], min_depth: 
             }
             let d = g.dosage;
             if (0..=2).contains(&d) {
-                // Depth-bonus weight, mirroring consensus::obs_weight's WGS term (constant method
-                // factor drops out of the argmax).
+                // The weight of the depth bonus. It has the same shape as the WGS term of
+                // consensus::obs_weight. The constant method factor cancels in the argmax.
                 let weight = 1.0 + ((g.depth as f64).sqrt() / 10.0).min(1.0);
                 w_add(&mut acc.w, &mut acc.counts, d as usize, weight);
                 acc.depth += g.depth as u64;
@@ -898,7 +955,8 @@ pub fn reconcile_site_genotypes(per_alignment: &[Vec<SiteGenotype>], min_depth: 
     }
     let mut out = Vec::new();
     for (_, acc) in groups {
-        // argmax weight; tie → more raw supporting runs, then the lower dosage.
+        // Take the argmax of the weight. A tie goes to the higher count of raw runs that support
+        // the call, and then to the lower dosage.
         let mut best = 0usize;
         for d in 1..3 {
             if acc.w[d] > acc.w[best] || (acc.w[d] == acc.w[best] && acc.counts[d] > acc.counts[best]) {
@@ -930,8 +988,9 @@ fn w_add(w: &mut [f64; 3], counts: &mut [usize; 3], d: usize, weight: f64) {
     counts[d] += 1;
 }
 
-/// Force-call (genotype-given-alleles) at known SNP sites on `contig`. Non-SNP sites
-/// (multi-base ref/alt) are skipped — v1 is SNP-only.
+/// Force-call at the known SNP sites on `contig`. The caller already has the alleles. The code
+/// skips a site that is not a SNP, because v1 handles a SNP alone. Such a site holds more than
+/// one base in its ref allele or in its alt allele.
 pub fn force_call_sites(
     bam_path: &Path,
     contig: &str,
@@ -1000,10 +1059,11 @@ pub fn force_call_sites(
     Ok(out)
 }
 
-/// De-novo SNP discovery across `contig`, processed in overlapping chunks so memory is
-/// bounded by the chunk (not the contig length). Emits positions whose consensus base
-/// passes the depth/fraction filters and differs from the reference. Both-side context
-/// overlap keeps realignment windows that straddle a chunk boundary fully visible.
+/// De-novo SNP discovery across `contig`. The code walks it in chunks that overlap, so the chunk
+/// bounds the memory, and not the length of the contig. It emits each position whose consensus
+/// base passes the depth filter and the fraction filter, and differs from the reference. The
+/// context overlaps on both sides, so a realignment window that crosses a chunk boundary stays
+/// fully visible.
 pub fn call_denovo(
     bam_path: &Path,
     reference_path: &Path,
@@ -1013,14 +1073,17 @@ pub fn call_denovo(
 ) -> Result<Vec<VariantCall>, AnalysisError> {
     let length = read_contig_length(bam_path, contig, Some(reference_path))?;
 
-    // Load the contig's reference once, shared read-only across chunks — each chunk slices its own
-    // window instead of re-querying the FASTA.
+    // Load the reference of the contig once. The chunks share it read-only, and each chunk takes
+    // a slice for its own window. No chunk queries the FASTA again.
     let ref_seq = load_contig_sequence(reference_path, contig, length)?;
 
-    // Disjoint emit ranges, in order, each processed independently with its own indexed BAM
-    // region query. Chunks stay large (`denovo_chunk`, default 8 MB): a CRAM container spans
-    // several MB, so chunks smaller than a container would re-decode it in every overlapping
-    // chunk. rayon caps in-flight chunks at the pool size, so peak memory is bounded.
+    // The emit ranges do not overlap, and they come in order. The code walks each one on its
+    // own, with its own region query against the BAM index.
+    //
+    // The chunks stay large: `denovo_chunk` defaults to 8 MB. A CRAM container covers some MB.
+    // Take a chunk smaller than a container. Every chunk over that container decodes it again.
+    // The rayon pool limits how many chunks run at one time to its own size, so the peak memory
+    // has a bound.
     let threads = crate::unified::analysis_thread_count();
     let chunk = params.denovo_chunk.max(1);
     let mut ranges: Vec<(usize, usize)> = Vec::new();
@@ -1038,21 +1101,26 @@ pub fn call_denovo(
         ranges
             .par_iter()
             .map(|&(lo, hi)| {
-                // Per chunk: each is bounded work (default 8 MB of reference), so this bounds the
-                // delay between a click and a stop without splitting the chunks any finer.
+                // One check at each chunk. The work in a chunk has a bound, at a default of 8 MB
+                // of reference. This bounds the delay between a click and a stop, and the chunks
+                // do not have to get smaller.
                 cancel.check()?;
                 denovo_chunk(bam_path, reference_path, contig, params, &ref_seq, length, lo, hi)
             })
             .collect::<Result<Vec<_>, AnalysisError>>()
     })?;
-    // Ranges are disjoint and collected in order, so flattening preserves global position order.
+    // The ranges do not overlap, and the code collects them in order. A flat join then keeps the
+    // global position order.
     Ok(nested.into_iter().flatten().collect())
 }
 
-/// De-novo SNP calls restricted to `[region_lo, region_hi]` (1-based inclusive) on `contig` — the
-/// same tally/realign/reassembly path as [`call_denovo`] over a single bounded emit range. Loads the
-/// whole contig reference once (cheap) but only queries the region. Intended for debug/validation
-/// tooling (e.g. checking recovery at specific positions) without walking the whole contig.
+/// The de-novo SNP calls inside `[region_lo, region_hi]` alone, which is 1-based and inclusive,
+/// on `contig`. It is the same tally, realign and reassembly path as [`call_denovo`], over one
+/// bounded emit range. It loads the reference of the whole contig once, which costs little, and
+/// it queries the region alone.
+///
+/// Use it in a debug tool or a check tool, for example to look at the recovery at given
+/// positions. It does not walk the whole contig.
 pub fn call_denovo_region(
     bam_path: &Path,
     reference_path: &Path,
@@ -1071,10 +1139,11 @@ pub fn call_denovo_region(
     denovo_chunk(bam_path, reference_path, contig, params, &ref_seq, length, lo, hi)
 }
 
-/// De-novo SNP calls for one emit range `[emit_lo, emit_hi]` (1-based inclusive). Tallies a
-/// `denovo_overlap`-padded window so realignment windows straddling the boundary are fully
-/// seen, but emits only `[emit_lo, emit_hi]`. `ref_seq` is the full contig reference (index 0 =
-/// position 1). Each call opens its own BAM reader, so it is independent and thread-safe.
+/// The de-novo SNP calls for one emit range `[emit_lo, emit_hi]`, which is 1-based and inclusive.
+/// It tallies a window with `denovo_overlap` of padding, so that a realignment window across the
+/// boundary stays fully visible. It emits `[emit_lo, emit_hi]` alone. `ref_seq` is the reference
+/// of the whole contig, where index 0 is position 1. Each call opens its own BAM reader, so it is
+/// independent and safe across threads.
 #[allow(clippy::too_many_arguments)]
 fn denovo_chunk(
     bam_path: &Path,
@@ -1089,8 +1158,8 @@ fn denovo_chunk(
     let overlap = params.denovo_overlap;
     let proc_lo = emit_lo.saturating_sub(overlap).max(1);
     let proc_hi = (emit_hi + overlap).min(length);
-    // Reference window [proc_lo, proc_hi], indexed relative to proc_lo (clamped to what the
-    // FASTA actually returned, so a short contig tail reads as 'N' like before).
+    // The reference window [proc_lo, proc_hi], with its index relative to proc_lo. The code
+    // clamps it to what the FASTA returned, so a short contig tail reads as 'N', as before.
     let ref_chunk = &ref_seq[(proc_lo - 1).min(ref_seq.len())..proc_hi.min(ref_seq.len())];
 
     let (mut counts, indel) = tally_region(bam_path, contig, params, proc_lo, proc_hi, Some(reference_path))?;
@@ -1108,8 +1177,9 @@ fn denovo_chunk(
     }
 
     let mut out = Vec::new();
-    // Stage A — positions the paralog gate would drop but that carry a real non-reference allele
-    // are escalated to the local-reassembly resolver instead of discarded (private-Y Option B).
+    // Stage A. Take the positions that the paralog gate would drop, but that carry a real
+    // non-reference allele. Send those to the local-reassembly resolver, and do not throw them
+    // away. That is Option B of the private-Y work.
     let mut active: Vec<reassembly::Candidate> = Vec::new();
     for pos in emit_lo..=emit_hi {
         let r = pos - proc_lo; // index into the chunk arrays
@@ -1124,8 +1194,9 @@ fn denovo_chunk(
         }
         let ref_base = ref_chunk.get(r).copied().unwrap_or(b'N');
         if is_paralogous(&c, depth, params) {
-            // bi-allelic at a haploid site — the pileup can't tell a true derived SNV from a
-            // paralog artifact. Hand it to reassembly (Stage B–E below) rather than dropping it.
+            // The site has two alleles, and it is haploid. The pileup can not separate a true
+            // derived SNV from a paralog artifact. Give it to reassembly, in stages B to E
+            // below, and do not drop it.
             if params.reassembly {
                 if let Some(cand) = active_candidate(pos as i64, &c, ref_base, params) {
                     active.push(cand);
@@ -1152,7 +1223,8 @@ fn denovo_chunk(
         });
     }
 
-    // Stages B–F — reassemble the escalated windows and append the recovered DERIVED calls.
+    // Stages B to F. Reassemble the windows that stage A sent on, and add the DERIVED calls that
+    // they recover.
     if params.reassembly && !active.is_empty() {
         let recovered = resolve_active(bam_path, contig, ref_seq, length, &active, params, Some(reference_path))?;
         out.extend(recovered);
@@ -1161,8 +1233,9 @@ fn denovo_chunk(
     Ok(out)
 }
 
-/// A reassembly candidate for a paralog-gated position: the top **non-reference** base, kept only if
-/// it carries at least `min_paralog_minor_reads` reads (a real alternate, not a lone error).
+/// A reassembly candidate at a position that the paralog gate held. It is the most common
+/// **non-reference** base. The code keeps it only when it carries `min_paralog_minor_reads` reads
+/// or more, which makes it a real alternate and not one error.
 fn active_candidate(
     pos: i64,
     counts: &[u32; 4],
@@ -1185,9 +1258,10 @@ fn active_candidate(
     })
 }
 
-/// Stages B–F for a chunk's escalated candidates: group them into windows, extract the spanning
-/// reads (projected onto each window's reference frame), genotype with the reassembly resolver, and
-/// return the DERIVED recoveries as `VariantCall`s (paralog artifacts stay dropped).
+/// Stages B to F, for the candidates that a chunk sent on. It puts them into windows. It takes
+/// the reads that cover each window, and projects them onto the reference frame of that window.
+/// It genotypes them with the reassembly resolver. It returns the DERIVED recoveries as
+/// `VariantCall` values, and a paralog artifact stays dropped.
 fn resolve_active(
     bam_path: &Path,
     contig: &str,
@@ -1212,8 +1286,8 @@ fn resolve_active(
     };
     let w = params.reassembly_window.max(1);
 
-    // Merge candidates whose windows overlap into one extraction window (candidates arrive in
-    // ascending position order from the emit loop).
+    // Merge the candidates whose windows overlap into one extraction window. The candidates come
+    // from the emit loop in position order, from the lowest up.
     let mut out = Vec::new();
     let mut i = 0;
     while i < active.len() {
@@ -1249,10 +1323,13 @@ fn resolve_active(
     Ok(out)
 }
 
-/// Project every spanning read in `[win_lo, win_hi]` onto the window's reference frame: the
-/// window-frame sequence + per-base qualities (for the PairHMM) and the base/quality each read
-/// carries at each candidate (for depth + dedup). One CIGAR walk per read; insertions inside the
-/// window are kept so an indel haplotype survives (matching the pileup's realignment intent).
+/// Project every read that covers `[win_lo, win_hi]` onto the reference frame of that window. The
+/// result holds the sequence in the window frame, with the quality of each base, which the
+/// PairHMM needs. It also holds the base and the quality that each read carries at each
+/// candidate, which the depth and the dedup need.
+///
+/// There is one CIGAR walk for each read. An insertion inside the window stays, so an indel
+/// haplotype survives. That matches what the realignment in the pileup intends.
 fn extract_window_reads(
     header: &noodles::sam::Header,
     reader: &mut reader::IdxReader,
@@ -1339,22 +1416,28 @@ fn extract_window_reads(
     Ok(reads)
 }
 
-/// Nominal base quality for the de-novo **diploid** genotype likelihood. The chunked pileup keeps
-/// only A/C/G/T counts (per-base quals would blow up WGS memory), and every counted base already
-/// cleared `min_base_quality`, so the GL is evaluated at this representative phred. The resulting
-/// genotype (0/1 vs 1/1 vs 0/0) is robust to the exact value; PL/GQ are approximate (the per-site
-/// [`genotype_sites`] path keeps true per-read quals when exact likelihoods matter).
+/// The nominal base quality of the de-novo **diploid** genotype likelihood.
+///
+/// The pileup that works in chunks keeps the A/C/G/T counts alone. A quality for each base would
+/// use too much memory on a WGS run. Every base that it counted already cleared
+/// `min_base_quality`. So the code evaluates the GL at this one representative phred value.
+///
+/// The genotype that comes out, 0/1 or 1/1 or 0/0, is robust to the exact value. The PL and the
+/// GQ are approximate. The [`genotype_sites`] path, which works at one site, keeps the true
+/// quality of each read where the exact likelihood matters.
 const DENOVO_DIPLOID_Q: u8 = 30;
-/// Minimum reads supporting the alt allele before a site is even considered a candidate variant —
-/// suppresses singleton sequencing-error "hets".
+/// The count of reads that must support the alt allele before a site becomes a candidate variant
+/// at all. It holds back a "het" that one sequencing error produced.
 const DENOVO_MIN_ALT_READS: u32 = 2;
 
-/// Whole-contig **de-novo diploid** SNV calling: the same chunked, parallel pileup as
-/// [`call_denovo`], but each variant site is genotyped at ploidy 2 via the genotype-likelihood model
-/// ([`genotype::call_genotype`]) — emitting heterozygous (0/1) and homozygous-alt (1/1) calls, not
-/// just a haploid consensus. Biallelic (REF + the top non-REF base) for v1; indels are not called
-/// here. Output is in ascending position order, as [`SiteGenotype`] (ploidy 2) — feed it to
-/// [`crate::vcf::write_diploid_vcf`].
+/// **De-novo diploid** SNV calling over a whole contig. It uses the same parallel pileup in
+/// chunks as [`call_denovo`]. But it genotypes each variant site at ploidy 2, with the
+/// genotype-likelihood model ([`genotype::call_genotype`]). So it emits heterozygous (0/1) and
+/// homozygous-alt (1/1) calls, and not a haploid consensus alone.
+///
+/// v1 handles two alleles: REF, and the most common non-REF base. It does not call an indel here.
+/// The output comes in position order, from the lowest up, as [`SiteGenotype`] at ploidy 2. Give
+/// it to [`crate::vcf::write_diploid_vcf`].
 pub fn call_denovo_diploid(
     bam_path: &Path,
     reference_path: &Path,
@@ -1375,7 +1458,8 @@ pub fn call_denovo_diploid(
         emit_lo = emit_hi + 1;
     }
 
-    // Decode-safe worker stack (CRAM 3.1 decode recursion — see [`reader::decode_pool`]).
+    // A worker stack that is safe for a decode. A CRAM 3.1 decode recurses deeply. See
+    // [`reader::decode_pool`].
     let pool = crate::reader::decode_pool(threads)?;
     let nested: Vec<Vec<SiteGenotype>> = pool.install(|| {
         ranges
@@ -1432,7 +1516,8 @@ fn denovo_chunk_diploid(
         let Some(ref_bi) = base_index(ref_base) else { continue }; // reference N/ambiguous
         let ref_byte = BASES[ref_bi];
         let ref_count = c[ref_bi];
-        // All non-reference bases clearing the support floor are candidate alts (dominant first).
+        // Every non-reference base that clears the support floor is a candidate alt. The most
+        // common one comes first.
         let mut alts: Vec<(usize, u32)> = c
             .iter()
             .enumerate()
@@ -1533,12 +1618,15 @@ enum IndelAllele {
     Del(u32),
 }
 
-/// Left-align an indel within the reference repeat structure (VCF normalization): an aligner may
-/// place an indel anywhere within a homopolymer/STR run, but the canonical representation is the
-/// leftmost. Returns the normalized `anchor` (1-based) and allele. A deletion of `len` bases at
-/// `[anchor, anchor+len-1]` shifts left while `ref[anchor-1] == ref[anchor+len-1]`; an insertion
-/// before `anchor` shifts left while `ref[anchor-1]` equals its last base (rotating the bases).
-/// Bounded by `proc_lo` (the loaded reference window start, 1-based).
+/// Left-align an indel inside the repeat structure of the reference. This is the VCF
+/// normalization. An aligner may put an indel anywhere inside a homopolymer or an STR run, but
+/// the canonical form is the leftmost one. Returns the normalized `anchor`, which is 1-based, and
+/// the allele.
+///
+/// A deletion of `len` bases at `[anchor, anchor+len-1]` moves left while
+/// `ref[anchor-1] == ref[anchor+len-1]`. An insertion before `anchor` moves left while
+/// `ref[anchor-1]` equals its last base, and the bases turn around the allele. `proc_lo` bounds
+/// the move, and it is the 1-based start of the reference window that the code loaded.
 fn left_normalize(anchor: i64, allele: &IndelAllele, ref_chunk: &[u8], proc_lo: usize) -> (i64, IndelAllele) {
     let at = |p: i64| -> Option<u8> {
         let i = p - proc_lo as i64;
@@ -1566,10 +1654,12 @@ fn left_normalize(anchor: i64, allele: &IndelAllele, ref_chunk: &[u8], proc_lo: 
     }
 }
 
-/// Build a diploid indel [`SiteGenotype`] (VCF-style, left-anchored at `emit_pos`) from ref-vs-indel
-/// read support, genotyped at ploidy 2 via the sentinel-byte GL (`b'R'` ref-spanning, `b'A'`
-/// indel-carrying). `ref_byte` is the reference base at `emit_pos`; `deleted` is the deleted
-/// reference bases (empty for an insertion). `None` for a hom-ref / no-call.
+/// Build a diploid indel [`SiteGenotype`] in the VCF style, left-anchored at `emit_pos`, from the
+/// read support for the reference against the indel. It genotypes at ploidy 2, with the GL over
+/// sentinel bytes: `b'R'` for a read that covers the reference, and `b'A'` for a read that carries
+/// the indel. `ref_byte` is the reference base at `emit_pos`. `deleted` holds the deleted
+/// reference bases, and it is empty for an insertion. Returns `None` for a hom-ref call and for a
+/// no-call.
 #[allow(clippy::too_many_arguments)]
 fn indel_site_genotype(
     contig: &str,
@@ -1623,10 +1713,15 @@ fn indel_site_genotype(
     })
 }
 
-/// De-novo diploid **indel** calls for this chunk: over each active (indel-evidence) window, extract
-/// per-read indel alleles (CIGAR I/D) + ref-spanning support, tally the dominant allele per locus
-/// (biallelic v1), and genotype it at ploidy 2. Emits only loci whose VCF position is in the emit
-/// range (dedup across chunk boundaries). Left-anchored at the standard VCF convention.
+/// The de-novo diploid **indel** calls for this chunk. An active window is a window with indel
+/// evidence. Over each of those, the code takes the indel allele of each read, from the CIGAR I
+/// and D operations. It also takes the support of the reads that cover the reference. It tallies
+/// the most common allele at each locus, and v1 keeps two alleles. It then genotypes that locus
+/// at ploidy 2.
+///
+/// It emits a locus only when the VCF position of that locus lies in the emit range, which
+/// removes a duplicate across a chunk boundary. The anchor is on the left, by the standard VCF
+/// convention.
 #[allow(clippy::too_many_arguments)]
 fn indels_in_chunk(
     bam_path: &Path,
@@ -1793,7 +1888,8 @@ fn indels_in_chunk(
                 continue;
             }
 
-            // Multiallelic: one common REF spanning the largest deletion, one ALT per allele.
+            // The site has more than two alleles. There is one common REF, which covers the
+            // largest deletion, and one ALT for each allele.
             cands.sort_by(|a, b| b.count.cmp(&a.count).then(a.anchor.cmp(&b.anchor))); // dominant first, deterministic
             let maxdel = cands
                 .iter()
@@ -1908,8 +2004,9 @@ fn active_windows(indel_evidence: &[u32], min_reads: u32, pad: i64) -> Vec<(usiz
     windows
 }
 
-/// Re-fit reads in each indel-active window onto the reference and replace the tally
-/// over those windows. Arrays are indexed relative to `region_lo` (1-based).
+/// Fit the reads in each window with indel evidence onto the reference again, and replace the
+/// tally over those windows. The index into the arrays is relative to `region_lo`, which is
+/// 1-based.
 #[allow(clippy::too_many_arguments)]
 fn realign_region(
     bam_path: &Path,
@@ -1929,11 +2026,13 @@ fn realign_region(
     }
     let mut win_counts: Vec<Vec<[u32; 4]>> = windows.iter().map(|&(w0, w1)| vec![[0u32; 4]; w1 - w0 + 1]).collect();
 
-    // ONE indexed query spanning all active windows: decode the region's reads once and route
-    // each read to the window(s) it overlaps. The previous code re-queried per window, which on
-    // a repeat-rich contig (thousands of indel windows) re-decoded the same CRAM containers over
-    // and over — the de-novo hot path. Reads are short, so each overlaps only a window or two,
-    // found by binary search over the sorted windows.
+    // ONE query against the index, over all of the active windows. Decode the reads of the
+    // region once, and send each read to the window or windows that it overlaps.
+    //
+    // The code before this one ran a query for each window. A contig with many repeats holds
+    // thousands of indel windows. So that code decoded the same CRAM containers again and again,
+    // on the hot path of the de-novo pass. The reads are short, so each one overlaps only
+    // one window or two, which a binary search over the sorted windows finds.
     let span_lo = region_lo + windows.first().unwrap().0;
     let span_hi = region_lo + windows.last().unwrap().1;
     let region: Region = format!("{contig}:{span_lo}-{span_hi}")
@@ -2079,10 +2178,14 @@ mod tests {
 
     #[test]
     fn consensus_reconcile_resolves_homref_and_abstains_on_no_call() {
-        // Site 100: run A het (0/1, deep), run B hom-ref (0/0, deep) → real disagreement; depth-
-        // weighted vote, both deep, equal weight → tie broken by lower dosage = hom-ref → NOT emitted.
-        // Site 200: run A het (deep), run B no-call (depth 1 < min 4) → B abstains, A wins → het.
-        // Site 300: both hom-alt (1/1) → hom-alt, depths summed.
+        // Site 100: run A is het (0/1) and deep, run B is hom-ref (0/0) and deep. That is a real
+        // disagreement. In the vote by depth both are deep and their weights are equal, so the
+        // lower dosage breaks the tie. The result is hom-ref, and the code does NOT emit it.
+        //
+        // Site 200: run A is het and deep, run B has no call, because its depth of 1 is below the
+        // minimum of 4. B then abstains, A wins, and the result is het.
+        //
+        // Site 300: both are hom-alt (1/1). The result is hom-alt, with the depths added.
         let a = vec![
             sg("chr1", 100, "G", 1, 30, 50),
             sg("chr1", 200, "G", 1, 30, 50),
@@ -2116,7 +2219,7 @@ mod tests {
         // An insertion of "A" before anchor 5 (in the A-run) left-aligns to anchor 2.
         let (a, al) = left_normalize(5, &IndelAllele::Ins(b"A".to_vec()), refc, 1);
         assert_eq!((a, al), (2, IndelAllele::Ins(b"A".to_vec())));
-        // A non-repeat deletion doesn't move: "ACGTC", delete the G (anchor 3).
+        // A non-repeat deletion does not move: "ACGTC", delete the G (anchor 3).
         let (a, _) = left_normalize(3, &IndelAllele::Del(1), b"ACGTC", 1);
         assert_eq!(a, 3);
     }
@@ -2179,18 +2282,19 @@ mod tests {
 
         // Clean monoallelic call (HiFi-like): not paralogous.
         assert!(!para([11, 0, 0, 0]));
-        // One discordant read at low depth — a sequencing error, kept.
+        // One read that disagrees, at low depth. That is a sequencing error, and the site stays.
         assert!(!para([3, 1, 0, 0])); // second=1 (< 2 reads)
 
-        // Scattered errors across other bases, none reaching 2 reads — kept.
+        // Errors spread over the other bases, and none of them gets to 2 reads. The site stays.
         assert!(!para([18, 1, 1, 0])); // second=1
 
-        // Genuine bi-allelic pileup (7 derived / 4 ancestral) — paralog, dropped.
+        // A true pileup with two alleles, at 7 derived and 4 ancestral. That is a paralog, and
+        // the code drops it.
         assert!(para([7, 4, 0, 0])); // second=4, 0.36 > 0.20
 
-        // Boundary: 2/10 = 0.20 is not strictly above the threshold — kept.
+        // The boundary. 2/10 = 0.20 is not above the threshold, so the site stays.
         assert!(!para([8, 2, 0, 0]));
-        // 3/10 = 0.30 > 0.20 with 3 reads — dropped.
+        // 3/10 = 0.30, which is more than 0.20, with 3 reads. The code drops the site.
         assert!(para([7, 3, 0, 0]));
         // Empty pileup is never paralogous.
         assert!(!para([0, 0, 0, 0]));
@@ -2202,7 +2306,7 @@ mod tests {
             max_minor_allele_fraction: 1.0,
             ..Default::default()
         };
-        // Even a 50/50 split is not flagged when the filter is disabled.
+        // With the filter off, even a 50/50 split gets no flag.
         assert!(!is_paralogous(&[5, 5, 0, 0], 10, &p));
     }
 

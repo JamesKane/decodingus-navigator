@@ -1,5 +1,5 @@
-//! Y-STR profile queries: profiles and their marker values. Profiles attach to a
-//! biosample (the `SampleGuid` is stored as its hyphenated TEXT form, like elsewhere).
+//! Y-STR profile queries: the profiles and their marker values. A profile attaches to a biosample.
+//! The `SampleGuid` goes in as its hyphenated TEXT form, as it does everywhere else.
 
 use du_domain::ids::SampleGuid;
 use navigator_domain::strprofile::{NewStrProfile, StrMarker, StrProfile};
@@ -73,9 +73,9 @@ async fn markers_for(pool: &SqlitePool, profile_id: i64) -> Result<Vec<StrMarker
     Ok(rows.into_iter().map(MarkerRow::into_domain).collect())
 }
 
-/// The first STR profile for a biosample matching `panel_name` (with markers), if any. Used to
-/// merge a re-imported panel (e.g. a Big Y CUSTOM set) into the existing profile instead of
-/// adding a duplicate.
+/// The first STR profile of a biosample that matches `panel_name`, with its markers, if there is
+/// one. The import uses it to merge a panel that arrives a second time, such as a Big Y CUSTOM set,
+/// into the profile that exists. Without it the import would add a duplicate.
 pub async fn find_by_panel(
     pool: &SqlitePool,
     guid: SampleGuid,
@@ -102,8 +102,8 @@ pub async fn find_by_panel(
     }))
 }
 
-/// Replace all of a profile's markers (delete-then-insert) in one transaction — used when merging
-/// a re-imported panel into an existing profile.
+/// Replace every marker of a profile, with a delete and then an insert, in one transaction. The
+/// merge of a panel that arrives a second time into an existing profile uses it.
 pub async fn replace_markers(pool: &SqlitePool, profile_id: i64, markers: &[StrMarker]) -> Result<(), StoreError> {
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM str_marker WHERE str_profile_id = ?")
@@ -122,8 +122,8 @@ pub async fn replace_markers(pool: &SqlitePool, profile_id: i64, markers: &[StrM
     Ok(())
 }
 
-/// Delete an STR profile and its markers (children-first; FKs are enforced). Returns whether
-/// the profile row was removed.
+/// Delete an STR profile and its markers. The children go first, because the database enforces the
+/// FKs. It returns whether it removed the profile row.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM str_marker WHERE str_profile_id = ?")

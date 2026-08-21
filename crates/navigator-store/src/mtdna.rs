@@ -65,7 +65,7 @@ pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<MtdnaSequence>, St
     row.map(Row::into_domain).transpose()
 }
 
-/// Delete an mtDNA sequence (no child rows). Returns whether the row was removed.
+/// Delete an mtDNA sequence, which has no child rows. It returns whether it removed the row.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     let affected = sqlx::query("DELETE FROM mtdna_sequence WHERE id = ?")
         .bind(id)

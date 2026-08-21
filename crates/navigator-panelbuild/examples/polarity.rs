@@ -1,7 +1,12 @@
-//! Throwaway: is the ancient AF panel's ref/alt orientation consistent with the (correctly
-//! oriented) super-pop panel? estimate_admixture joins sample dosage to panel freqs by (contig,pos)
-//! ONLY — no allele check — so a site where the ancient panel's alt is the super panel's ref feeds
-//! an inverted dosage into the mixture. Tabulate aligned / swapped / mismatched, split by EUR MAF.
+//! A throwaway tool, with one question. The super-pop panel has the correct orientation. Does the
+//! ref and alt orientation of the ancient AF panel agree with it?
+//!
+//! `estimate_admixture` joins a sample dosage to a panel frequency by (contig,pos) ONLY, and checks
+//! no allele. So at a site where the ancient panel's alt is the super panel's ref, an inverted
+//! dosage goes into the mixture.
+//!
+//! The tool counts three groups of sites: the ones that agree, the ones that are the other way
+//! round, and the ones that match neither. It splits each count by EUR MAF.
 use navigator_analysis::ancestry::AncestryPanel;
 use std::collections::HashMap;
 

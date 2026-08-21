@@ -836,23 +836,23 @@ pub enum Event {
         dna: DnaType,
         result: Result<Option<navigator_app::BranchReport>, String>,
     },
-    /// A streamed slice of narration text as it's generated (live preview; the final BriefNarration
+    /// A streamed slice of narration text as it is generated (live preview; the final BriefNarration
     /// is authoritative).
     BriefNarrationChunk {
         guid: SampleGuid,
         text: String,
     },
-    /// AI-assisted narration of a subject's brief (or a plain-language reason it's unavailable).
+    /// AI-assisted narration of a subject's brief (or a plain-language reason it is unavailable).
     BriefNarration {
         guid: SampleGuid,
         result: Result<NarratedBrief, String>,
     },
-    /// A streamed slice of a chat answer as it's generated (live preview).
+    /// A streamed slice of a chat answer as it is generated (live preview).
     ChatAnswerChunk {
         guid: SampleGuid,
         text: String,
     },
-    /// Answer to an "ask my results" question (or a plain-language reason it's unavailable).
+    /// Answer to an "ask my results" question (or a plain-language reason it is unavailable).
     ChatAnswer {
         guid: SampleGuid,
         result: Result<String, String>,
@@ -863,7 +863,7 @@ pub enum Event {
         kind: SignalKind,
         text: String,
     },
-    /// AI-assisted explanation of one result signal (or a plain-language reason it's unavailable).
+    /// AI-assisted explanation of one result signal (or a plain-language reason it is unavailable).
     SignalNarration {
         guid: SampleGuid,
         kind: SignalKind,
@@ -1341,24 +1341,9 @@ pub enum Event {
     Cancelled,
 }
 
-/// Settle a finished alignment command into the event the UI should actually see.
-///
-/// Two things have to happen between a command failing and a user reading about it, and both are
-/// about not reporting the wrong thing:
-///
-/// 1. A **cancellation** is swallowed. It travels as an error so it can unwind the walk from deep
-///    inside a walker, but the user asked for it — surfacing "Error: cancelled" would report their
-///    own click back to them as a failure. The run's `AnalysisDone { cancelled }` already says so.
-/// 2. A **genuine** failure gets a file-level diagnosis attached, because:
-///
-/// The errors this upgrades are the ones that name a path but not the *right* path: the reader
-/// helpers report whichever path the failing call was handed, so a bad index, an unreadable
-/// reference or a privacy-denied file all surface as `io error on <the alignment>`. Running
-/// [`App::diagnose_alignment`] probes each of those files separately and says which one it is.
-///
-/// Errors with no file-level cause pass through untouched — if every preflight check passes, the
-/// failure is genuinely elsewhere (tree fetch, liftover, appview) and a clean bill of health would
-/// be worse than saying nothing.
+/// How a cancellation reads once it has been flattened to a string by an event.
+const CANCELLED_MESSAGE: &str = "cancelled";
+
 /// The token for whichever cancellable run is in flight, so `CancelAnalysis` can reach it.
 ///
 /// Replaces a single shared `AtomicBool` that each run reset to `false` at its own entry. Because
@@ -1369,9 +1354,6 @@ pub enum Event {
 ///
 /// The generation counter keeps a finishing run from clearing a *newer* run's registration — the
 /// same stale-write bug in a different costume.
-/// How a cancellation reads once it has been flattened to a string by an event.
-const CANCELLED_MESSAGE: &str = "cancelled";
-
 #[derive(Clone, Default)]
 struct CancelRegistry {
     current: Arc<Mutex<Option<(u64, CancelToken)>>>,
@@ -1404,6 +1386,24 @@ impl CancelRegistry {
     }
 }
 
+/// Settle a finished alignment command into the event the UI should actually see.
+///
+/// Two things have to happen between a command failing and a user reading about it, and both are
+/// about not reporting the wrong thing:
+///
+/// 1. A **cancellation** is swallowed. It travels as an error so it can unwind the walk from deep
+///    inside a walker, but the user asked for it — surfacing "Error: cancelled" would report their
+///    own click back to them as a failure. The run's `AnalysisDone { cancelled }` already says so.
+/// 2. A **genuine** failure gets a file-level diagnosis attached, because:
+///
+/// The errors this upgrades are the ones that name a path but not the *right* path: the reader
+/// helpers report whichever path the failing call was handed, so a bad index, an unreadable
+/// reference or a privacy-denied file all surface as `io error on <the alignment>`. Running
+/// [`App::diagnose_alignment`] probes each of those files separately and says which one it is.
+///
+/// Errors with no file-level cause pass through untouched — if every preflight check passes, the
+/// failure is genuinely elsewhere (tree fetch, liftover, appview) and a clean bill of health would
+/// be worse than saying nothing.
 async fn settle_alignment_command(app: &App, alignment_id: i64, event: Event) -> Event {
     let Event::Error(message) = event else {
         return event;
@@ -1847,7 +1847,7 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         }
         Command::EstimateDeepAncestry { biosample_guid } => {
             // Heavy: genotypes the best CHM13 alignment at ~1.15M sites, then fits qpAdm f4. Persists
-            // the ANCIENT_ADMIXTURE result (or nothing, when the model doesn't apply).
+            // the ANCIENT_ADMIXTURE result (or nothing, when the model does not apply).
             ev(app.estimate_deep_ancestry(biosample_guid).await, |result| {
                 Event::DeepAncestryEstimated {
                     biosample_guid,
@@ -2164,7 +2164,7 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::RunIbdExchange { info, biosample_guid } => {
             let cfg = IbdDetectorConfig::default();
             // A failure is recorded on the conversation rather than only surfaced as a transient
-            // toast — otherwise the request sits at READY and the user cannot tell it was tried.
+            // toast — otherwise the request sits at READY and the user can not tell it was tried.
             let outcome = match app.open_exchange_session(&info).await {
                 Ok(session) => {
                     app.exchange_ibd_for_subject(&session, biosample_guid, &info.request_uri, None, cfg)
@@ -2364,7 +2364,7 @@ async fn resolve_reference_streaming(
     wake: &(dyn Fn() + Send + Sync),
 ) {
     // The progress closure must be Send (it runs in a task) — capture an owned Sender clone
-    // and a label, not borrows. Throttle to ~every 25 MB so a multi-GB pull doesn't flood.
+    // and a label, not borrows. Throttle to ~every 25 MB so a multi-GB pull does not flood.
     let tx = evt_tx.clone();
     let label = build.clone();
     let mut last_sent = 0u64;
@@ -2390,7 +2390,7 @@ async fn resolve_reference_streaming(
 /// [`resolve_reference_streaming`]). Cached builds are skipped silently. The reference FASTA is a
 /// required artifact for any BAM/CRAM analysis and is fetched on demand (cache-first, else a
 /// multi-GB download) — without this the download runs deep inside a pure `App` method with a no-op
-/// callback, so the UI shows nothing and a first import looks like it "didn't register". Call this
+/// callback, so the UI shows nothing and a first import looks like it "did not register". Call this
 /// from the worker after an import and before a reference-needing analysis so the pull is visible.
 async fn ensure_references_streaming(
     app: &App,
@@ -2558,7 +2558,7 @@ async fn run_realign_streaming(
 
 /// Run the full per-alignment analysis pipeline, emitting `AnalysisProgress` before each step
 /// and forwarding each step's own result event (so the detail tabs fill in live). `cancel` is
-/// checked between steps. Per-step errors are forwarded but don't abort the pipeline (best-effort).
+/// checked between steps. Per-step errors are forwarded but do not abort the pipeline (best-effort).
 async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     app: &App,
     alignment_id: i64,
@@ -2593,9 +2593,9 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         });
         wake();
         // Reuse cached sub-results instead of re-scanning the whole genome (minutes) — only when
-        // all three are present, since they're persisted together by the unified walker. The
+        // all three are present, since they are persisted together by the unified walker. The
         // coverage must also be at the right scope (a stale whole-genome result for a targeted-Y
-        // test reads as a miss) so it's recomputed restricted to the target contigs.
+        // test reads as a miss) so it is recomputed restricted to the target contigs.
         let cached = match (
             app.cached_coverage_for_analysis(alignment_id).await,
             app.cached_read_metrics(alignment_id).await,
@@ -3169,7 +3169,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             }
                             // Import, then eagerly resolve the imported alignments' reference(s) with a
                             // visible progress bar — a first CRAM/BAM that needs a multi-GB reference
-                            // download otherwise looks like it didn't register (§ ensure_references_streaming).
+                            // download otherwise looks like it did not register (§ ensure_references_streaming).
                             Command::AddDataBatch { biosample_guid, paths } => {
                                 let event = handle(
                                     &app,
@@ -3216,7 +3216,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 }
                             }
                             // Pre-resolve the subject's / alignment's reference and coordinate index (with a
-                            // progress bar) so a query-driven analysis doesn't trigger a silent download or
+                            // progress bar) so a query-driven analysis does not trigger a silent download or
                             // index build partway through.
                             Command::BuildAutosomalProfile { biosample_guid } => {
                                 if let Ok(builds) = app.reference_builds_for_subject(biosample_guid).await {
@@ -3567,11 +3567,11 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             Command::DrainOutbox => {
                                 emit_drain(&app, &evt_tx, &*wake).await;
                             }
-                            // Streams narration text as it's generated, then a final BriefNarration.
+                            // Streams narration text as it is generated, then a final BriefNarration.
                             Command::NarrateBrief(guid) => {
                                 narrate_brief_streaming(&app, guid, &evt_tx, &*wake).await;
                             }
-                            // Streams a chat answer as it's generated, then a final ChatAnswer.
+                            // Streams a chat answer as it is generated, then a final ChatAnswer.
                             Command::AskQuestion {
                                 guid,
                                 history,
@@ -3579,7 +3579,7 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             } => {
                                 ask_question_streaming(&app, guid, history, question, &evt_tx, &*wake).await;
                             }
-                            // Streams a per-signal explanation as it's generated, then a final SignalNarration.
+                            // Streams a per-signal explanation as it is generated, then a final SignalNarration.
                             Command::NarrateSignal { guid, kind } => {
                                 narrate_signal_streaming(&app, guid, kind, &evt_tx, &*wake).await;
                             }

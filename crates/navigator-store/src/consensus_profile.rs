@@ -1,7 +1,11 @@
-//! Persisted consensus-profile snapshots — one per (biosample, DNA type). The full reconciled
-//! profile is opaque JSON in `payload` (the app's `ConsensusProfile`); the scalar columns mirror the
-//! header for quick listing. Upsert on rebuild, load on tab open. DNA-type-agnostic: `dna_type` keys
-//! the row ('Y' today; 'Mt' / autosomal adapters reuse this table).
+//! Stored consensus-profile snapshots, one for each (biosample, DNA type) pair.
+//!
+//! The full reconciled profile is opaque JSON in `payload`, and it is the app's
+//! `ConsensusProfile`. The scalar columns mirror the header, for a fast listing. A rebuild upserts
+//! the row, and the tab loads it when it opens.
+//!
+//! The table does not care which DNA type it holds: `dna_type` keys the row. Today that is 'Y'.
+//! The 'Mt' adapter and the autosomal adapter reuse this table.
 
 use du_domain::ids::SampleGuid;
 use sqlx::SqlitePool;
@@ -58,7 +62,7 @@ pub async fn upsert(pool: &SqlitePool, p: &StoredConsensusProfile) -> Result<(),
     Ok(())
 }
 
-/// Load the snapshot for a (biosample, dna_type), if one has been built.
+/// Load the snapshot for a (biosample, dna_type) pair, if a build has made one.
 pub async fn get(
     pool: &SqlitePool,
     guid: SampleGuid,
@@ -73,9 +77,9 @@ pub async fn get(
     Ok(row)
 }
 
-/// All persisted `(biosample_guid, dna_type, consensus_label)` rows that carry a non-null label —
-/// the genome-level placed terminal per subject + arm, for the subjects-list bulk path (one query
-/// instead of a `get` per subject).
+/// Every stored `(biosample_guid, dna_type, consensus_label)` row with a label that is not null.
+/// That is the genome-level placed terminal of each subject and arm. The bulk path of the subjects
+/// list uses it: one query, and not a `get` for each subject.
 pub async fn list_labels(pool: &SqlitePool) -> Result<Vec<(String, String, String)>, StoreError> {
     let rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT biosample_guid, dna_type, consensus_label FROM consensus_profile \
@@ -86,7 +90,7 @@ pub async fn list_labels(pool: &SqlitePool) -> Result<Vec<(String, String, Strin
     Ok(rows)
 }
 
-/// Remove a biosample's snapshot for one DNA type. Returns whether a row was removed.
+/// Remove a biosample's snapshot for one DNA type. It returns whether it removed a row.
 pub async fn delete(pool: &SqlitePool, guid: SampleGuid, dna_type: &str) -> Result<bool, StoreError> {
     let affected = sqlx::query("DELETE FROM consensus_profile WHERE biosample_guid = ? AND dna_type = ?")
         .bind(guid.0.to_string())

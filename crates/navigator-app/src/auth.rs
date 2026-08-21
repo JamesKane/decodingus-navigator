@@ -5,9 +5,11 @@ use super::*;
 impl App {
     // ---- authentication ----------------------------------------------------
 
-    /// Run the public-client OAuth login for `handle` (handle or DID): browser authorize →
-    /// loopback callback → token exchange. On success the DPoP-bound session is persisted
-    /// to the OS keychain and becomes the active account. Returns the authenticated DID.
+    /// Do the public-client OAuth login for `handle`. The value can be a handle or a DID.
+    ///
+    /// The sequence is: the browser authorizes, the loopback receives the callback, and the client
+    /// exchanges the token. After a good login, the code writes the DPoP-bound session to the OS
+    /// keychain, and that session becomes the active account. The function returns the DID.
     pub async fn login(&self, handle: &str) -> Result<String, AppError> {
         let session = login_default(&self.auth.http, &self.auth.config, handle).await?;
         let did = session.did.clone();
@@ -22,17 +24,20 @@ impl App {
         self.auth.active.lock().unwrap().clone()
     }
 
-    /// The signed-in account's DID, or [`AppError::NotAuthenticated`] — the cheap auth guard publish
-    /// methods run before building a record / touching the DB.
+    /// The DID of the active account, or [`AppError::NotAuthenticated`]. This is the small guard
+    /// that the publish methods call first, before they make a record or read the database.
     pub(crate) fn require_account(&self) -> Result<String, AppError> {
         self.current_account().ok_or(AppError::NotAuthenticated)
     }
 
-    /// Adopt a **local `did:key` identity** as the active account: the device key *is* the identity,
-    /// so AppView calls self-certify (`verify_signed` accepts `did:key` directly — no PDS record).
-    /// This is the desktop bootstrap for the federated edge: device-key-signed calls (IBD suggestions,
-    /// the encrypted exchange) work with no OAuth/PDS. Reuses an existing local identity if one is
-    /// active; otherwise generates + persists a fresh device key. Returns the `did:key`.
+    /// Use a **local `did:key` identity** as the active account. The device key is the identity.
+    /// So a call to the AppView certifies itself, because `verify_signed` accepts a `did:key`
+    /// directly and needs no PDS record.
+    ///
+    /// This function is the desktop start point for the federated edge. Calls that the device key
+    /// signs, such as IBD suggestions and the encrypted exchange, then work with no OAuth and no
+    /// PDS. If a local identity is already active, this function uses it. If not, it makes a new
+    /// device key and writes it to the keychain. It returns the `did:key`.
     pub fn use_local_identity(&self) -> Result<String, AppError> {
         if let Some(did) = self.current_account() {
             if did.starts_with("did:key:") && DeviceKey::load(KEYCHAIN_SERVICE, &did)?.is_some() {
@@ -47,8 +52,9 @@ impl App {
         Ok(did)
     }
 
-    /// Switch the active account to an already-known DID (in-memory; the keychain marker too). For
-    /// multi-identity flows — e.g. driving both sides of an exchange from one process.
+    /// Change the active account to a known DID. The change applies to memory and to the keychain
+    /// marker. Use this for a flow with more than one identity. One example is a test that operates
+    /// both sides of an exchange in one process.
     pub fn set_active_account(&self, did: &str) {
         let _ = self.auth.tokens.set_active(did);
         *self.auth.active.lock().unwrap() = Some(did.to_string());
@@ -64,9 +70,11 @@ impl App {
         Ok(())
     }
 
-    /// Build the resilient sync engine for the active account, loading its session from the
-    /// keychain. Errors with [`AppError::NotAuthenticated`] when no one is signed in. The
-    /// engine auto-refreshes on 401 and retries transient failures with backoff.
+    /// Make the sync engine for the active account and read its session from the keychain.
+    ///
+    /// The function returns [`AppError::NotAuthenticated`] if no account is active. On a 401
+    /// response, the engine refreshes the token. It also tries again after a temporary failure.
+    /// The delay becomes longer after each try.
     pub(crate) fn sync_engine(&self) -> Result<AsyncSync, AppError> {
         let did = self.current_account().ok_or(AppError::NotAuthenticated)?;
         let session = self.auth.tokens.load(&did)?.ok_or(AppError::NotAuthenticated)?;

@@ -1,15 +1,20 @@
 //! Build the IBD genetic-map asset (`genetic_map_<build>.bin`) from a recombination map.
 //!
-//! IBD segment lengths in cM (and thus the relationship bands) are only as good as the map, so this
-//! replaces the app's flat 1 cM/Mb stand-in with a real sex-averaged map (deCODE 2019 / HapMap II),
-//! **already lifted to CHM13**. The lift is coordinate-only (no alleles), so a stage-2 CrossMap BED
-//! lift of the map's positions is sufficient — this step just parses the lifted text and serializes
-//! it to the bincode [`navigator_analysis::ibd::GeneticMap`] the app loads.
+//! The length of an IBD segment in cM, and so the relationship band that the app reports, is only
+//! as good as the map. The app has a flat 1 cM/Mb stand-in. This replaces it with a real
+//! sex-averaged map, from deCODE 2019 or HapMap II, that somebody has **already lifted to CHM13**.
 //!
-//! Input is whitespace/tab-delimited with columns `chromosome  position(bp)  …  cumulative_cM`
-//! (the **last** column is the cumulative genetic position — matching HapMap's
-//! `Chromosome Position(bp) Rate(cM/Mb) Map(cM)` and the simple `chrom pos cM` form). A non-numeric
-//! first data row is treated as a header and skipped. Positions must be CHM13 coordinates.
+//! That lift moves coordinates alone, and no alleles, so a stage-2 CrossMap BED lift of the map's
+//! positions is enough. This step parses the lifted text and serializes it to the bincode
+//! [`navigator_analysis::ibd::GeneticMap`] that the app loads.
+//!
+//! Whitespace or a tab separates the input columns, which are
+//! `chromosome  position(bp)  …  cumulative_cM`. The **last** column holds the cumulative genetic
+//! position. That matches HapMap's `Chromosome Position(bp) Rate(cM/Mb) Map(cM)`, and the simple
+//! `chrom pos cM` form.
+//!
+//! A first data row that is not numeric counts as a header, and the parser skips it. Every position
+//! must be a CHM13 coordinate.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -44,7 +49,8 @@ pub fn build_genetic_map(args: GeneticMapArgs) -> Result<()> {
         if f.len() < 3 {
             continue;
         }
-        // Position is col 1; cumulative cM is the last column. A header row (non-numeric) is skipped.
+        // Column 1 holds the position, and the last column holds the cumulative cM. The parser
+        // skips a header row, which is not numeric.
         let (Ok(pos), Ok(cm)) = (f[1].parse::<i32>(), f[f.len() - 1].parse::<f64>()) else {
             continue;
         };

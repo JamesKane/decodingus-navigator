@@ -1,22 +1,26 @@
-//! Unified quality-metrics walker — one coordinate-ordered pass over a BAM/CRAM that
-//! collects coverage + callable loci, read-level QC metrics, and sex inference together.
+//! The unified walker over the quality metrics. It makes one pass over a BAM or a CRAM, in
+//! coordinate order. In that pass it collects three things together: the coverage and the callable
+//! loci, the QC metrics at the read level, and the sex inference.
 //!
-//! The rewrite already had three focused single-pass walkers ([`crate::coverage`],
-//! [`crate::read_metrics`], [`crate::sex`]); run separately they read a BAM end-to-end
-//! **twice** (coverage pileup + read-metrics scan) and a CRAM **three times** (plus the
-//! sex scan, since `.crai` carries no per-reference counts). This walker fuses them into a
-//! single record loop — 2→1 for BAM, 3→1 for CRAM (CRAM decode being the expensive case).
+//! The rewrite already had three walkers, each with one purpose and one pass:
+//! [`crate::coverage`], [`crate::read_metrics`] and [`crate::sex`]. Run apart, they read a BAM
+//! from end to end **twice**, for the coverage pileup and the read-metrics scan. They read a CRAM
+//! **three times**, because the sex scan is separate: a `.crai` carries no count for each
+//! reference. This walker puts them into one record loop. That is 2 passes to 1 for a BAM, and 3
+//! to 1 for a CRAM, and a CRAM decode is the costly case.
 //!
-//! There is **no metric change**: each record is dispatched to the same `*State` accumulators
-//! the standalone walkers use (the single source of truth), so the numbers are byte-for-byte
-//! identical to running the three separately. The only subtlety is filtering — coverage
-//! pre-filters hard (mapped/primary/main-assembly), but read-metrics needs *every* record and
-//! sex needs per-contig mapped tallies, so the loop hands every record to all three states and
-//! each applies its own filtering internally.
+//! **No metric changes.** The loop sends each record to the same `*State` accumulators that the
+//! separate walkers use, which are the single source of truth. Every number then matches the
+//! number that three separate runs give, to the last digit.
 //!
-//! Sex here is tallied directly from the record stream (no BAI dependency), matching the
-//! standalone CRAM path's math; the standalone [`crate::sex::infer_from_bam`] keeps its BAI
-//! fast path for the cheap à-la-carte "Sex inference" command.
+//! There is one thing to watch, and that is the filter. The coverage pass applies a hard filter,
+//! and it keeps only a primary record with a mapping on the main assembly. But
+//! read-metrics needs *every* record, and sex needs the mapped tally of each contig. So the loop
+//! gives every record to all three states, and each state applies its own filter inside.
+//!
+//! The sex tally here comes straight from the record stream, and it needs no BAI. The arithmetic
+//! is the same as in the separate CRAM path. The separate [`crate::sex::infer_from_bam`] keeps its
+//! fast path over the BAI, for the small "Sex inference" command on its own.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -38,27 +42,37 @@ use crate::reader::{self, RecordSink};
 use crate::readview::AlnRead;
 use crate::sex::{self, SexInferenceResult, SexState};
 
-/// Flush accumulated base-pair progress to the shared counter every this many bp of advance.
-/// Small enough that the bar moves smoothly (~1500 ticks over a 3.1 Gb genome) yet coarse enough
-/// that the atomic add + progress callback (a mutex-guarded channel send in the GUI) is cheap.
+/// Send the base-pair progress that the loop has collected to the shared counter, after this many
+/// bp of advance. It is small enough that the bar moves smoothly, at about 1500 ticks over a
+/// 3.1 Gb genome. It is also large enough that the atomic add and the progress callback cost
+/// little. In the GUI that callback is a channel send behind a mutex.
 const PROGRESS_FLUSH_BP: u64 = 2_000_000;
 
-/// Per-contig record consumer: feeds each record to read-metrics + coverage and tallies the
-/// per-contig mapped counts the sex inference needs. `class`: 1 = autosome, 2 = chrX, 0 = other.
-/// Operates on borrowed accumulators so it serves the zero-copy BAM record path.
+/// The record consumer for one contig. It gives each record to read-metrics and to coverage, and
+/// it tallies the mapped count of each contig, which the sex inference needs. `class` is 1 for an
+/// autosome, 2 for chrX, and 0 for anything else. It works on borrowed accumulators, so it serves
+/// the zero-copy path for a BAM record.
 ///
-/// It also drives **base-pair progress**: reads are coordinate-sorted within a contig, so the
-/// alignment start advances monotonically — the delta between successive starts is bp walked.
-/// Deltas accumulate locally and flush to the shared `processed_bp` counter (and the progress
-/// callback) every [`PROGRESS_FLUSH_BP`], so the bar advances continuously *within* a contig
-/// instead of only when one finishes (the big autosomes otherwise sit frozen for minutes).
+/// It also drives the **base-pair progress**. The reads inside a contig are in coordinate order,
+/// so the alignment start only rises. The difference between one start and the next is the count
+/// of bp walked.
+///
+/// The differences add up locally, and go to the shared `processed_bp` counter, and to the
+/// progress callback, every [`PROGRESS_FLUSH_BP`]. The bar then advances all the time *inside* a
+/// contig. Without that, it moves only when a contig finishes, and the big autosomes leave it
+/// frozen for minutes.
 struct ContigSink<'a> {
-    /// Header index of the contig this sink is walking. A record is processed only when its own
-    /// `reference_sequence_id` matches: a CRAM multi-reference slice surfaces in the region query
-    /// of *every* contig it overlaps, so without this gate its records would be misattributed to
-    /// the wrong contig (coverage) and counted once per overlapping contig (read-metrics). Each
-    /// record is processed exactly once — by the query of the contig it actually belongs to —
-    /// matching the sequential walker's single binned pass. A no-op for single-reference slices.
+    /// The header index of the contig that this sink walks. The sink takes a record only when the
+    /// `reference_sequence_id` of that record matches.
+    ///
+    /// A CRAM slice with more than one reference comes back from the region query of *every*
+    /// contig that it overlaps. Without this gate, its records would go to the wrong contig in the
+    /// coverage pass. Read-metrics would also count them once for each contig that they
+    /// overlap.
+    ///
+    /// With the gate, the code takes each record exactly once, in the query of the contig that it
+    /// belongs to. That matches the single binned pass of the sequential walker. The gate does
+    /// nothing for a slice with one reference.
     ref_id: usize,
     rm: &'a mut ReadMetricsState,
     cov: &'a mut Option<ContigCoverageAccum>,
@@ -75,8 +89,9 @@ struct ContigSink<'a> {
 
 impl RecordSink for ContigSink<'_> {
     fn accept(&mut self, record: &impl AlnRead) {
-        // Only this contig's own records (drop a multi-reference slice's foreign records — they're
-        // processed by their own contig's query). Keeps every per-record tally counted exactly once.
+        // Take the records of this contig alone. Drop a record of another contig that came in
+        // with a slice that holds more than one reference. The query of its own contig takes it.
+        // Every tally over the records then counts each record exactly once.
         if record.reference_sequence_id() != Some(self.ref_id) {
             return;
         }
@@ -116,14 +131,18 @@ impl RecordSink for MetricsSink {
     }
 }
 
-/// Algorithm version for the unified artifact cache key; bump on any change that alters output.
-/// (The three sub-results are persisted under their own existing keys; this is for completeness.)
+/// The algorithm version, for the cache key of the unified artifact. Raise it after any change
+/// that alters the output. The three sub-results already go into the store under their own keys,
+/// so this version exists to make the set complete.
 pub const UNIFIED_VERSION: &str = "unified-1";
 
-/// The three quality-metric results collected in one pass. Sex is `None` when inference
-/// can't be computed for the input (no autosomes/chrX, or no autosomal reads — e.g. a
-/// targeted panel or chrY-only test); coverage + read-metrics are unaffected, mirroring the
-/// pipeline where sex is an independent step whose failure doesn't kill the others.
+/// The three quality-metric results that one pass collects.
+///
+/// Sex is `None` when the code can not infer it for the input. That happens when there is no
+/// autosome and no chrX, and when there is no autosomal read. A targeted panel and a chrY-only
+/// test are examples. The coverage and the read-metrics do not change. This has the same shape as
+/// the pipeline, where sex is an independent step, and a failure there does not kill the other
+/// two.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnifiedMetricsResult {
     pub coverage: CoverageResult,
@@ -131,10 +150,12 @@ pub struct UnifiedMetricsResult {
     pub sex: Option<SexInferenceResult>,
 }
 
-/// Single-pass coverage + read-metrics + sex over a coordinate-sorted BAM/CRAM. `reference`
-/// is required (CRAM decode + reference-N detection). Equivalent to running
+/// The coverage, the read-metrics and the sex, in one pass over a BAM or CRAM in coordinate
+/// order. It needs `reference`, both to decode a CRAM and to find the N bases in the reference.
+///
+/// The result is the same as three separate steps:
 /// [`crate::coverage::collect_coverage_callable`], [`crate::read_metrics::collect_read_metrics`],
-/// and tallying sex from the same records — but one read of the file.
+/// and a tally of the sex over the same records. But it reads the file once.
 pub fn collect_unified_metrics(
     bam_path: &Path,
     reference_path: &Path,
@@ -151,9 +172,11 @@ pub fn collect_unified_metrics(
     )
 }
 
-/// Like [`collect_unified_metrics`], reporting `progress(contigs_done, contigs_total)` as the
-/// coverage pass finalizes each tracked contig (the slow whole-genome step — so a progress bar
-/// can advance instead of sitting frozen for minutes). Assumes a coordinate-sorted BAM/CRAM.
+/// The same as [`collect_unified_metrics`], and it also reports
+/// `progress(contigs_done, contigs_total)`. It calls that as the coverage pass finishes each
+/// contig that it tracks. That pass is the slow step over the whole genome, so a progress bar can
+/// then move, and it does not stay frozen for minutes. This function needs a BAM or CRAM in
+/// coordinate order.
 pub fn collect_unified_metrics_with_progress(
     bam_path: &Path,
     reference_path: &Path,
@@ -168,10 +191,12 @@ pub fn collect_unified_metrics_with_progress(
     let mut sx = SexState::new(&header);
     progress(0, cov.total_tracked());
 
-    // Polled on the same cadence as the indexed walker's record loop — often enough that a click
-    // stops the walk within milliseconds, rare enough to stay invisible next to the per-record
-    // pileup work. This is the fallback path (unindexed BAM / CRAM), which has no contig boundaries
-    // to stop at, so without a check here it could not be cancelled at all.
+    // The code polls this at the same rate as the record loop of the walker that uses an index.
+    // That rate is often enough that a click stops the walk in milliseconds. It is also rare
+    // enough to cost nothing next to the pileup work at each record. This is the fallback path,
+    // for a BAM
+    // or CRAM with no index. It has no contig boundary to stop at, so without a check here nobody
+    // could cancel it at all.
     let mut seen = 0u32;
     for result in reader.records_lazy(&header) {
         let record = result?;
@@ -197,18 +222,22 @@ pub fn collect_unified_metrics_with_progress(
     })
 }
 
-/// Per-contig parallel unified metrics — the same result as [`collect_unified_metrics`] but
-/// computed concurrently across contigs. Coverage is embarrassingly parallel per contig; the
-/// per-position pileup compute (not decompression) is the bottleneck a sequential pass hits.
+/// The unified metrics, with one task for each contig. The result is the same as
+/// [`collect_unified_metrics`], and the contigs run at the same time. The coverage pass over one
+/// contig is independent of every other contig. The compute of the pileup at each position, and
+/// not the decompression, is what limits a sequential pass.
 ///
-/// Requires an **indexed BAM** (per-contig region queries + an unmapped-tail sweep). Anything
-/// else — CRAM (no `.crai` unmapped query), or a BAM without a `.bai` — transparently falls
-/// back to the sequential [`collect_unified_metrics`], so callers can always prefer this.
+/// This needs an **indexed BAM**, for the region query of each contig and for a sweep over the
+/// unmapped tail. Anything else falls back to the sequential [`collect_unified_metrics`], and the
+/// caller sees no difference. That covers a CRAM, because a `.crai` has no query for the unmapped
+/// reads, and a BAM with no `.bai`. A caller can then always ask for this function.
 ///
-/// Output is byte-identical to the sequential walker: per contig it runs the same `*State`
-/// accumulators, and the merge is over commutative sums / header-ordered per-contig outputs.
-/// Read-metrics covers **every** contig (not just main-assembly) plus the unmapped tail — the
-/// same record set the sequential pass sees — so totals match exactly.
+/// The output matches that of the sequential walker to the last digit. At each contig it runs the
+/// same `*State` accumulators. The merge is over sums that commute, and over outputs that follow
+/// the header order of the contigs.
+///
+/// Read-metrics covers **every** contig, and not the main assembly alone, plus the unmapped tail.
+/// That is the same set of records that the sequential pass sees, so the totals agree exactly.
 pub fn collect_unified_metrics_parallel(
     bam_path: &Path,
     reference_path: &Path,
@@ -225,10 +254,10 @@ pub fn collect_unified_metrics_parallel(
     )
 }
 
-/// Worker threads for the per-contig fan-out. Defaults to all available cores capped at 12 —
-/// past that the wall time is floored by the largest contig + the unmapped sweep, so more
-/// threads only add memory. Override with `NAVIGATOR_ANALYSIS_THREADS`. Shared with the
-/// de-novo caller's region fan-out.
+/// The count of worker threads for the fan-out over the contigs. The default is every available
+/// core, up to 12. Above that, the largest contig plus the unmapped sweep set the floor on the
+/// wall time, so more threads only add memory. `NAVIGATOR_ANALYSIS_THREADS` overrides it. The
+/// region fan-out of the de-novo caller uses the same value.
 pub(crate) fn analysis_thread_count() -> usize {
     std::env::var("NAVIGATOR_ANALYSIS_THREADS")
         .ok()
@@ -242,9 +271,10 @@ pub(crate) fn analysis_thread_count() -> usize {
         .max(1)
 }
 
-/// A token from the reference-load semaphore; returns itself to the pool on drop (including on
-/// the error path). Bounds how many contigs hold their full reference buffer at once — the peak
-/// memory driver, since the per-contig N-mask is tiny once built.
+/// A token from the semaphore that limits the reference loads. It goes back into the pool when it
+/// drops, and that includes the error path. It bounds how many contigs hold their full reference
+/// buffer at one time. That is what sets the peak memory, because the N-mask of a contig is very
+/// small once the code has built it.
 struct LoadPermit<'a> {
     tx: &'a std::sync::mpsc::Sender<()>,
 }
@@ -263,11 +293,12 @@ struct ContigPartial {
     x_reads: u64,
 }
 
-/// Like [`collect_unified_metrics_parallel`], reporting `progress(megabases_done, megabases_total)`
-/// — base-pair position walked across all contigs, so the bar advances continuously rather than
-/// stepping once per finished contig (the big autosomes run first and finish in a late burst,
-/// freezing a contig-count bar at 0 for ~half the run). The callback is `Fn + Sync` because it's
-/// invoked concurrently from worker threads.
+/// The same as [`collect_unified_metrics_parallel`], and it also reports
+/// `progress(megabases_done, megabases_total)`. Those are the base-pair positions walked over all
+/// of the contigs, so the bar advances all the time. It does not take one step at each finished
+/// contig. The big autosomes start first and finish together late, which holds a bar over the
+/// contig count at 0 for about half of the run. The callback is `Fn + Sync`, because the worker
+/// threads call it at the same time.
 pub fn collect_unified_metrics_parallel_with_progress(
     bam_path: &Path,
     reference_path: &Path,
@@ -276,10 +307,13 @@ pub fn collect_unified_metrics_parallel_with_progress(
     progress: &(dyn Fn(usize, usize) + Sync),
     cancel: &CancelToken,
 ) -> Result<UnifiedMetricsResult, AnalysisError> {
-    // The parallel path needs a coordinate index for per-contig region queries — a BAM `.bai` or a
-    // CRAM `.crai`. Without one (unindexed BAM/CRAM) fall back to the sequential walker. A CRAM can't
-    // region-query its unmapped tail, so its read-metrics totals exclude unmapped-only reads (those
-    // carry no coverage/sex signal) — the per-contig coverage + mapped read-metrics still parallelize.
+    // The parallel path needs a coordinate index for the region query of each contig. That is a
+    // `.bai` for a BAM, or a `.crai` for a CRAM. Without one, fall back to the sequential walker.
+    //
+    // A CRAM has no region query for its unmapped tail. So the read-metrics totals of a CRAM
+    // leave out the reads that have no mapping and nothing else. Those reads carry no coverage
+    // signal and no sex signal. The coverage of each contig, and the read-metrics over the mapped reads,
+    // still run in parallel.
     if !reader::has_region_index(bam_path) {
         return collect_unified_metrics_with_progress(
             bam_path,
@@ -294,8 +328,9 @@ pub fn collect_unified_metrics_parallel_with_progress(
 
     let header = reader::read_header(bam_path, Some(reference_path))?;
 
-    // Work items: one per reference sequence (read-metrics + sex span all contigs). Coverage
-    // runs only for tracked = main-assembly ∩ allowlist contigs (matching the sequential walker).
+    // The work items: one for each reference sequence, because read-metrics and sex cover every
+    // contig. The coverage runs only for the contigs that the code tracks, which are the ones on
+    // the main assembly that are also in the allowlist. That matches the sequential walker.
     struct Work {
         ref_id: usize,
         name: String,
@@ -327,20 +362,24 @@ pub fn collect_unified_metrics_parallel_with_progress(
         });
     }
 
-    // Progress is reported in **megabases of reference walked** rather than contigs finished, so
-    // the bar advances continuously from the first seconds — the big autosomes (scheduled first by
-    // rayon) otherwise complete in a late burst, leaving the bar frozen at 0 for ~half the run.
-    // Denominator = every walked contig's length (read-metrics covers all contigs); the dominant
-    // main-assembly contigs make the count track genomic position closely enough.
+    // The progress goes out in **megabases of reference walked**, and not in contigs finished.
+    // The bar then advances all the time, from the first seconds. rayon schedules the big
+    // autosomes first, and they otherwise finish together late. That leaves the bar frozen at 0
+    // for about half of the run.
+    //
+    // The denominator is the length of every contig that the code walks, because read-metrics
+    // covers all of them. The contigs of the main assembly dominate that sum, so the count follows
+    // the position in the genome closely enough.
     let total_bp: u64 = works.iter().map(|w| w.length as u64).sum();
     let total_mb = (total_bp / 1_000_000).max(1) as usize;
     let processed_bp = AtomicU64::new(0);
     progress(0, total_mb);
 
     let n_threads = analysis_thread_count();
-    // Bound concurrent full-reference loads (the peak-memory driver) independently of compute
-    // parallelism: at most a few contigs hold their raw reference at once while building the
-    // compact N-mask. A token pool implements the counting semaphore.
+    // Limit how many full-reference loads run at one time, and set that limit apart from the
+    // compute parallelism. Those loads are what set the peak memory. At most a few contigs hold
+    // their raw reference at one time, while the code builds the compact N-mask. A pool of tokens
+    // is the counting semaphore.
     let load_permits = n_threads.min(4);
     let (perm_tx, perm_rx) = std::sync::mpsc::channel::<()>();
     for _ in 0..load_permits {
@@ -349,15 +388,15 @@ pub fn collect_unified_metrics_parallel_with_progress(
     let perm_rx = std::sync::Mutex::new(perm_rx);
 
     let process_contig = |w: &Work| -> Result<ContigPartial, AnalysisError> {
-        // Bail before paying for this contig's reader + reference load. In-flight contigs stop at
-        // their own record-loop check inside `for_each`.
+        // Stop before the cost of the reader and the reference load of this contig. A contig that
+        // already runs stops at its own check in the record loop inside `for_each`.
         cancel.check()?;
         let (h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
         let region = Region::new(w.name.as_bytes().to_vec(), ..); // whole contig
 
         let mut cov_accum = if w.tracked {
-            // Hold a load permit only across the raw-reference load + mask build; release before
-            // the long pileup (which keeps just the small mask).
+            // Hold a load token across the raw-reference load and the build of the mask, and no
+            // longer. Release it before the long pileup, which keeps the small mask alone.
             let _permit = {
                 let _ = perm_rx.lock().unwrap().recv();
                 LoadPermit { tx: &perm_tx }
@@ -401,8 +440,9 @@ pub fn collect_unified_metrics_parallel_with_progress(
         })
     };
 
-    // The unmapped tail (no reference position) is invisible to region queries but the
-    // sequential read-metrics counts it (total/pf reads, read-length) — sweep it separately.
+    // A region query can not see the unmapped tail, because it has no reference position. But the
+    // sequential read-metrics counts it, in the total reads, the pf reads and the read length. So
+    // sweep it on its own.
     let process_unmapped = || -> Result<ReadMetricsState, AnalysisError> {
         let (_h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
         let mut sink = MetricsSink {
@@ -412,11 +452,14 @@ pub fn collect_unified_metrics_parallel_with_progress(
         Ok(sink.rm)
     };
 
-    // noodles' CRAM decoder can recurse deeply enough to blow rayon's default 2 MiB worker stack
-    // (the main thread's larger stack handles the same file in the sequential walker). CRAM 3.1
-    // files (new range/arithmetic + fqzcomp + name-tokenizer codecs) recurse deeper still. Give the
-    // workers a generous decode-safe stack so the per-contig CRAM decode doesn't overflow — an
-    // overflow aborts the whole process, so this must not be marginal.
+    // The CRAM decoder of noodles can recurse deep enough to overflow the default 2 MiB worker
+    // stack of rayon. In the sequential walker, the larger stack of the main thread holds the same
+    // file. A CRAM 3.1 file recurses deeper still, because of its new range and arithmetic codecs,
+    // fqzcomp, and the name tokenizer.
+    //
+    // So give the workers a large stack that is safe for a decode, and the CRAM decode of one
+    // contig then does not overflow. An overflow aborts the whole process, so the margin here must
+    // be wide.
     let pool = reader::decode_pool(n_threads)?;
 
     let (contig_results, unmapped_rm) = pool.install(|| {
@@ -439,8 +482,8 @@ pub fn collect_unified_metrics_parallel_with_progress(
     let contig_results = contig_results?;
     let unmapped_rm = unmapped_rm?;
 
-    // Merge: read-metrics is a commutative fold; coverage merges per-contig (header order);
-    // sex sums per-contig class counts into one tally.
+    // The merge. Read-metrics is a fold that commutes. Coverage merges one contig at a time, in
+    // header order. Sex adds the class counts of each contig into one tally.
     let mut rm_total = ReadMetricsState::default();
     let mut cov_partials: Vec<ContigCoveragePartial> = Vec::new();
     let (mut autosome_reads, mut x_reads) = (0u64, 0u64);
@@ -465,22 +508,25 @@ pub fn collect_unified_metrics_parallel_with_progress(
     })
 }
 
-/// Per-pass timings from [`profile_contig`] over one contig.
+/// The time of each pass from [`profile_contig`], over one contig.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
 pub struct ContigProfile {
     pub reads: u64,
-    /// Raw decode only: BGZF + BAM record decode, minimal lazy field touch (no `RecordBuf`).
+    /// The raw decode alone: BGZF and the BAM record decode. It touches as few lazy fields as it
+    /// can, and it makes no `RecordBuf`.
     pub raw: std::time::Duration,
-    /// Raw decode + `RecordBuf::try_from_alignment_record` (the owned per-read copy).
+    /// The raw decode, plus `RecordBuf::try_from_alignment_record`, which is the owned copy of
+    /// each read.
     pub recordbuf: std::time::Duration,
     /// The full production work: `RecordBuf` + read-metrics + coverage pileup.
     pub full: std::time::Duration,
 }
 
-/// Diagnostic: time the per-read loop over a **single** contig in three passes so the cost splits
-/// out — raw decode vs the `RecordBuf` owned copy vs the metrics/pileup work. Profiles the hot loop
-/// without walking the whole genome. Not used in production.
+/// A diagnostic. It times the loop over the reads of a **single** contig, in three passes. The
+/// cost then separates into its parts: the raw decode, the owned `RecordBuf` copy, and the metrics
+/// and pileup work. It profiles the hot loop, and it does not walk the whole genome. Production
+/// does not use it.
 #[doc(hidden)]
 pub fn profile_contig(
     bam_path: &Path,
@@ -492,7 +538,8 @@ pub fn profile_contig(
 
     let region = Region::new(contig.as_bytes().to_vec(), ..);
 
-    // Pass 1 — raw decode: iterate the lazy bam::Record, touch flags + sequence length, no RecordBuf.
+    // Pass 1, the raw decode. Walk the lazy bam::Record, touch the flags and the sequence length,
+    // and make no RecordBuf.
     let mut raw_reads = 0u64;
     let raw = {
         let mut inner = bam::io::indexed_reader::Builder::default()
@@ -512,7 +559,7 @@ pub fn profile_contig(
         start.elapsed()
     };
 
-    // Pass 2 — + RecordBuf conversion (no accepts).
+    // Pass 2. The same, plus the conversion to a RecordBuf. It accepts nothing.
     let recordbuf = {
         let (h, mut idx) = reader::open_indexed(bam_path, Some(reference_path))?;
         let start = std::time::Instant::now();
@@ -523,7 +570,7 @@ pub fn profile_contig(
         start.elapsed()
     };
 
-    // Pass 3 — the full production per-read work.
+    // Pass 3. The full work at each read, as production does it.
     let length = {
         let (h, _) = reader::open_indexed(bam_path, Some(reference_path))?;
         h.reference_sequences()
@@ -554,10 +601,13 @@ pub fn profile_contig(
     })
 }
 
-/// Diagnostic: run the full per-read work on each of `contigs` concurrently (mirroring the real
-/// parallel walker's per-contig fan-out) and return `(total_reads, wall_clock)`. Comparing the
-/// aggregate throughput against the single-threaded [`profile_contig`] rate exposes contention
-/// (e.g. allocator thrash on per-read `RecordBuf` allocations). Not used in production.
+/// A diagnostic. It runs the full work at each read, on every contig in `contigs`, at the same
+/// time. That has the same shape as the fan-out over contigs in the real parallel walker. It
+/// returns `(total_reads, wall_clock)`.
+///
+/// Compare that throughput against the rate of [`profile_contig`], which runs on one thread. The
+/// difference shows contention, for example an allocator under pressure from the `RecordBuf`
+/// allocation at each read. Production does not use this.
 #[doc(hidden)]
 pub fn profile_contigs_parallel(
     bam_path: &Path,
@@ -615,9 +665,10 @@ mod tests {
 
         let cov = coverage::collect_coverage_callable(&bam, &reference, &params, None).unwrap();
         let rm = read_metrics::collect_read_metrics(&bam, Some(&reference)).unwrap();
-        // The fixture is chrM-only (no autosomes/chrX), so sex inference can't be computed —
-        // the fused walker reports it as `None` (best-effort) while still returning coverage +
-        // read-metrics, and the standalone walker errors. Both agree sex is unavailable here.
+        // The fixture holds chrM alone, with no autosome and no chrX, so the code can not infer
+        // the sex. The fused walker reports `None`, and it still gives back the coverage and the
+        // read-metrics. The separate walker returns an error. Both agree that there is no sex
+        // here.
         assert!(sex::infer_from_bam(&bam, Some(&reference)).is_err());
 
         assert_eq!(unified.coverage, cov, "coverage diverged");

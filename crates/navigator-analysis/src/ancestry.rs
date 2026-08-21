@@ -1,11 +1,12 @@
-//! Ancestry estimation — the genotype → population-proportion path, Navigator-side.
+//! Ancestry estimation. This is the path from genotypes to population proportions, on the
+//! Navigator side.
 //!
-//! Phase 1 is the allele-frequency likelihood (no PCA, no GATK): the bundled [`AncestryPanel`]
-//! carries per-(super-)population alt-allele frequencies at a set of ancestry-informative
-//! sites; we genotype the sample there with the GL caller ([`crate::caller::genotype_sites`]),
-//! then score each population by the binomial likelihood of the observed diploid genotypes
-//! under its allele frequencies. The panel is built offline by `navigator-panelbuild` from the
-//! 1000G-on-CHM13 VCFs.
+//! Phase 1 is the allele-frequency likelihood. It uses no PCA and no GATK. The bundled
+//! [`AncestryPanel`] carries alt-allele frequencies for each (super-)population at a set of
+//! ancestry-informative sites. The code genotypes the sample at those sites with the GL caller
+//! ([`crate::caller::genotype_sites`]). It then scores each population by the binomial
+//! likelihood of the observed diploid genotypes under the allele frequencies of that
+//! population. `navigator-panelbuild` builds the panel offline from the 1000G-on-CHM13 VCFs.
 //!
 //! The result is a [`navigator_domain::ancestry::AncestryResult`]. PCA projection
 //! ([`AncestryResult::pca_coordinates`]) is phase 2.
@@ -22,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use crate::caller::SiteGenotype;
 use crate::AnalysisError;
 
-/// One ancestry-informative site with its per-population alt-allele frequencies. `freqs[i]`
+/// One ancestry-informative site with the alt-allele frequency for each population. `freqs[i]`
 /// aligns with [`AncestryPanel::populations`]`[i]`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PanelSite {
@@ -39,7 +40,7 @@ pub struct PanelSite {
 pub struct AncestryPanel {
     /// Canonical reference build the site coordinates are in (e.g. "chm13v2.0").
     pub build: String,
-    /// Population codes, defining the axis order of every `PanelSite::freqs`.
+    /// Population codes. They give the axis order of every `PanelSite::freqs`.
     pub populations: Vec<String>,
     pub sites: Vec<PanelSite>,
 }
@@ -55,9 +56,9 @@ impl AncestryPanel {
         bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("panel encode: {e}")))
     }
 
-    /// A panel restricted to `codes` (those present, in `codes` order), projecting each site's
-    /// per-population frequencies down to the kept columns. Used to run a well-conditioned
-    /// admixture EM over a curated subset of a large fine-frequency panel.
+    /// A panel that keeps only `codes`, those that are present, in `codes` order. It projects
+    /// the frequencies of each site down to the columns that stay. Use it to run a
+    /// well-conditioned admixture EM over a curated subset of a large fine-frequency panel.
     pub fn subset(&self, codes: &[&str]) -> AncestryPanel {
         let keep: Vec<usize> = codes
             .iter()
@@ -90,16 +91,18 @@ impl AncestryPanel {
     }
 }
 
-/// PCA loadings for projecting a sample onto the reference populations' principal-component
-/// space (Phase 2). Built offline by `navigator-panelbuild` from the 1000G genotype matrix:
-/// per-SNP loadings + means (for centering), plus each population's centroid and diagonal
-/// variance in PC space (for the Mahalanobis/Gaussian assignment and the scatter plot).
+/// PCA loadings. They project a sample onto the principal-component space of the reference
+/// populations (Phase 2). `navigator-panelbuild` builds them offline from the 1000G genotype
+/// matrix. They hold a loading and a mean for each SNP, and the mean centres the data. They
+/// also hold the centroid and the diagonal variance of each population in PC space, for the
+/// Mahalanobis/Gaussian assignment and for the scatter plot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PcaLoadings {
     pub build: String,
-    /// (contig, 1-based pos) per row, aligned with `means` and the rows of `loadings`.
+    /// A (contig, 1-based pos) for each row, aligned with `means` and the rows of `loadings`.
     pub sites: Vec<(String, i64)>,
-    /// Mean dosage per site (reference panel) — used to centre the sample before projecting.
+    /// The mean dosage at each site, from the reference panel. It centres the sample before
+    /// the projection.
     pub means: Vec<f32>,
     pub n_components: usize,
     /// Row-major `sites.len() × n_components`.
@@ -142,18 +145,24 @@ pub struct HapSite {
     pub alternate_allele: char,
 }
 
-/// A reference panel of **phased haplotypes** at the painting loci — the substrate for statistical
-/// phasing (the Li & Stephens copying model) and, later, copying-model local-ancestry inference.
+/// A reference panel of **phased haplotypes** at the painting loci. It is the substrate for
+/// statistical phasing, which uses the Li & Stephens copying model, and, later, for
+/// local-ancestry inference with the copying model.
 ///
-/// Distinct from [`AncestryPanel`], which stores per-population allele *frequencies*: this carries
-/// each individual reference *haplotype*'s allele at every site plus its population label, so a
-/// sample can be phased as a mosaic of these haplotypes. Built offline by `navigator-panelbuild`
-/// from the **phased** 1000G-on-CHM13 VCFs. Only modern, phased references enter it (1000G super +
-/// fine populations); pseudo-haploid / unphased sources (ancient, AADR continental groups) are
-/// excluded — those contribute to the frequency panel used by the two-tier fine-resolution step.
+/// It is different from [`AncestryPanel`], which stores allele *frequencies* for each
+/// population. This panel carries the allele of each individual reference *haplotype* at every
+/// site, and the population label of that haplotype. The code can then phase a sample as a
+/// mosaic of these haplotypes. `navigator-panelbuild` builds it offline from the **phased**
+/// 1000G-on-CHM13 VCFs.
 ///
-/// Alleles are bit-packed row-major: haplotype `h`'s allele at site `s` is bit `h * n_sites + s`
-/// of [`alleles`](Self::alleles). This keeps a ~5000-haplotype × ~20k-site reference near ~12 MB.
+/// Only modern, phased references go into it: the 1000G super populations and fine populations.
+/// Pseudo-haploid and unphased sources, which are the ancient data and the AADR continental
+/// groups, stay out. Those sources go into the frequency panel that the two-tier
+/// fine-resolution step uses.
+///
+/// The alleles are bit-packed row-major. The allele of haplotype `h` at site `s` is bit
+/// `h * n_sites + s` of [`alleles`](Self::alleles). This keeps a reference of about 5000
+/// haplotypes by about 20k sites near 12 MB.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HaplotypeReference {
     /// Canonical reference build the site coordinates are in (e.g. "chm13v2.0").
@@ -162,7 +171,7 @@ pub struct HaplotypeReference {
     pub sites: Vec<HapSite>,
     /// Distinct population codes; `hap_pop[h]` indexes into this axis.
     pub populations: Vec<String>,
-    /// One entry per haplotype: the index into [`populations`](Self::populations) of its label.
+    /// One entry for each haplotype: the index of its label in [`populations`](Self::populations).
     pub hap_pop: Vec<u16>,
     /// `n_haplotypes × n_sites` alleles, bit-packed row-major (see the type doc). `1` = alt.
     pub alleles: Vec<u64>,
@@ -181,8 +190,9 @@ impl HaplotypeReference {
         bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("hap reference encode: {e}")))
     }
 
-    /// Pack per-haplotype allele rows (`rows[h][s]` = 0/1) into the bit-packed form. `hap_pop[h]`
-    /// is the population index of haplotype `h`. Used by the offline builder and by tests.
+    /// Pack the allele row of each haplotype (`rows[h][s]` = 0/1) into the bit-packed form.
+    /// `hap_pop[h]` is the population index of haplotype `h`. The offline builder and the tests
+    /// use this.
     pub fn from_rows(
         build: String,
         sites: Vec<HapSite>,
@@ -230,10 +240,10 @@ impl HaplotypeReference {
         self.n_sites == 0 || self.n_haplotypes == 0
     }
 
-    /// The same reference with the haplotypes in `drop` removed (sites, population axis and every
-    /// other haplotype unchanged). Leave-one-out validation of the copying painter needs it: a test
-    /// individual taken *from* the reference would otherwise be painted by copying itself, which
-    /// measures nothing. Unknown indices are ignored.
+    /// The same reference with the haplotypes in `drop` removed. The sites, the population axis
+    /// and every other haplotype do not change. The leave-one-out check of the copying painter
+    /// needs this. A test individual taken *from* the reference would else get its paint from a
+    /// copy of itself, which measures nothing. The code ignores an index that it does not know.
     pub fn without_haplotypes(&self, drop: &[usize]) -> Self {
         let dropped: std::collections::HashSet<usize> = drop.iter().copied().collect();
         let keep: Vec<usize> = (0..self.n_haplotypes).filter(|h| !dropped.contains(h)).collect();
@@ -258,10 +268,11 @@ impl HaplotypeReference {
         }
     }
 
-    /// The same reference thinned to every `step`-th site (`step` <= 1 returns a clone). Marker
-    /// density is the copying model's binding constraint — a shared tract only identifies whose
-    /// haplotype it is if enough markers fall inside it — so measuring accuracy against density
-    /// needs the same panel at several densities, which this produces without rebuilding the asset.
+    /// The same reference thinned to every `step`-th site. A `step` of 1 or less returns a
+    /// clone. Marker density is the constraint that limits the copying model. A shared tract
+    /// identifies whose haplotype it is only if enough markers fall inside it. To measure
+    /// accuracy against density you need the same panel at more than one density. This
+    /// function makes those panels, and it does not build the asset again.
     pub fn thin_sites(&self, step: usize) -> Self {
         if step <= 1 {
             return self.clone();
@@ -290,11 +301,11 @@ impl HaplotypeReference {
     }
 }
 
-/// Project a sample's genotypes onto the reference PCA space: centre each site by its panel
-/// mean and accumulate `centered · loading` into each component. A missing genotype contributes
-/// 0 (mean-imputed), then the projection is rescaled by `total_sites / sites_used` so a sample
-/// with missing genotypes isn't shrunk toward the origin (which would pull it off its true
-/// cluster). Returns the sample's coordinate in each principal component.
+/// Project the genotypes of a sample onto the reference PCA space. Centre each site by its
+/// panel mean, then add `centered · loading` into each component. A missing genotype adds 0,
+/// which imputes the mean. The code then scales the projection by `total_sites / sites_used`.
+/// Without that scale, a sample with missing genotypes moves toward the origin and away from
+/// its true cluster. Returns the coordinate of the sample in each principal component.
 pub fn project_pca(genotypes: &[SiteGenotype], pca: &PcaLoadings) -> Vec<f64> {
     let dosage: HashMap<(&str, i64), i32> = genotypes
         .iter()
@@ -311,14 +322,14 @@ pub fn project_pca(genotypes: &[SiteGenotype], pca: &PcaLoadings) -> Vec<f64> {
     })
 }
 
-/// The PCA projection kernel: accumulate `centered · loading` into each component over the sites
-/// the sample actually has, then un-shrink by `n_sites / used` so a sample with missing genotypes
-/// isn't pulled toward the origin (see [`project_pca`]).
+/// The PCA projection kernel. It adds `centered · loading` into each component, over the sites
+/// that the sample has. It then scales up by `n_sites / used`, so that a sample with missing
+/// genotypes does not move toward the origin. See [`project_pca`].
 ///
-/// `centered` yields `(site index, dosage − site mean)` for each present site; `loading` reads the
-/// `(site, component)` basis entry. Both are supplied by the caller because the runtime projector
-/// and the offline basis builder hold their basis in different layouts (`PcaLoadings` vs a
-/// `DMatrix`) — the scaling policy, which has to agree between them, lives here.
+/// `centered` gives `(site index, dosage − site mean)` for each site that is present. `loading`
+/// reads the `(site, component)` basis entry. The caller gives both, because the runtime
+/// projector and the offline basis builder hold their basis in different layouts: `PcaLoadings`
+/// against a `DMatrix`. The scale policy must agree between the two, so it lives here.
 pub fn project_centered(
     n_sites: usize,
     n_components: usize,
@@ -333,7 +344,8 @@ pub fn project_centered(
             *coord += value * loading(i, c);
         }
     }
-    // Un-shrink: reference coords were built from all sites; scale up for the missing fraction.
+    // The reference coordinates come from all of the sites. Scale up for the fraction that is
+    // missing.
     if used > 0 {
         let scale = n_sites as f64 / used as f64;
         for coord in &mut coords {
@@ -346,16 +358,20 @@ pub fn project_centered(
 /// Parameters for [`paint_local_ancestry`].
 #[derive(Debug, Clone)]
 pub struct PaintParams {
-    /// Per-bp ancestry-switch rate (segment-length knob): switch prob over distance `d` bp is
-    /// `1 - exp(-d·rate)`. Smaller → longer segments. Default ≈ one switch per 20 Mb.
+    /// The ancestry-switch rate for each bp, which controls the segment length. The switch
+    /// probability over a distance of `d` bp is `1 - exp(-d·rate)`. A smaller rate gives longer
+    /// segments. The default is about one switch in 20 Mb.
     pub rate: f64,
-    /// Runs shorter than this many markers are merged into the neighbouring segment.
+    /// The code merges a run of fewer markers than this into the segment that is next to it.
     pub min_segment_sites: usize,
-    /// Global-composition gate: a super-population whose genome-wide `prior` weight is below this
-    /// fraction is dropped from the HMM's state set entirely (the dominant ancestry is always kept),
-    /// so a 99%-European donor can't be *locally* painted East-Asian/South-Asian by a handful of
-    /// noise loci. AF-based local ancestry over coarse super-pops is prone to inventing a globally
-    /// absent continent; anchoring the states to the global estimate suppresses that. `0.0` disables.
+    /// The gate on the global composition. The HMM drops a super-population from its state set
+    /// if the genome-wide `prior` weight of that population is below this fraction. It always
+    /// keeps the dominant ancestry. A donor who is 99% European can then not get a *local*
+    /// East-Asian or South-Asian paint from a few noise loci. `0.0` turns the gate off.
+    ///
+    /// Local ancestry from allele frequencies over coarse super-populations can show a continent
+    /// that the genome does not contain at all. To hold the states to the global estimate stops
+    /// that.
     pub min_ancestry: f64,
 }
 
@@ -369,9 +385,10 @@ impl Default for PaintParams {
     }
 }
 
-/// Diploid genotype log-likelihood when the two genome copies draw their alt allele from frequencies
-/// `fa` and `fb` (one copy per ancestry): `P(0)=(1-fa)(1-fb)`, `P(1)=fa(1-fb)+(1-fa)fb`, `P(2)=fa·fb`.
-/// Missing dosage → uniform. This is the proper diploid (two-copy) emission the pair-state HMM needs.
+/// The log-likelihood of a diploid genotype. The two genome copies draw their alt allele from
+/// the frequencies `fa` and `fb`, one copy for each ancestry: `P(0)=(1-fa)(1-fb)`,
+/// `P(1)=fa(1-fb)+(1-fa)fb`, `P(2)=fa·fb`. A missing dosage gives a uniform value. This is the
+/// correct diploid emission, over two copies, that the pair-state HMM needs.
 fn emit_diploid_ln(g: i32, fa: f64, fb: f64) -> f64 {
     let fa = fa.clamp(1e-4, 1.0 - 1e-4);
     let fb = fb.clamp(1e-4, 1.0 - 1e-4);
@@ -384,16 +401,21 @@ fn emit_diploid_ln(g: i32, fa: f64, fb: f64) -> f64 {
     p.max(1e-300).ln()
 }
 
-/// Paint each chromosome with local ancestry: an HMM over the panel sites whose hidden states are
-/// the super-populations, emissions are the diploid genotype likelihood under each population's
-/// allele frequency, and transitions penalise ancestry switches by physical distance. Viterbi
-/// gives the segment path; forward-backward gives per-site posteriors (segment confidence).
+/// Paint each chromosome with local ancestry. The model is an HMM over the panel sites. Its
+/// hidden states are the super-populations. Its emissions are the diploid genotype likelihood
+/// under the allele frequency of each population. Its transitions penalise an ancestry switch
+/// by physical distance. Viterbi gives the segment path, and forward-backward gives the
+/// posterior at each site, which is the segment confidence.
 ///
-/// `prior` is the genome-wide composition `(population_code, weight)` (rolled to super-populations
-/// here) — the HMM's stationary/switch distribution, anchoring the painting to the global estimate.
-/// **Diploid pair-state HMM**: the hidden state is an ancestry pair (both genome copies), so a region
-/// where the two copies differ (e.g. EUR/SAS) is shown, not collapsed. Output is two sorted, unphased
-/// copies per chromosome (segments tagged `copy` 0/1) — not maternal/paternal (no phasing).
+/// `prior` is the genome-wide composition `(population_code, weight)`, which this function rolls
+/// up to super-populations. It is the stationary and switch distribution of the HMM, and it
+/// holds the painting to the global estimate.
+///
+/// **The HMM has diploid pair states**: one hidden state is a pair of ancestries, for both
+/// genome copies. A region where the two copies are different, for example EUR and SAS, stays
+/// visible and does not collapse. The output is two sorted, unphased copies for each chromosome,
+/// with the segments tagged `copy` 0 or 1. The copies are not maternal and paternal, because
+/// there is no phasing.
 pub fn paint_local_ancestry(
     genotypes: &[SiteGenotype],
     panel: &AncestryPanel,
@@ -416,8 +438,9 @@ pub fn paint_local_ancestry(
         return Vec::new();
     }
 
-    // Prior π over the full state set (roll the global composition up to super-pops; normalize;
-    // uniform fallback when no prior is supplied).
+    // The prior π over the full state set. Roll the global composition up to the
+    // super-populations and normalize it. Fall back to a uniform π when the caller gives no
+    // prior.
     let mut full_pi = vec![0.0f64; all_states.len()];
     for (code, w) in prior {
         let sp = population_super(code).unwrap_or(code);
@@ -432,9 +455,10 @@ pub fn paint_local_ancestry(
         full_pi.iter_mut().for_each(|p| *p = 1.0 / all_states.len() as f64);
     }
 
-    // Global-composition gate: keep only ancestries present genome-wide (>= min_ancestry), always
-    // retaining the dominant one, so local painting can't invent a globally absent continent. With a
-    // uniform (no-prior) π every state clears the default threshold, so gating is a no-op there.
+    // The gate on the global composition. Keep only an ancestry that the genome shows
+    // (>= min_ancestry), and always keep the dominant one. The local painting can then not show
+    // a continent that the genome does not contain at all. With a uniform π, which is the
+    // no-prior case, every state clears the default threshold, and the gate does nothing.
     let argmax = full_pi
         .iter()
         .enumerate()
@@ -463,7 +487,8 @@ pub fn paint_local_ancestry(
         .map(|g| ((g.contig.as_str(), g.position), g.dosage))
         .collect();
 
-    // Per-contig sites with a genotype: (pos, per-state super-pop AF, dosage). Sorted by pos.
+    // The sites with a genotype, for each contig: (pos, super-pop AF for each state, dosage).
+    // Sorted by pos.
     let mut by_contig: BTreeMap<String, Vec<(i64, Vec<f64>, i32)>> = BTreeMap::new();
     for site in &panel.sites {
         if site.freqs.len() != panel.populations.len() {
@@ -496,8 +521,9 @@ pub fn paint_local_ancestry(
         if sites.is_empty() {
             continue;
         }
-        // Diploid MAP path: one ancestry PAIR per locus, canonicalized (min,max) into two sorted,
-        // coherent copies (copy 0 = lower-index ancestry, copy 1 = higher). Unphased.
+        // The diploid MAP path. It gives one ancestry PAIR at each locus. The code puts the
+        // pair into a canonical (min,max) order. That makes two sorted, coherent copies. Copy 0
+        // is the ancestry with the lower index, and copy 1 is the higher. There is no phasing.
         let pairs = diploid_viterbi(&sites, &pi, params.rate, k);
         let copy0: Vec<usize> = pairs.iter().map(|&(a, b)| a.min(b)).collect();
         let copy1: Vec<usize> = pairs.iter().map(|&(a, b)| a.max(b)).collect();
@@ -521,10 +547,14 @@ pub fn paint_local_ancestry(
     segments
 }
 
-/// The HMM state scaffold shared by the diploid (unphased) and haploid (phased-side) painters: the
-/// kept super-population states, each panel population's super-pop, and the prior π over the kept
-/// states. Selection + global-composition gating are identical to [`paint_local_ancestry`], so both
-/// painters anchor to the same global estimate and can't invent a globally-absent continent.
+/// The HMM state scaffold that the two painters share. One painter is diploid and unphased, and
+/// the other is haploid and works on a phased side. The scaffold holds the super-population
+/// states that stay, the super-population of each panel population, and the prior π over the
+/// states that stay.
+///
+/// The selection and the gate on the global composition are the same as in
+/// [`paint_local_ancestry`]. Both painters hold to the same global estimate, and neither
+/// can show a continent that the genome does not contain at all.
 struct PaintStates {
     states: Vec<String>,
     pop_state: Vec<String>,
@@ -582,8 +612,9 @@ fn build_paint_states(panel: &AncestryPanel, prior: &[(String, f64)], params: &P
     Some(PaintStates { states, pop_state, pi })
 }
 
-/// Per-state alt-allele frequency at one site: the mean fine-pop frequency within each kept
-/// super-population state (`0.5` when a state has no contributing population). `states` order.
+/// The alt-allele frequency of each state at one site. It is the mean fine-population frequency
+/// in each super-population state that stays. A state with no population in it gets `0.5`. The
+/// order is the `states` order.
 fn per_state_af(freqs: &[f32], pop_state: &[String], states: &[String]) -> Vec<f64> {
     let k = states.len();
     let mut sum = vec![0.0f64; k];
@@ -606,10 +637,11 @@ fn emit_haploid_ln(a: u8, f: f64) -> f64 {
     p.max(1e-300).ln()
 }
 
-/// Haploid Viterbi: the MAP super-population per site for **one** phased haplotype. Hidden state =
-/// the super-population being copied; emission is [`emit_haploid_ln`] on the side's allele;
-/// transitions penalise ancestry switches by physical distance (same `switch_prob`/`ln_trans` as
-/// the diploid painter). `sites` are `(pos, per-state AF, allele 0/1)`, position-sorted.
+/// Haploid Viterbi. It gives the MAP super-population at each site for **one** phased
+/// haplotype. The hidden state is the super-population that the model copies. The emission is
+/// [`emit_haploid_ln`] on the allele of that side. The transitions penalise an ancestry switch
+/// by physical distance, with the same `switch_prob` and `ln_trans` as the diploid painter.
+/// `sites` are `(pos, AF for each state, allele 0/1)`, in position order.
 fn haploid_viterbi(sites: &[(i64, Vec<f64>, u8)], pi: &[f64], rate: f64, k: usize) -> Vec<usize> {
     let n = sites.len();
     let lnpi: Vec<f64> = (0..k).map(|s| pi[s].max(1e-300).ln()).collect();
@@ -643,11 +675,14 @@ fn haploid_viterbi(sites: &[(i64, Vec<f64>, u8)], pi: &[f64], rate: f64, k: usiz
     path
 }
 
-/// Paint local ancestry from **phased** genotypes: a haploid ancestry HMM run independently on each
-/// of the two phased sides, so the two output tracks are internally-consistent parental sides
-/// (segment `copy` = phased side 0/1, consistent across the whole genome) — the parent-split the
-/// unphased [`paint_local_ancestry`] cannot produce. `prior` is the genome-wide composition
-/// (anchors the state set); `panel` supplies per-super-pop allele frequencies.
+/// Paint local ancestry from **phased** genotypes. A haploid ancestry HMM runs on each of the
+/// two phased sides, and the two runs are independent. The two output tracks are then parental
+/// sides that agree with themselves. The segment `copy` is the phased side, 0 or 1, and it keeps
+/// that sense across the whole genome. The unphased [`paint_local_ancestry`] can not make that
+/// parent split.
+///
+/// `prior` is the genome-wide composition, which holds the state set in place. `panel` gives the
+/// allele frequency of each super-population.
 pub fn paint_local_ancestry_phased(
     phased: &crate::phasing::PhasedGenotypes,
     panel: &AncestryPanel,
@@ -659,7 +694,8 @@ pub fn paint_local_ancestry_phased(
     };
     let k = states.len();
 
-    // Per-site per-state AF, keyed by (contig, pos) — computed once, shared by both sides.
+    // The AF of each state at each site, keyed by (contig, pos). The code computes this once,
+    // and both sides use it.
     let site_af: HashMap<(&str, i64), Vec<f64>> = panel
         .sites
         .iter()
@@ -692,7 +728,8 @@ pub fn paint_local_ancestry_phased(
                 continue;
             }
             let path = haploid_viterbi(&sites, &pi, params.rate, k);
-            // collapse_copy needs (pos, _, dosage-ish); the AF/allele payload is unused there.
+            // collapse_copy needs (pos, _, a dosage-like value). It does not read the AF and
+            // allele payload.
             let collapse_sites: Vec<(i64, Vec<f64>, i32)> =
                 sites.iter().map(|s| (s.0, Vec::new(), s.2 as i32)).collect();
             segments.extend(collapse_copy(
@@ -708,13 +745,14 @@ pub fn paint_local_ancestry_phased(
     segments
 }
 
-/// Tuning for [`resolve_fine_populations`] (the two-tier super→fine step).
+/// The controls of [`resolve_fine_populations`], which is the two-tier super-to-fine step.
 #[derive(Debug, Clone)]
 pub struct FineResolveParams {
-    /// Minimum informative sites in a segment before a fine call is attempted.
+    /// The count of informative sites that a segment needs before the code tries a fine call.
     pub min_sites: usize,
-    /// Minimum average per-site ln-likelihood advantage of the best fine population over the
-    /// runner-up to accept the call (otherwise the segment keeps `fine_population_code = None`).
+    /// The mean ln-likelihood advantage at each site that the best fine population needs over
+    /// the second one before the code accepts the call. Below this, the segment keeps
+    /// `fine_population_code = None`.
     pub min_margin_per_site: f64,
 }
 
@@ -727,12 +765,17 @@ impl Default for FineResolveParams {
     }
 }
 
-/// Two-tier fine resolution: for each already-painted super-population segment, pick the most likely
-/// **fine** population *within that super-population* from the fine-frequency panel, scoring the
-/// segment's phased-side alleles by the haploid likelihood under each candidate fine population.
-/// Sets [`AncestrySegment::fine_population_code`] in place; leaves it `None` when the segment is too
-/// short or the best fine call isn't clearly ahead of the runner-up (mirrors the super→fine admixture
-/// hierarchy). `fine_panel.populations` are fine-pop codes; each site's `freqs` are per-fine-pop AF.
+/// Two-tier fine resolution. For each super-population segment that the painter made, this
+/// takes the most likely **fine** population *inside that super-population* from the
+/// fine-frequency panel. It scores the phased-side alleles of the segment by the haploid
+/// likelihood under each candidate fine population.
+///
+/// It sets [`AncestrySegment::fine_population_code`] in place. It leaves the code `None` when
+/// the segment is too short, or when the best fine call is not clearly ahead of the second one.
+/// This is the same shape as the super-to-fine admixture hierarchy.
+///
+/// `fine_panel.populations` are fine-population codes. The `freqs` of each site are the AF of
+/// each fine population.
 pub fn resolve_fine_populations(
     segments: &mut [AncestrySegment],
     phased: &crate::phasing::PhasedGenotypes,
@@ -765,10 +808,11 @@ pub fn resolve_fine_populations(
         allele.insert((s.contig.as_str(), 1, s.position), s.side1);
     }
 
-    // Sites grouped by contig in position order, so each segment binary-searches its own window.
-    // Scanning `phased.sites` per segment instead is O(segments × sites) — at genome scale (hundreds
-    // of segments over ~1M sites) that dominates the whole fine-resolution pass. Same grouped-by-
-    // contig shape as `paint_local_ancestry`.
+    // The sites, in groups by contig and in position order. Each segment can then do a binary
+    // search for its own window. A scan of `phased.sites` for each segment instead is
+    // O(segments × sites). At genome scale, which is hundreds of segments over about 1M sites,
+    // that scan controls the time of the whole fine-resolution pass. The shape of the groups by
+    // contig is the same as in `paint_local_ancestry`.
     let mut by_contig: HashMap<&str, Vec<&crate::phasing::PhasedSite>> = HashMap::new();
     for s in &phased.sites {
         by_contig.entry(s.contig.as_str()).or_default().push(s);
@@ -779,8 +823,9 @@ pub fn resolve_fine_populations(
 
     for seg in segments.iter_mut() {
         let sp = seg.population_code.as_str();
-        // Candidate fine columns in this segment's super-population, excluding a fine code identical
-        // to the super code (no extra resolution to offer, e.g. MEA/CAS/OCE).
+        // The candidate fine columns in the super-population of this segment. A fine code that
+        // is the same as the super code stays out, because it offers no more resolution. MEA,
+        // CAS and OCE are examples.
         let candidates: Vec<usize> = col_super
             .iter()
             .enumerate()
@@ -791,7 +836,8 @@ pub fn resolve_fine_populations(
             continue;
         }
 
-        // Per-candidate summed ln-likelihood over the segment's informative sites on this side.
+        // The sum of the ln-likelihood of each candidate, over the informative sites of the
+        // segment on this side.
         let mut ll = vec![0.0f64; candidates.len()];
         let mut n = 0usize;
         let contig_sites = by_contig.get(seg.contig.as_str()).map(Vec::as_slice).unwrap_or(&[]);
@@ -814,7 +860,7 @@ pub fn resolve_fine_populations(
             continue;
         }
 
-        // Best and runner-up; accept only with a clear per-site margin.
+        // The best and the second. Accept only with a clear margin at each site.
         let mut order: Vec<usize> = (0..candidates.len()).collect();
         order.sort_by(|&a, &b| ll[b].total_cmp(&ll[a]));
         let best = order[0];
@@ -838,10 +884,11 @@ fn switch_prob(d: i64, rate: f64) -> f64 {
     (1.0 - (-(d.max(0) as f64) * rate).exp()).clamp(0.0, 0.999)
 }
 
-/// Diploid Viterbi: the MAP ancestry **pair** `(a1, a2)` per site. Hidden state = an ordered pair of
-/// ancestries (the two genome copies, independent Markov chains), so transitions factorize as
-/// `ln_trans(a1,b1) + ln_trans(a2,b2)` and the emission is the two-copy [`emit_diploid_ln`]. Returns
-/// one `(a1, a2)` per site (state index `a1*k + a2`).
+/// Diploid Viterbi. It gives the MAP ancestry **pair** `(a1, a2)` at each site. The hidden state
+/// is an ordered pair of ancestries, one for each of the two genome copies, and the two copies
+/// are independent Markov chains. The transitions then factorize as
+/// `ln_trans(a1,b1) + ln_trans(a2,b2)`, and the emission is the two-copy [`emit_diploid_ln`].
+/// Returns one `(a1, a2)` for each site, at the state index `a1*k + a2`.
 fn diploid_viterbi(sites: &[(i64, Vec<f64>, i32)], pi: &[f64], rate: f64, k: usize) -> Vec<(usize, usize)> {
     let n = sites.len();
     let ns = k * k;
@@ -855,8 +902,9 @@ fn diploid_viterbi(sites: &[(i64, Vec<f64>, i32)], pi: &[f64], rate: f64, k: usi
     }
     for i in 1..n {
         let sw = switch_prob(sites[i].0 - sites[i - 1].0, rate);
-        // Per-chain best predecessor for each target chain-state (factorized, so the pair step is
-        // O(k²) not O(k⁴)): for chain value b, max over a of v_chain[a] + ln_trans(a,b).
+        // The best predecessor in each chain, for each target chain-state. The step factorizes,
+        // so the pair step is O(k²) and not O(k⁴). For a chain value b, take the maximum over a
+        // of v_chain[a] + ln_trans(a,b).
         for b1 in 0..k {
             for b2 in 0..k {
                 let (mut best, mut arg) = (f64::NEG_INFINITY, 0usize);
@@ -887,9 +935,10 @@ fn diploid_viterbi(sites: &[(i64, Vec<f64>, i32)], pi: &[f64], rate: f64, k: usi
     path
 }
 
-/// Collapse one copy's per-site ancestry path into segments, merging runs shorter than `min_sites`
-/// into the previous segment (keeping its ancestry). Each segment is tagged with the `copy` index.
-/// `posterior` is set to 1.0 (the MAP path; per-copy posterior shading is a future refinement).
+/// Collapse the ancestry path of one copy, which has a value at each site, into segments. A run
+/// of fewer sites than `min_sites` merges into the segment before it and takes the ancestry of
+/// that segment. Each segment carries the `copy` index. The `posterior` is 1.0, because this is
+/// the MAP path. A posterior for each copy is a later improvement.
 fn collapse_copy(
     contig: &str,
     sites: &[(i64, Vec<f64>, i32)],
@@ -933,10 +982,11 @@ fn collapse_copy(
 
 use navigator_domain::seq::complement_base as revcomp_base;
 
-/// Alt-allele dosage (0/1/2) for a chip diploid call `(a1,a2)` against a panel site's
-/// `ref_allele`/`alt_allele`. When the call's alleles don't both lie in `{ref,alt}`, retry once on
-/// the **reverse-complemented** call (the array reported the other strand); `None` if it still
-/// doesn't match (no-call / multi-allelic mismatch). The minimal strand-flip logic chip→panel needs.
+/// The alt-allele dosage (0/1/2) for a diploid chip call `(a1,a2)`, against the `ref_allele` and
+/// `alt_allele` of a panel site. If the two alleles are not both in `{ref,alt}`, the code tries
+/// once more on the **reverse-complement** of the call. The array can report the other strand. It returns `None` if the call still does not match, which is a no-call or a
+/// multi-allelic mismatch. This is the small amount of strand-flip logic that the path from a
+/// chip to the panel needs.
 pub fn dosage_from_alleles(a1: char, a2: char, ref_allele: char, alt_allele: char) -> Option<i32> {
     let (r, alt) = (ref_allele.to_ascii_uppercase(), alt_allele.to_ascii_uppercase());
     let count = |x: char, y: char| -> Option<i32> {
@@ -949,18 +999,20 @@ pub fn dosage_from_alleles(a1: char, a2: char, ref_allele: char, alt_allele: cha
 
 const PIPELINE_VERSION: &str = "1.0.0-af";
 
-/// Estimate ancestry by the per-population binomial allele-frequency likelihood.
+/// Estimate ancestry by the binomial allele-frequency likelihood of each population.
 ///
-/// For each population, the log-likelihood sums `ln P(genotype | f)` over genotyped sites,
-/// where `f` is that population's alt-allele frequency (clamped to [0.001, 0.999]) and the
-/// diploid genotype probability is `(1-f)²` (hom-ref), `2f(1-f)` (het), or `f²` (hom-alt).
-/// Likelihoods are exponentiated relative to the best population and normalized to percentages.
+/// For each population, the log-likelihood is the sum of `ln P(genotype | f)` over the sites
+/// with a genotype. `f` is the alt-allele frequency of that population, clamped to
+/// [0.001, 0.999]. The diploid genotype probability is `(1-f)²` for hom-ref, `2f(1-f)` for het,
+/// or `f²` for hom-alt. The code then takes the exponential of each likelihood against the best
+/// population, and normalizes the results to percentages.
 pub fn estimate_by_allele_frequency(
     genotypes: &[SiteGenotype],
     panel: &AncestryPanel,
     reference_version: &str,
 ) -> AncestryResult {
-    // (contig, position) -> dosage; missing/no-call dosages (< 0) are dropped.
+    // A map from (contig, position) to a dosage. The code drops a missing or no-call dosage,
+    // which is a value less than 0.
     let dosage: HashMap<(&str, i64), i32> = genotypes
         .iter()
         .filter(|g| g.dosage >= 0)
@@ -1012,16 +1064,19 @@ pub fn estimate_by_allele_frequency(
     )
 }
 
-/// Estimate the sample's **admixture proportions** over the panel populations by supervised
-/// ADMIXTURE: the reference allele frequencies `P` (the panel) are fixed and we estimate the
-/// mixture vector `Q` (on the simplex, summing to 1) that maximizes the genotype likelihood
-/// `∏_j P(g_j | f_j)`, where the mixed alt-allele frequency at site `j` is `f_j = Σ_k q_k·p_{k,j}`
-/// and `P(g_j|f_j)` is the diploid binomial under HWE.
+/// Estimate the **admixture proportions** of the sample over the panel populations, by
+/// supervised ADMIXTURE. The reference allele frequencies `P`, which are the panel, stay fixed.
+/// The code estimates the mixture vector `Q`, which lies on the simplex and sums to 1, that
+/// maximizes the genotype likelihood `∏_j P(g_j | f_j)`. The mixed alt-allele frequency at site
+/// `j` is `f_j = Σ_k q_k·p_{k,j}`, and `P(g_j|f_j)` is the diploid binomial under HWE.
 ///
-/// Fitted by the frappe/ADMIXTURE EM: each allele copy has a latent source population; the E-step
-/// is its posterior given ref/alt, the M-step re-estimates `q_k` as the mean posterior. Unlike
-/// [`estimate_by_allele_frequency`] (which picks the single best-fitting population), this yields
-/// a 100%-summing composition — the shape of a consumer ancestry report.
+/// The frappe/ADMIXTURE EM does the fit. Each allele copy has a latent source population. The
+/// E-step gives the posterior of that population, given ref or alt. The M-step estimates `q_k`
+/// again, as the mean posterior.
+///
+/// [`estimate_by_allele_frequency`] takes the one population that fits best. This function
+/// instead gives a composition that sums to 100%, which is the shape of a consumer ancestry
+/// report.
 pub fn estimate_admixture(
     genotypes: &[SiteGenotype],
     panel: &AncestryPanel,
@@ -1034,7 +1089,7 @@ pub fn estimate_admixture(
         .collect();
 
     let k = panel.populations.len();
-    // Informative sites: (dosage 0/1/2, clamped per-pop alt frequencies).
+    // The informative sites: (dosage 0/1/2, the clamped alt frequency of each population).
     let sites: Vec<(f64, Vec<f64>)> = panel
         .sites
         .iter()
@@ -1050,7 +1105,8 @@ pub fn estimate_admixture(
 
     let mut q = vec![1.0 / k.max(1) as f64; k];
     if snps_with_data > 0 {
-        // EM to convergence (monotone in the likelihood); cheap — O(sites·k) per iteration.
+        // Run the EM until it converges. It is monotone in the likelihood, and it costs only
+        // O(sites·k) in each iteration.
         for _ in 0..500 {
             let mut acc = vec![0.0f64; k];
             for (g, freqs) in &sites {
@@ -1089,11 +1145,14 @@ pub fn estimate_admixture(
     )
 }
 
-/// Fine-population admixture: the same supervised EM as [`estimate_admixture`], run over a curated
-/// **modern subset** of a large fine-frequency panel (the `freq_global` asset carries all reference
-/// populations incl. ancient; a flat 173-way EM is ill-posed, so we restrict to `modern_codes`).
-/// Reuses the *same* genotypes (the fine panel shares the AIM panel's sites). The result is labeled
-/// `FINE_ADMIXTURE`; its components roll up to the super-pops via the domain `population_super` map.
+/// Fine-population admixture. It is the same supervised EM as [`estimate_admixture`], over a
+/// curated **modern subset** of a large fine-frequency panel. The `freq_global` asset holds all
+/// of the reference populations, and that includes the ancient ones. A flat 173-way EM is
+/// ill-posed, so the code keeps only `modern_codes`.
+///
+/// It uses the *same* genotypes, because the fine panel and the AIM panel share their sites. The
+/// result carries the label `FINE_ADMIXTURE`. Its components roll up to the super-populations
+/// through the `population_super` map in the domain crate.
 pub fn estimate_fine_admixture(
     genotypes: &[SiteGenotype],
     fine_panel: &AncestryPanel,
@@ -1106,71 +1165,88 @@ pub fn estimate_fine_admixture(
     result
 }
 
-/// The `ANCIENT_ADMIXTURE` method label — deep (pre-historic) source proportions.
+/// The `ANCIENT_ADMIXTURE` method label. It marks deep, pre-historic source proportions.
 pub const ANCIENT_ADMIXTURE: &str = "ANCIENT_ADMIXTURE";
 
 /// Below this many genotyped panel sites the three-way fit is too noisy to report at all.
 const ANCIENT_MIN_SITES: usize = 500;
 
-/// Dispersion above which the sample is **outside the span of the ancient sources** and we report
-/// nothing. Under a correct model the dispersion is ≈1 by construction (see [`ancient_dispersion`]).
+/// The dispersion above which the sample is **outside the span of the ancient sources**, and the
+/// code reports nothing. Under a correct model the dispersion is about 1 by construction. See
+/// [`ancient_dispersion`].
 ///
-/// Calibrated on simulated reference individuals (`panelbuild validate-ancient`), worst case per
-/// population: GBR 1.65 · CEU 1.58 · FIN 1.78 · TSI 2.38 · **IBS 3.65** ‖ CHB 13.1 · JPT 12.4 ·
-/// YRI 175 · LWK 158. So 4.0 sits in the wide, empty gap between "every European individual" and
-/// "the closest East Asian" — it is not a knob tuned to taste, it is the middle of a real gap.
+/// The calibration ran on simulated reference individuals
+/// (`panelbuild validate-ancient`). The worst case for each population was:
+/// GBR 1.65 · CEU 1.58 · FIN 1.78 · TSI 2.38 · **IBS 3.65** ‖ CHB 13.1 · JPT 12.4 ·
+/// YRI 175 · LWK 158. 4.0 sits in the wide, empty gap between "every European individual"
+/// and "the closest East Asian". It is the middle of a real gap, and it is not a value that
+/// somebody chose because it looked correct.
 ///
-/// It deliberately does **not** try to separate South Asians (PJL 3.3–4.0), who overlap the European
-/// tail: no dispersion threshold can do that, which is why there is a second guard,
-/// [`ANCIENT_MIN_WEST_EURASIAN`].
+/// This threshold does **not** try to separate South Asians, at PJL 3.3 to 4.0, who lie in the
+/// same range as the European tail. No dispersion threshold can do that. That is why there is a
+/// second guard, [`ANCIENT_MIN_WEST_EURASIAN`].
 const ANCIENT_MAX_DISPERSION: f64 = 4.0;
 
-/// Minimum European share (by the modern super-population admixture) for the deep three-way model to
-/// apply at all.
+/// The smallest European share, from the modern super-population admixture, at which the deep
+/// three-way model applies at all.
 ///
-/// WHG / Anatolian Farmer / Steppe is a **West-Eurasian** model: those three sources are the ones
-/// that actually compose modern Europeans. It has no term for Ancestral South Indian, no term for
-/// East Asian, and no term for Sub-Saharan African, so for a person who carries a lot of any of
-/// those, a three-way decomposition of their *whole genome* is not an approximation — it is a
-/// category error. A Punjabi fits at Steppe 67% here; their real Steppe ancestry is nearer 20–30%,
-/// with the rest Iranian-Neolithic and AASI that this model simply cannot see, so it piles the
-/// unexplained ancestry onto whichever source is least unlike it.
+/// WHG / Anatolian Farmer / Steppe is a **West-Eurasian** model. Those three sources are the
+/// ones that compose modern Europeans. The model has no term for Ancestral South Indian, no term
+/// for East Asian, and no term for Sub-Saharan African. For a person who carries much of any of
+/// those, a three-way decomposition of the *whole genome* is not an approximation. It is a
+/// category error.
 ///
-/// Dispersion alone cannot catch that (South Asians overlap the European tail), but the *modern*
-/// estimate — which is well validated and independent of this panel — separates them cleanly. So
-/// deep ancestry only runs for samples the modern model already calls predominantly European.
+/// A Punjabi fits at Steppe 67% here. The real Steppe ancestry of that person is nearer to 20 or
+/// 30%, and the remainder is Iranian-Neolithic and AASI, which this model can not see. The model
+/// then puts all of the ancestry that it can not explain onto the source that is least unlike
+/// it.
+///
+/// The dispersion alone can not catch that, because South Asians lie in the same range as the
+/// European tail. But the *modern* estimate separates them cleanly, and that estimate is well
+/// checked and independent of this panel. Deep ancestry runs only for a sample that the modern
+/// model already calls mostly European.
 const ANCIENT_MIN_WEST_EURASIAN: f64 = 50.0;
 
 /// qpAdm model-fit acceptance: report the deep breakdown only when the model is **not rejected** at
 /// this tail probability (documents/design/ancient-ancestry-rebuild.md §7.14). The garbage fits the gate
 /// exists to suppress reject at p ≈ 1e-13; a real British WGS/chip accepts at p ≈ 0.15–0.21.
 const QPADM_MIN_P: f64 = 0.05;
-/// Tolerance for the "weights are valid proportions" check — a fit that needs a source weight outside
-/// `[0,1]` is the model failing, not a small numerical overshoot.
+/// The tolerance of the check that the weights are correct proportions. A fit that needs a
+/// source weight outside `[0,1]` shows that the model does not hold. It is not a small numerical
+/// overshoot.
 const QPADM_WEIGHT_TOL: f64 = 0.02;
 
-/// Estimate **deep ancestral (ancient) source proportions** — the Western Hunter-Gatherer /
-/// Anatolian Farmer / Steppe pastoralist decomposition — by the same supervised allele-frequency
-/// admixture EM as [`estimate_admixture`], over the dedicated ancient frequency panel
-/// (`ancestry_freq_ancient_<build>.bin`, built by `panelbuild ancient-panel` from the AADR).
+/// Estimate **deep ancestral (ancient) source proportions**. This is the decomposition into
+/// Western Hunter-Gatherer, Anatolian Farmer and Steppe pastoralist. It uses the same supervised
+/// allele-frequency admixture EM as [`estimate_admixture`], over the dedicated ancient frequency
+/// panel `ancestry_freq_ancient_<build>.bin`, which `panelbuild ancient-panel` builds from the
+/// AADR.
 ///
-/// This *replaces* an earlier PCA-centroid classifier, which was wrong twice over: it asked "which
-/// ancient population **is** this sample?" (a membership posterior) where the question is "what
-/// **mixture** of ancient sources is this sample?", and it ran against centroids that had been
-/// shrunk on top of the modern European cloud by projection, so they carried no ancient signal at
-/// all. A modern European is not a *member* of WHG; they are a *mixture*. Allele frequencies keep
-/// the sources genuinely distinct (WHG↔ANF Fst ≈ 0.07) where the projected PCA did not.
+/// This *replaces* an earlier PCA-centroid classifier. That classifier was wrong in two ways.
+/// It asked which ancient population this sample **is**, which is a membership posterior, when
+/// the question is what **mixture** of ancient sources the sample is. It also ran against the
+/// wrong centroids. The projection had pulled those centroids in on top of the modern European
+/// cloud, so they carried no ancient signal at all.
 ///
-/// `modern` is the sample's **modern** super-population admixture ([`estimate_admixture`] over the
-/// super-pop panel) — an independent, already-validated estimate, used only to decide whether this
-/// West-Eurasian model applies to this person at all (see [`ANCIENT_MIN_WEST_EURASIAN`]).
+/// A modern European is not a *member* of WHG. That person is a *mixture*.
 ///
-/// Returns `None` whenever the model does not apply: too few genotyped sites, too little European
-/// ancestry for a WHG/ANF/Steppe decomposition to mean anything, or a fit dispersion above
-/// [`ANCIENT_MAX_DISPERSION`] (the sample's ancestry lies outside the span of the three sources — a
-/// Yoruba is not *any* mixture of them). Reporting nothing is the entire point: the EM will always
-/// return *some* simplex vector, and presenting that vector for a sample the model cannot express is
-/// precisely the failure this rebuild exists to prevent.
+/// Allele frequencies keep the sources truly separate, at a WHG-to-ANF Fst of about 0.07, where
+/// the projected PCA did not.
+///
+/// `modern` is the **modern** super-population admixture of the sample, which is
+/// [`estimate_admixture`] over the super-population panel. It is an independent estimate that is
+/// already checked. It has one use here: to decide if this West-Eurasian model applies to this
+/// person at all. See [`ANCIENT_MIN_WEST_EURASIAN`].
+///
+/// Returns `None` when the model does not apply. There are three such cases. The run genotyped
+/// too few sites. Or the sample has too little European ancestry for a WHG/ANF/Steppe
+/// decomposition to say anything. Or the fit dispersion is above
+/// [`ANCIENT_MAX_DISPERSION`], which puts the ancestry of the sample outside the span of the
+/// three sources. A Yoruba is not *any* mixture of them.
+///
+/// To report nothing is the whole point. The EM always returns *some* simplex vector. To show
+/// that vector for a sample that the model can not express is the exact failure that this
+/// rebuild prevents.
 pub fn estimate_ancient_admixture(
     genotypes: &[SiteGenotype],
     ancient_panel: &AncestryPanel,
@@ -1185,12 +1261,12 @@ pub fn estimate_ancient_admixture(
     (dispersion.is_finite() && dispersion <= ANCIENT_MAX_DISPERSION).then_some(result)
 }
 
-/// The sample's European share (%) according to a modern super-population estimate — the scope
-/// check for the deep three-way model. Reads the `EUR` rollup, so it works whether `modern` came
-/// from the 5-way super-pop panel or a finer panel that rolls up to it.
+/// The European share (%) of the sample, from a modern super-population estimate. It is the
+/// scope check for the deep three-way model. It reads the `EUR` rollup. It works for the
+/// 5-way super-population panel, and also for a finer panel that rolls up to that one.
 ///
-/// `SuperPopulationSummary::super_population` carries the *display name*, not the code, so the
-/// lookup goes through the catalog rather than hard-coding either spelling.
+/// `SuperPopulationSummary::super_population` carries the *display name* and not the code. The
+/// lookup goes through the catalog, and neither form of the name goes into the code.
 pub fn west_eurasian_share(modern: &AncestryResult) -> f64 {
     let eur = population_name("EUR");
     modern
@@ -1200,14 +1276,17 @@ pub fn west_eurasian_share(modern: &AncestryResult) -> f64 {
         .map_or(0.0, |s| s.percentage)
 }
 
-/// The ancient mixture fit **without** the applicability threshold: the EM result with its
-/// dispersion attached as `fit_distance`, for any sample with enough genotyped sites.
+/// The ancient mixture fit **without** the threshold that decides if the model applies. It is
+/// the EM result with its dispersion attached as `fit_distance`, for any sample that has enough
+/// genotyped sites.
 ///
-/// [`estimate_ancient_admixture`] is this plus the [`ANCIENT_MAX_DISPERSION`] gate, and is what the
-/// app calls. This variant exists so the offline validator can *report* the dispersion of samples
-/// that the gate rejects — the threshold is only defensible if you can see the separation it rests
-/// on. Do not use it on a user's data: its components are exactly the numbers the gate exists to
-/// suppress.
+/// [`estimate_ancient_admixture`] is this function plus the [`ANCIENT_MAX_DISPERSION`] gate, and
+/// the app calls that one. This one exists so that the offline checker can *report* the
+/// dispersion of the samples that the gate refuses. You can defend the threshold only if you can
+/// see the separation that it stands on.
+///
+/// Do not use this function on the data of a user. Its components are the exact numbers that the
+/// gate exists to hold back.
 pub fn ancient_admixture_fit(
     genotypes: &[SiteGenotype],
     ancient_panel: &AncestryPanel,
@@ -1218,7 +1297,8 @@ pub fn ancient_admixture_fit(
         return None;
     }
 
-    // Recover the fitted mixture on the panel's axis order (`components` are sorted by percentage).
+    // Get the fitted mixture again, on the axis order of the panel. The `components` come in
+    // the order of their percentage.
     let q: Vec<f64> = ancient_panel
         .populations
         .iter()
@@ -1237,19 +1317,27 @@ pub fn ancient_admixture_fit(
     Some(result)
 }
 
-/// The **app-facing deep-ancestry estimator** (documents/design/ancient-ancestry-rebuild.md §7.14): fit
-/// `target = Σ wᵢ · sourcesᵢ` by qpAdm f4 and return it as an [`AncestryResult`] over the source
-/// components (WHG / EEF / Steppe), or `None` when the deep model does not apply.
+/// The **deep-ancestry estimator that the app calls**. See
+/// documents/design/ancient-ancestry-rebuild.md §7.14. It fits `target = Σ wᵢ · sourcesᵢ` by
+/// qpAdm f4. It returns the fit as an [`AncestryResult`] over the source components, which are
+/// WHG, EEF and Steppe. It returns `None` when the deep model does not apply.
 ///
-/// `sources` and `outgroups` are indices into `panel.populations` — the committed Patterson-2022
-/// config: sources first (WHG/EEF/Steppe), then the sister outgroups. Gates, all of which must pass:
-/// the sample is West-Eurasian (`modern`, [`ANCIENT_MIN_WEST_EURASIAN`]); enough sites were genotyped
-/// ([`ANCIENT_MIN_SITES`]); the qpAdm model is **not rejected** (`p ≥` [`QPADM_MIN_P`]); and the
-/// weights are feasible proportions ([`QPADM_WEIGHT_TOL`]). `None` must stay `None` all the way to the
-/// UI/PDS — an inapplicable or rejected fit is reported as nothing, never as confident percentages.
+/// `sources` and `outgroups` are indices into `panel.populations`. That order is the committed
+/// Patterson-2022 configuration: the sources first, which are WHG, EEF and Steppe, and then the
+/// sister outgroups.
 ///
-/// This supersedes [`estimate_ancient_admixture`] (the frequency-mixture EM, which failed the
-/// WGS-vs-chip stability gate); the model-fit **p-value** rides out on `fit_distance`.
+/// There are four gates, and the fit must pass all of them. The sample is West-Eurasian, which
+/// `modern` and [`ANCIENT_MIN_WEST_EURASIAN`] decide. The run genotyped enough sites, which is
+/// [`ANCIENT_MIN_SITES`]. The qpAdm model is **not rejected**, at `p ≥` [`QPADM_MIN_P`]. The
+/// weights are proportions that can occur, within [`QPADM_WEIGHT_TOL`].
+///
+/// A `None` must stay a `None` all the way out to the UI and the PDS. A fit that does not apply,
+/// or that the test rejects, goes out as nothing. It never goes out as percentages that look
+/// sure.
+///
+/// This function replaces [`estimate_ancient_admixture`], which is the frequency-mixture EM.
+/// That EM did not pass the stability gate between WGS and chip data. The **p-value** of the
+/// model fit goes out on `fit_distance`.
 pub fn estimate_qpadm_ancestry(
     genotypes: &[SiteGenotype],
     panel: &AncestryPanel,
@@ -1285,16 +1373,18 @@ pub fn estimate_qpadm_ancestry(
     Some(result)
 }
 
-/// Goodness of fit of a fitted ancient mixture `q`, as a **variance-ratio dispersion**.
+/// How well a fitted ancient mixture `q` agrees with the data, as a **variance-ratio
+/// dispersion**.
 ///
-/// At each genotyped site the mixture predicts an alt-allele frequency `f = Σ q_k·p_k`, so under
-/// the model's own HWE assumption the observed dosage `g` has mean `2f` and variance `2f(1-f)`.
-/// Averaging `(g − 2f)² / 2f(1-f)` over sites therefore gives ≈1 **when the model is right**, and
-/// grows without bound as the sample's true ancestry moves outside the span of the sources — the
-/// mixture is then forced to predict frequencies the genotypes keep contradicting.
+/// At each genotyped site the mixture predicts an alt-allele frequency `f = Σ q_k·p_k`. Under
+/// the HWE assumption of the model, the observed dosage `g` then has a mean of `2f` and a
+/// variance of `2f(1-f)`. The mean of `(g − 2f)² / 2f(1-f)` over the sites is then about 1
+/// **when the model is correct**. It grows without a limit as the true ancestry of the sample
+/// moves outside the span of the sources. The mixture must then predict frequencies that the
+/// genotypes continue to deny.
 ///
-/// It is a *ratio*, so it does not drift with panel size or the sample's coverage — which is what
-/// makes it usable as a fixed applicability threshold rather than a tuned magic number.
+/// It is a *ratio*, so it does not change with the panel size or with the coverage of the
+/// sample. You can use it as a fixed threshold, and it is not a number that somebody tuned.
 fn ancient_dispersion(genotypes: &[SiteGenotype], panel: &AncestryPanel, q: &[f64]) -> f64 {
     let dosage: HashMap<(&str, i64), i32> = genotypes
         .iter()
@@ -1326,27 +1416,32 @@ fn ancient_dispersion(genotypes: &[SiteGenotype], panel: &AncestryPanel, q: &[f6
 
 // ── f-statistics core (Lever 2 / qpAdm) ─────────────────────────────────────────────────────────
 //
-// `f4(A,B;C,D) = mean_site (a−b)(c−d)` over per-population alt-allele frequencies. It is the
-// ascertainment-robust primitive qpAdm is built on (documents/design/ancient-ancestry-rebuild.md §7): a
-// difference-of-differences against outgroups that cancels drift shared across the whole set, and is
-// **unbiased from *pooled* frequencies** — the estimation noise in each of the four slots is
-// independent, so the cross-terms vanish in expectation (no per-sample hzcorr, unlike f2/f3). The
-// genotyped sample enters as its own "population" with frequency `dosage/2 ∈ {0, 0.5, 1}`.
+// `f4(A,B;C,D) = mean_site (a−b)(c−d)`, over the alt-allele frequency of each population. It is
+// the primitive that qpAdm stands on, and it is robust to ascertainment. See
+// documents/design/ancient-ancestry-rebuild.md §7. It is a difference of differences against the
+// outgroups, and it cancels the drift that the whole set shares.
 //
-// This module is the primitive: a jointly-estimated **vector** of f4 statistics with its
-// block-jackknife covariance. The qpAdm GLS solve (§7.2) is assembled on top of it in a later step.
+// It is also **unbiased from *pooled* frequencies**. The estimation noise in each of the four
+// slots is independent, so the cross-terms go to zero in expectation. There is no hzcorr for
+// each sample, which f2 and f3 need. The genotyped sample goes in as its own "population",
+// with the frequency `dosage/2 ∈ {0, 0.5, 1}`.
+//
+// This module is the primitive. It gives a **vector** of f4 statistics that the code estimates
+// together, with its block-jackknife covariance. A later step puts the qpAdm GLS solve (§7.2) on
+// top of it.
 
-/// Genome block size (bp) for the f-statistic block jackknife. ~5 Mb ≫ the LD range, so blocks are
-/// effectively independent — the assumption the jackknife variance rests on.
+/// The genome block size, in bp, for the block jackknife of the f-statistics. About 5 Mb is much
+/// more than the LD range, so the blocks are independent for this purpose. That is the
+/// assumption that the jackknife variance stands on.
 pub const F4_BLOCK_BP: i64 = 5_000_000;
 
 /// A population slot in an f-statistic: either a reference population (index into
 /// [`AncestryPanel::populations`]) or the genotyped sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pop {
-    /// Reference population `i` (its per-site frequency is `PanelSite::freqs[i]`).
+    /// The reference population `i`. Its frequency at each site is `PanelSite::freqs[i]`.
     Ref(usize),
-    /// The sample being placed (per-site frequency `dosage/2`).
+    /// The sample that the code places. Its frequency at each site is `dosage/2`.
     Target,
 }
 
@@ -1365,18 +1460,20 @@ impl Quartet {
     }
 }
 
-/// A jointly-estimated vector of f4 statistics with its block-jackknife covariance — the input the
-/// qpAdm GLS solve consumes.
+/// A vector of f4 statistics that the code estimates together, with its block-jackknife
+/// covariance. The qpAdm GLS solve reads this.
 #[derive(Clone, Debug)]
 pub struct F4Estimate {
     /// Full-sample f4 point estimates, parallel to the requested quartets (ADMIXTOOLS reports the
     /// full-sample estimate as the statistic; the jackknife supplies only the covariance).
     pub values: Vec<f64>,
-    /// `d×d` delete-one-block jackknife covariance of `values` (Busing et al. 1999, unequal blocks).
+    /// The `d×d` delete-one-block jackknife covariance of `values`. See Busing and others, 1999,
+    /// for blocks that are not equal.
     pub cov: Vec<Vec<f64>>,
-    /// Sites contributing (target genotyped ∧ every referenced population present).
+    /// The count of sites that count. The target has a genotype, and every population that the
+    /// statistic names is present.
     pub n_sites: usize,
-    /// Genome blocks with ≥1 contributing site.
+    /// The count of genome blocks that hold one such site or more.
     pub n_blocks: usize,
 }
 
@@ -1393,17 +1490,23 @@ impl F4Estimate {
     }
 }
 
-/// Point estimate of a single `f4(a,b;c,d)` over the genotyped sites (no covariance) — a thin
-/// convenience over [`f4_vector`]. `None` if fewer than two genome blocks carry a contributing site.
+/// The point estimate of one `f4(a,b;c,d)` over the genotyped sites, with no covariance. It is a
+/// thin wrapper over [`f4_vector`]. It returns `None` if fewer than two genome blocks hold a
+/// site that counts.
 pub fn f4(genotypes: &[SiteGenotype], panel: &AncestryPanel, q: Quartet, block_bp: i64) -> Option<f64> {
     f4_vector(genotypes, panel, &[q], block_bp).map(|e| e.values[0])
 }
 
-/// A jointly-estimated f4 vector over `quartets`, with the Busing et al. (1999) unequal-block
-/// jackknife covariance. Every statistic is measured over the **same** informative site set (target
-/// genotyped ∧ all referenced populations present at the site), which is what makes the covariance a
-/// valid joint covariance for a downstream GLS. `None` if any quartet references a non-existent
-/// population, or fewer than two blocks carry a site (a jackknife needs ≥2 blocks).
+/// An f4 vector over `quartets` that the code estimates together, with the unequal-block
+/// jackknife covariance of Busing and others (1999).
+///
+/// The code measures every statistic over the **same** set of informative sites. A site counts
+/// when the target has a genotype there, and every population that the statistic names is
+/// present there. That is what makes the covariance a correct joint covariance for a GLS later
+/// in the chain.
+///
+/// It returns `None` if a quartet names a population that does not exist, or if fewer than two
+/// blocks hold a site. A jackknife needs two blocks or more.
 pub fn f4_vector(
     genotypes: &[SiteGenotype],
     panel: &AncestryPanel,
@@ -1415,7 +1518,8 @@ pub fn f4_vector(
     if d == 0 || block_bp <= 0 {
         return None;
     }
-    // Reject out-of-range population indices up front — a mis-built quartet must not panic mid-scan.
+    // Refuse a population index that is out of range, at the start. A quartet that somebody
+    // built wrongly must not panic in the middle of the scan.
     let ref_ok = |p: Pop| matches!(p, Pop::Target) || matches!(p, Pop::Ref(i) if i < k);
     if !quartets
         .iter()
@@ -1430,7 +1534,8 @@ pub fn f4_vector(
         .map(|g| ((g.contig.as_str(), g.position), g.dosage))
         .collect();
 
-    // Accumulate per genome block over the informative sites: Σ x and site count, plus the totals.
+    // Add up over the informative sites, in each genome block: Σ x, the count of sites, and the
+    // totals.
     let mut block_index: HashMap<(&str, i64), usize> = HashMap::new();
     let mut block_sum: Vec<Vec<f64>> = Vec::new();
     let mut block_n: Vec<usize> = Vec::new();
@@ -1470,8 +1575,9 @@ pub fn f4_vector(
     let n = n_sites as f64;
     let theta: Vec<f64> = total.iter().map(|&s| s / n).collect();
 
-    // Delete-one-block estimates θ̂_(j) and per-block weights h_j = n/m_j (Busing et al. 1999, for
-    // unequal block sizes). With g ≥ 2 and every block non-empty, n − m_j ≥ 1 and h_j > 1.
+    // The delete-one-block estimates θ̂_(j), and the weight of each block, h_j = n/m_j. See
+    // Busing and others, 1999, for block sizes that are not equal. With g ≥ 2, and with no empty
+    // block, n − m_j ≥ 1 and h_j > 1.
     let h: Vec<f64> = block_n.iter().map(|&m| n / m as f64).collect();
     let theta_j: Vec<Vec<f64>> = (0..g)
         .map(|j| {
@@ -1516,25 +1622,28 @@ pub fn f4_vector(
 /// test. See [`qpadm_fit`] and documents/design/ancient-ancestry-rebuild.md §7.2.
 #[derive(Clone, Debug)]
 pub struct QpAdmFit {
-    /// Weights over the sources, **in the order they were passed** (sums to 1). `weights[0]` is the
-    /// base source's weight, recovered as `1 − Σ others`.
+    /// The weights over the sources, **in the order that the caller gave them**. They sum to 1.
+    /// `weights[0]` is the weight of the base source, which the code gets as `1 − Σ others`.
     pub weights: Vec<f64>,
     /// Standard error of each weight (from the GLS normal-equations covariance).
     pub std_errors: Vec<f64>,
-    /// Model-fit χ² — the minimized GLS objective (residual not explained by the source span).
+    /// The χ² of the model fit. It is the minimized GLS objective, which is the residual that
+    /// the span of the sources does not explain.
     pub chi2: f64,
     /// Degrees of freedom `= (#outgroups − 1) − (#sources − 1) = #outgroups − #sources`.
     pub dof: usize,
-    /// Tail probability `P(χ²_dof ≥ chi2)`. The model is **rejected** when this is small (< ~0.05):
-    /// the sources can't express the target's allele-sharing with the outgroups.
+    /// The tail probability `P(χ²_dof ≥ chi2)`. A small value, below about 0.05, **rejects** the
+    /// model. The sources can then not express how the target shares alleles with the
+    /// outgroups.
     pub p_value: f64,
     pub n_sites: usize,
     pub n_blocks: usize,
 }
 
 impl QpAdmFit {
-    /// Whether every weight is a valid proportion (within `tol` of `[0,1]`). qpAdm accepts a model
-    /// only when it is not rejected **and** the weights are feasible.
+    /// True when every weight is a correct proportion, within `tol` of `[0,1]`. qpAdm accepts a
+    /// model only when two things hold. The test does not reject it, **and** the weights can
+    /// occur.
     pub fn weights_feasible(&self, tol: f64) -> bool {
         self.weights.iter().all(|&w| w >= -tol && w <= 1.0 + tol)
     }
@@ -1571,20 +1680,24 @@ fn qpadm_residual_cov(cov: &[Vec<f64>], n: usize, l: usize, w: &[f64]) -> DMatri
     sigma
 }
 
-/// Fit `target = Σ wᵢ · sourcesᵢ` by the qpAdm f4 method (docs §7.2). The weights are estimated from
-/// the target's *allele-sharing against outgroups* — differences-of-differences that cancel drift
-/// and SNP ascertainment — not from its raw frequencies, which is the property §3's frequency-EM
-/// lacked. `sources` and `outgroups` are indices into `panel.populations`; the target enters through
-/// `genotypes` (dosage/2 per site).
+/// Fit `target = Σ wᵢ · sourcesᵢ` by the qpAdm f4 method. See the design document, §7.2.
 ///
-/// Method: for each left population `X ∈ {target, S₂..Sₙ}` form the vector
-/// `φ_X = [f4(X, S₁; R₁, Rⱼ)]_{j=2..m}`; the admixture identity is `φ_target = Σ_{i≥2} wᵢ φ_{Sᵢ}`.
-/// Solve the weights by iteratively-reweighted GLS against the block-jackknife covariance (the
-/// residual covariance depends on the weights, since the sources are themselves estimated), then
-/// read the model-fit χ²/p-value from the weighted residual.
+/// The weights come from how the target *shares alleles against the outgroups*. Those are
+/// differences of differences, and they cancel drift and SNP ascertainment. The weights do not
+/// come from the raw frequencies of the target. That is the property that the frequency-EM of §3
+/// did not have. `sources` and `outgroups` are indices into `panel.populations`. The target comes
+/// in through `genotypes`, which holds `dosage/2` at each site.
 ///
-/// Returns `None` when `sources.len() < 2`, `outgroups.len() < sources.len()`, the f4 vector can't be
-/// formed (too few blocks/sites), or the GLS system is singular.
+/// The method is this. For each left population `X ∈ {target, S₂..Sₙ}`, make the vector
+/// `φ_X = [f4(X, S₁; R₁, Rⱼ)]_{j=2..m}`. The admixture identity is then
+/// `φ_target = Σ_{i≥2} wᵢ φ_{Sᵢ}`. Solve for the weights by GLS against the block-jackknife
+/// covariance, and reweight at each iteration. That iteration is necessary because the residual
+/// covariance depends on the weights, since the code also estimates the sources. Last, read the
+/// χ² and the p-value of the model fit from the weighted residual.
+///
+/// Returns `None` in four cases: `sources.len() < 2`; `outgroups.len() < sources.len()`; the code
+/// can not make the f4 vector, because there are too few blocks or sites; or the GLS system is
+/// singular.
 pub fn qpadm_fit(
     genotypes: &[SiteGenotype],
     panel: &AncestryPanel,
@@ -1602,8 +1715,9 @@ pub fn qpadm_fit(
     let s1 = Pop::Ref(sources[0]);
     let r1 = outgroups[0];
 
-    // Left populations relative to the base source: target, then S₂..Sₙ. Group order in the f4
-    // vector is [target, S₂, …, Sₙ], each contributing `l` statistics over the non-base outgroups.
+    // The left populations against the base source: the target, then S₂..Sₙ. The group order in
+    // the f4 vector is [target, S₂, …, Sₙ]. Each group adds `l` statistics over the outgroups
+    // that are not the base.
     let lefts: Vec<Pop> = std::iter::once(Pop::Target)
         .chain(sources[1..].iter().map(|&i| Pop::Ref(i)))
         .collect();
@@ -1664,8 +1778,8 @@ pub fn qpadm_fit(
     })
 }
 
-/// Upper tail of the χ² distribution, `P(χ²_k ≥ x)`, via the regularized upper incomplete gamma
-/// `Q(k/2, x/2)`. Used for the qpAdm model-fit p-value.
+/// The upper tail of the χ² distribution, `P(χ²_k ≥ x)`, through the regularized upper
+/// incomplete gamma `Q(k/2, x/2)`. The qpAdm model-fit p-value uses this.
 fn chi2_sf(x: f64, k: usize) -> f64 {
     if k == 0 {
         return if x <= 0.0 { 1.0 } else { 0.0 };
@@ -1676,7 +1790,7 @@ fn chi2_sf(x: f64, k: usize) -> f64 {
     gammq(k as f64 / 2.0, x / 2.0)
 }
 
-/// `ln Γ(x)` via the Lanczos approximation (g=7), with the reflection formula for `x < 0.5`.
+/// `ln Γ(x)` by the Lanczos approximation (g=7), with the reflection formula for `x < 0.5`.
 fn ln_gamma(x: f64) -> f64 {
     const C: [f64; 9] = [
         0.999_999_999_999_809_9,
@@ -1757,9 +1871,9 @@ fn gammq(a: f64, x: f64) -> f64 {
     }
 }
 
-/// Build an [`AncestryResult`] from raw per-population probabilities (need not be normalized).
-/// With the phase-1 super-population panel each component *is* a super-population, so the
-/// super-population summary is 1:1 with the components.
+/// Build an [`AncestryResult`] from the raw probability of each population. The caller does not
+/// have to normalize them. With the phase-1 super-population panel, each component *is* a
+/// super-population, so the super-population summary is 1:1 with the components.
 fn from_probabilities(
     method: &str,
     panel_type: &str,
@@ -1794,9 +1908,9 @@ fn from_probabilities(
         })
         .collect();
 
-    // Roll components up into super-population summaries. With a super-population panel each
-    // component is its own super-population; with a fine-grained (26-pop) panel several
-    // components aggregate into one super-population.
+    // Roll the components up into super-population summaries. With a super-population panel,
+    // each component is its own super-population. With a fine-grained 26-population panel, more
+    // than one component goes into a single super-population.
     let mut by_super: BTreeMap<String, (f64, Vec<String>)> = BTreeMap::new();
     for (code, p) in &pct {
         let sp = population_super(code).unwrap_or(code.as_str()).to_string();
@@ -1818,7 +1932,7 @@ fn from_probabilities(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Touch the catalog color path so the API stays cohesive; color is consumed by the UI.
+    // Touch the color path of the catalog, to keep the API coherent. The UI reads the color.
     debug_assert!(!population_color("EUR").is_empty());
 
     AncestryResult {
@@ -1871,7 +1985,8 @@ fn confidence_from_completeness(snps_with_data: usize, total_snps: usize) -> f64
 mod tests {
     use super::*;
 
-    /// Dropping haplotypes keeps every remaining row's alleles and population label intact.
+    /// When the code drops haplotypes, every row that stays keeps its alleles and its population
+    /// label.
     #[test]
     fn without_haplotypes_preserves_the_kept_rows() {
         let sites: Vec<HapSite> = (0..7)
@@ -1905,7 +2020,7 @@ mod tests {
         }
     }
 
-    /// Thinning keeps every step-th site's alleles intact on every haplotype.
+    /// When the code thins the panel, every step-th site keeps its alleles on every haplotype.
     #[test]
     fn thin_sites_keeps_every_nth_column() {
         let sites: Vec<HapSite> = (0..9)
@@ -2035,8 +2150,9 @@ mod tests {
         assert_eq!(panel, back);
     }
 
-    /// A 1-component PCA where the loading is +1 at every site and the panel mean is 1.0
-    /// (a het reference): a hom-alt sample projects to +n_sites, a hom-ref sample to −n_sites.
+    /// A 1-component PCA where the loading is +1 at every site and the panel mean is 1.0, which
+    /// is a het reference. A hom-alt sample then projects to +n_sites, and a hom-ref sample to
+    /// −n_sites.
     #[test]
     fn project_pca_centres_and_accumulates() {
         let sites: Vec<(String, i64)> = (1..=4).map(|p| ("chr1".to_string(), p)).collect();
@@ -2139,8 +2255,9 @@ mod tests {
 
     #[test]
     fn fine_admixture_restricts_to_modern_subset_and_labels_method() {
-        // A fine panel with two modern pops + one ancient (Steppe). The modern subset must drop the
-        // ancient column, and the result is labeled FINE_ADMIXTURE rolling up to super-pops.
+        // A fine panel with two modern populations and one ancient population, which is Steppe.
+        // The modern subset must drop the ancient column. The result carries the label
+        // FINE_ADMIXTURE, and it rolls up to the super-populations.
         let sites: Vec<PanelSite> = (1..=40)
             .map(|pos| PanelSite {
                 contig: "chr1".into(),
@@ -2188,8 +2305,9 @@ mod tests {
         }
     }
 
-    /// Ancestry-HOMOZYGOUS sample: hom-alt (→ both copies A) first half, hom-ref (→ both copies B)
-    /// second half. Diploid painting emits two copies, each switching A→B at the midpoint.
+    /// A sample that is HOMOZYGOUS in its ancestry. The first half is hom-alt, so both copies are
+    /// A. The second half is hom-ref, so both copies are B. The diploid painting gives two
+    /// copies, and each one goes from A to B at the middle point.
     #[test]
     fn painting_diploid_homozygous_switch() {
         let n = 80;
@@ -2211,7 +2329,7 @@ mod tests {
 
     /// Ancestry-HETEROZYGOUS sample: every site het (one copy A, one copy B). Diploid painting must
     /// put A on one copy and B on the other across the whole chromosome (the case a single-track
-    /// painter cannot express).
+    /// painter can not express).
     #[test]
     fn painting_diploid_heterozygous_copies_differ() {
         let n = 60;
@@ -2228,10 +2346,12 @@ mod tests {
         assert_eq!(copy1[0].population_code, "B");
     }
 
-    /// Global-composition gate: a sample that is overwhelmingly A with a short hom-ref run that,
-    /// ungated, paints as B — but B is only a 1% trace globally, below the 2% gate. The gate must
-    /// drop B from the state set so local painting can't invent a globally absent ancestry (the
-    /// "99%-European donor shown East-Asian on one chromosome arm" bug). Also exercises the k=1 path.
+    /// The gate on the global composition. The sample is almost all A, with a short hom-ref run
+    /// that paints as B when there is no gate. But B is only a 1% trace across the genome, which
+    /// is below the 2% gate. The gate must drop B from the state set, so that the local painting
+    /// can not show an ancestry that the genome does not contain. That was the bug that showed a
+    /// 99%-European donor as East-Asian on one chromosome arm. This test also covers the k=1
+    /// path.
     #[test]
     fn painting_gate_suppresses_globally_absent_ancestry() {
         let n = 80;
@@ -2272,9 +2392,10 @@ mod tests {
         );
     }
 
-    /// Phased painting: two genuine parental sides. Side 0 is ancestry A (alt) on the first half,
-    /// B (ref) on the second; side 1 is the mirror. Each side must paint as a consistent two-segment
-    /// track (A→B on side 0, B→A on side 1) — the parent-split the unphased painter cannot express.
+    /// Phased painting, with two true parental sides. Side 0 is ancestry A (alt) on the first
+    /// half and B (ref) on the second. Side 1 is the mirror of that. Each side must paint as a
+    /// coherent two-segment track: A to B on side 0, and B to A on side 1. That is the parent
+    /// split that the unphased painter can not express.
     #[test]
     fn painting_phased_two_consistent_sides() {
         use crate::phasing::{PhasedGenotypes, PhasedSite};
@@ -2312,9 +2433,10 @@ mod tests {
         );
     }
 
-    /// Two-tier fine resolution: a EUR segment whose phased side is alt-rich must resolve to the
-    /// alt-rich fine population (GBR), not the alt-poor one (TSI). A fine code equal to the super
-    /// code offers no extra resolution and is skipped.
+    /// Two-tier fine resolution. A EUR segment with an alt-rich phased side must resolve to the
+    /// alt-rich fine population, GBR, and not to the alt-poor one, TSI. A fine
+    /// code that is the same as the super code offers no more resolution, and the code skips
+    /// it.
     #[test]
     fn fine_resolution_picks_alt_rich_fine_pop() {
         use crate::phasing::{PhasedGenotypes, PhasedSite};
@@ -2379,11 +2501,11 @@ mod tests {
 
     // ── deep (ancient) ancestry ─────────────────────────────────────────────────────────────────
     //
-    // The three-source model is the one that previously shipped fabricated numbers, so these tests
-    // pin the two properties whose absence made that possible: it must recover a mixture it was
-    // never told, and it must refuse a sample its sources cannot express.
+    // The three-source model is the one that once gave invented numbers to a user. These tests
+    // hold the two properties whose absence made that possible. The model must find a mixture
+    // that nobody told it. And it must refuse a sample that its sources can not express.
 
-    /// A deterministic LCG — the simulations below must give the same answer on every run.
+    /// A deterministic LCG. The simulations below must give the same answer on every run.
     struct Lcg(u64);
     impl Lcg {
         fn next_f64(&mut self) -> f64 {
@@ -2399,21 +2521,23 @@ mod tests {
         }
     }
 
-    /// A 3-source panel over `n` sites whose frequencies differ sharply between sources (so the
-    /// mixture is well-conditioned), plus an "outsider" frequency track standing in for a sample
-    /// from outside the sources' span (a Yoruba against WHG/ANF/Steppe).
+    /// A 3-source panel over `n` sites. The frequencies differ sharply between the sources, so
+    /// the mixture is well-conditioned. The panel also holds an "outsider" frequency track, which
+    /// represents a sample from outside the span of the sources. A Yoruba against WHG, ANF and
+    /// Steppe is such a sample.
     ///
-    /// What makes the outsider genuinely unreachable is the last site pattern, where **all three
-    /// sources agree** at 0.10: a mixture can only ever predict a value inside the convex hull of
-    /// its sources, so at those sites every possible `q` predicts 0.10 while the outsider carries the
-    /// allele at 0.95. No mixture can absorb that, which is exactly the situation the applicability
-    /// gate exists to detect. Without such sites, a near-pure single source approximates the outsider
-    /// well enough to slip under the threshold.
+    /// The last site pattern is what makes the outsider truly unreachable. There, **all three
+    /// sources agree** at 0.10. A mixture can predict only a value inside the convex hull of its
+    /// sources, so at those sites every possible `q` predicts 0.10. The outsider carries the
+    /// allele at 0.95. No mixture can absorb that, and that is the exact case that the gate must
+    /// detect. Without such sites, one nearly pure source comes close enough to the outsider to
+    /// pass below the threshold.
     fn ancient_panel(n: i64) -> (AncestryPanel, Vec<f64>) {
         let mut sites = Vec::new();
         let mut outsider = Vec::new();
         for pos in 1..=n {
-            // Cycle through contrasting frequency patterns so every source is identifiable.
+            // Go around a set of frequency patterns that differ, so that the code can find
+            // every source.
             let (a, b, c, out) = match pos % 6 {
                 0 => (0.90, 0.10, 0.50, 0.02),
                 1 => (0.10, 0.90, 0.50, 0.98),
@@ -2450,17 +2574,18 @@ mod tests {
             .map_or(0.0, |c| c.percentage)
     }
 
-    /// A stand-in modern super-population estimate that is `eur`% European — the scope input the
-    /// deep model gates on.
+    /// A modern super-population estimate for a test, which is `eur`% European. It is the scope
+    /// input that the deep model gates on.
     fn modern_eur(eur: f64) -> AncestryResult {
         let probs = [("EUR".to_string(), eur), ("AFR".to_string(), 100.0 - eur)];
         from_probabilities("ADMIXTURE", "aims", 1000, 1000, &probs, 0.9, "t")
     }
 
-    /// The estimator recovers a mixture it was never given: simulate a 20/30/50 individual from the
-    /// panel's own source frequencies and the EM must return ~20/30/50, with a dispersion near the
-    /// model's noise floor of 1. This is the property the PCA-centroid classifier never had — it
-    /// answered "which source *is* this?", so a genuine mixture came back as a single population.
+    /// The estimator finds a mixture that nobody gave it. The test simulates a 20/30/50
+    /// individual from the source frequencies of the panel itself. The EM must then return about
+    /// 20/30/50, with a dispersion near 1, which is the noise floor of the model. The
+    /// PCA-centroid classifier never had this property. It answered which source the sample
+    /// *is*, so a true mixture came back as one population.
     #[test]
     fn ancient_admixture_recovers_a_known_mixture() {
         let (panel, _) = ancient_panel(4000);
@@ -2487,9 +2612,9 @@ mod tests {
         assert!(d > 0.5 && d < 1.5, "dispersion of a well-specified sample = {d}");
     }
 
-    /// A sample from outside the sources' span is **rejected**, not decomposed. The EM will always
-    /// return *some* simplex vector — that vector is exactly what the old implementation printed as
-    /// a result — so the applicability gate, not the EM, is what makes this safe.
+    /// The code **refuses** a sample from outside the span of the sources. It does not decompose
+    /// it. The EM always returns *some* simplex vector, and that vector is exactly what the old
+    /// implementation printed as a result. The gate, and not the EM, is what makes this safe.
     #[test]
     fn ancient_admixture_rejects_a_sample_outside_the_sources() {
         let (panel, outsider) = ancient_panel(4000);
@@ -2501,7 +2626,7 @@ mod tests {
             .map(|(s, &f)| sg("chr1", s.position, rng.dosage(f)))
             .collect();
 
-        // The raw fit still produces a confident-looking breakdown …
+        // The raw fit still gives a breakdown that looks sure …
         let raw = ancient_admixture_fit(&genos, &panel, "t").expect("enough sites to fit");
         let total: f64 = raw.components.iter().map(|c| c.percentage).sum();
         assert!((total - 100.0).abs() < 1e-6, "the EM always returns a full simplex");
@@ -2509,12 +2634,13 @@ mod tests {
             raw.fit_distance.unwrap() > ANCIENT_MAX_DISPERSION,
             "an out-of-span sample must be driven above the dispersion threshold"
         );
-        // … and the shipping estimator refuses to report it, even for a sample the modern model
-        // calls European (so this is the dispersion gate doing the work, not the scope gate).
+        // … and the estimator that the app calls refuses to report it. That holds even for a
+        // sample that the modern model calls European. The dispersion gate does the work here,
+        // and not the scope gate.
         assert!(estimate_ancient_admixture(&genos, &panel, &modern_eur(95.0), "t").is_none());
     }
 
-    /// Too few genotyped sites → no estimate at all, rather than a noisy one.
+    /// With too few genotyped sites, the code gives no estimate at all, and not a noisy one.
     #[test]
     fn ancient_admixture_needs_enough_sites() {
         let (panel, _) = ancient_panel(4000);
@@ -2528,9 +2654,10 @@ mod tests {
         assert!(estimate_ancient_admixture(&genos, &panel, &modern_eur(95.0), "t").is_none());
     }
 
-    /// A WHG/ANF/Steppe decomposition is a *West-Eurasian* model. A sample the modern estimate calls
-    /// mostly non-European is out of scope and gets nothing — even if its genotypes happen to fit the
-    /// three sources well, because "fits the arithmetic" is not the same as "means anything".
+    /// A WHG/ANF/Steppe decomposition is a *West-Eurasian* model. A sample that the modern
+    /// estimate calls mostly non-European is out of scope, and it gets nothing. That holds even
+    /// when its genotypes fit the three sources well, because a fit to the arithmetic does not
+    /// make the result true.
     #[test]
     fn ancient_admixture_is_scoped_to_european_samples() {
         let (panel, _) = ancient_panel(4000);
@@ -2545,20 +2672,22 @@ mod tests {
             })
             .collect();
 
-        // Same genotypes, same perfect fit — only the scope differs.
+        // The genotypes and the fit are the same. Only the scope is different.
         assert!(estimate_ancient_admixture(&genos, &panel, &modern_eur(95.0), "t").is_some());
         assert!(estimate_ancient_admixture(&genos, &panel, &modern_eur(20.0), "t").is_none());
     }
 
     // ── f-statistics core (Lever 2 / qpAdm) ─────────────────────────────────────────────────────
     //
-    // Three properties pin the f4 primitive against known-value graphs: the exact f4-ratio algebra
-    // qpAdm rests on, the antisymmetries of f4, and a *calibrated* block-jackknife SE (a symmetric
-    // tree reads f4 ≈ 0 within noise, while a real internal edge reads many SE from zero).
+    // Three properties test the f4 primitive against graphs with known values. They are the
+    // exact f4-ratio algebra that qpAdm stands on, the antisymmetries of f4, and a *calibrated*
+    // block-jackknife SE. For that last one, a symmetric tree reads f4 ≈ 0 within the noise,
+    // while a real internal edge reads many SE away from zero.
 
-    /// A panel over `pops` whose per-site frequency rows are `freqs[site][pop]`, laid out one site
-    /// per 100 kb so the 5 Mb block jackknife sees ~50 sites/block. Plus a target genotyped
-    /// (dosage 0) at every site, so every site is informative for reference-only quartets.
+    /// A panel over `pops`. Its frequency row at each site is `freqs[site][pop]`. The sites lie
+    /// one in each 100 kb, so the 5 Mb block jackknife sees about 50 sites in each block. The
+    /// panel also holds a target with a genotype (dosage 0) at every site, so every site counts
+    /// for a quartet that names only references.
     fn f4_panel(pops: &[&str], freqs: &[Vec<f32>]) -> (AncestryPanel, Vec<SiteGenotype>) {
         let sites: Vec<PanelSite> = freqs
             .iter()
@@ -2580,10 +2709,11 @@ mod tests {
         (panel, genos)
     }
 
-    /// The f4-ratio identity qpAdm generalizes: if `X = α·P + (1−α)·Q` (a frequency mixture), then
-    /// `f4(X,P;O1,O2) = (1−α)·f4(Q,P;O1,O2)` **exactly** — per site the two are proportional. So the
-    /// ratio recovers `1−α` regardless of the outgroups. This is the core arithmetic the whole method
-    /// stands on; a wrong sign or a transposed index would blow the recovered α far past f32 noise.
+    /// The f4-ratio identity that qpAdm makes more general. If `X = α·P + (1−α)·Q`, which is a
+    /// frequency mixture, then `f4(X,P;O1,O2) = (1−α)·f4(Q,P;O1,O2)` **exactly**. At each site
+    /// the two are proportional. The ratio then gives back `1−α` for any outgroups. This is the
+    /// core arithmetic that the whole method stands on. A wrong sign, or two indices in the wrong
+    /// order, would push the recovered α far outside the f32 noise.
     #[test]
     fn f4_ratio_recovers_the_mixture_weight() {
         let alpha = 0.3_f64;
@@ -2593,8 +2723,9 @@ mod tests {
                 let (r1, r2) = (rng.next_f64(), rng.next_f64());
                 let p = 0.1 + 0.8 * r1;
                 let q = 0.1 + 0.8 * r2;
-                // Outgroups tied to the sources so f4(Q,P;O1,O2) is large and clean (no small-denom
-                // amplification): O1−O2 = 0.7(r1−r2) tracks −(Q−P), giving a firmly non-zero f4.
+                // Tie the outgroups to the sources, to keep f4(Q,P;O1,O2) large and clean. A
+                // small denominator then does not amplify it. O1−O2 = 0.7(r1−r2) follows
+                // −(Q−P), which makes f4 clearly different from zero.
                 let o1 = 0.15 + 0.7 * r1;
                 let o2 = 0.15 + 0.7 * r2;
                 let x = alpha * p + (1.0 - alpha) * q;
@@ -2621,8 +2752,9 @@ mod tests {
         );
     }
 
-    /// f4's exact symmetries (pure f64 arithmetic over one fixed site set): swapping either pair
-    /// negates it, and swapping the two pairs leaves it unchanged.
+    /// The exact symmetries of f4, in pure f64 arithmetic over one fixed set of sites. An
+    /// exchange of the two members of either pair negates it. An exchange of the two pairs leaves
+    /// it the same.
     #[test]
     fn f4_obeys_its_antisymmetries() {
         let mut rng = Lcg(7);
@@ -2651,11 +2783,12 @@ mod tests {
         assert!(est.se(0) >= 0.0);
     }
 
-    /// A symmetric tree `((A,B),(C,D))` has `f4(A,B;C,D) = 0` in expectation (the A–B and C–D drift
-    /// paths don't overlap), while `f4(A,C;B,D)` sits on the shared internal edge and is non-zero.
-    /// Simulate exactly that and require the jackknife SE to *tell them apart*: the null within a few
-    /// SE of zero, the real edge many SE away. This is the test that the covariance is calibrated —
-    /// the property §5.4 needs and simulation-of-frequencies alone can't fake.
+    /// A symmetric tree `((A,B),(C,D))` has `f4(A,B;C,D) = 0` in expectation, because the A–B
+    /// and C–D drift paths do not overlap. But `f4(A,C;B,D)` lies on the shared internal edge,
+    /// and it is not zero. This test simulates that tree, and the jackknife SE must *separate*
+    /// the two. The null must lie within a few SE of zero, and the real edge many SE away. Only
+    /// this test shows that the covariance carries the correct scale. §5.4 needs that property,
+    /// and a simulation of frequencies alone can not produce it.
     #[test]
     fn f4_jackknife_se_separates_a_null_from_a_real_edge() {
         let mut rng = Lcg(2024);
@@ -2697,7 +2830,8 @@ mod tests {
         );
     }
 
-    /// The χ² upper tail against textbook critical points — the model-fit p-value depends on it.
+    /// The χ² upper tail against critical points from a textbook. The model-fit p-value depends
+    /// on this.
     #[test]
     fn chi2_sf_matches_known_critical_values() {
         assert!((chi2_sf(3.841, 1) - 0.05).abs() < 2e-3);
@@ -2716,11 +2850,14 @@ mod tests {
         sd * (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
     }
 
-    /// Simulate frequencies on a small admixture graph: three sources S1/S2/S3, each carrying a
-    /// distinct deep component (iA/iB/iC); six outgroups differentially related to those components
-    /// (R0 pure near-root; R1,R4→A; R2,R5→B; R3→C); and a target that is an exact per-site frequency
-    /// mixture of the three sources, drawn as one diploid genome. Under Brownian drift the f4
-    /// tree-identities hold, so this is a graph qpAdm is entitled to decompose.
+    /// Simulate frequencies on a small admixture graph. It has three sources, S1, S2 and S3, and
+    /// each one holds a distinct deep component, iA, iB or iC. It has six outgroups, and each one
+    /// relates to those components in a different way. R0 is pure and near the root, R1 and R4 go
+    /// to A, R2 and R5 go to B, and R3 goes to C.
+    ///
+    /// The graph also has a target, which is an exact frequency mixture of the three sources at
+    /// each site, drawn as one diploid genome. Under Brownian drift the f4 tree identities hold,
+    /// so qpAdm may decompose this graph.
     fn qpadm_graph(n_sites: usize, weights: [f64; 3], seed: u64) -> (AncestryPanel, Vec<SiteGenotype>) {
         let mut rng = Lcg(seed);
         let clamp = |x: f64| x.clamp(0.02, 0.98);
@@ -2761,9 +2898,10 @@ mod tests {
         (panel, genos)
     }
 
-    /// qpAdm recovers the true mixture weights from allele-sharing against the outgroups, accepts the
-    /// well-specified model, and **rejects** a model missing a needed source — the property §3's
-    /// frequency-EM never had (it always returned a confident simplex).
+    /// qpAdm finds the true mixture weights from how the target shares alleles against the
+    /// outgroups. It accepts the model that names the correct sources. It **rejects** a model
+    /// that leaves out a source that the target needs. The frequency-EM of §3 never had that last
+    /// property, because it always returned a simplex that looked sure.
     #[test]
     fn qpadm_recovers_a_known_mixture_and_rejects_a_deficient_model() {
         let truth = [0.5, 0.3, 0.2];
@@ -2801,8 +2939,10 @@ mod tests {
         );
     }
 
-    /// The app-facing `estimate_qpadm_ancestry`: reports the source weights for a well-specified
-    /// European fit, and gates on both scope (non-European → None) and model-fit (deficient → None).
+    /// `estimate_qpadm_ancestry`, which is the function that the app calls. It reports the source
+    /// weights for a European fit that names the correct sources. It gates on two things. The
+    /// first is the scope, where a non-European sample gives `None`. The second is the model fit,
+    /// where a model that lacks a source gives `None`.
     #[test]
     fn estimate_qpadm_ancestry_reports_european_and_gates_the_rest() {
         let truth = [0.5, 0.3, 0.2];
@@ -2830,7 +2970,7 @@ mod tests {
 
         // Scope gate: a mostly-non-European sample gets nothing, even though the arithmetic fits.
         assert!(estimate_qpadm_ancestry(&genos, &panel, &[0, 1, 2], &outgroups, &modern_eur(20.0), "t").is_none());
-        // Model-fit gate: a source-deficient model is rejected by the p-value.
+        // The gate on the model fit. The p-value rejects a model that lacks a source.
         assert!(estimate_qpadm_ancestry(&genos, &panel, &[0, 1], &outgroups, &modern_eur(95.0), "t").is_none());
     }
 }

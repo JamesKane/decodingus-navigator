@@ -45,7 +45,7 @@ pub async fn get_override(
     Ok(row)
 }
 
-/// Every manual override as `(guid, dna_type, haplogroup)` — for the subjects-list summary.
+/// Every manual override, as `(guid, dna_type, haplogroup)`, for the summary in the subjects list.
 pub async fn list_all_overrides(pool: &SqlitePool) -> Result<Vec<(SampleGuid, DnaType, String)>, StoreError> {
     let rows: Vec<(String, String, String)> =
         sqlx::query_as("SELECT biosample_guid, dna_type, haplogroup FROM reconciliation_override")
@@ -78,9 +78,9 @@ pub async fn clear_override(
     Ok(())
 }
 
-/// Clear the whole reconciliation audit log for a subject + DNA type. Used when the derived
-/// consensus is purged (the audit describes a placement that no longer exists), so a stale
-/// RUN_RECORDED history can't linger after the underlying alignments are gone.
+/// Clear the whole reconciliation audit log of a subject and DNA type. A purge of the derived
+/// consensus uses it, because the audit then describes a placement that no longer exists. So a
+/// stale RUN_RECORDED history can not stay after the alignments below it are gone.
 pub async fn clear_audit(pool: &SqlitePool, biosample_guid: SampleGuid, dna_type: DnaType) -> Result<(), StoreError> {
     sqlx::query("DELETE FROM reconciliation_audit WHERE biosample_guid = ? AND dna_type = ?")
         .bind(biosample_guid.0.to_string())

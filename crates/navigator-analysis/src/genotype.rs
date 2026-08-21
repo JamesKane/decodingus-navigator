@@ -1,16 +1,22 @@
-//! Genotype-likelihood model for biallelic genotyping at a known site (the foundation
-//! the population / ancestry / IBD paths need — they consume dosage 0/1/2 + a quality).
+//! The genotype-likelihood model, for a genotype over two alleles at a known site. The population,
+//! ancestry and IBD paths all stand on it, because each of them reads a dosage of 0, 1 or 2, and a
+//! quality.
 //!
-//! Standard GATK/bcftools model. For a site with reference allele R and alternate A,
-//! and per-read base observations with phred base qualities, the per-base error is
-//! `e = 10^(-Q/10)` and `P(base | allele) = 1-e` on a match, `e/3` on a mismatch. For a
-//! genotype carrying `g` alt copies out of `ploidy` P, the allele pool gives
-//! `P(base | g) = [ (P-g)·P(base|R) + g·P(base|A) ] / P`. The genotype log-likelihoods
-//! are summed over reads; the call is the argmax, with phred-scaled likelihoods (PL,
-//! best = 0) and genotype quality `GQ` = the second-smallest PL.
+//! This is the standard model of GATK and bcftools. Take a site with a reference allele R and an
+//! alternate allele A, and base observations from the reads, each with a phred base quality. The
+//! error at one base is `e = 10^(-Q/10)`. Then `P(base | allele) = 1-e` on a match, and `e/3` on a
+//! mismatch.
 //!
-//! `ploidy` is supplied by the caller (sex → `sex::ploidy_for_contig`): 2 for autosomes
-//! / female chrX, 1 for chrY / chrM / male chrX. Biallelic (ref + one alt) for v1.
+//! Take a genotype that carries `g` alt copies, out of a `ploidy` of P. The pool of alleles then
+//! gives `P(base | g) = [ (P-g)·P(base|R) + g·P(base|A) ] / P`.
+//!
+//! The code adds the genotype log-likelihoods over the reads. The call is the argmax. It also gives
+//! the likelihoods on the phred scale, as PL, where the best is 0, and the genotype quality `GQ`,
+//! which is the second-smallest PL.
+//!
+//! The caller gives the `ploidy`, from the sex, through `sex::ploidy_for_contig`. It is 2 on an
+//! autosome and on a female chrX. It is 1 on chrY, on chrM and on a male chrX. v1 handles two
+//! alleles: the ref and one alt.
 
 /// Result of genotyping one site.
 #[derive(Debug, Clone, PartialEq)]
@@ -21,7 +27,7 @@ pub struct GenotypeResult {
     pub pls: Vec<u8>,
     /// Genotype quality (phred), capped at 99.
     pub gq: u8,
-    /// Passing observations (ACGT bases clearing the quality filters).
+    /// The observations that pass, which are the ACGT bases that clear the quality filters.
     pub depth: u32,
     pub ref_depth: u32,
     pub alt_depth: u32,
@@ -41,7 +47,7 @@ fn no_call(ploidy: u8, depth: u32, ref_depth: u32, alt_depth: u32) -> GenotypeRe
     }
 }
 
-/// Call a biallelic genotype from passing `(base, phred_qual)` observations.
+/// Call a genotype over two alleles, from the `(base, phred_qual)` observations that pass.
 pub fn call_genotype(
     observations: &[(u8, u8)],
     reference_allele: u8,
@@ -104,17 +110,22 @@ pub struct MultiGenotype {
     pub gt: (usize, usize),
     pub gq: u8,
     pub depth: u32,
-    /// Reads supporting each allele index (0 = ref).
+    /// The count of reads behind each allele index, where 0 is the ref.
     pub allele_depths: Vec<u32>,
-    /// Phred-scaled per-genotype likelihoods in VCF order (`for j: for i in 0..=j`); best = 0.
+    /// The likelihood of each genotype, on the phred scale, in VCF order, which is
+    /// `for j: for i in 0..=j`. The best one is 0.
     pub pls: Vec<u8>,
 }
 
-/// Diploid genotype likelihood over `n_alleles` (index 0 = reference). Observations are
-/// `(allele_index, phred_qual)`; an index `>= n_alleles` is a non-supporting read. Same per-base
-/// error model as [`call_genotype`], generalized to a pooled diploid allele pair
-/// `P(obs|{i,j}) = ½·P(obs|i) + ½·P(obs|j)`. Returns the best allele pair, per-allele depths,
-/// per-genotype PLs (VCF order), and GQ (second-smallest PL).
+/// The diploid genotype likelihood over `n_alleles`, where index 0 is the reference. An
+/// observation is `(allele_index, phred_qual)`, and an index of `n_alleles` or more marks a read
+/// that supports nothing.
+///
+/// The error model at each base is the same as in [`call_genotype`]. It goes to a pooled diploid
+/// pair of alleles, as `P(obs|{i,j}) = ½·P(obs|i) + ½·P(obs|j)`.
+///
+/// It returns four things. The best pair of alleles. The depth of each allele. The PL of each
+/// genotype, in VCF order. And the GQ, which is the second-smallest PL.
 pub fn call_genotype_multi(observations: &[(usize, u8)], n_alleles: usize, min_depth: u32) -> MultiGenotype {
     let n = n_alleles.max(1);
     let mut allele_depths = vec![0u32; n];

@@ -1,4 +1,4 @@
-//! Biosample queries. The `SampleGuid` (UUID) is stored as its hyphenated TEXT form.
+//! Biosample queries. The `SampleGuid` is a UUID, and it goes in as its hyphenated TEXT form.
 
 use du_domain::ids::SampleGuid;
 use navigator_domain::workspace::Biosample;
@@ -61,9 +61,10 @@ pub async fn get(pool: &SqlitePool, guid: SampleGuid) -> Result<Option<Biosample
     row.map(Row::into_domain).transpose()
 }
 
-/// Find an existing subject by its donor identifier — a person is one subject across projects, so
-/// importers reuse it rather than duplicating. Deterministic (`guid` order) when several share an
-/// identifier. Case-sensitive, matching how identifiers are stored.
+/// Find a subject that exists, by its donor identifier. A person is one subject across every
+/// project, so an importer reuses that subject and makes no duplicate. The result is deterministic,
+/// in `guid` order, when more than one subject shares an identifier. The match uses case, which is
+/// how the store holds an identifier.
 pub async fn find_by_donor(pool: &SqlitePool, donor_identifier: &str) -> Result<Option<Biosample>, StoreError> {
     let row: Option<Row> = sqlx::query_as(&format!(
         "SELECT {COLS} FROM biosample WHERE donor_identifier = ? ORDER BY guid LIMIT 1"
@@ -84,8 +85,8 @@ pub async fn set_sex(pool: &SqlitePool, guid: SampleGuid, sex: &str) -> Result<(
     Ok(())
 }
 
-/// Update the user-editable biosample fields. `donor_identifier` is required; the rest are
-/// nullable (an empty value clears them). Returns whether a row was affected.
+/// Update the biosample fields that a user can edit. `donor_identifier` must have a value. Each
+/// other field can be null, and an empty value clears it. It returns whether it changed a row.
 pub async fn update(
     pool: &SqlitePool,
     guid: SampleGuid,
@@ -111,9 +112,9 @@ pub async fn update(
     Ok(affected > 0)
 }
 
-/// Set only the biosample's `sample_accession` (e.g. correcting a friendly-name placeholder to the
-/// authoritative catalog accession fetched from the AppView). Leaves every other field untouched.
-/// Returns whether a row was affected.
+/// Set the biosample's `sample_accession`, and nothing else. One example: change a friendly-name
+/// placeholder to the authoritative catalog accession that the app fetched from the AppView. It
+/// leaves every other field as it is, and returns whether it changed a row.
 pub async fn set_accession(pool: &SqlitePool, guid: SampleGuid, accession: &str) -> Result<bool, StoreError> {
     let affected = sqlx::query("UPDATE biosample SET sample_accession = ? WHERE guid = ?")
         .bind(accession)
@@ -124,7 +125,7 @@ pub async fn set_accession(pool: &SqlitePool, guid: SampleGuid, accession: &str)
     Ok(affected > 0)
 }
 
-/// Assign (or clear, with `None`) the biosample's project. Returns whether a row was affected.
+/// Assign the biosample's project, or clear it with `None`. It returns whether it changed a row.
 pub async fn set_project(pool: &SqlitePool, guid: SampleGuid, project_id: Option<i64>) -> Result<bool, StoreError> {
     let affected = sqlx::query("UPDATE biosample SET project_id = ? WHERE guid = ?")
         .bind(project_id)
@@ -135,8 +136,8 @@ pub async fn set_project(pool: &SqlitePool, guid: SampleGuid, project_id: Option
     Ok(affected > 0)
 }
 
-/// Clear the legacy home-project column for every subject homed in `project_id` (used when deleting
-/// a project — the subjects survive, unhomed). Returns the number cleared.
+/// Clear the legacy home-project column of every subject whose home is `project_id`. A delete of a
+/// project uses it, and the subjects survive with no home. It returns the count that it cleared.
 pub async fn clear_home_project(pool: &SqlitePool, project_id: i64) -> Result<u64, StoreError> {
     let affected = sqlx::query("UPDATE biosample SET project_id = NULL WHERE project_id = ?")
         .bind(project_id)
@@ -146,26 +147,37 @@ pub async fn clear_home_project(pool: &SqlitePool, project_id: i64) -> Result<u6
     Ok(affected)
 }
 
-/// Clear **all sequencing + derived/imported analysis data** for a subject in one transaction,
-/// leaving the biosample row itself (and its identity: name/sex/center, vendor external IDs,
-/// project memberships, and MDKA genealogy) intact. The "reset this subject" maintenance op —
-/// used both by the explicit *Clear data* action and as the pre-step of [`delete`] (so a delete
-/// can never orphan rows). Removes: sequencing runs → alignments → cached analysis artifacts
-/// (and unlinks source files); Y/mt haplogroup calls + genome consensus; every signature-keyed
-/// cache ([`crate::sig_cache::ALL`] — painting, ROH, both archaic tiers); reconciliation
-/// overrides + audit log; ancestry results; IBD exchange results; mtDNA sequences; and chip /
-/// STR / variant profiles (with their child rows). Idempotent.
+/// Clear **every piece of sequencing data, and every derived or imported analysis**, for a
+/// subject, in one transaction.
+///
+/// It keeps the biosample row itself, and its identity. That identity is the name, the sex, the
+/// center, the vendor external IDs, the project memberships, and the MDKA genealogy.
+///
+/// This is the "reset this subject" maintenance operation. The explicit *Clear data* action uses
+/// it, and so does [`delete`], as its first step, so a delete can never leave an orphan row.
+///
+/// It removes the sequencing runs, then their alignments, then the cached analysis artifacts, and
+/// it unlinks the source files.
+///
+/// It also removes the Y and mt haplogroup calls, and the genome consensus. Then every cache that a
+/// signature keys, from [`crate::sig_cache::ALL`], which is the painting, the ROH, and both archaic
+/// tiers. Then the reconciliation overrides and the audit log, the ancestry results, the IBD
+/// exchange results, and the mtDNA sequences. Last, the chip, STR, and variant profiles, with their
+/// child rows. It is idempotent.
 pub async fn clear_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), StoreError> {
     let g = guid.0.to_string();
     let mut tx = pool.begin().await?;
-    // The alignments that belong to this subject (via its runs) — drives the alignment-keyed deletes.
+    // The alignments that belong to this subject, through its runs. They drive the deletes that
+    // key on an alignment.
     const ALN: &str =
         "SELECT id FROM alignment WHERE sequence_run_id IN (SELECT id FROM sequence_run WHERE biosample_guid = ?)";
-    // Alignment-keyed children first (artifacts, then the source-file rows). We DELETE the source
-    // files, not just unlink them: clearing removes the subject's sequencing data, so the file
-    // identity must go too. A left-behind `source_file` keeps a `UNIQUE content_sha256` that later
-    // makes a re-import of the same file dedup to a dead row — an orphan that silently blocks
-    // re-importing after a delete (delete requires clearing the data first).
+    // The children that key on an alignment go first: the artifacts, and then the source-file
+    // rows. The code DELETES a source file, and does not only unlink it. A clear removes the
+    // subject's sequencing data, so the file identity must go with it.
+    //
+    // A `source_file` that stays behind keeps a `UNIQUE content_sha256`. A second import of the
+    // same file would then dedup to a dead row. That orphan blocks the import, and says nothing,
+    // after a delete. A delete needs the clear first.
     sqlx::query(&format!("DELETE FROM analysis_artifact WHERE alignment_id IN ({ALN})"))
         .bind(&g)
         .execute(&mut *tx)
@@ -195,11 +207,12 @@ pub async fn clear_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), Store
     .bind(&g)
     .execute(&mut *tx)
     .await?;
-    // Biosample-keyed derived + imported tables (the biosample row itself is kept). The
-    // signature-keyed caches come from `sig_cache::ALL` rather than being listed here, because when
-    // they were listed by hand this loop only ever named `consensus_painting` — ROH and both
-    // archaic caches survived a "clear this subject's data", still keyed to a consensus signature
-    // that no longer existed.
+    // The derived and imported tables that key on a biosample. The biosample row itself stays.
+    //
+    // The caches that a signature keys come from `sig_cache::ALL`, and this code does not list
+    // them. When a hand-written list stood here, the loop named `consensus_painting` alone. The ROH
+    // cache, and both archaic caches, survived a "clear this subject's data". Each one still keyed
+    // to a consensus signature that no longer existed.
     for table in [
         "haplogroup_call",
         "consensus_profile",
@@ -224,10 +237,15 @@ pub async fn clear_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), Store
     Ok(())
 }
 
-/// Clear *only* a subject's haplogroup placement state — the per-source calls, the pooled
-/// consensus snapshot, and the reconciliation override/audit — for both Y and mtDNA. Coverage,
-/// ancestry, imported profiles, runs and alignments are untouched. Used to drop a stale legacy
-/// lineage (e.g. an old ISOGG-named trail) so the next analysis re-places it consistently.
+/// Clear a subject's haplogroup placement state, and *nothing else*, for Y and for mtDNA. That
+/// state is the call of each source, the pooled consensus snapshot, and the reconciliation override
+/// with its audit.
+///
+/// It leaves the coverage, the ancestry, the imported profiles, the runs, and the alignments as
+/// they are.
+///
+/// The app uses it to drop a stale legacy lineage, such as an old trail with ISOGG names. The next
+/// analysis then places the subject again, consistently.
 pub async fn clear_haplogroup_data(pool: &SqlitePool, guid: SampleGuid) -> Result<(), StoreError> {
     let g = guid.0.to_string();
     let mut tx = pool.begin().await?;
@@ -246,8 +264,8 @@ pub async fn clear_haplogroup_data(pool: &SqlitePool, guid: SampleGuid) -> Resul
     Ok(())
 }
 
-/// Delete a biosample row. Returns whether a row was removed. Callers must ensure no
-/// dependent rows reference it (sequence runs, profiles, etc.) — the app layer guards this.
+/// Delete a biosample row. It returns whether it removed a row. A caller must make sure that no
+/// dependent row names it, such as a sequence run or a profile. The app layer guards that.
 pub async fn delete(pool: &SqlitePool, guid: SampleGuid) -> Result<bool, StoreError> {
     let affected = sqlx::query("DELETE FROM biosample WHERE guid = ?")
         .bind(guid.0.to_string())
@@ -267,10 +285,12 @@ pub async fn list_for_project(pool: &SqlitePool, project_id: i64) -> Result<Vec<
     rows.into_iter().map(Row::into_domain).collect()
 }
 
-/// All members of a project — the union of the M:N membership table (the source of truth) and the
-/// legacy `biosample.project_id` home column (older imports never wrote a membership row). A subject
-/// merged into a project by FTDNA import gets a membership row but keeps its original home column, so
-/// the report must read both. Deduped by guid.
+/// Every member of a project. It is the union of two things. The first is the M:N membership
+/// table, which is the source of truth. The second is the legacy `biosample.project_id` home
+/// column, because an older import wrote no membership row.
+///
+/// An FTDNA import that merges a subject into a project gives it a membership row, and the subject
+/// keeps its original home column. So the report must read both. The guid dedupes the result.
 pub async fn list_members_for_project(pool: &SqlitePool, project_id: i64) -> Result<Vec<Biosample>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT {COLS} FROM biosample WHERE guid IN ( \
@@ -286,8 +306,9 @@ pub async fn list_members_for_project(pool: &SqlitePool, project_id: i64) -> Res
     rows.into_iter().map(Row::into_domain).collect()
 }
 
-/// Every biosample, regardless of project (biosamples are first-class — the project link
-/// is optional). Ordered by donor identifier for a stable subjects list.
+/// Every biosample, whatever its project. A biosample is an entity in its own right, and the link
+/// to a project is optional. The order is by donor identifier, which keeps the subjects list
+/// stable.
 pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Biosample>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!("SELECT {COLS} FROM biosample ORDER BY donor_identifier, guid"))
         .fetch_all(pool)
@@ -303,16 +324,21 @@ pub async fn count_for_project(pool: &SqlitePool, project_id: i64) -> Result<i64
     Ok(n)
 }
 
-/// Member counts for **every** project at once, as `(project_id, count)` — the same membership rule
-/// as [`count_members_for_project`] (M:N ∪ legacy home column, deduped by guid, and only counting
-/// guids that still exist in `biosample`), in one `GROUP BY` instead of a query per project.
-/// Projects with no members are absent from the result rather than reported as zero.
+/// The member count of **every** project at once, as `(project_id, count)`.
+///
+/// The membership rule is the same as in [`count_members_for_project`]. It takes the M:N table
+/// together with the legacy home column, dedupes by guid, and counts only a guid that still exists
+/// in `biosample`.
+///
+/// It is one `GROUP BY`, and not a query for each project. A project with no members is absent from
+/// the result, and the query does not report it as zero.
 pub async fn member_counts(pool: &SqlitePool) -> Result<Vec<(i64, i64)>, StoreError> {
-    // The inner UNION (not UNION ALL) dedupes `(project, guid)` pairs, so a subject that is both a
-    // M:N member and has the project as its legacy home is counted once — matching the `IN (...)`
-    // semantics of the single-project query. The join to `biosample` drops membership rows whose
-    // subject has been deleted, which the `SELECT COUNT(*) FROM biosample WHERE guid IN (...)` form
-    // also excluded.
+    // The inner UNION, which is not a UNION ALL, dedupes the `(project, guid)` pairs. So a subject
+    // that is both an M:N member and has the project as its legacy home counts once. That matches
+    // the `IN (...)` behaviour of the single-project query.
+    //
+    // The join to `biosample` drops a membership row whose subject is gone. The
+    // `SELECT COUNT(*) FROM biosample WHERE guid IN (...)` form also left those out.
     let rows: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT m.project_id, COUNT(*) FROM ( \
              SELECT project_id, biosample_guid AS guid FROM biosample_project \
@@ -327,8 +353,9 @@ pub async fn member_counts(pool: &SqlitePool) -> Result<Vec<(i64, i64)>, StoreEr
     Ok(rows)
 }
 
-/// Count of all project members (M:N membership ∪ legacy home column), deduped by guid — matches
-/// [`list_members_for_project`]. Used for the projects-list sample badge.
+/// The count of every project member, from the M:N membership table together with the legacy home
+/// column, deduped by guid. It matches [`list_members_for_project`]. The sample badge of the
+/// projects list uses it.
 pub async fn count_members_for_project(pool: &SqlitePool, project_id: i64) -> Result<i64, StoreError> {
     let n: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM biosample WHERE guid IN ( \

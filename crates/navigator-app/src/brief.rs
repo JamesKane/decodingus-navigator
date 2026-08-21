@@ -1,12 +1,16 @@
-//! Composition of a casual-reader [`SubjectBrief`]: pull the existing analysis signals for one
-//! subject, load the narrative reference pack, and assemble the render-ready model via the pure
-//! templating in `navigator_domain::brief`.
+//! This module makes a [`SubjectBrief`] for a reader who is not a specialist.
 //!
-//! The reference pack is loaded with **graceful fallback** (decided 2026-06-22): a bundled seed is
-//! the always-available floor; a CDN-hosted pack refreshes/augments it when reachable; a stale cache
-//! covers a failed refresh. A brief is never blocked by a missing pack — sections degrade to the
-//! structured facts the analysis already provides, and [`SubjectBrief::pack_status`] records how
-//! fresh the narrative is.
+//! It reads the analysis signals of one subject, reads the narrative reference pack, and builds the
+//! model that the UI draws. The template code in `navigator_domain::brief` does the last step, and
+//! that code is pure.
+//!
+//! The module reads the reference pack in three steps, and each step has a fallback. The team
+//! decided this on 2026-06-22. The app always holds a seed pack, which is the lowest step. A pack
+//! on the CDN refreshes and extends the seed when the network permits it. An old cache covers a
+//! failed refresh.
+//!
+//! An absent pack never stops a brief. Each section then falls back to the structured facts of the
+//! analysis. [`SubjectBrief::pack_status`] records the age of the narrative.
 
 use crate::{decodingus_appview_url, App, AppError};
 use navigator_domain::ancestry::AncestryResult;
@@ -20,14 +24,16 @@ use navigator_domain::reconciliation::{CompatibilityLevel, Consensus, DnaType};
 use navigator_domain::testtype::{self, TargetType};
 use navigator_refgenome::cache as refgenome_cache;
 
-/// The bundled seed pack — the offline floor. Authored in `assets/brief-pack.seed.json`.
+/// The seed pack in the application bundle. It is the lowest step, and it works offline. The file
+/// is `assets/brief-pack.seed.json`.
 const SEED_PACK: &str = include_str!("../assets/brief-pack.seed.json");
 
 /// Default CDN location of the refreshable reference pack. Override with `NAVIGATOR_BRIEF_PACK_URL`.
 /// A 404 / unreachable host falls back gracefully to the cache, then the bundled seed.
 const DEFAULT_BRIEF_PACK_URL: &str = "https://assets.decodingus.org/briefs/brief-pack.json";
 
-/// How long a downloaded pack is trusted before a refresh is attempted (days).
+/// The count of days that the app trusts a downloaded pack. After this time, the app tries a
+/// refresh.
 const BRIEF_PACK_TTL_DAYS: u64 = 7;
 
 fn brief_pack_url() -> String {
@@ -53,12 +59,14 @@ pub(crate) fn cache_is_fresh(path: &std::path::Path, ttl_days: u64) -> bool {
         .unwrap_or(false)
 }
 
-/// How long a per-haplogroup enrichment record is trusted before a refresh is attempted (days).
+/// The count of days that the app trusts the extra record of one haplogroup. After this time, the
+/// app tries a refresh.
 const HAPLO_ENRICH_TTL_DAYS: u64 = 30;
 
-/// Live haplogroup content fetched from the AppView, cached per (dna-type, name). `found = false` is
-/// a negative-cache marker (the endpoint answered but had nothing) so a definitively-absent
-/// haplogroup isn't re-requested every rebuild.
+/// Haplogroup content from the AppView. The cache key is the DNA type together with the name.
+///
+/// A `found = false` value marks an absent record. The endpoint answered, but it held nothing. So
+/// the app does not request that haplogroup again at each rebuild.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct HaploEnrichment {
     found: bool,
@@ -73,7 +81,7 @@ struct HaploEnrichment {
 }
 
 impl HaploEnrichment {
-    /// Does this carry any narrative/age content worth folding in?
+    /// Shows that this record holds narrative content or age content for the brief.
     fn has_content(&self) -> bool {
         self.found && (self.formed_ybp.is_some() || self.origin.is_some() || self.story.is_some())
     }
@@ -99,9 +107,13 @@ fn haplo_enrich_cache_path(dna_type: DnaType, name: &str) -> std::path::PathBuf 
 }
 
 impl App {
-    /// Build the plain-language brief for one subject. Pulls the consensus haplogroups, the best
-    /// alignment's coverage, and the run's test type, and joins them to the reference pack. Always
-    /// returns a brief (degrading per-section); only a store error propagates.
+    /// Build the plain-language brief for one subject.
+    ///
+    /// The method reads the consensus haplogroups, the coverage of the best alignment, and the test
+    /// type of the run. It then joins these values to the reference pack.
+    ///
+    /// The method always returns a brief. A section with no data falls back to a simpler form. Only
+    /// a store error stops the method.
     pub async fn subject_brief(&self, biosample_guid: SampleGuid) -> Result<SubjectBrief, AppError> {
         let bio = navigator_store::biosample::get(self.store.pool(), biosample_guid)
             .await?
@@ -120,14 +132,17 @@ impl App {
         let test_code = run.as_ref().map(|r| r.test_type.clone());
 
         let (pack, pack_status) = self.load_brief_pack().await;
-        // The brief is prose written for the reader, so it is built in *their* language. Resolved
-        // here rather than passed in because every consumer wants the same thing: the UI renders it,
-        // the HTML export writes it to a file the user keeps, and the local-LLM prompt hands it to a
-        // model that should answer in the language the user is reading.
+        // The brief is prose for the reader, so the code builds it in the language of that
+        // reader. The code finds the language here, and the caller does not supply it, because
+        // each caller needs the same language. The UI draws the brief. The HTML export writes it
+        // to a file that the user keeps. The local-LLM prompt gives it to a model, and that model
+        // must answer in the language that the user reads.
         let lang = i18n::load_lang().unwrap_or(Lang::En);
 
-        // Consensus lineages (None when not placed yet, or N/A for the test). Each terminal is
-        // enriched best-effort from the live haplogroup endpoint (cached); pack values stand offline.
+        // The consensus lineages. A value is None when the app did not place the subject, or when
+        // the test does not cover that lineage. The code tries to add content for each terminal
+        // node from the haplogroup endpoint, and it caches the result. Offline, the pack values
+        // apply.
         let cons_y = self.haplogroup_consensus(biosample_guid, DnaType::Y).await?;
         let cons_mt = self.haplogroup_consensus(biosample_guid, DnaType::Mt).await?;
         let mut enriched = false;
@@ -157,11 +172,14 @@ impl App {
                     .await
                     .ok()
                     .flatten();
-                // Deep (ancient) components. Reading *only* `ANCIENT_ADMIXTURE` is also what keeps a
-                // stale `PCA_PROJECTION_GMM` / `G25_NMONTE` row — persisted by the build whose
-                // fabricated numbers prompted this rebuild — from resurfacing in the brief, the
-                // DNA-story HTML export, or the LLM facts. Absent when the three ancient sources
-                // can't express the sample's ancestry: no card beats a wrong card.
+                // The deep, or ancient, components. The code reads *only* `ANCIENT_ADMIXTURE`.
+                // An older build wrote incorrect numbers to a `PCA_PROJECTION_GMM` row and a
+                // `G25_NMONTE` row, and that fault caused this rebuild. A read of only one source
+                // keeps those old rows out of three places. They are the brief, the DNA-story HTML
+                // export, and the facts for the LLM.
+                //
+                // The value is absent when the three ancient sources can not express the ancestry
+                // of the sample. No card is better than a wrong card.
                 let ancient = if crate::ANCIENT_ANCESTRY_ENABLED {
                     self.consensus_ancestry(biosample_guid, navigator_analysis::ancestry::ANCIENT_ADMIXTURE)
                         .await
@@ -175,8 +193,10 @@ impl App {
             _ => None,
         };
 
-        // Runs-of-homozygosity (relatedness / endogamy). Read-only: only surfaced when it's already
-        // been computed and cached (the brief must stay cheap — ROH computation is on-demand).
+        // The runs of homozygosity, which show relatedness and endogamy. The code only reads
+        // them. It shows a value only when an earlier run calculated it and wrote it to the cache.
+        // The brief must stay fast, and the ROH calculation runs only at the request of the
+        // user.
         let roh = self.cached_roh(biosample_guid).await?.map(|r| {
             brief::roh_brief(
                 lang,
@@ -188,8 +208,9 @@ impl App {
             )
         });
 
-        // Archaic (Neanderthal) markers — same contract as ROH: read-only, surfaced only once the
-        // count has been computed and cached, so the brief stays cheap.
+        // The archaic markers for Neanderthal. The rule is the same as the rule for ROH. The code
+        // only reads them, and it shows a value only after an earlier run calculated the count and
+        // wrote it to the cache. The brief must stay fast.
         let archaic = self.cached_archaic(biosample_guid).await?.map(|a| {
             brief::archaic_brief(
                 lang,
@@ -217,7 +238,8 @@ impl App {
             summary: headline_summary(lang, &bio.donor_identifier, paternal.as_ref(), maternal.as_ref()),
         };
 
-        // Computed before the brief is assembled, because `paternal` is moved into it.
+        // The code calculates this value first, because the next step moves `paternal` into the
+        // brief.
         let realign_offer = self
             .realign_offer(biosample_guid, paternal.is_some(), default_aln.map(|(_, aln)| aln))
             .await?;
@@ -240,27 +262,32 @@ impl App {
         })
     }
 
-    /// Whether to offer this subject a realignment, and which alignment to offer.
+    /// Shows whether to offer a realignment to this subject, and which alignment to offer.
     ///
-    /// Every condition here exists to avoid proposing hours of work that would change nothing:
+    /// Each condition below stops an offer of many hours of work that would change nothing.
     ///
-    /// - **A paternal line to improve.** Realignment buys Y-chromosome discovery and essentially
-    ///   nothing else — ancestry, IBD and the autosomes already handle GRCh37/38 and give the same
-    ///   answer either way. With no Y placed there is no payoff, so no offer.
-    /// - **Reads to re-map.** A chip or VCF-only subject has no alignment; an alignment row without
-    ///   a file cannot be read.
-    /// - **No CHM13 alignment already.** The offer claims part of their paternal line cannot
-    ///   currently be read; for someone who already has data on the complete assembly, by any route,
-    ///   that claim is simply false — even if some older file of theirs has never been realigned.
-    /// - **Reads the job would actually act on** — not already on CHM13, not itself a realignment,
-    ///   and not already realigned once. Those three are not re-implemented here: they are
-    ///   [`crate::realign::realignable_for_subject`], the same rule the batch count and the job
-    ///   itself use. Offering work the job would then refuse is worse than not offering it.
+    /// - **The subject has a paternal line to improve.** A realignment gives discovery on the Y
+    ///   chromosome and almost nothing more. The ancestry, the IBD, and the autosomes already work
+    ///   on GRCh37 and GRCh38, and they give the same answer on CHM13. With no Y placement there is
+    ///   no gain, so the app makes no offer.
+    /// - **The subject has reads to map again.** A subject with only a chip or a VCF has no
+    ///   alignment. An alignment row with no file has no reads.
+    /// - **The subject has no CHM13 alignment.** The offer states that the app can not read part of
+    ///   the paternal line of the user. That statement is false for a user who already has data on
+    ///   the complete assembly, by any route. An older file of that user can still be without a
+    ///   realignment, and the statement stays false.
+    /// - **The job would act on the reads.** Three tests apply. The alignment must not be on
+    ///   CHM13. It must not be a realignment. It must not have a realignment already.
     ///
-    /// Among qualifying alignments it prefers the subject's default — the widest, then deepest test,
-    /// per [`Self::default_alignment_for_subject`] — and otherwise takes the first. That matters for
-    /// someone holding both a whole genome and a Y-only test: the whole genome is the one whose
-    /// realignment answers more.
+    ///   This code does not repeat those tests. [`crate::realign::realignable_for_subject`] holds
+    ///   them, and the batch count and the job call the same function. An offer of work that the
+    ///   job then refuses is worse than no offer.
+    ///
+    /// Among the alignments that pass, the code selects the default alignment of the subject. That
+    /// is the test with the largest breadth, and then the largest depth, from
+    /// [`Self::default_alignment_for_subject`]. If there is none, the code takes the first
+    /// alignment. This choice matters for a user with a whole genome and a Y-only test. The
+    /// realignment of the whole genome answers more questions.
     async fn realign_offer(
         &self,
         biosample_guid: SampleGuid,
@@ -273,12 +300,16 @@ impl App {
 
         let alignments = navigator_store::alignment::list_for_biosample(self.store.pool(), biosample_guid).await?;
 
-        // Already reading this person's Y against the complete assembly — however they got there.
-        // The per-alignment rule below would still find, say, an old GRCh37 file nobody has
-        // realigned, and the *job* would indeed act on it; but the offer's promise is about the
-        // subject's paternal line rather than about one file, and for this reader that promise is
-        // already kept. Observed on a donor holding four CHM13 alignments and being told their
-        // father's line had nowhere to be read from.
+        // The app already reads the Y chromosome of this person against the complete assembly.
+        // The route to that state does not matter.
+        //
+        // The rule below, which looks at one alignment, can still find an old GRCh37 file with no
+        // realignment. The *job* would act on that file. But the offer makes a promise about the
+        // paternal line of the subject, not about one file. For this reader the app already keeps
+        // that promise.
+        //
+        // A donor with four CHM13 alignments saw this fault. The app told that donor that it could
+        // read nothing of the line of their father.
         if alignments
             .iter()
             .any(|a| crate::realign::is_target_build(&a.reference_build))
@@ -317,7 +348,7 @@ impl App {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok());
 
-        // Fresh cache → use it without touching the network.
+        // The cache is new enough. Use it, and do not use the network.
         if let Some(cp) = &cached {
             if cache_is_fresh(&cache_path, BRIEF_PACK_TTL_DAYS) {
                 pack.merge(cp.clone());
@@ -325,7 +356,8 @@ impl App {
             }
         }
 
-        // Stale / absent → try a refresh, falling back to the stale cache (then the seed).
+        // The cache is old or absent. Try a refresh. If the refresh fails, use the old cache, and
+        // then the seed pack.
         let url = brief_pack_url();
         let fetched: Result<BriefPack, String> = async {
             let resp = self
@@ -368,11 +400,16 @@ impl App {
         (pack, status)
     }
 
-    /// Best-effort live enrichment for one haplogroup: cache-first (30-day TTL), else a short-timeout
-    /// `GET {appview}/api/v1/haplogroup/{name}`. A definitive answer (200 / 404) is cached — including
-    /// "not found" — so it isn't re-requested each rebuild; a transient network error is *not* cached,
-    /// so enrichment self-heals once connectivity returns. Returns content only when there's something
-    /// worth folding in (an age or narrative).
+    /// Read the extra content for one haplogroup, if the network permits it.
+    ///
+    /// The method reads the cache first, and the cache entry is valid for 30 days. If the cache has
+    /// no entry, the method sends `GET {appview}/api/v1/haplogroup/{name}` with a short timeout.
+    ///
+    /// The method caches a definite answer, which is a 200 response or a 404 response. It caches
+    /// the "not found" result also, so it does not send the request again at each rebuild. It does
+    /// not cache a temporary network error, so the content appears after the network returns.
+    ///
+    /// The method returns content only when that content has an age or a narrative.
     async fn enrich_haplogroup(&self, name: &str, dna_type: DnaType) -> Option<HaploEnrichment> {
         if name.trim().is_empty() {
             return None;
@@ -404,7 +441,7 @@ impl App {
             }
             // The endpoint answered but had nothing (404 etc.) → cache a negative result.
             Ok(_) => HaploEnrichment::default(),
-            // Network/timeout error → don't cache (retry next time).
+            // Network/timeout error → do not cache (retry next time).
             Err(_) => return None,
         };
 
@@ -453,8 +490,9 @@ fn parse_haplo_enrichment(body: &str) -> HaploEnrichment {
     }
 }
 
-/// Assemble a lineage section from the consensus + pack content, overlaying live `enrich`ment when
-/// present (it wins over pack values for age/origin/story). `is_paternal` only chooses the lookup.
+/// Build a lineage section from the consensus and the pack content. The `enrich` value, when it is
+/// present, replaces the age, the origin, and the story of the pack. `is_paternal` only selects the
+/// lookup.
 fn build_lineage(
     lang: Lang,
     kind: LineageKind,
@@ -542,18 +580,20 @@ fn build_ancestry(
                 .iter()
                 .filter(|c| c.percentage >= 0.5)
                 .map(|c| {
-                    // Pack content (by code, then display name) supplies an optional friendlier name
-                    // and the explanation — so a bare code like "ANF" reads as "Anatolian Farmer".
+                    // The pack content gives a clearer name and the explanation. The code looks
+                    // up the pack by the code first, and then by the display name. So a plain code
+                    // such as "ANF" becomes "Anatolian Farmer".
                     let direct = pack
                         .population(&c.population_code)
                         .or_else(|| pack.population(&c.population_name));
                     let name = direct
                         .and_then(|p| p.name.clone())
                         .unwrap_or_else(|| c.population_name.clone());
-                    // The model's reference set mixes ancient and *modern* populations; the modern
-                    // ones (e.g. Colombian/Puerto Rican standing in for Native American ancestry)
-                    // rarely have their own blurb, so fall back to the continental description rather
-                    // than leaving real non-European signal unexplained.
+                    // The reference set of the model holds ancient populations and *modern*
+                    // populations. A modern population usually has no text of its own. One example
+                    // is a Colombian or Puerto Rican population, which represents Native American
+                    // ancestry. So the code uses the continental description. Without it, a real
+                    // signal from outside Europe has no explanation.
                     let blurb = direct.and_then(|p| p.blurb.clone()).or_else(|| {
                         population_super(&c.population_code)
                             .map(population_name)
@@ -625,7 +665,7 @@ fn build_test(
     }
 }
 
-/// Plain-language test description when the pack doesn't cover the code, derived from what the test
+/// Plain-language test description when the pack does not cover the code, derived from what the test
 /// targets.
 fn fallback_test_text(lang: Lang, target: TargetType) -> (String, Option<String>) {
     let (what, limits) = match target {

@@ -1,15 +1,20 @@
-//! Per-window counts of African-outgroup segregating sites — a candidate local mutation-rate proxy.
+//! The count of sites that vary in the African outgroup, in each window. It is a candidate proxy
+//! for the local mutation rate.
 //!
-//! The Tier B emission model assumes one background rate genome-wide. Measured, the background
-//! private-variant density varies 5.3x between its 10th and 90th percentile and is 14.6x
-//! overdispersed relative to the Poisson it is modelled with, which is larger than the 2.89x
-//! enrichment inside real archaic tracts — so the model calls its own upper tail archaic. hmmix
-//! avoids this with a mutation-rate map; we have no such asset.
+//! The Tier B emission model takes one background rate over the whole genome. A measurement shows
+//! otherwise. The background density of private variants changes by 5.3x between its 10th and 90th
+//! percentile. It is also 14.6x more spread out than the Poisson distribution that the model gives
+//! it.
 //!
-//! The density of sites segregating in Africans is already in `archaic_outgroup_af_<build>.bin` and
-//! is a direct measure of how variable a region is, for reasons that have nothing to do with
-//! archaic introgression (mutation rate, reference quality, mappability). This dumps it so that
-//! proxy can be tested as a normalizer before an asset is built for the purpose.
+//! That spread is larger than the 2.89x enrichment inside a real archaic tract. So the model calls
+//! its own upper tail archaic. The hmmix tool avoids this with a map of the mutation rate, and
+//! this project has no such asset.
+//!
+//! `archaic_outgroup_af_<build>.bin` already holds the density of the sites that vary in Africans.
+//! That density measures directly how much a region varies. Its reasons have nothing to do with
+//! archaic introgression. They are the mutation rate, the quality of the reference, and how well
+//! reads map there. This tool writes it out, so that somebody can test it as a normalizer before anybody
+//! builds an asset for the purpose.
 //!
 //! ```sh
 //! cargo run --release -p navigator-analysis --example archaic_outgroup_density -- \

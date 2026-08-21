@@ -1,6 +1,6 @@
-//! Decompress a downloaded reference to a plain FASTA and build its `.fai` — all in-Rust
-//! (`flate2` for gzip/bgzip, `noodles::fasta` for indexing), so no samtools/GATK is needed.
-//! Blocking; call from `spawn_blocking`.
+//! Decompress a downloaded reference to a plain FASTA, and build its `.fai`. This is all pure
+//! Rust: `flate2` for gzip and bgzip, and `noodles::fasta` for the index. So it needs no samtools
+//! and no GATK. It blocks, so call it from `spawn_blocking`.
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -21,8 +21,8 @@ fn with_suffix(path: &Path, ext: &str) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Whether `path` starts with the gzip magic bytes (`1f 8b`). bgzip is gzip-compatible, so
-/// `MultiGzDecoder` handles both.
+/// Whether `path` starts with the two bytes of a gzip header (`1f 8b`). bgzip is compatible with
+/// gzip, so `MultiGzDecoder` reads both.
 fn is_gzip(path: &Path) -> Result<bool, RefgenomeError> {
     let mut f = File::open(path).map_err(|e| RefgenomeError::io(path, e))?;
     let mut magic = [0u8; 2];
@@ -30,7 +30,7 @@ fn is_gzip(path: &Path) -> Result<bool, RefgenomeError> {
     Ok(n == 2 && magic == [0x1f, 0x8b])
 }
 
-/// Read until the buffer is full or EOF; returns bytes read (a short final read isn't EOF).
+/// Read until the buffer is full or EOF; returns bytes read (a short final read is not EOF).
 fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     let mut filled = 0;
     while filled < buf.len() {
@@ -42,8 +42,8 @@ fn read_up_to(r: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
     Ok(filled)
 }
 
-/// A writer that tees everything written to it through a SHA-256 hasher while forwarding to the
-/// inner writer — lets us hash the decompressed FASTA for free during the decompress copy.
+/// A writer that sends everything through a SHA-256 hasher, and on to the inner writer. So the
+/// code hashes the decompressed FASTA at no extra cost, during the copy.
 struct HashingWriter<W: io::Write> {
     inner: W,
     hasher: Sha256,
@@ -74,11 +74,15 @@ pub(crate) fn hash_file(path: &Path) -> Result<String, RefgenomeError> {
     Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Turn `src` (gzip/bgzip or plain FASTA) into a plain FASTA at `fa_out` and write
-/// `fa_out.fai`. On a gzip input, `src` is decompressed then deleted; on a plain input it is
-/// moved into place. The `.fai` is built by indexing the plain FASTA. Returns the SHA-256
-/// (lowercase hex) of the final `.fa` — computed for free while decompressing, or via a single
-/// streaming read for a plain (renamed) input — for the integrity sidecar.
+/// Turn `src`, which is a gzip, a bgzip, or a plain FASTA, into a plain FASTA at `fa_out`, and
+/// write `fa_out.fai`.
+///
+/// With a gzip input, the code decompresses `src` and then deletes it. With a plain input it moves
+/// the file into place. It builds the `.fai` from an index pass over the plain FASTA.
+///
+/// It returns the SHA-256 of the final `.fa`, in lowercase hex, for the integrity sidecar. A
+/// decompress gives that hash at no extra cost. A plain input, which the code renames, needs one
+/// streamed read.
 pub fn decompress_and_index(src: &Path, fa_out: &Path) -> Result<String, RefgenomeError> {
     if let Some(parent) = fa_out.parent() {
         std::fs::create_dir_all(parent).map_err(|e| RefgenomeError::io(parent, e))?;
@@ -135,7 +139,7 @@ mod tests {
     fn decompresses_gz_and_builds_fai() {
         let dir = scratch("gz");
         let fasta = ">chr1\nACGTACGTAC\nACGT\n>chr2\nTTTTNNNNAA\n";
-        // bgzip-compatible plain gzip via flate2.
+        // Plain gzip through flate2, which also reads bgzip.
         let gz = dir.join("ref.fa.gz");
         {
             let mut enc = flate2::write::GzEncoder::new(File::create(&gz).unwrap(), flate2::Compression::default());

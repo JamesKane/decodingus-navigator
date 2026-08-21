@@ -1,13 +1,18 @@
-//! Coverage-walker tests against the synthetic fixture (see tests/fixtures/make_fixture.sh).
+//! Tests of the coverage walker, against the synthetic fixture. See
+//! tests/fixtures/make_fixture.sh.
 //!
-//! Reference chrM (50 bp, N at position 25). Reads:
-//!   pos 1-10   depth 4  MAPQ 60  -> CALLABLE              (10 bp)
-//!   pos 11-20  depth 2  MAPQ 60  -> LOW_COVERAGE          (10 bp)
-//!   pos 21-24  depth 0           -> NO_COVERAGE            (4 bp)
-//!   pos 25     depth 0  ref N    -> REF_N                  (1 bp)
-//!   pos 26-30  depth 5  MAPQ 0   -> POOR_MAPPING_QUALITY   (5 bp)
-//!   pos 31-50  depth 0           -> NO_COVERAGE           (20 bp)
-//! Base quality is Phred 40 throughout.
+//! The reference is chrM, at 50 bp, with an N at position 25. The reads give:
+//!
+//! ```text
+//! pos 1-10   depth 4  MAPQ 60  -> CALLABLE              (10 bp)
+//! pos 11-20  depth 2  MAPQ 60  -> LOW_COVERAGE          (10 bp)
+//! pos 21-24  depth 0           -> NO_COVERAGE            (4 bp)
+//! pos 25     depth 0  ref N    -> REF_N                  (1 bp)
+//! pos 26-30  depth 5  MAPQ 0   -> POOR_MAPPING_QUALITY   (5 bp)
+//! pos 31-50  depth 0           -> NO_COVERAGE           (20 bp)
+//! ```
+//!
+//! Every base carries a quality of Phred 40.
 
 use std::path::PathBuf;
 
@@ -65,14 +70,16 @@ fn coverage_matches_hand_computed_values() {
     );
     assert_eq!(result.callable_bases, 10);
 
-    // --- samtools-style per-contig stats (per-base-observation averaging) ---
+    // --- The statistics of each contig, in the style of samtools. The mean goes over the base
+    //     observations. ---
     let cs = &result.contig_coverage_stats[0];
     assert_eq!(cs.num_reads, 11); // 4 + 2 + 5
     assert_eq!(cs.cov_bases, 25);
     approx(cs.coverage, 50.0);
     approx(cs.mean_depth, 1.7);
     approx(cs.mean_base_q, 40.0); // all bases Phred 40
-                                  // map quality per base obs: (60 obs * 60 + 25 obs * 0) / 85
+                                  // The map quality over the base observations:
+                                  // (60 obs * 60 + 25 obs * 0) / 85
     approx(cs.mean_map_q, 3600.0 / 85.0);
 }
 

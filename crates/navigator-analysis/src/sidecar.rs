@@ -1,19 +1,21 @@
-//! Parse the `ytree` pipeline's per-sample text sidecars into Navigator's existing result
-//! structs, so the fast-path import fills the same caches the CRAM walkers would — without
-//! touching the alignment.
+//! Parse the text sidecars that the `ytree` pipeline writes for each sample, into the result
+//! structs that Navigator already has. The fast-path import then fills the same caches that the
+//! CRAM walkers would fill, and it never touches the alignment.
 //!
-//! - `.sex` (`male`/`female`) → [`SexInferenceResult`].
-//! - `stats.txt` (`samtools stats`) → [`ReadMetrics`] — **fully** populated: the `SN`
-//!   summary gives the scalar counts and the `RL`/`IS` histogram lines give the read-length
-//!   and insert-size distributions (median/std/min/max), including the `median_insert_size`
-//!   the project report shows.
-//! - `coverage.txt` (`samtools coverage`) + `callable.summary.txt` (GATK `CallableLoci`) →
-//!   a **lite** [`CoverageResult`]: genome-wide mean depth (length-weighted) + per-contig
-//!   stats + callable-base counts. The depth histogram and `pct_Nx` / median need the
-//!   per-base walk, so they're left zeroed and the result is flagged `partial` by the caller.
+//! - `.sex`, which holds `male` or `female`, becomes a [`SexInferenceResult`].
+//! - `stats.txt`, from `samtools stats`, becomes a **complete** [`ReadMetrics`]. The `SN` summary
+//!   gives the scalar counts. The `RL` and `IS` histogram lines give the distributions of the read
+//!   length and the insert size, with their median, standard deviation, minimum and maximum. That
+//!   includes the `median_insert_size` that the project report shows.
+//! - `coverage.txt`, from `samtools coverage`, together with `callable.summary.txt`, from GATK
+//!   `CallableLoci`, becomes a **light** [`CoverageResult`]. It holds the genome-wide mean depth,
+//!   weighted by length, the statistics of each contig, and the counts of callable bases. The
+//!   depth histogram, the `pct_Nx` values and the median all need the walk over each base. Those
+//!   stay at zero, and the caller marks the result `partial`.
 //!
-//! Unknown numeric fields are `0.0` (not `NaN`) because the cache round-trips through
-//! `serde_json`, which encodes `NaN` as `null` and then fails to read it back.
+//! A numeric field whose value nobody knows is `0.0`, and not `NaN`. The cache goes out and back
+//! through `serde_json`. That writes a `NaN` as `null`, and it then fails to read the `null`
+//! back.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -51,9 +53,11 @@ pub fn parse_sex(text: &str) -> SexInferenceResult {
 
 // ---- stats.txt (samtools stats) ----------------------------------------------
 
-/// Parse `samtools stats` output into a fully-populated [`ReadMetrics`]. `SN` lines give the
-/// scalar counts; `RL`/`IS` lines give the read-length / insert-size histograms (and thus
-/// their median/std/min/max). `mean_mapping_quality` isn't emitted by samtools stats → 0.0.
+/// Parse the output of `samtools stats` into a complete [`ReadMetrics`].
+///
+/// The `SN` lines give the scalar counts. The `RL` and `IS` lines give the histograms of the read
+/// length and the insert size. From those come the median, the standard deviation, the minimum and
+/// the maximum. samtools stats writes no `mean_mapping_quality`, so that field is 0.0.
 pub fn parse_samtools_stats(text: &str) -> ReadMetrics {
     let mut sn: BTreeMap<&str, f64> = BTreeMap::new();
     let mut rl: BTreeMap<u32, u64> = BTreeMap::new();
@@ -125,7 +129,7 @@ pub fn parse_samtools_stats(text: &str) -> ReadMetrics {
         min_insert_size: is_min,
         max_insert_size: is_max,
         insert_size_histogram: is,
-        // samtools stats doesn't classify orientation; Illumina paired-end is FR.
+        // samtools stats does not classify orientation; Illumina paired-end is FR.
         pair_orientation: PairOrientation::Fr,
         // Picard-style chimera rate: read pairs mapping to different chromosomes / total pairs.
         pct_chimeras: pct(pairs_diff_chrom, total_reads / 2),
@@ -175,8 +179,9 @@ fn summarize(hist: &BTreeMap<u32, u64>) -> (f64, f64, f64, u32, u32) {
 
 // ---- coverage.txt + callable.summary.txt -------------------------------------
 
-/// Parse `samtools coverage` TSV → per-contig stats + the length-weighted genome-wide mean
-/// depth and total territory (sum of contig lengths). Skips the `#rname …` header.
+/// Parse the TSV of `samtools coverage`. It gives three things. The statistics of each contig. The
+/// genome-wide mean depth, weighted by length. And the total territory, which is the sum of the
+/// contig lengths. It skips the `#rname …` header.
 pub fn parse_samtools_coverage(text: &str) -> (f64, u64, Vec<ContigCoverageStats>) {
     let mut contigs = Vec::new();
     let mut weighted_depth = 0.0f64;
@@ -216,10 +221,11 @@ pub fn parse_samtools_coverage(text: &str) -> (f64, u64, Vec<ContigCoverageStats
     (mean_coverage, territory, contigs)
 }
 
-/// Parse a GATK `CallableLoci` summary (`state nBases` blocks, one per contig). Contig blocks
-/// are introduced by a `--- <contig> ---` line; the **leading headerless block** in a
-/// `.chrYM.` summary is the mitochondrion (`chrM`). Returns total CALLABLE bases and the
-/// per-contig breakdown.
+/// Parse a summary from GATK `CallableLoci`. It holds `state nBases` blocks, one for each contig.
+/// A `--- <contig> ---` line opens each block.
+///
+/// In a `.chrYM.` summary, the **first block, which has no header**, is the mitochondrion, at
+/// `chrM`. Returns the total count of CALLABLE bases, and the breakdown over the contigs.
 pub fn parse_callable_summary(text: &str) -> (u64, Vec<ContigCallableMetrics>) {
     let mut out: Vec<ContigCallableMetrics> = Vec::new();
     // The first block precedes any `--- … ---` header → mitochondrion in the chrYM summary.
@@ -259,8 +265,8 @@ pub fn parse_callable_summary(text: &str) -> (u64, Vec<ContigCallableMetrics>) {
             started = true;
             continue;
         }
-        // `<STATE> <nBases>` rows (whitespace-padded); the `state nBases` header has a
-        // non-numeric second token and is skipped by the parse.
+        // The rows are `<STATE> <nBases>`, with spaces around them. The `state nBases` header has
+        // a second token that is not a number, so the parse skips it.
         let mut it = t.split_whitespace();
         let (Some(state), Some(val)) = (it.next(), it.next()) else {
             continue;
@@ -284,9 +290,10 @@ pub fn parse_callable_summary(text: &str) -> (u64, Vec<ContigCallableMetrics>) {
     (total_callable, out)
 }
 
-/// Assemble a **lite** [`CoverageResult`] from the coverage + callable sidecars. Mean depth
-/// and callable counts are real; median/sd/histogram/`pct_Nx` need the per-base walk and are
-/// left zeroed — the caller records this artifact as `partial` so the deep pass upgrades it.
+/// Build a **light** [`CoverageResult`] from the coverage sidecar and the callable one. The mean
+/// depth and the callable counts are real. The median, the standard deviation, the histogram and
+/// the `pct_Nx` values all need the walk over each base, so they stay at zero. The caller records
+/// this artifact as `partial`, so that the deep pass replaces it later.
 pub fn lite_coverage(coverage_txt: &str, callable_summary: Option<&str>) -> CoverageResult {
     let (mean_coverage, genome_territory, contig_coverage_stats) = parse_samtools_coverage(coverage_txt);
     let (callable_bases, contig_callable) = callable_summary.map(parse_callable_summary).unwrap_or((0, Vec::new()));
@@ -316,10 +323,14 @@ pub fn lite_coverage(coverage_txt: &str, callable_summary: Option<&str>) -> Cove
 
 // ---- samtools flagstat -------------------------------------------------------
 
-/// Parse `samtools flagstat` into a [`ReadMetrics`] — **scalar counts only**. flagstat carries no
-/// read-length / insert-size distributions or mapping quality, so those stay 0 (an alternative
-/// `ReadMetrics` source when `stats.txt` is absent). Lines are `<n> + <qc_failed> <category> [(…)]`;
-/// the first number is the QC-passed count, the category is the text before any `(`.
+/// Parse `samtools flagstat` into a [`ReadMetrics`]. It fills the **scalar counts alone**.
+///
+/// flagstat carries no distribution of the read length or the insert size, and no mapping quality.
+/// Those all stay at 0. Use it as another source of a `ReadMetrics` when `stats.txt` is
+/// absent.
+///
+/// A line reads `<n> + <qc_failed> <category> [(…)]`. The first number is the count that passed
+/// QC, and the category is the text before any `(`.
 pub fn parse_flagstat(text: &str) -> ReadMetrics {
     let mut cats: Vec<(String, u64)> = Vec::new();
     for line in text.lines() {
@@ -328,7 +339,8 @@ pub fn parse_flagstat(text: &str) -> ReadMetrics {
             continue;
         };
         let Ok(n) = n_str.trim().parse::<u64>() else { continue };
-        // rest = "<qc_failed> <category> (pct…)" — drop the qc-failed number, strip the "(…)" tail.
+        // The rest is "<qc_failed> <category> (pct…)". Drop the number of records that failed QC,
+        // and cut the "(…)" off the end.
         let category = rest
             .trim()
             .split_once(char::is_whitespace)
@@ -362,9 +374,10 @@ pub fn parse_flagstat(text: &str) -> ReadMetrics {
 
 // ---- Picard metrics (CollectWgsMetrics / CollectAlignmentSummaryMetrics) ------
 
-/// Parse a Picard metrics table: skip to the header line beginning with `header_key`, then read the
-/// tab-separated data rows until a blank line (Picard appends a histogram section after a blank).
-/// Returns `(headers, rows)`. `None` if the header isn't found.
+/// Parse a metrics table from Picard. It goes forward to the header line that starts with
+/// `header_key`. It then reads the data rows, which have tabs between their fields, until a blank
+/// line. Picard puts a histogram section after that blank line. Returns `(headers, rows)`, and
+/// `None` when it does not find the header.
 fn parse_picard_rows(text: &str, header_key: &str) -> Option<(Vec<String>, Vec<Vec<String>>)> {
     let mut lines = text.lines();
     let header = lines.by_ref().find(|l| l.trim_start().starts_with(header_key))?;
@@ -387,11 +400,16 @@ fn row_map<'a>(keys: &'a [String], row: &'a [String]) -> HashMap<&'a str, &'a st
         .collect()
 }
 
-/// Parse Picard `CollectWgsMetrics` → the genome-wide depth distribution of a [`CoverageResult`]
-/// (mean/median/sd/MAD, the MAPQ/baseQ exclusion fractions, and the `pct_Nx` depth thresholds — the
-/// fields the lite samtools-coverage path leaves at 0). Per-contig stats / histogram stay empty
-/// (Picard is genome-wide); the ingest overlays this onto the lite result's contig breakdown.
-/// Picard `PCT_*` are 0–1 fractions, matching `CoverageResult`'s convention. `None` if no table.
+/// Parse Picard `CollectWgsMetrics`. It fills the genome-wide depth distribution of a
+/// [`CoverageResult`]. That covers the mean, the median, the standard deviation and the MAD. It
+/// also covers the fractions that the MAPQ and baseQ filters removed, and the `pct_Nx` depth
+/// thresholds. Those are the fields that the light path over samtools coverage leaves at 0.
+///
+/// The statistics of each contig, and the histogram, stay empty, because Picard works over the
+/// whole genome. The ingest puts this on top of the contig breakdown of the light result.
+///
+/// The `PCT_*` values of Picard are fractions from 0 to 1, which matches the convention of
+/// `CoverageResult`. Returns `None` when there is no table.
 pub fn parse_wgs_metrics(text: &str) -> Option<CoverageResult> {
     let (keys, rows) = parse_picard_rows(text, "GENOME_TERRITORY")?;
     let row = rows.first()?;
@@ -421,7 +439,7 @@ pub fn parse_wgs_metrics(text: &str) -> Option<CoverageResult> {
 
 /// Parse Picard `CollectAlignmentSummaryMetrics` → a [`ReadMetrics`] (the `PAIR` summary row,
 /// else `UNPAIRED`, else the first). Counts + alignment percentages + mean read length + chimera
-/// rate; read-length / insert-size histograms aren't in this metrics class, so they stay 0. Picard
+/// rate; read-length / insert-size histograms are not in this metrics class, so they stay 0. Picard
 /// `PCT_*` are 0–1 fractions → scaled to the `ReadMetrics` 0–100 convention. `None` if no table.
 pub fn parse_alignment_summary(text: &str) -> Option<ReadMetrics> {
     let (keys, rows) = parse_picard_rows(text, "CATEGORY")?;
@@ -616,14 +634,15 @@ chrY\t1\t500\t20\t400\t80.0\t10.0\t29.0\t40.0
         assert_eq!(c.callable_bases, 16249 + 16627537);
         assert_eq!(c.contig_coverage_stats.len(), 2);
         assert_eq!(c.contig_callable.len(), 2);
-        // Deep-walk-only fields stay zeroed (artifact is flagged partial by the caller).
+        // The fields that need the deep walk stay at zero. The caller marks the artifact
+        // `partial`.
         assert_eq!(c.median_coverage, 0.0);
         assert!(c.coverage_histogram.is_empty());
         assert_eq!(c.pct_10x, 0.0);
     }
 
     /// Real-data smoke test: parse HG00096's actual pipeline sidecars off the NAS. No-ops
-    /// when the share isn't mounted. Run: `cargo test -p navigator-analysis sidecar -- --ignored --nocapture`.
+    /// when the share is not mounted. Run: `cargo test -p navigator-analysis sidecar -- --ignored --nocapture`.
     #[test]
     #[ignore = "reads NAS files; run explicitly"]
     fn real_sidecars_parse() {

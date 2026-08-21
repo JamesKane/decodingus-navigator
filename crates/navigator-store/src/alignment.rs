@@ -83,8 +83,8 @@ pub async fn set_content_hash(pool: &SqlitePool, id: i64, sha256: &str) -> Resul
     Ok(affected > 0)
 }
 
-/// Reparent an alignment to a different sequence run (used by run merge). Just an `UPDATE` of the
-/// FK column — no schema change. Returns whether a row was affected.
+/// Move an alignment to a different sequence run, which the run merge does. It is one `UPDATE` of
+/// the FK column, and it changes no schema. It returns whether it changed a row.
 pub async fn set_sequence_run(pool: &SqlitePool, id: i64, sequence_run_id: i64) -> Result<bool, StoreError> {
     let affected = sqlx::query("UPDATE alignment SET sequence_run_id = ? WHERE id = ?")
         .bind(sequence_run_id)
@@ -121,8 +121,9 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<Alignment>, StoreError> {
     Ok(rows.into_iter().map(Row::into_domain).collect())
 }
 
-/// Update an alignment's descriptive fields (reference build, aligner, variant caller). The
-/// file paths are managed by import/probe, not here. Returns whether a row was affected.
+/// Update an alignment's descriptive fields: the reference build, the aligner, and the variant
+/// caller. The import and the probe own the file paths, and this does not touch them. It returns
+/// whether it changed a row.
 pub async fn update(
     pool: &SqlitePool,
     id: i64,
@@ -142,8 +143,8 @@ pub async fn update(
     Ok(affected > 0)
 }
 
-/// Delete an alignment and its cached analysis artifacts (FKs are enforced, so the
-/// `analysis_artifact` children go first). Returns whether the alignment row was removed.
+/// Delete an alignment and its cached analysis artifacts. The database enforces the FKs, so the
+/// `analysis_artifact` children go first. It returns whether it removed the alignment row.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM analysis_artifact WHERE alignment_id = ?")
@@ -164,8 +165,9 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     Ok(affected > 0)
 }
 
-/// Alignments for several biosamples at once, as `(biosample guid, alignment)` in `alignment.id`
-/// order — one query instead of a [`list_for_biosample`] per member. An empty `guids` yields no query.
+/// The alignments of many biosamples at once, as `(biosample guid, alignment)`, in `alignment.id`
+/// order. It is one query, and not a [`list_for_biosample`] for each member. An empty `guids` runs
+/// no query at all.
 pub async fn list_for_biosamples(
     pool: &SqlitePool,
     guids: &[SampleGuid],
@@ -173,7 +175,8 @@ pub async fn list_for_biosamples(
     if guids.is_empty() {
         return Ok(Vec::new());
     }
-    // The placeholder list is sized from the guid count (never interpolated text); each guid is bound.
+    // The guid count gives the length of the placeholder list, which holds no interpolated text.
+    // The code binds each guid.
     let placeholders = vec!["?"; guids.len()].join(",");
     let cols = COLS
         .split(", ")
@@ -184,8 +187,8 @@ pub async fn list_for_biosamples(
         "SELECT r.biosample_guid, {cols} FROM alignment a JOIN sequence_run r ON a.sequence_run_id = r.id \
          WHERE r.biosample_guid IN ({placeholders}) ORDER BY a.id"
     );
-    // The owning subject rides along with the alignment columns, so one query answers "every
-    // alignment of these subjects, grouped by subject".
+    // The subject that owns the row comes back with the alignment columns. So one query answers
+    // "every alignment of these subjects, grouped by subject".
     #[derive(sqlx::FromRow)]
     struct OwnedRow {
         biosample_guid: String,

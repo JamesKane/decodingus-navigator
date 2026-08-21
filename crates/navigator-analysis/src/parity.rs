@@ -1,11 +1,14 @@
-//! §4c golden-truth parity harness — compares the Rust haploid caller's de-novo SNP
-//! calls against a GATK truth VCF and reports concordance (precision/recall).
+//! The parity harness of §4c, against a golden truth. It compares the de-novo SNP calls of the
+//! Rust haploid caller against a truth VCF from GATK. It then reports the concordance, as a
+//! precision and a recall.
 //!
-//! The v1 caller is SNP-only, so GATK indel/MNP alleles are counted separately and
-//! excluded from the SNP concordance rather than scored as misses — an honest fair
-//! comparison until local realignment lands (plan §4b). This is the cutover gate and
-//! the regression guard for the analysis layer; the comparison logic is pure and
-//! unit-tested, and an ignored test drives it against real GATK output.
+//! The v1 caller handles a SNP alone. So an indel allele, and an MNP allele, from GATK go into
+//! their own count, and they stay out of the SNP concordance. The harness does not score them as
+//! misses. That is an honest comparison, until the local realignment of plan §4b arrives.
+//!
+//! This is the gate of the cutover, and the guard against a regression in the analysis layer. The
+//! comparison logic is pure, and unit tests cover it. A test that carries `#[ignore]` runs it
+//! against real GATK output.
 
 use std::collections::BTreeSet;
 use std::io::BufReader;
@@ -16,8 +19,8 @@ pub use du_bio::vcf::VcfVariant;
 use crate::caller::VariantCall;
 use crate::error::AnalysisError;
 
-/// Parse a (plain-text) truth VCF — e.g. GATK output decompressed with `bgzip -d`.
-/// Reuses the shared `du-bio` variant-column parser.
+/// Parse a truth VCF in plain text, such as GATK output that `bgzip -d` decompressed. It uses the
+/// shared parser of the variant columns, from `du-bio`.
 pub fn parse_truth_vcf(path: &Path) -> Result<Vec<VcfVariant>, AnalysisError> {
     let file = std::fs::File::open(path).map_err(|e| AnalysisError::io(path, e))?;
     du_bio::vcf::parse(BufReader::new(file))

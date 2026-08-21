@@ -90,7 +90,7 @@ pub struct IbdFact {
 
 /// The brief plus curated summaries of the other signals — the grounding context for the M4 chat.
 /// Absent signals are `None` / empty and are simply omitted from the fact sheet (so the model can't
-/// restate what isn't there), exactly like the brief's own optional sections.
+/// restate what is not there), exactly like the brief's own optional sections.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResultsContext {
     pub brief: SubjectBrief,
@@ -300,7 +300,7 @@ pub fn results_fact_sheet(ctx: &ResultsContext) -> String {
         mt_section(&ctx.mt_mutations),
         ibd_section(&ctx.ibd),
         // ROH already reaches the sheet via narrate_fact_sheet (it lives on the brief); the archaic
-        // block does not, so add it explicitly or the chat cannot answer about it.
+        // block does not, so add it explicitly or the chat can not answer about it.
         archaic_section(&ctx.brief),
     ]
     .into_iter()
@@ -452,7 +452,7 @@ mod tests {
         assert!(section.contains("longest 7 Mb"));
         assert!(!mentions_health(&section), "ROH must not read as a health result");
 
-        // Absent when ROH hasn't been computed.
+        // Absent when ROH has not been computed.
         ctx.brief.roh = None;
         assert!(signal_section(&ctx, SignalKind::Roh).is_none());
     }

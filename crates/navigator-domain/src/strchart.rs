@@ -84,7 +84,7 @@ pub enum Deviation {
     Below,
     /// Strictly above the modal value (more repeats).
     Above,
-    /// Differs from the mode but isn't strictly orderable (multi-copy with mixed direction).
+    /// Differs from the mode but is not strictly orderable (multi-copy with mixed direction).
     Differs,
 }
 

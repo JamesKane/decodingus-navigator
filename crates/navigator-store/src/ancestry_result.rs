@@ -1,6 +1,6 @@
-//! Persisted ancestry estimates — one row per (biosample, alignment, panel). Upsert
-//! replaces a re-run of the same panel on the same alignment. The ranked components and
-//! super-population summary are stored as JSON blobs.
+//! Stored ancestry estimates, with one row for each (biosample, alignment, panel) triple. An
+//! upsert replaces a second run of the same panel on the same alignment. The store keeps the ranked
+//! components, and the super-population summary, as JSON blobs.
 
 use du_domain::ids::SampleGuid;
 use navigator_domain::ancestry::{AncestryResult, PopulationComponent, SuperPopulationSummary};
@@ -123,8 +123,8 @@ pub async fn get_for_alignment_method(
     row.map(Row::into_domain).transpose()
 }
 
-/// Delete every ancestry estimate recorded for `alignment_id` (all methods). Used when an
-/// alignment is deleted, so its per-alignment ancestry doesn't outlive it.
+/// Delete every ancestry estimate that the store holds for `alignment_id`, from every method. A
+/// delete of an alignment uses it, so the ancestry of that alignment does not outlive it.
 pub async fn delete_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<(), StoreError> {
     sqlx::query("DELETE FROM ancestry_result WHERE alignment_id = ?")
         .bind(alignment_id)
@@ -133,7 +133,8 @@ pub async fn delete_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Resul
     Ok(())
 }
 
-/// Every ancestry estimate recorded for `alignment_id` (one per method), newest first.
+/// Every ancestry estimate that the store holds for `alignment_id`, one from each method, newest
+/// first.
 pub async fn list_for_alignment(pool: &SqlitePool, alignment_id: i64) -> Result<Vec<AncestryResult>, StoreError> {
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT {SELECT_COLS} FROM ancestry_result WHERE alignment_id = ? ORDER BY id DESC"

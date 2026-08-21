@@ -1,6 +1,6 @@
 //! Genotyping-array (chip) profiles — the QC summary of a vendor raw-data export
 //! (23andMe, AncestryDNA, MyHeritage, …), a pragmatic port of the Scala `ChipProfile`.
-//! We don't keep every genotype (a chip is ~600–700k markers); we keep the call/no-call/
+//! We do not keep every genotype (a chip is ~600–700k markers); we keep the call/no-call/
 //! het summary and per-region counts that drive quality and downstream eligibility.
 //! [`summarize`] is a pure pass over the file text (no IO) that also guesses the vendor.
 
@@ -223,8 +223,8 @@ pub struct ChipHaploCall {
     pub base: char,
 }
 
-/// The single haploid base of a genotype token, or `None` if it's a no-call, an indel
-/// (`I`/`D`), or heterozygous (two different bases — on a true haploid Y/MT that's
+/// The single haploid base of a genotype token, or `None` if it is a no-call, an indel
+/// (`I`/`D`), or heterozygous (two different bases — on a true haploid Y/MT that is
 /// contamination, so we drop it rather than guess).
 fn haploid_base(genotype: &str) -> Option<char> {
     let mut bases = genotype
@@ -337,7 +337,7 @@ pub fn autosomal_calls(text: &str) -> Vec<ChipAutosomalCall> {
 }
 
 /// The reference build a vendor export is reported on. Consumer arrays (23andMe v4/v5,
-/// AncestryDNA v1/v2) are GRCh37, so that's the default; a header naming build 38 / GRCh38 /
+/// AncestryDNA v1/v2) are GRCh37, so that is the default; a header naming build 38 / GRCh38 /
 /// hg38 overrides it. Scans only the comment header.
 pub fn detect_build(text: &str) -> String {
     for raw in text.lines() {

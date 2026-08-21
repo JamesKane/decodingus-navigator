@@ -28,7 +28,8 @@ fn walker_extracts_discordant_pairs_split_reads_and_depth() {
     )
     .expect("walker should succeed");
 
-    // 2 inter-chromosomal (one per mate) + 2 insert-size outliers.
+    // 2 pairs across two chromosomes, one for each mate, and 2 pairs whose insert size is an
+    // outlier.
     assert_eq!(ev.total_discordant_pairs(), 4);
     let inter = ev.inter_chromosomal_pairs();
     assert_eq!(inter.len(), 2);
@@ -55,9 +56,10 @@ fn walker_extracts_discordant_pairs_split_reads_and_depth() {
     assert_eq!(ev.depth_bins["chr2"], vec![1, 0, 0, 0, 0]);
 }
 
-/// The same reads stored as CRAM must yield byte-identical evidence. The walker used to open every
-/// file with the BAM (BGZF) reader, so a CRAM failed at open with "invalid BGZF header" and SV
-/// calling was silently unavailable for every CRAM in the workspace.
+/// The same reads, stored as a CRAM, must give evidence that matches to the last byte. The walker
+/// once opened every file with the BAM reader, which reads BGZF. So a CRAM failed at the open,
+/// with `invalid BGZF header`. Every CRAM in a workspace then had no SV call at all, and nobody saw
+/// it.
 #[test]
 fn walker_reads_cram_with_the_same_result_as_bam() {
     let lengths = BTreeMap::from([("chr1".to_string(), 5000i64), ("chr2".to_string(), 5000)]);
@@ -89,8 +91,9 @@ fn walker_reads_cram_with_the_same_result_as_bam() {
     assert_eq!(from_cram.total_discordant_pairs(), from_bam.total_discordant_pairs());
     assert_eq!(from_cram.total_split_reads(), from_bam.total_split_reads());
 
-    // Compare the evidence itself, not just the counts — the split read carries the fields that
-    // come from the accessors CRAM implements differently (SA tag, CIGAR clip length).
+    // Compare the evidence itself, and not the counts alone. The split read carries the fields
+    // that come from the accessors that a CRAM implements in a different way. Those are the SA tag
+    // and the clip length of the CIGAR.
     let (b, c) = (&from_bam.split_reads[0], &from_cram.split_reads[0]);
     assert_eq!(
         (c.clip_length, &c.supp_chrom, c.supp_pos, c.primary_pos),
@@ -108,10 +111,15 @@ fn walker_reads_cram_with_the_same_result_as_bam() {
     assert_eq!(placed(&from_cram), placed(&from_bam));
 }
 
-/// The per-contig parallel fan-out must be a pure speedup: identical depth bins, discordant pairs
-/// and split reads, in identical order. SV was the last whole-genome analysis still decoding on one
-/// thread (2–5 h per 30x CRAM in a batch), so the fan-out is only worth having if it changes nothing
-/// but the wall clock. Run over BAM *and* CRAM — they take different decode paths into the same sink.
+/// The parallel fan-out over the contigs must give speed and nothing else. The depth bins, the
+/// discordant pairs and the split reads must all match, and they must come in the same order.
+///
+/// SV was the last analysis over the whole genome that still decoded on one thread, at 2 to 5 h for
+/// each 30x CRAM in a batch. So the fan-out is worth its code only when it changes the wall time
+/// and nothing more.
+///
+/// This runs over a BAM *and* over a CRAM. The two take different decode paths into the same
+/// sink.
 #[test]
 fn parallel_walk_matches_sequential_on_bam_and_cram() {
     let lengths = BTreeMap::from([("chr1".to_string(), 5000i64), ("chr2".to_string(), 5000)]);
@@ -120,8 +128,9 @@ fn parallel_walk_matches_sequential_on_bam_and_cram() {
 
     for (file, reference) in cases {
         let path = fixtures().join(file);
-        // Without an index the parallel entry point falls back to the sequential walk, which would
-        // make this test compare a walk against itself and pass no matter what the fan-out does.
+        // With no index, the parallel entry point falls back to the sequential walk. This test
+        // would then compare a walk against itself, and it would pass whatever the fan-out
+        // does.
         assert!(
             navigator_analysis::reader::has_region_index(&path),
             "{file} needs its .bai/.crai for this test to exercise the parallel path"
@@ -154,10 +163,11 @@ fn parallel_walk_matches_sequential_on_bam_and_cram() {
     }
 }
 
-/// The evidence cap must truncate what is *retained* without falsifying what was *found*. A cap
-/// that quietly lowered `total_discordant_pairs` would make a truncated run read as a clean sample,
-/// which is the one failure mode a safety valve must not have. Exercised on both walks, since each
-/// claims against the shared budget separately.
+/// The evidence cap must cut short what the code *keeps*, and it must not change what the code
+/// *found*. A cap that lowered `total_discordant_pairs`, where nobody saw it, would make a run that
+/// the cap cut short read as a clean sample. That is the one failure that a safety valve must not
+/// have. This test covers both walks, because each one claims against the shared budget on its
+/// own.
 #[test]
 fn evidence_cap_truncates_retained_evidence_but_not_the_reported_totals() {
     let lengths = BTreeMap::from([("chr1".to_string(), 5000i64), ("chr2".to_string(), 5000)]);
@@ -187,7 +197,8 @@ fn evidence_cap_truncates_retained_evidence_but_not_the_reported_totals() {
         assert_eq!(ev.discordant_pairs.len(), 1, "parallel={parallel} retained");
         assert_eq!(ev.discordant_pairs_dropped, 3, "parallel={parallel} dropped");
         assert_eq!(ev.total_discordant_pairs(), 4, "parallel={parallel} reported total");
-        // Only 1 split read exists, so its cap is met exactly and nothing is dropped.
+        // There is only 1 split read. So its count reaches the cap exactly, and the code drops
+        // nothing.
         assert_eq!(ev.split_reads.len(), 1, "parallel={parallel} split retained");
         assert_eq!(ev.split_reads_dropped, 0, "parallel={parallel} split dropped");
         // Depth bins are not evidence records and are never capped.

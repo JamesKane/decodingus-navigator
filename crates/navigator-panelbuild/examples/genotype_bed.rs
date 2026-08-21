@@ -53,9 +53,10 @@ fn main() -> anyhow::Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    // genotype_sites_all_contigs returns genotypes REORDERED (per-contig), so we must key each
-    // returned genotype to its rsID by (contig,position) — NOT by input order. Zipping with `rsids`
-    // would mislabel every genotype (only ~14% would land on the right rsID).
+    // `genotype_sites_all_contigs` returns the genotypes in a NEW ORDER, grouped by contig. So the
+    // code must key each returned genotype to its rsID by (contig,position), and NOT by the input
+    // order. A zip with `rsids` would give almost every genotype a wrong label, and only about 14%
+    // would reach the correct rsID.
     let rsid_at: std::collections::HashMap<(&str, i64), &str> = sites
         .iter()
         .zip(&rsids)

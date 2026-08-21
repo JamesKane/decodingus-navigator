@@ -1,12 +1,16 @@
-//! Depth segmenter — port of the Scala `DepthSegmenter`. Z-score CNV detection: expected
-//! reads/bin from coverage, Poisson-ish variance, greedy extension of aberrant runs
-//! (tolerating short dips), size filter, then merge + conversion to SV calls.
+//! The depth segmenter. It is the port of the Scala `DepthSegmenter`. It finds a CNV from a
+//! z-score.
+//!
+//! The coverage gives the count of reads that each bin expects. The variance is near that of a
+//! Poisson. The code then extends a run of bins that differ from the expectation, greedily, and it
+//! accepts a short dip inside such a run. It filters by size, merges the runs that stay, and turns
+//! them into SV calls.
 
 use super::evidence::DepthSegment;
 use super::types::{SvCall, SvCallerConfig, SvType};
 use std::collections::BTreeMap;
 
-/// Segment per-contig depth bins into CNV `DepthSegment`s.
+/// Turn the depth bins of each contig into CNV `DepthSegment` values.
 pub fn segment(
     depth_bins: &BTreeMap<String, Vec<u32>>,
     contig_lengths: &BTreeMap<String, i64>,
@@ -52,7 +56,8 @@ pub fn segment(
             let mut sum_z = z;
             let mut sum_depth = bins[i] as f64;
 
-            // Extend while the next bin is on the same side, or short dips are bridged.
+            // Extend while the next bin lies on the same side. A short dip does not stop the
+            // extension, and the run goes over it.
             loop {
                 let end_bin = start_bin + count - 1;
                 if end_bin + 1 >= z_scores.len() {
@@ -113,7 +118,8 @@ pub fn segment(
     segments
 }
 
-/// Merge nearby same-type segments (default gap 50 kb), weighting by bin count.
+/// Merge two segments of the same type that lie near each other. The default gap is 50 kb. The
+/// count of bins gives the weight.
 pub fn merge_nearby_segments(segments: &[DepthSegment], max_gap: i64) -> Vec<DepthSegment> {
     if segments.is_empty() {
         return Vec::new();

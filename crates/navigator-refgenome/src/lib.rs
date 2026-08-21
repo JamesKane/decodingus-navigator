@@ -1,10 +1,12 @@
 //! Reference-genome + liftover-chain asset retrieval and on-disk cache (plan §4f).
 //!
-//! Resolves a reference *build* (e.g. `chm13v2.0`) to a usable local file: a decompressed,
-//! `.fai`-indexed FASTA, fetched + cached on a miss. Also caches UCSC liftover chains for
-//! `du-bio` to parse. Indexing is in-Rust (`noodles::fasta::fs::index`) — no samtools/GATK.
+//! It resolves a reference *build*, such as `chm13v2.0`, to a local file that the app can use.
+//! That file is a decompressed FASTA with a `.fai` index. On a cache miss it fetches the file and
+//! caches it. It also caches the UCSC liftover chains, for `du-bio` to parse. The index step is
+//! pure Rust, through `noodles::fasta::fs::index`, so it needs no samtools and no GATK.
 //!
-//! Layered below `navigator-app`; depends only on `du-bio` + reqwest/noodles/flate2.
+//! This crate sits below `navigator-app`. It depends on `du-bio` alone, plus reqwest, noodles, and
+//! flate2.
 
 pub mod cache;
 pub mod download;

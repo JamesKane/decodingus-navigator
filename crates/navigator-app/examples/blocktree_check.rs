@@ -1,6 +1,8 @@
-//! Throwaway validation for the project block tree: run `App::project_block_tree` against the live
-//! workspace and print the result as an indented tree. Proves the real data path — tree fetch, name
-//! index, induced subtree, collapse — on an actual multi-thousand-member cohort.
+//! A temporary check for the project block tree. It calls `App::project_block_tree` on the live
+//! workspace and prints the result as a tree with an indent for each level.
+//!
+//! The check covers the real data path on a cohort with some thousands of members. That path is the
+//! tree fetch, the name index, the induced subtree, and the collapse step.
 //!
 //! ```bash
 //! cargo run -p navigator-app --example blocktree_check -- <project_id>
@@ -71,8 +73,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Split the unplaced: "no placement at all" is expected (STR-only kits), but "has a terminal
-    // this tree doesn't carry" is provider/build skew worth naming.
+    // Separate the two groups of subjects with no place in the tree. A subject with no placement
+    // is normal, because an STR-only kit has none. The second group has a terminal node that this
+    // tree does not hold. That group shows a difference between the provider and the build, and
+    // the report must give its count.
     let (skew, unplaced_none): (Vec<_>, Vec<_>) = tree.unplaced.iter().partition(|u| u.terminal.is_some());
     println!(
         "unplaced: {} with no Y placement · {} with a terminal absent from this tree",
@@ -89,7 +93,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // Pre-order with depth as indent is exactly how the aggregate is ordered, so this prints itself.
+    // The aggregate is already in pre-order, and the depth gives the indent. So the code prints
+    // the rows in the order that it receives them.
     for b in tree.blocks.iter().take(60) {
         let indent = "  ".repeat(b.depth);
         let folded = if b.collapsed.is_empty() {

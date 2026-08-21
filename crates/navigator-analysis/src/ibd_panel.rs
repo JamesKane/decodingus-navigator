@@ -1,17 +1,24 @@
-//! Multi-build, chip-compatible IBD reference panel (ancestry-ibd-asset-wiring B2/B2c).
+//! The IBD reference panel. It covers more than one build, and a chip can use it. See the
+//! ancestry-ibd asset design, B2 and B2c.
 //!
-//! IBD matching needs a neutral, dense SNP set that's also **assayed by consumer arrays** — chip
-//! kits outnumber WGS by orders of magnitude, so the panel must be where chip and WGS overlap.
-//! Each site carries its `(contig, pos, REF, ALT)` on **CHM13, GRCh37, and GRCh38** (built once via
-//! allele-aware GATK liftover, offline), so a chip genotype on *any* build resolves to the canonical
-//! CHM13 site + orientation with **no runtime liftover** — the panel pre-computes it.
+//! IBD matching needs a neutral, dense set of SNPs that a **consumer array also assays**. Chip kits
+//! outnumber WGS runs by orders of magnitude, so the panel must sit where a chip and a WGS run
+//! overlap.
 //!
-//! Two correctness rules:
-//! - The per-build loci carry the **same biological alleles** (GATK reverse-complements / swaps
-//!   REF↔ALT on inverted chain blocks), so "count of that build's ALT" == "count of the CHM13 ALT".
-//!   The dosage is therefore build-agnostic.
-//! - **Strand-ambiguous palindromes (A/T, C/G) are excluded** ([`is_palindromic`]) — `rc(A)=T` is
-//!   also a valid allele, so a chip's strand can't be disambiguated by allele comparison.
+//! Each site carries its `(contig, pos, REF, ALT)` on **CHM13, GRCh37 and GRCh38**. An offline
+//! GATK liftover that knows about alleles builds those once. So a chip genotype on *any* build
+//! resolves to the canonical CHM13 site, with its orientation. The app needs **no liftover at run
+//! time**, because the panel already holds the answer.
+//!
+//! Two rules keep this correct:
+//!
+//! - The locus of each build carries the **same biological alleles**. On an inverted chain block,
+//!   GATK takes the reverse complement, and it exchanges REF with ALT. The count of the ALT of
+//!   that build then equals the count of the CHM13 ALT. The dosage does not depend on the
+//!   build.
+//! - The panel **leaves out a palindrome that is ambiguous about the strand**, which is A/T or
+//!   C/G. See [`is_palindromic`]. There `rc(A)=T` is also a correct allele, so a comparison of the
+//!   alleles can not tell you the strand of a chip.
 
 use std::collections::HashMap;
 
@@ -76,11 +83,16 @@ impl IbdPanel {
         bincode::serialize(self).map_err(|e| AnalysisError::Message(format!("ibd panel encode: {e}")))
     }
 
-    /// Build from sites, **retaining** strand-ambiguous palindromes (A/T, C/G). The panel is a probe
-    /// superset: WGS + ancestry genotype palindromic sites fine (a read gives the reference-strand
-    /// base), and only the CHIP path can't orient them — so [`resolve_chip`] skips palindromes at
-    /// resolve time rather than excluding them from the panel here. Returns `(panel, n_palindromic)`
-    /// (the retained palindrome count, for the build log).
+    /// Build from a set of sites, and **keep** a palindrome that is ambiguous about the strand,
+    /// which is A/T or C/G.
+    ///
+    /// The panel is a superset of probes. A WGS run and the ancestry path genotype a palindromic
+    /// site without trouble, because a read gives the base on the reference strand. The CHIP path
+    /// alone can not orient one. So [`resolve_chip`] skips a palindrome when it resolves, and this
+    /// function does not remove one from the panel.
+    ///
+    /// Returns `(panel, n_palindromic)`, where the second value is the count of palindromes that
+    /// stayed, for the build log.
     pub fn from_sites(build: impl Into<String>, sites: Vec<IbdPanelSite>) -> (Self, usize) {
         let palindromic = sites
             .iter()
@@ -95,18 +107,25 @@ impl IbdPanel {
         )
     }
 
-    /// Resolve chip calls (on `build`, as `(contig, pos, a1, a2)`) to canonical CHM13 dosages.
-    /// Indexes the panel by the build's `(contig, position)`, then counts copies of the **canonical
-    /// CHM13 ALT** directly from each observed pair — direct or reverse-complement
-    /// ([`dosage_from_alleles`]) — and emits it as a [`SiteGenotype`] at the CHM13 locus. No runtime
-    /// liftover; no alignment. Unmatched / no-call / non-reconciling calls are dropped.
+    /// Resolve the chip calls, which are on `build` and come as `(contig, pos, a1, a2)`, to
+    /// canonical CHM13 dosages.
     ///
-    /// We deliberately score against the **CHM13** `(REF, ALT)`, not the build locus's: chip allele
-    /// letters are absolute, and the asset's per-build `(REF, ALT)` labels are *not* reliably oriented
-    /// to the CHM13 ALT (a large fraction are ref/alt-swapped relative to CHM13 — the GRCh37 reference
-    /// allele is often the CHM13 ALT), so scoring against the build ALT flips the dosage 0↔2 at those
-    /// sites. Comparing the chip alleles to the CHM13 alleles (with the rc retry for strand) is
-    /// orientation-bug-proof; the build locus is used only to look the site up by position.
+    /// It indexes the panel by the `(contig, position)` of that build. It then counts the copies of
+    /// the **canonical CHM13 ALT** straight from each observed pair, either directly or through the
+    /// reverse complement. See [`dosage_from_alleles`]. It emits the result as a [`SiteGenotype`]
+    /// at the CHM13 locus. There is no liftover at run time, and no alignment. It drops a call that
+    /// does not match a site, a no-call, and a call that does not reconcile.
+    ///
+    /// The score goes against the **CHM13** `(REF, ALT)`, and not against the locus of the build.
+    /// That is deliberate. The allele letters of a chip are absolute. But the `(REF, ALT)` labels
+    /// of each build, in the asset, do not reliably point to the CHM13 ALT. A large share of them
+    /// have REF and ALT the other way round, and the reference allele of GRCh37 is often the CHM13
+    /// ALT. At those sites, a score against the ALT of the build turns the dosage from 0 to 2, and
+    /// from 2 to 0.
+    ///
+    /// A comparison of the chip alleles against the CHM13 alleles, with the reverse-complement
+    /// retry for the strand, can not go wrong that way. The locus of the build has one use: to look
+    /// the site up by position.
     pub fn resolve_chip(&self, build: &str, calls: &[(String, i64, char, char)]) -> Vec<SiteGenotype> {
         let mut index: HashMap<(&str, i64), &IbdPanelSite> = HashMap::new();
         for s in &self.sites {
@@ -119,9 +138,10 @@ impl IbdPanel {
             let Some(site) = index.get(&(contig.as_str(), *pos)) else {
                 continue;
             };
-            // Strand-ambiguous palindromes (A/T, C/G) can't be oriented from a chip's reported
-            // alleles — skip them for the chip path (WGS/ancestry still use them via direct base
-            // calls). The probe panel retains them; this is where the chip-only exclusion lives.
+            // Take a palindrome that is ambiguous about the strand, which is A/T or C/G. The
+            // reported alleles of a chip give it no orientation. So skip it on the chip path. A
+            // WGS run and the ancestry path still use it, from a direct base call. The probe panel
+            // keeps it, and this line is where the chip path alone leaves it out.
             if is_palindromic(site.chm13.reference, site.chm13.alternate) {
                 continue;
             }
@@ -133,18 +153,26 @@ impl IbdPanel {
         out
     }
 
-    /// Resolve a **whole-genome, variant-only** source (a WGS VCF or CompleteGenomics masterVar) to
-    /// canonical CHM13 dosages over the panel. Unlike a chip — which reports a genotype at every
-    /// array site — such a source lists *only* the non-reference sites, so every panel site the
-    /// source could have called but didn't is taken as **homozygous reference** (dosage 0). That
-    /// assumption is valid **only** for a source that genotyped the whole genome (absent ⇒ hom-ref,
-    /// not no-call); never pass a targeted panel (Big Y / Sanger) here.
+    /// Resolve a source that covers the **whole genome and lists variants alone** to canonical
+    /// CHM13 dosages over the panel. A WGS VCF and a CompleteGenomics masterVar are such
+    /// sources.
     ///
-    /// `variant_calls` are the source's variant sites on `build` as `(contig, pos, a1, a2)`
-    /// reference-forward allele pairs. Contigs match `chr`-insensitively (a source's `chr1` lines up
-    /// with a panel `grch37` locus stored as `1`). A variant whose alleles don't reconcile to the
-    /// site (multiallelic mismatch) is dropped, not mis-called hom-ref. Palindromic (A/T, C/G) sites
-    /// are skipped — strand-ambiguous across builds, exactly as [`resolve_chip`].
+    /// A chip reports a genotype at every array site. Such a source instead lists *only* the sites
+    /// that are not reference. So every panel site that the source could have called, and did not,
+    /// counts as **homozygous reference**, at dosage 0.
+    ///
+    /// That assumption holds **only** for a source that genotyped the whole genome, where an
+    /// absent site means hom-ref and not a no-call. Never give this function a targeted panel,
+    /// such as a Big Y or a Sanger run.
+    ///
+    /// `variant_calls` holds the variant sites of the source on `build`, as `(contig, pos, a1, a2)`
+    /// allele pairs, forward on the reference. A contig matches whatever `chr` prefix it carries,
+    /// so a `chr1` from the source lines up with a `grch37` panel locus stored as `1`.
+    ///
+    /// A variant whose alleles do not reconcile to the site, which is a mismatch at a site with
+    /// more than two alleles, goes away. The code does not call it hom-ref by mistake. It also
+    /// skips a palindromic site, A/T or C/G, because that site is ambiguous about the strand across
+    /// builds, exactly as in [`resolve_chip`].
     pub fn resolve_whole_genome(&self, build: &str, variant_calls: &[(String, i64, char, char)]) -> Vec<SiteGenotype> {
         let norm = crate::contig::bare_upper;
         let variants: HashMap<(String, i64), (char, char)> = variant_calls
@@ -172,16 +200,24 @@ impl IbdPanel {
         out
     }
 
-    /// Re-key genotypes taken at **this build's** loci back to canonical CHM13 dosages. The caller
-    /// genotypes a non-CHM13 alignment's BAM at each site's `locus(build)` (that build's
-    /// contig/pos/REF/ALT); the resulting `dosage` counts the *build* ALT. Because the per-build
-    /// REF/ALT are often swapped relative to CHM13 (see [`resolve_chip`]), we reconstruct the observed
-    /// alleles from that dosage and re-score them against the **CHM13** REF/ALT (direct or
-    /// reverse-complement), emitting each at its CHM13 locus with the alignment's depth/GQ preserved.
-    /// Palindromes (A/T, C/G) are skipped — strand-ambiguous across builds, exactly as the chip and
-    /// whole-genome resolvers. This is the alignment analogue of [`resolve_chip`], and it lets a
-    /// GRCh37/GRCh38 WGS reach the CHM13-coordinate ancestry panel without a runtime liftover (the
-    /// panel already carries every build's coordinates).
+    /// Take genotypes that the caller made at the loci of **this build**, and key them back to
+    /// canonical CHM13 dosages.
+    ///
+    /// The caller genotypes the BAM of an alignment that is not on CHM13. It works at the
+    /// `locus(build)` of each site, which holds the contig, the position, the REF and the ALT of
+    /// that build. The `dosage` that comes back counts the ALT of the *build*.
+    ///
+    /// The REF and ALT of a build are often the other way round from CHM13. See [`resolve_chip`].
+    /// So this function builds the observed alleles again from that dosage. It scores them against
+    /// the **CHM13** REF and ALT, either directly or through the reverse complement. It emits each
+    /// one at its CHM13 locus, with the depth and the GQ of the alignment.
+    ///
+    /// It skips a palindrome, A/T or C/G. That site is ambiguous about the strand across builds,
+    /// exactly as in the chip resolver and the whole-genome one.
+    ///
+    /// This is the counterpart of [`resolve_chip`] for an alignment. It lets a GRCh37 or GRCh38 WGS
+    /// run reach the ancestry panel, whose coordinates are CHM13, with no liftover at run time. The
+    /// panel already carries the coordinates of every build.
     pub fn resolve_alignment(&self, build: &str, genotypes: &[SiteGenotype]) -> Vec<SiteGenotype> {
         let norm = crate::contig::bare_upper;
         let mut index: HashMap<(String, i64), &IbdPanelSite> = HashMap::new();
@@ -201,8 +237,9 @@ impl IbdPanel {
             if is_palindromic(site.chm13.reference, site.chm13.alternate) {
                 continue;
             }
-            // The genotype was called against the build REF/ALT (g.reference_allele/g.alternate_allele).
-            // Reconstruct the observed diploid alleles from the dosage, then re-score vs the CHM13 alleles.
+            // The caller made this genotype against the REF and ALT of the build, which are
+            // g.reference_allele and g.alternate_allele. Build the observed diploid alleles again
+            // from the dosage, and then score them against the CHM13 alleles.
             let br = g.reference_allele.chars().next().unwrap_or('N');
             let ba = g.alternate_allele.chars().next().unwrap_or('N');
             let (a1, a2) = match g.dosage {
@@ -233,8 +270,8 @@ impl IbdPanel {
         out
     }
 
-    /// The canonical CHM13 `(contig, position)` sites — the targets a WGS caller genotypes so its
-    /// dosages line up with the chip path.
+    /// The canonical CHM13 `(contig, position)` sites. A WGS caller genotypes these targets, and
+    /// its dosages then line up with those of the chip path.
     pub fn chm13_sites(&self) -> Vec<(&str, i64)> {
         self.sites
             .iter()
@@ -243,8 +280,9 @@ impl IbdPanel {
     }
 }
 
-/// Build a diploid [`SiteGenotype`] at a panel site's canonical CHM13 locus with the given alt
-/// dosage — the shared emit for the chip and whole-genome resolvers (no depth/quality; dosage only).
+/// Build a diploid [`SiteGenotype`] at the canonical CHM13 locus of a panel site, with the given
+/// alt dosage. The chip resolver and the whole-genome one share this. It carries no depth and no
+/// quality, and the dosage alone.
 fn panel_site_genotype(site: &IbdPanelSite, dosage: i32) -> SiteGenotype {
     SiteGenotype {
         name: site.rsid.clone(),
@@ -264,8 +302,9 @@ fn panel_site_genotype(site: &IbdPanelSite, dosage: i32) -> SiteGenotype {
     }
 }
 
-/// Whether `(a, b)` is a strand-ambiguous palindrome (A/T or C/G) — excluded from a chip-compatible
-/// panel because reverse-complement can't disambiguate the array's strand.
+/// True when `(a, b)` is a palindrome that is ambiguous about the strand, which is A/T or C/G. A
+/// panel that a chip can use leaves those out, because the reverse complement can not tell you the
+/// strand of the array.
 pub fn is_palindromic(a: char, b: char) -> bool {
     matches!(
         (a.to_ascii_uppercase(), b.to_ascii_uppercase()),
@@ -324,8 +363,9 @@ mod tests {
 
     #[test]
     fn resolve_chip_same_and_opposite_strand() {
-        // rs1: GRCh37 1:500 A/G (same alleles as CHM13 chr1:100 A/G).
-        // rs2: GRCh37 1:600 T/C — CHM13 chr1:200 A/G (a strand flip: GRCh37 alleles are rc).
+        // rs1: GRCh37 1:500 A/G, which holds the same alleles as CHM13 chr1:100 A/G.
+        // rs2: GRCh37 1:600 T/C, against CHM13 chr1:200 A/G. That is a strand flip, and the GRCh37
+        // alleles are the reverse complement.
         let (panel, _) = IbdPanel::from_sites(
             "chm13v2.0",
             vec![
@@ -333,7 +373,8 @@ mod tests {
                 site("rs2", (200, 'A', 'G'), Some((600, 'T', 'C'))),
             ],
         );
-        // Chip on GRCh37: rs1 het AG → dosage 1; rs2 het TC → reconciles via rc → dosage 1.
+        // A chip on GRCh37. rs1 is het AG, so the dosage is 1. rs2 is het TC. That reconciles
+        // through the reverse complement, so its dosage is 1 too.
         let calls = vec![
             ("1".to_string(), 500, 'A', 'G'),
             ("1".to_string(), 600, 'T', 'C'),
@@ -350,9 +391,11 @@ mod tests {
 
     #[test]
     fn resolve_chip_ref_alt_swapped_against_chm13() {
-        // The asset's GRCh37 locus is ref/alt-SWAPPED vs CHM13: chm13 chr1:100 G/T (ALT=T) but
-        // grch37 1:500 T/G (ALT=G). A chip hom for G is hom-CHM13-REF → dosage 0. Scoring against the
-        // build ALT (G) would wrongly give 2; scoring against the CHM13 ALT (T) gives the correct 0.
+        // The GRCh37 locus of the asset has REF and ALT the OTHER WAY ROUND from CHM13. CHM13
+        // chr1:100 is G/T, with ALT=T. GRCh37 1:500 is T/G, with ALT=G. A chip that is hom for G is
+        // then hom for the CHM13 REF, and the dosage is 0. A score against the ALT of the build,
+        // which is G, would wrongly give 2. A score against the CHM13 ALT, which is T, gives the
+        // correct 0.
         let (panel, _) = IbdPanel::from_sites(
             "chm13v2.0",
             vec![site("rs_swap", (100, 'G', 'T'), Some((500, 'T', 'G')))],
@@ -391,8 +434,9 @@ mod tests {
                 site("rs3", (300, 'A', 'T'), Some((700, 'A', 'T'))), // palindrome — always skipped
             ],
         );
-        // A whole-genome source that lists ONLY rs1 as a het (GRCh37 forward alleles T/C, contig
-        // "chr1" to prove chr-insensitive matching). rs2 is unlisted ⇒ hom-ref; rs3 skipped.
+        // A whole-genome source that lists ONLY rs1, as a het. Its GRCh37 forward alleles are
+        // T/C. Its contig is "chr1", which shows that the match ignores the `chr` prefix. rs2 is
+        // not in the list, so it is hom-ref. The code skips rs3.
         let calls = vec![("chr1".to_string(), 500, 'T', 'C')];
         let g = panel.resolve_whole_genome("GRCh37", &calls);
         let by_pos: std::collections::HashMap<i64, i32> = g.iter().map(|s| (s.position, s.dosage)).collect();
@@ -411,9 +455,13 @@ mod tests {
                 site("rs2", (200, 'C', 'T'), Some((600, 'C', 'T'))),
             ],
         );
-        // rs1 hom-alt (G/G → dosage 2); rs2 listed but the alleles are internally inconsistent with
-        // the biallelic site: C matches ref directly, A only matches alt(T) under rc — neither a
-        // pure direct nor a pure rc pair, so it doesn't reconcile → dropped, NOT called hom-ref.
+        // rs1 is hom-alt, G/G, so its dosage is 2.
+        //
+        // The rs2 record is in the list, but its alleles do not agree with the site, which has two
+        // alleles. C matches the ref directly. A matches the
+        // alt, T, only under the reverse complement. The pair is then neither a pure direct match
+        // nor a pure reverse-complement one. It does not reconcile. The code drops it, and it does
+        // NOT call it hom-ref.
         let calls = vec![("1".to_string(), 500, 'G', 'G'), ("1".to_string(), 600, 'C', 'A')];
         let g = panel.resolve_whole_genome("GRCh37", &calls);
         let by_pos: std::collections::HashMap<i64, i32> = g.iter().map(|s| (s.position, s.dosage)).collect();
@@ -471,8 +519,10 @@ mod tests {
             site_b("rs_pal", (300, 'A', 'T'), ("chr1", 700, 'A', 'T'), "38"),
         ];
         let (panel, _) = IbdPanel::from_sites("chm13v2.0", sites);
-        // Genotypes at the grch38 loci (build-oriented dosage):
-        // rs1 het → chm13 dosage 1; rs_swap hom grch38-ALT (G/G) — G is the CHM13 REF → chm13 dosage 0.
+        // The genotypes at the grch38 loci, whose dosage points at the build.
+        //
+        // rs1 is het, so the CHM13 dosage is 1. rs_swap is hom for the grch38 ALT, which is G/G. G
+        // is the CHM13 REF, so the CHM13 dosage is 0.
         let raw = vec![
             geno("rs1", "chr1", 500, "A", "G", 1),
             geno("rs_swap", "chr1", 600, "T", "G", 2),
@@ -504,7 +554,7 @@ mod tests {
             (out[0].position, out[0].dosage, out[0].contig.as_str()),
             (100, 2, "chr1")
         );
-        // A no-call (dosage < 0) is dropped.
+        // The code drops a no-call, which is a dosage below 0.
         assert!(panel
             .resolve_alignment("GRCh37", &[geno("rs1", "1", 500, "A", "G", -1)])
             .is_empty());

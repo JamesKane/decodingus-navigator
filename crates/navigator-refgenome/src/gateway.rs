@@ -1,6 +1,9 @@
-//! The reference gateway: resolves a build name → a cached, decompressed, indexed FASTA
-//! (fetching on a miss), and caches liftover chains for `du-bio` to parse. Cheap to clone
-//! (the app holds one). Per-key locks prevent concurrent double-downloads.
+//! The reference gateway. It resolves a build name to a cached FASTA, in plain text, with an
+//! index, and it fetches that file on a cache miss. It also caches liftover chains, for `du-bio`
+//! to parse.
+//!
+//! It is low-cost to clone, and the app holds one. A lock on each key stops two downloads of the
+//! same file at the same time.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -26,13 +29,14 @@ pub enum RefStatus {
     Unknown,
 }
 
-/// Result of [`ReferenceGateway::verify_reference`] — re-hashing a cached reference against its
-/// integrity sidecar.
+/// The result of [`ReferenceGateway::verify_reference`], which hashes a cached reference again and
+/// compares it against the integrity sidecar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyOutcome {
     /// The cached file's SHA-256 matches its recorded sidecar.
     Verified,
-    /// The cached file's hash differs from the sidecar — likely on-disk corruption.
+    /// The cached file's hash is not the one in the sidecar. The file on disk is probably
+    /// corrupt.
     Mismatch { expected: String, got: String },
     /// Cached, but no sidecar to check against (e.g. a user-pinned local FASTA, or pre-dates this).
     NoSidecar,
@@ -40,10 +44,12 @@ pub enum VerifyOutcome {
     NotCached,
 }
 
-/// A tree position lifted to another build: the original `tree_pos` plus its `(contig, pos)`
-/// in the target build (all 1-based). `reverse` is true when the target chain is on the minus
-/// strand — the caller must reverse-complement the base it reads there (large tracts of the
-/// CHM13 Y are inverted relative to GRCh38).
+/// A tree position, lifted to another build. It holds the original `tree_pos`, and the
+/// `(contig, pos)` in the target build. All of these are 1-based.
+///
+/// `reverse` is true when the target chain is on the minus strand. The caller must then
+/// reverse-complement the base that it reads there. Large tracts of the CHM13 Y run in the
+/// opposite direction from GRCh38.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiftedPos {
     pub tree_pos: i64,
@@ -90,9 +96,9 @@ impl ReferenceGateway {
         self.base.join("config").join("reference_sources.json")
     }
 
-    /// A registry over the **current** on-disk overrides — re-read each call so edits made via the
-    /// Settings UI apply without rebuilding the gateway. Resolution is per-analysis, so the small
-    /// JSON read is negligible.
+    /// A registry over the **current** overrides on disk. Every call reads them again, so an edit
+    /// in the Settings UI applies with no rebuild of the gateway. One resolve happens for each
+    /// analysis, so the small JSON read costs nothing that matters.
     fn registry(&self) -> Registry {
         Registry::new(UserConfig::load(&self.config_path()))
     }
@@ -104,7 +110,8 @@ impl ReferenceGateway {
             .clone()
     }
 
-    /// Cache/override status of a build — no I/O beyond a stat, never downloads.
+    /// The cache and override status of a build. It does no I/O beyond a stat, and never
+    /// downloads.
     pub fn reference_status(&self, build_name: &str) -> RefStatus {
         let Some(build) = canonical_build(build_name) else {
             return RefStatus::Unknown;
@@ -127,7 +134,8 @@ impl ReferenceGateway {
         }
     }
 
-    /// The cached/overridden reference path, or `None` if a download would be required.
+    /// The reference path from the cache or the override. It gives `None` when the app would have
+    /// to download the file.
     pub fn cached_reference(&self, build_name: &str) -> Option<PathBuf> {
         match self.reference_status(build_name) {
             RefStatus::Cached(p) | RefStatus::LocalOverride(p) => Some(p),
@@ -135,8 +143,9 @@ impl ReferenceGateway {
         }
     }
 
-    /// Resolve a build to a usable indexed `.fa`, downloading + decompressing + indexing on a
-    /// miss. `progress(received, total)` is called as bytes arrive during any download.
+    /// Resolve a build to an indexed `.fa` that the app can use. On a cache miss it downloads the
+    /// file, decompresses it, and indexes it. It calls `progress(received, total)` as the bytes
+    /// arrive during any download.
     pub async fn resolve_reference(
         &self,
         build_name: &str,
@@ -169,7 +178,7 @@ impl ReferenceGateway {
         Ok(fa)
     }
 
-    /// Resolve a liftover chain to a cached `.chain` file, downloading on a miss.
+    /// Resolve a liftover chain to a cached `.chain` file. It downloads on a cache miss.
     pub async fn resolve_chain(
         &self,
         from_name: &str,
@@ -196,17 +205,19 @@ impl ReferenceGateway {
         let sha = download::download(&self.http, &src.url, &path, progress).await?;
         verify_pinned(&path, src.sha256.as_deref(), &sha)?; // verify the artifact exactly as served
 
-        // The cache stores chains as plain text (`load_liftover` reads them with `read_to_string`).
-        // Every chain flows through the same path: if the downloaded artifact is gzipped (UCSC
-        // serves `.over.chain.gz`; the curated bucket serves plain `.chain`), decompress it in place
-        // — detected by the gzip magic bytes, so the source URL/extension doesn't matter.
+        // The cache stores a chain as plain text, and `load_liftover` reads it with
+        // `read_to_string`. Every chain takes the same path here. A downloaded artifact in gzip
+        // form decompresses in place. UCSC serves `.over.chain.gz`, and the curated bucket serves a
+        // plain `.chain`. The first two bytes of the file say which one it is, so the source URL
+        // and its extension do not matter.
         maybe_gunzip_in_place(&path)?;
         write_sidecar(&path, &sha);
         Ok(path)
     }
 
-    /// Resolve a named annotation mask (see [`registry::Y_STRUCTURAL_MASKS`]) to a cached BED,
-    /// downloading on a miss. Cached under `<base>/masks/<name>.bed` — pull once, use many.
+    /// Resolve a named annotation mask (see [`registry::Y_STRUCTURAL_MASKS`]) to a cached BED. It
+    /// downloads on a cache miss. The cache holds it at `<base>/masks/<name>.bed`, so the app
+    /// fetches it once and reads it many times.
     pub async fn resolve_mask(
         &self,
         name: &str,
@@ -231,11 +242,13 @@ impl ReferenceGateway {
         Ok(path)
     }
 
-    /// Resolve a published **ancestry/IBD asset** (a prebuilt panel / PCA / manifest / genetic map) to
-    /// a cached file under `<base>/ancestry/<name>`, downloading from `url` on a miss (locked per
-    /// name). Unlike a reference or mask there is **no pinned sha** here — the app verifies the asset
-    /// against the downloaded asset manifest. This is how end users get the prebuilt panels instead of
-    /// running the offline `panelbuild` tool.
+    /// Resolve a published **ancestry/IBD asset** to a cached file under `<base>/ancestry/<name>`.
+    /// Such an asset is a prebuilt panel, a PCA, a manifest, or a genetic map. It downloads from
+    /// `url` on a cache miss, under a lock for that name.
+    ///
+    /// There is **no pinned sha** here, unlike a reference or a mask. The app checks the asset
+    /// against the asset manifest that it downloaded. This is how a user gets the prebuilt panels,
+    /// and nobody has to run the offline `panelbuild` tool.
     pub async fn resolve_ancestry_asset(
         &self,
         name: &str,
@@ -261,10 +274,15 @@ impl ReferenceGateway {
         cache::is_present(&path).then_some(path)
     }
 
-    /// Resolve a build's genome-region metadata (centromere/telomere/cytoband/PAR) through a
-    /// 2-layer cache: in-memory (parsed) over a disk JSON (`<base>/regions/<build>.json`), refreshed
-    /// from the UCSC `cytoBand` table on a miss/expiry. If the refresh fails but a (possibly stale)
-    /// disk copy exists, that copy is used — region data is stable, so stale beats nothing.
+    /// Resolve a build's genome-region metadata through a cache of two layers. That metadata is
+    /// the centromere, the telomere, the cytoband, and the PAR.
+    ///
+    /// The first layer is a parsed copy in memory, over a JSON on disk at
+    /// `<base>/regions/<build>.json`. On a miss, or when the copy expires, it refreshes from the
+    /// UCSC `cytoBand` table.
+    ///
+    /// If that refresh fails, and a disk copy exists, the code uses that copy, even a stale one.
+    /// Region data does not change, so a stale copy is better than none.
     pub async fn genome_regions(
         &self,
         build_name: &str,
@@ -312,8 +330,8 @@ impl ReferenceGateway {
         }
     }
 
-    /// Cached genome regions without any network — in-memory, else a disk copy (any age). `None`
-    /// when neither is present.
+    /// Cached genome regions, with no network. It takes the copy in memory, else a copy from disk,
+    /// of any age. It gives `None` when it has neither.
     pub fn cached_genome_regions(&self, build_name: &str) -> Option<Arc<crate::regions::GenomeRegions>> {
         let build = canonical_build(build_name)?.nuclear();
         if let Some(r) = self.regions_cache.lock().unwrap().get(&build).cloned() {
@@ -348,8 +366,8 @@ impl ReferenceGateway {
         Ok(crate::regions::GenomeRegions::from_cytoband(build.as_str(), &text))
     }
 
-    /// Parse the cached chain for a build pair into a `du-bio` `Liftover` (call
-    /// [`resolve_chain`](Self::resolve_chain) first to ensure it's present).
+    /// Parse the cached chain for a pair of builds into a `du-bio` `Liftover`. Call
+    /// [`resolve_chain`](Self::resolve_chain) first, to make sure the chain is there.
     pub fn load_liftover(&self, from_name: &str, to_name: &str) -> Result<du_bio::liftover::Liftover, RefgenomeError> {
         let (from, to) = self.chain_builds(from_name, to_name)?;
         let path = cache::chain_path(&self.base, from, to);
@@ -364,8 +382,8 @@ impl ReferenceGateway {
         du_bio::liftover::Liftover::parse(&text).map_err(|e| RefgenomeError::Message(e.to_string()))
     }
 
-    /// Whether a liftover chain is registered for this build pair (both names canonicalize
-    /// and a chain source exists). No I/O.
+    /// Whether the registry holds a liftover chain for this pair of builds. Both names must
+    /// canonicalize, and a chain source must exist. It does no I/O.
     pub fn chain_available(&self, from: &str, to: &str) -> bool {
         match (canonical_build(from), canonical_build(to)) {
             (Some(f), Some(t)) => self.registry().chain_source(f, t).is_some(),
@@ -373,10 +391,12 @@ impl ReferenceGateway {
         }
     }
 
-    /// Lift 1-based `positions` on `contig` from build `from` to build `to`, using the cached
-    /// chain (call [`resolve_chain`](Self::resolve_chain) first). Positions in gaps /
-    /// non-syntenic regions are dropped. UCSC chains are 0-based half-open while genomic
-    /// positions are 1-based, so we lift `p - 1` and return `q + 1`.
+    /// Lift the 1-based `positions` on `contig` from build `from` to build `to`, with the cached
+    /// chain. Call [`resolve_chain`](Self::resolve_chain) first. The code drops a position that
+    /// falls in a gap, or in a region with no synteny.
+    ///
+    /// A UCSC chain is 0-based half-open, and a genomic position is 1-based. So the code lifts
+    /// `p - 1` and returns `q + 1`.
     pub fn lift_positions(
         &self,
         from: &str,
@@ -385,8 +405,8 @@ impl ReferenceGateway {
         positions: &[i64],
     ) -> Result<Vec<LiftedPos>, RefgenomeError> {
         let lo = self.load_liftover(from, to)?;
-        // Walk chains directly (rather than Liftover::lift) so we can capture the target
-        // strand, which the base-reader needs to reverse-complement inverted lifts.
+        // Walk the chains directly, and do not call Liftover::lift. The walk gives the target
+        // strand, and the base-reader needs that to reverse-complement an inverted lift.
         Ok(positions
             .iter()
             .filter_map(|&p| {
@@ -402,17 +422,20 @@ impl ReferenceGateway {
             .collect())
     }
 
-    /// Lift `[start, end)` intervals on `contig` from build `from` to build `to` via the cached
-    /// chain (call [`resolve_chain`](Self::resolve_chain) first).
+    /// Lift the `[start, end)` intervals on `contig` from build `from` to build `to`, through the
+    /// cached chain. Call [`resolve_chain`](Self::resolve_chain) first.
     ///
-    /// An interval survives only when **both endpoints** land on the same target contig and the
-    /// lifted span is 0.5×–2× the source span — the same sanity check
-    /// [`lift_hipstr_bed`](Self::lift_hipstr_bed) applies, and for the same reason: a chain can map
-    /// two ends of a repeat to wildly separated places, and a structural mask that has silently
-    /// stretched across a chromosome is worse than no mask, because it would suppress real calls.
+    /// An interval gets through only when **both endpoints** land on the same target contig, and
+    /// the lifted span is 0.5 to 2 times the source span.
     ///
-    /// Intervals that fail are dropped and counted. The caller gets `(intervals, dropped)` so it can
-    /// say how much of the mask survived rather than presenting a thinned mask as the whole one.
+    /// [`lift_hipstr_bed`](Self::lift_hipstr_bed) applies the same check, for the same reason. A
+    /// chain can map the two ends of a repeat to places far apart. A structural mask that stretched
+    /// across a chromosome, with no warning, is worse than no mask at all, because it would
+    /// suppress a real call.
+    ///
+    /// The code drops an interval that fails, and counts it. The caller gets `(intervals,
+    /// dropped)`, so it can say how much of the mask got through. Without that count it would show
+    /// a thin mask as the whole one.
     pub fn lift_intervals(
         &self,
         from: &str,
@@ -433,7 +456,8 @@ impl ReferenceGateway {
                 dropped += 1;
                 continue;
             }
-            // Endpoints first — the exact case, and the only one that can prove the full span.
+            // The endpoints first. That is the exact case, and the only one that can prove the
+            // full span.
             if let (Some(a), Some(b)) = (lift1(s), lift1(e)) {
                 if a.0 == b.0 {
                     // An inverted lift comes back reversed; the interval is the same stretch.
@@ -445,11 +469,13 @@ impl ReferenceGateway {
                     }
                 }
             }
-            // Fall back to the interior. An interval whose *ends* sit in a gap can still have a body
-            // that maps — which is the common case for amplicons, since they are exactly where the
-            // assemblies disagree. Recovering the mapped part matters because these masks are used
-            // to *suppress* calls: too small a mask admits false novels by the hundred, while too
-            // large a one costs a handful of true calls in known-paralogous sequence.
+            // Fall back to the interior. An interval whose *ends* sit in a gap can still have a
+            // body that maps. That is the usual case for an amplicon, because an amplicon is
+            // exactly where the two assemblies disagree.
+            //
+            // To recover the part that maps matters, because these masks *suppress* a call. A mask
+            // that is too small lets in hundreds of false novel variants. A mask that is too large
+            // costs a few true calls, in sequence that is a known paralog.
             const SAMPLES: i64 = 64;
             let step = ((e - s) / SAMPLES).max(1);
             let mut by_contig: std::collections::HashMap<String, (i64, i64, usize)> = Default::default();
@@ -465,8 +491,8 @@ impl ReferenceGateway {
                 }
                 p += step;
             }
-            // The dominant target contig, and only if enough of the interval actually mapped — one
-            // stray point is not evidence of a region.
+            // The main target contig, and only when enough of the interval mapped. One stray point
+            // is not evidence of a region.
             let best = by_contig.into_values().max_by_key(|v| v.2);
             match best {
                 Some((lo_p, hi_p, hits)) if hits * 4 >= tried && hi_p > lo_p => {
@@ -485,14 +511,21 @@ impl ReferenceGateway {
         Ok((out, dropped))
     }
 
-    /// Lift a HipSTR-format reference BED from `from` build to `to` build via the cached chain
-    /// (call [`resolve_chain`](Self::resolve_chain) first), writing a new gzipped BED in the target
-    /// coordinates. Each tract's endpoints (`[start+1, end+1]`, 1-based, end-inclusive — the HipSTR
-    /// convention) are lifted; a locus is kept only when both endpoints map to the **same** target
-    /// contig with a plausible span (0.5×–2× the source span — guards against bad lifts through the
-    /// repeat). `ref_copies` is recomputed from the lifted span (the target assembly's own repeat
-    /// count); period / name / motif carry over. `only_contig` (matched `chr`-prefix-insensitively)
-    /// restricts the lift, e.g. `Some("chrY")` for a Y-only reference. Returns lift/drop counts.
+    /// Lift a HipSTR-format reference BED from build `from` to build `to`, through the cached
+    /// chain, and write a new gzipped BED in the target coordinates. Call
+    /// [`resolve_chain`](Self::resolve_chain) first.
+    ///
+    /// It lifts the endpoints of each tract, which are `[start+1, end+1]`, 1-based and
+    /// end-inclusive, as the HipSTR convention says. It keeps a locus only when both endpoints map
+    /// to the **same** target contig, with a plausible span of 0.5 to 2 times the source span. That
+    /// span check guards against a bad lift through the repeat.
+    ///
+    /// It computes `ref_copies` again from the lifted span, which gives the target assembly's own
+    /// repeat count. The period, the name, and the motif carry over.
+    ///
+    /// `only_contig` limits the lift, and the match ignores a `chr` prefix. An example is
+    /// `Some("chrY")`, for a reference that holds Y alone. It returns the count of the loci it
+    /// lifted and the count it dropped.
     pub fn lift_hipstr_bed(
         &self,
         from: &str,
@@ -580,10 +613,13 @@ impl ReferenceGateway {
         Ok(stats)
     }
 
-    /// Re-hash a cached reference and compare to its integrity sidecar (TOFU, written at download
-    /// time). Detects on-disk corruption of the cached `.fa`. Re-reads the whole FASTA, so call it
-    /// from a blocking context (it's an explicit, user-triggered check, not the hot path). A
-    /// user-pinned local FASTA has no sidecar → [`VerifyOutcome::NoSidecar`].
+    /// Hash a cached reference again, and compare the result to its integrity sidecar. The
+    /// download writes that sidecar, on a trust-on-first-use basis. This finds corruption of the
+    /// cached `.fa` on disk.
+    ///
+    /// It reads the whole FASTA again, so call it from a context that can block. It is an explicit
+    /// check that the user starts, and not part of the hot path. A local FASTA that the user pinned
+    /// has no sidecar, and gives [`VerifyOutcome::NoSidecar`].
     pub fn verify_reference(&self, build_name: &str) -> Result<VerifyOutcome, RefgenomeError> {
         let fa = match self.reference_status(build_name) {
             RefStatus::Cached(p) | RefStatus::LocalOverride(p) => p,
@@ -600,9 +636,9 @@ impl ReferenceGateway {
         })
     }
 
-    /// Resolve a `(from, to)` build-name pair for **chain** purposes, normalized to nuclear
-    /// coordinates — so the masked+rCRS variant resolves to (and reuses the cache of) CHM13's
-    /// chains rather than a duplicate keyed by its own name.
+    /// Resolve a `(from, to)` pair of build names for a **chain**, normalized to nuclear
+    /// coordinates. So the masked and rCRS variant resolves to CHM13's chains, and reuses that
+    /// cache. There is no second copy under its own name.
     fn chain_builds(&self, from: &str, to: &str) -> Result<(Build, Build), RefgenomeError> {
         let f = canonical_build(from).ok_or_else(|| RefgenomeError::UnknownBuild(from.to_string()))?;
         let t = canonical_build(to).ok_or_else(|| RefgenomeError::UnknownBuild(to.to_string()))?;
@@ -610,13 +646,13 @@ impl ReferenceGateway {
     }
 }
 
-/// Genome-region cache freshness window. Region metadata (cytoband/centromere) is effectively
-/// static per assembly, so a long TTL avoids needless refetches; a stale copy is still used if a
-/// refetch fails.
+/// How long a genome-region cache entry stays fresh. The region metadata, which is the cytoband
+/// and the centromere, does not change inside one assembly. So a long TTL keeps the app off the
+/// network. A stale copy still serves when a fetch fails.
 const REGIONS_TTL_DAYS: f64 = 90.0;
 
-/// Load + deserialize a cached genome-regions JSON, dropping it if it predates the current schema
-/// version (so a parser/overlay change invalidates stale caches).
+/// Load a cached genome-regions JSON and deserialize it. It drops a file from before the current
+/// schema version. So a change to the parser, or to an overlay, invalidates a stale cache.
 fn load_regions_json(path: &Path) -> Option<crate::regions::GenomeRegions> {
     let text = std::fs::read_to_string(path).ok()?;
     let regions: crate::regions::GenomeRegions = serde_json::from_str(&text).ok()?;
@@ -633,9 +669,9 @@ fn read_gz_to_string(path: &Path) -> Result<String, RefgenomeError> {
     Ok(s)
 }
 
-/// If `path` holds gzip-compressed data (detected by the `1f 8b` magic bytes), decompress it to
-/// plain text in place; otherwise leave it untouched. Lets every cached chain be stored as plain
-/// text regardless of whether its source served `.chain` or `.chain.gz`.
+/// If `path` holds gzip-compressed data, decompress it to plain text in place. The first two
+/// bytes, `1f 8b`, say whether it does. In all other cases, leave the file as it is. So the cache
+/// can hold every chain as plain text, whether its source served a `.chain` or a `.chain.gz`.
 fn maybe_gunzip_in_place(path: &Path) -> Result<(), RefgenomeError> {
     let bytes = std::fs::read(path).map_err(|e| RefgenomeError::io(path, e))?;
     if bytes.len() < 2 || bytes[0] != 0x1f || bytes[1] != 0x8b {
@@ -664,9 +700,10 @@ fn read_sidecar(file: &Path) -> Option<String> {
     s.split_whitespace().next().map(str::to_string)
 }
 
-/// Compare a freshly-downloaded artifact's digest to a pinned (publisher) hash, if one is set.
-/// On mismatch the partial download at `path` is removed and an [`RefgenomeError::Integrity`] is
-/// returned; `None` pinned hash = nothing to check (TOFU only).
+/// Compare the digest of an artifact that the app has just downloaded to a pinned hash from the
+/// publisher, when there is one. On a mismatch it removes the partial download at `path` and gives
+/// an [`RefgenomeError::Integrity`]. A pinned hash of `None` means there is nothing to check, and
+/// the app trusts the file on first use.
 fn verify_pinned(path: &Path, pinned: Option<&str>, got: &str) -> Result<(), RefgenomeError> {
     if let Some(expected) = pinned {
         if !expected.eq_ignore_ascii_case(got) {
@@ -743,8 +780,9 @@ mod tests {
         )
         .unwrap();
         let g = gw(&base);
-        // A chain is "available" for the masked variant, and loading it reuses the CHM13 file
-        // (normalized to nuclear coords) rather than a missing masked-named one.
+        // A chain is "available" for the masked variant. A load of it reuses the CHM13 file,
+        // normalized to nuclear coordinates. It does not look for a file under the masked name,
+        // which does not exist.
         assert!(g.chain_available("GRCh38", "chm13v2.0_maskedY_rCRS"));
         let lo = g.load_liftover("GRCh38", "chm13v2.0_maskedY_rCRS").unwrap();
         assert_eq!(lo.lift("chrZ", 50), Some(("chrZp".to_string(), 50)));
@@ -756,7 +794,7 @@ mod tests {
         let base = scratch("chain");
         let dir = base.join("liftover");
         std::fs::create_dir_all(&dir).unwrap();
-        // A minimal UCSC chain (du-bio format): chrZ -> chrZp, one 100bp block.
+        // A small UCSC chain, in the du-bio format: chrZ to chrZp, with one 100bp block.
         std::fs::write(
             dir.join("GRCh38-to-chm13v2.0.chain"),
             "chain 1000 chrZ 1000 + 0 100 chrZp 1000 + 0 100 1\n100\n",
@@ -859,7 +897,8 @@ mod tests {
         let r2 = g.cached_genome_regions("chm13v2.0_maskedY_rCRS").unwrap();
         assert!(Arc::ptr_eq(&r, &r2));
 
-        // A wrong-version JSON is rejected (forces a refetch path), so cold-cache load is None.
+        // The code refuses a JSON of the wrong version, which forces a fetch. So a load from a
+        // cold cache gives None.
         let g2 = gw(&base);
         std::fs::write(
             cache::regions_path(&base, Build::Chm13v2),

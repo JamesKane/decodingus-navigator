@@ -1,8 +1,12 @@
-//! Throwaway: does the IBD panel's per-build locus actually point at the SNP on that build's genome?
-//! For a spread of sites, read the reference base at the panel's stored (contig,pos) on both CHM13
-//! and GRCh38, and check it equals the panel's stored REF for that build. A correct locus has
-//! genome[pos] == panel.REF (or panel.ALT if that build's strand is flipped). Wholesale mismatch on
-//! GRCh38 but not CHM13 == the GRCh38 liftover coordinates are wrong.
+//! A throwaway tool. It answers one question: does the IBD panel's locus for a build point at the
+//! SNP on that build's genome?
+//!
+//! For a spread of sites, it reads the reference base at the panel's stored (contig,pos), on CHM13
+//! and on GRCh38. It then checks that the base equals the panel's stored REF for that build. A
+//! correct locus gives genome[pos] == panel.REF, or panel.ALT when that build has the other strand.
+//!
+//! A mismatch on almost every GRCh38 site, but not on CHM13, means that the GRCh38 liftover
+//! coordinates are wrong.
 use navigator_analysis::ibd_panel::IbdPanel;
 use noodles::core::Region;
 use noodles::fasta;
@@ -32,8 +36,8 @@ fn main() -> anyhow::Result<()> {
     let mut chm = open(&chm13_fa)?;
     let mut g38 = open(&grch38_fa)?;
 
-    // Try the stored contig name, then chr/bare variants, so a naming mismatch doesn't masquerade
-    // as a coordinate error.
+    // Try the stored contig name first, then the forms with and without a `chr` prefix. A
+    // difference of convention must not look like a coordinate error.
     let g38_base = |g38: &mut _, l: &navigator_analysis::ibd_panel::Locus| -> Option<char> {
         let bare = navigator_analysis::contig::bare(&l.contig).to_string();
         base_at(g38, &l.contig, l.position)

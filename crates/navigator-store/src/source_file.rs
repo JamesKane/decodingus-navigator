@@ -1,6 +1,7 @@
-//! Content-hash file identity (gap §5-p2). Imported files are keyed by their SHA-256, not their path —
-//! so moving/renaming a BAM updates the path in place instead of orphaning its analyses, and a
-//! re-import of the same content is recognised as a duplicate. Ports the legacy `SourceFileRepository`.
+//! Content-hash file identity (gap §5-p2). An imported file has its SHA-256 as its key, and not
+//! its path. So a BAM that somebody moves, or gives a new name, keeps its analyses: the store
+//! updates the path in place. A second import of the same content shows as a duplicate. This is the
+//! port of the legacy `SourceFileRepository`.
 
 use sqlx::SqlitePool;
 
@@ -75,7 +76,8 @@ pub async fn link_to_alignment(
     Ok(())
 }
 
-/// Update a file's accessibility (path still resolves on disk?) after a re-verify pass.
+/// Update a file's accessibility, which asks whether the path still resolves on disk, after a
+/// second check pass.
 pub async fn set_accessible(pool: &SqlitePool, id: i64, accessible: bool, now: &str) -> Result<(), StoreError> {
     sqlx::query("UPDATE source_file SET is_accessible = ?, last_verified_at = ?, updated_at = ? WHERE id = ?")
         .bind(accessible)

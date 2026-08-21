@@ -1,7 +1,11 @@
-//! Persisted federated-IBD exchange results (gap §4) — one row per completed exchange session. The
-//! match summary scalars are columns for quick listing; the segment list + both signed attestations
-//! are opaque JSON. Upsert by `session_id` (re-running an exchange overwrites). PII-free: DIDs +
-//! opaque sample refs + cM only.
+//! Stored federated-IBD exchange results (gap §4), with one row for each completed exchange
+//! session.
+//!
+//! The scalars of the match summary are columns, for a fast listing. The segment list, and both
+//! signed attestations, are opaque JSON. The upsert key is `session_id`, so a second run of an
+//! exchange overwrites the row.
+//!
+//! It holds no PII: DIDs, opaque sample refs, and cM values, and nothing else.
 
 use du_domain::ids::SampleGuid;
 use sqlx::SqlitePool;

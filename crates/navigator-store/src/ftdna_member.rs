@@ -1,8 +1,11 @@
-//! FTDNA-reported member labels (FTDNA project-import design §4.2). One row per Subject, upserted on
-//! the `biosample_guid` PK. These are FTDNA's *reported* labels — our own computed haplogroups live
-//! in `haplogroup_call` (different provenance).
+//! The member labels that FTDNA reports (FTDNA project-import design §4.2). Each Subject has one
+//! row, and the upsert key is the `biosample_guid` primary key.
 //!
-//! PII / never-federated: see the migration `0029_subject_identity` header.
+//! These are the labels that FTDNA *reports*. The haplogroups that we compute ourselves live in
+//! `haplogroup_call`, and they have a different provenance.
+//!
+//! This is PII, and it never goes to the federation. See the header of the migration
+//! `0029_subject_identity`.
 
 use du_domain::ids::SampleGuid;
 use navigator_domain::identity::FtdnaMember;

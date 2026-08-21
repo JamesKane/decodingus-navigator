@@ -1,6 +1,7 @@
-//! Cached private-Y buckets for a variant set — the VCF counterpart of the per-alignment `private_y`
-//! artifact. Same `(set, cache_key)` shape as [`crate::variant_set_genotype`], so a changed tree is a
-//! miss rather than a bucket classified against sites that have moved.
+//! Cached private-Y buckets for a variant set. This is the VCF counterpart of the `private_y`
+//! artifact that each alignment has. It has the same `(set, cache_key)` shape as
+//! [`crate::variant_set_genotype`]. So a changed tree misses the cache, and the code never
+//! classifies a bucket against sites that moved.
 
 use sqlx::SqlitePool;
 
@@ -30,7 +31,7 @@ pub async fn get(pool: &SqlitePool, set_id: i64, cache_key: &str) -> Result<Opti
     )
 }
 
-/// Every cached bucket for a subject's sets, newest cache first — for the donor-level union.
+/// Every cached bucket of a subject's sets, newest cache first, for the donor-level union.
 pub async fn list_for_biosample(pool: &SqlitePool, guid: &str) -> Result<Vec<(i64, String)>, StoreError> {
     Ok(sqlx::query_as(
         "SELECT p.variant_set_id, p.bucket FROM variant_set_private_y p \

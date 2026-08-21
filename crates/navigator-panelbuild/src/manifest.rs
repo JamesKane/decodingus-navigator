@@ -1,6 +1,6 @@
-//! Build the asset integrity manifest (`ancestry_manifest_<build>.json`) — run after the other
-//! `panelbuild` steps. Hashes every `*_<build>.bin` in the ancestry directory so the app can verify
-//! a loaded asset and refuse a corrupt / truncated CDN download.
+//! Build the asset integrity manifest (`ancestry_manifest_<build>.json`). Run it after the other
+//! `panelbuild` steps. It hashes every `*_<build>.bin` in the ancestry directory. The app can then
+//! check an asset that it loads, and refuse a CDN download that is corrupt or short.
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -15,7 +15,7 @@ pub struct ManifestArgs {
     /// The ancestry asset directory (where the `.bin` files live).
     #[arg(long)]
     pub dir: PathBuf,
-    /// Build label; only files ending `_<build>.bin` are hashed.
+    /// The build label. The tool hashes a file whose name ends in `_<build>.bin`, and no other.
     #[arg(long, default_value = "chm13v2.0")]
     pub build: String,
     /// Output manifest path (defaults to `<dir>/ancestry_manifest_<build>.json`).

@@ -1,10 +1,13 @@
-//! Lever-2 viability probe (documents/design/ancient-ancestry-rebuild.md §7): does the qpAdm f4 estimator
-//! pull a WGS sample out of the fabricated ~80% Steppe band into the sane NW-European range
-//! (Steppe 40–55 / ANF 25–40 / WHG 10–25), and does the model-fit p-value behave?
+//! A probe for lever 2 (documents/design/ancient-ancestry-rebuild.md §7). It asks two questions.
 //!
-//! Genotypes one alignment at the qpAdm panel sites (sources WHG/ANF/Steppe + outgroups), then runs
-//! qpadm_fit. Sources = the panel populations named WHG/ANF/Steppe; every other population is an
-//! outgroup. Compare across sources (WGS vs chip) for the stability gate.
+//! The first: does the qpAdm f4 estimator move a WGS sample out of the false band near 80% Steppe?
+//! The sensible NW-European range is Steppe 40–55, ANF 25–40, and WHG 10–25. The second: does the
+//! p-value of the model fit behave?
+//!
+//! It genotypes one alignment at the qpAdm panel sites, whose sources are WHG, ANF, and Steppe,
+//! with the outgroups. It then runs qpadm_fit. The sources are the panel populations that carry the
+//! names WHG, ANF, and Steppe. Every other population is an outgroup. Compare a WGS source against
+//! a chip source, for the stability gate.
 //!   qpadm_check <qpadm_panel.bin> <bam_or_cram> [reference.fa]
 use navigator_analysis::ancestry::{qpadm_fit, AncestryPanel, F4_BLOCK_BP};
 use navigator_analysis::caller::{genotype_sites_all_contigs, HaploidCallerParams, Site};

@@ -1,12 +1,15 @@
-//! Real-data smoke test (seed of the phase-3 §4c parity harness). Ignored by default;
-//! runs only when pointed at a local BAM + reference via env vars:
+//! A smoke test on real data. It is the seed of the parity harness of phase 3, §4c. The test
+//! carries `#[ignore]`, and it runs only when the environment variables point it at a local BAM
+//! and a reference:
 //!
-//!   HG002_CHRM_BAM=/tmp/hg002.chrM.bam CHM13_REF=/Users/.../chm13v2.0.fa \
-//!     cargo test -p navigator-analysis --test parity_real -- --ignored --nocapture
+//! ```text
+//! HG002_CHRM_BAM=/tmp/hg002.chrM.bam CHM13_REF=/Users/.../chm13v2.0.fa \
+//!   cargo test -p navigator-analysis --test parity_real -- --ignored --nocapture
+//! ```
 //!
-//! This is a sanity check that noodles handles a real BAM (varied CIGARs/MAPQ) and the
-//! chrM numbers are plausible — NOT strict parity, which is measured against the Scala
-//! walker / GATK in phase 3.
+//! This test checks two things. noodles handles a real BAM, which carries CIGARs and MAPQ values
+//! of every shape. And the chrM numbers look reasonable. It is NOT a strict parity check. Phase 3
+//! measures that against the Scala walker and against GATK.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -54,7 +57,7 @@ fn hg002_chrm_smoke() {
     eprintln!("callable metrics = {:?}", result.contig_callable);
     eprintln!("coverage stats   = {:?}", result.contig_coverage_stats);
 
-    // chrM should be fully covered at high depth.
+    // The reads must cover the whole of chrM, at a high depth.
     assert_eq!(result.genome_territory, 16569);
     let cs = &result.contig_coverage_stats[0];
     assert_eq!(cs.contig, "chrM");
@@ -90,8 +93,10 @@ fn hg002_chrm_denovo_smoke() {
         );
     }
 
-    // HG002 mtDNA vs CHM13 chrM: a handful to a few dozen real differences at high
-    // depth — never thousands (that would mean the consensus/fraction gate is broken).
+    // The mtDNA of HG002 against the chrM of CHM13. There are a few real differences, from a
+    // handful up to a few dozen, at a high depth. There are never thousands. Thousands would mean
+    // that a gate no longer works: either the one on the consensus, or the one on the
+    // fraction.
     assert!(!calls.is_empty(), "expected some mtDNA variants");
     assert!(calls.len() < 1000, "implausibly many calls: {}", calls.len());
     for c in &calls {
@@ -101,8 +106,8 @@ fn hg002_chrm_denovo_smoke() {
     }
 }
 
-/// De-novo calling on chrY (57 Mb) against the full BAM — exercises the chunked tally
-/// on a large contig. Memory is bounded by the chunk, not chrY's length.
+/// A de-novo call over chrY, at 57 Mb, against the full BAM. It covers the tally that works in
+/// chunks, on a large contig. The chunk bounds the memory, and the length of chrY does not.
 #[test]
 #[ignore = "requires HG002_BAM + CHM13_REF (chrY de-novo, chunked)"]
 fn hg002_chry_denovo_streams() {
@@ -125,9 +130,10 @@ fn hg002_chry_denovo_streams() {
     }
 }
 
-/// Whole-genome coverage over the full BAM (no allowlist). Only feasible because the
-/// walker streams a sliding window — the old dense version allocated per-position
-/// arrays for every main-assembly contig at once (~84 GB).
+/// The coverage over the whole genome, from the full BAM, with no allowlist. This is possible only
+/// because the walker streams a window that slides. The dense version before it allocated an array
+/// at each position. It held one for every contig of the main assembly at one time, and that came
+/// to about 84 GB.
 #[test]
 #[ignore = "requires HG002_BAM + CHM13_REF (whole-genome streaming coverage)"]
 fn hg002_wgs_coverage_streams_all_contigs() {
@@ -205,9 +211,9 @@ fn hg002_read_metrics_smoke() {
     assert!(m.proper_pairs > 0);
 }
 
-/// The fused unified walker must produce, in one whole-genome pass, exactly what the three
-/// standalone walkers produce separately — coverage, read-metrics, and sex, field for field.
-/// This is the parity guard for the single-pass optimization on real data.
+/// In one pass over the whole genome, the fused unified walker must give exactly what the three
+/// separate walkers give in three passes. That covers the coverage, the read-metrics and the sex,
+/// field for field. This test guards the parity of the one-pass change, on real data.
 #[test]
 #[ignore = "requires HG002_BAM + CHM13_REF (whole-genome single-pass parity)"]
 fn hg002_unified_matches_standalone() {
@@ -227,16 +233,18 @@ fn hg002_unified_matches_standalone() {
 
     assert_eq!(unified.coverage, cov, "coverage diverged from standalone");
     assert_eq!(unified.read_metrics, rm, "read metrics diverged from standalone");
-    // Standalone BAM sex uses the BAI fast path; the fused path tallies from the record stream.
-    // They classify identically; the read-density floats can differ in the last ULP if the BAI
-    // mapped-record count differs from the streamed mapped-read count, so compare the call.
+    // The separate sex path on a BAM uses the fast path over the BAI. The fused path tallies from
+    // the record stream. The two put the sample into the same class. But the read-density floats
+    // can differ in the last ULP. That happens when the mapped-record count of the BAI differs
+    // from the mapped-read count of the stream. So compare the call itself.
     let fused_sex = unified.sex.expect("HG002 has autosomes + chrX");
     assert_eq!(fused_sex.inferred_sex, sex.inferred_sex, "sex call diverged");
     assert_eq!(fused_sex.inferred_sex, InferredSex::Male);
 }
 
-/// The per-contig parallel walker must produce a result byte-identical to the sequential one.
-/// Needs an indexed BAM (else it falls back to sequential and the test is trivially true).
+/// The parallel walker over the contigs must give a result that matches the sequential one to the
+/// last byte. It needs an indexed BAM. Without one it falls back to the sequential path, and the
+/// test then proves nothing.
 #[test]
 #[ignore = "requires indexed HG002_BAM + CHM13_REF (parallel == sequential parity)"]
 fn hg002_unified_parallel_matches_sequential() {
@@ -251,14 +259,16 @@ fn hg002_unified_parallel_matches_sequential() {
     let seq = collect_unified_metrics(&bam, &reference, &params, None).unwrap();
     let par = collect_unified_metrics_parallel(&bam, &reference, &params, None).unwrap();
 
-    // Whole struct equality: coverage (incl. per-contig + histogram), read-metrics, sex.
+    // The whole struct must be equal: the coverage, which holds the values of each contig and the
+    // histogram, the read-metrics, and the sex.
     assert_eq!(par.coverage, seq.coverage, "parallel coverage diverged");
     assert_eq!(par.read_metrics, seq.read_metrics, "parallel read-metrics diverged");
     assert_eq!(par.sex, seq.sex, "parallel sex diverged");
 }
 
-/// Wall-clock comparison of sequential vs per-contig parallel unified metrics (not a
-/// correctness assertion — see the parity test for that). Prints both times + speedup.
+/// A comparison of the wall time of the sequential unified metrics against the parallel ones,
+/// which run one task at each contig. It asserts nothing about correctness, and the parity test
+/// covers that. It prints both times, and the speedup.
 #[test]
 #[ignore = "perf smoke: requires indexed HG002_BAM + CHM13_REF"]
 fn hg002_unified_parallel_timing() {
@@ -285,10 +295,13 @@ fn hg002_unified_parallel_timing() {
     );
 }
 
-/// §4c parity gate: Rust de-novo SNP calls vs a GATK truth VCF on HG002 chrM.
-/// Generate the truth with:
-///   gatk HaplotypeCaller -I hg002.chrM.bam -R chm13v2.0.fa -L chrM \
-///     --sample-ploidy 1 -O hg002.chrM.gatk.vcf.gz && bgzip -d hg002.chrM.gatk.vcf.gz
+/// The parity gate of §4c. It puts the de-novo SNP calls of the Rust caller against a truth VCF
+/// from GATK, on the chrM of HG002. Make that truth file with:
+///
+/// ```text
+/// gatk HaplotypeCaller -I hg002.chrM.bam -R chm13v2.0.fa -L chrM \
+///   --sample-ploidy 1 -O hg002.chrM.gatk.vcf.gz && bgzip -d hg002.chrM.gatk.vcf.gz
+/// ```
 #[test]
 #[ignore = "requires GATK_CHRM_VCF + HG002_CHRM_BAM + CHM13_REF env vars"]
 fn hg002_chrm_gatk_parity() {

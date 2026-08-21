@@ -60,7 +60,7 @@ pub fn classify(meta: &str, contigs: &[String], filename: &str, readme: Option<&
     let mt_only = only(is_mt_contig);
     let y_only = only(is_y_contig);
 
-    // FTDNA: the Arpeggi caller (`aengine`) or an explicit "big y" mention. mtFull if it's chrM-only.
+    // FTDNA: the Arpeggi caller (`aengine`) or an explicit "big y" mention. mtFull if it is chrM-only.
     if hay.contains("aengine") || hay.contains("big y") || hay.contains("bigy") || hay.contains("mtfull") {
         return if mt_only {
             VendorVcf::FtdnaMtFull

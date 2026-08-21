@@ -1,9 +1,15 @@
-//! `impl App` methods for the AppView's signed recruitment Edge API (`/api/v1/recruitment/*`,
-//! social roadmap 3c) — the **response** side: list the caller's open invitations and accept/decline
-//! them. Campaign creation stays on the AppView web flow (it's gated to a group-project admin, which
-//! the Navigator can't yet act as). Device-key-signed like the social/exchange clients; reuses the
-//! shared [`appview_post`](App::appview_post) / [`appview_get_signed`](App::appview_get_signed) transport. Invitations
-//! also arrive as SYSTEM notifications, so this pairs with the Community → Notifications surface.
+//! `impl App` methods for the signed recruitment Edge API of the AppView
+//! (`/api/v1/recruitment/*`, social roadmap 3c).
+//!
+//! This module is the **response** side. It lists the open invitations of the caller. It also
+//! accepts or declines them. To make a campaign, the user must use the web flow of the AppView.
+//! Only an administrator of a group project can make a campaign, and Navigator can not yet act as
+//! one.
+//!
+//! The device key signs each call, as it does for the social client and the exchange client. This
+//! module uses the shared [`appview_post`](App::appview_post) and
+//! [`appview_get_signed`](App::appview_get_signed) transport. An invitation also arrives as a
+//! SYSTEM notification. So this module works together with the Community → Notifications view.
 use super::*;
 
 use navigator_sync::recruitment::messages;

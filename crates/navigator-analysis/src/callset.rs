@@ -1,31 +1,39 @@
-//! EIGENSTRAT (Reich-lab / `pileupCaller`) call-set reader — the external autosomal 1240K path.
+//! The reader of an EIGENSTRAT call set, which comes from the Reich lab and from `pileupCaller`.
+//! It is the path for an external autosomal 1240K set.
 //!
-//! Parses a `.geno`/`.snp`/`.ind` triplet for **one** target individual into diploid allele pairs on
-//! the call set's build (the AADR 1240K is GRCh37/hg19). Those pairs feed
-//! [`crate::ibd_panel::IbdPanel::resolve_chip`], which re-keys them to canonical CHM13 dosages and
-//! **self-orients** against the CHM13 alleles — so the EIGENSTRAT allele labelling need not match the
-//! genome reference, and pseudo-haploid calls (pileupCaller emits only `0`/`2`) come through as valid
-//! homozygous observations with no het synthesis.
+//! It parses a `.geno`, `.snp` and `.ind` triplet, for **one** target individual, into diploid
+//! allele pairs on the build of the call set. The AADR 1240K is on GRCh37, which is hg19.
 //!
-//! EIGENSTRAT format (whitespace-delimited text):
-//! - `.ind`: one line per individual — `SampleID  Sex  Population`.
-//! - `.snp`: one line per SNP — `SNPName  Chr  GeneticPos  PhysicalPos  RefAllele  VariantAllele`.
-//! - `.geno`: one line per SNP (same order as `.snp`), one char per individual —
-//!   `0`/`1`/`2` = **count of the first (`.snp` column-5) allele**, `9` = missing.
+//! Those pairs go to [`crate::ibd_panel::IbdPanel::resolve_chip`]. That function keys them to
+//! canonical CHM13 dosages, and it **orients them itself** against the CHM13 alleles. So the allele
+//! labels of the EIGENSTRAT set do not have to match the genome reference. And a pseudo-haploid
+//! call, where pileupCaller writes `0` or `2` alone, comes through as a correct homozygous
+//! observation, with no het that the code invented.
+//!
+//! The EIGENSTRAT format is text, with white space between its fields:
+//!
+//! - `.ind` holds one line for each individual: `SampleID  Sex  Population`.
+//! - `.snp` holds one line for each SNP:
+//!   `SNPName  Chr  GeneticPos  PhysicalPos  RefAllele  VariantAllele`.
+//! - `.geno` holds one line for each SNP, in the same order as `.snp`, with one character for each
+//!   individual. A `0`, `1` or `2` is the **count of the first allele**, which is column 5 of
+//!   `.snp`. A `9` means that the value is missing.
 
 use std::io::BufRead;
 use std::path::Path;
 
 use crate::error::AnalysisError;
 
-/// One target individual's genotypes from an EIGENSTRAT triplet: reference-forward diploid allele
-/// pairs on `build`, ready for `IbdPanel::resolve_chip`. No-calls (`9`) are dropped, not emitted.
+/// The genotypes of one target individual, from an EIGENSTRAT triplet. They are diploid allele
+/// pairs on `build`, forward on the reference, ready for `IbdPanel::resolve_chip`. The code drops a
+/// no-call, which is a `9`, and it emits nothing for it.
 pub struct CallSet {
-    /// Build the `.snp` positions are in. EIGENSTRAT does not encode it; the caller supplies it
-    /// (default GRCh37 — the AADR 1240K coordinate system).
+    /// The build that the `.snp` positions sit on. EIGENSTRAT does not record it, so the caller
+    /// gives it. The default is GRCh37, which is the coordinate system of the AADR 1240K.
     pub build: String,
-    /// `(contig, position, allele1, allele2)` per called autosomal site (contig is a bare `"1".."22"`,
-    /// matching the panel's GRCh37 loci). Alleles are the actual nucleotides the individual carries.
+    /// A `(contig, position, allele1, allele2)` at each autosomal site with a call. The contig is
+    /// bare, from `"1"` to `"22"`, which matches the GRCh37 loci of the panel. The alleles are the
+    /// nucleotides that the individual carries.
     pub calls: Vec<(String, i64, char, char)>,
     /// Count of autosomal `.snp` sites that were missing (`9`) for this individual.
     pub missing: usize,
@@ -43,8 +51,10 @@ fn geno_to_pair(g: u8, a1: char, a2: char) -> Option<(char, char)> {
     }
 }
 
-/// Bare autosomal contig (`"1".."22"`) for an EIGENSTRAT `Chr` field, or `None` for a sex/mt/unknown
-/// contig (EIGENSTRAT uses `23`=X, `24`=Y, `90`/`91`=mt, plus `0`). Accepts an optional `chr` prefix.
+/// The bare autosomal contig, from `"1"` to `"22"`, for a `Chr` field of EIGENSTRAT. It is `None`
+/// for a sex contig, for mt, and for a contig that the code does not know. EIGENSTRAT writes `23`
+/// for X, `24` for Y, `90` or `91` for mt, and it also uses `0`. This accepts a `chr` prefix, and
+/// it does not need one.
 fn autosome_contig(chr: &str) -> Option<String> {
     match crate::contig::bare(chr).parse::<u8>() {
         Ok(n @ 1..=22) => Some(n.to_string()),
@@ -73,8 +83,8 @@ fn select_individual(ind_text: &str, sample: Option<&str>) -> Result<usize, Anal
     }
 }
 
-/// Streamed core: walk `.snp` and `.geno` in lockstep, emitting the target column's autosomal calls.
-/// Split out (over `BufRead`) so it is testable without files.
+/// The streaming core. It walks `.snp` and `.geno` in step, and it emits the autosomal calls of the
+/// target column. It sits apart, over a `BufRead`, so that a test can cover it with no file.
 fn read_eigenstrat_core<S: BufRead, G: BufRead>(
     snp: S,
     geno: G,
@@ -119,9 +129,10 @@ fn read_eigenstrat_core<S: BufRead, G: BufRead>(
     })
 }
 
-/// Read an EIGENSTRAT triplet for one target individual. `sample` selects the individual (required
-/// when the `.ind` lists more than one); `build` is the coordinate system of the `.snp` positions
-/// (default GRCh37 for the AADR 1240K). Streams `.snp`/`.geno` so a large panel stays cheap.
+/// Read an EIGENSTRAT triplet, for one target individual. `sample` selects that individual, and it
+/// is necessary when the `.ind` lists more than one. `build` is the coordinate system of the `.snp`
+/// positions, and the default is GRCh37, for the AADR 1240K. It streams `.snp` and `.geno`, so a
+/// large panel costs little.
 pub fn read_eigenstrat(
     geno: &Path,
     snp: &Path,
@@ -177,7 +188,7 @@ rs2 2 0.0 2000 C T
 rsX 23 0.0 3000 A G
 rs3 22 0.0 4000 T C
 ";
-        // per row, char 0 = SAMPLE_A, char 1 = SAMPLE_B.
+        // In each row, character 0 is SAMPLE_A and character 1 is SAMPLE_B.
         let geno = "\
 20
 19

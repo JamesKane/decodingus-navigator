@@ -2,10 +2,15 @@
 //! 2026-06 simplification round; `use super::*` reaches the crate-root types + free helpers.
 use super::*;
 
-/// Load a bundled chrY position mask/blocklist BED for a build (best-effort). `env_var` overrides the
-/// path; otherwise the seeded `<cache base>/masks/<stem>.<build_token>.bed`, trying the gzipped
-/// `.bed.gz` first (how the bundled assets ship) then a plain `.bed`. Returns `None` if absent,
-/// unparseable, or empty — so a missing cohort asset simply skips that filter rather than blocking.
+/// Read a chrY position mask, or blocklist, from a BED file in the application bundle, for one
+/// build. The step is optional.
+///
+/// The variable `env_var` gives the path when the user sets it. If not, the code reads
+/// `<cache base>/masks/<stem>.<build_token>.bed`. It tries the `.bed.gz` file first, because the
+/// bundle holds that form, and then a plain `.bed` file.
+///
+/// The function returns `None` when the file is absent, when the parser refuses it, and when it
+/// holds no row. An absent cohort asset then removes that filter, and it stops no work.
 fn load_y_position_bed(env_var: &str, stem: &str, build_token: &str) -> Option<navigator_analysis::mask::RegionMask> {
     let candidates: Vec<PathBuf> = if let Ok(p) = std::env::var(env_var) {
         vec![PathBuf::from(p)]
@@ -21,20 +26,26 @@ fn load_y_position_bed(env_var: &str, stem: &str, build_token: &str) -> Option<n
     })
 }
 
-/// Caller output directories a per-sample GVCF is commonly filed under, beside the alignment.
-/// A pipeline that runs several callers keeps each one's output in its own directory rather than
-/// beside the CRAM, so looking only at the alignment's own directory misses them.
+/// The output directories of a caller, beside the alignment, that usually hold the GVCF file of one
+/// sample.
+///
+/// A pipeline with more than one caller puts the output of each caller in its own directory, and not
+/// beside the CRAM file. A search of the directory of the alignment alone finds no such file.
 const CALLER_SUBDIRS: [&str; 3] = ["gatk4", "gatk3", "gvcf"];
 
-/// Locate a per-sample GVCF for `contig` beside an alignment: the alignment's own directory first
-/// (a `*.chrY.g.vcf.gz` sidecar, the ytree layout), then the known caller subdirectories, where a
-/// bare `chrY.g.vcf.gz` is the usual name.
+/// Find the GVCF file of one sample for `contig`, beside an alignment.
 ///
-/// Both spellings matter. The ytree flat layout emits `<sample>.chrY.g.vcf.gz` next to the CRAM; a
-/// per-run pipeline emits `gatk4/chrY.g.vcf.gz`, whose name has no sample prefix at all. Matching
-/// only the dotted suffix missed every file of the second kind — and since finding the GVCF is what
-/// lets placement skip decoding the CRAM, missing it silently turns a seconds-long read into a
-/// minutes-long whole-chromosome walk.
+/// The function reads the directory of the alignment first, where the ytree layout puts a
+/// `*.chrY.g.vcf.gz` file. It then reads the known directories of each caller, where the usual name
+/// is a plain `chrY.g.vcf.gz`.
+///
+/// Both names matter. The flat ytree layout writes `<sample>.chrY.g.vcf.gz` beside the CRAM file. A
+/// pipeline that works on one run writes `gatk4/chrY.g.vcf.gz`, and that name holds no sample
+/// prefix.
+///
+/// An earlier version matched the dotted name only, and it found no file of the second kind. The
+/// GVCF file is what lets the placement skip the CRAM decode. So a search that fails changes a read
+/// of some seconds into a walk of the full chromosome, which needs some minutes.
 fn gvcf_beside_alignment(aln: &Alignment, contig_token: &str) -> Option<PathBuf> {
     let dotted = format!(".{contig_token}.g.vcf.gz");
     let bare = format!("{contig_token}.g.vcf.gz");
@@ -52,9 +63,11 @@ fn gvcf_beside_alignment(aln: &Alignment, contig_token: &str) -> Option<PathBuf>
     scan(dir).or_else(|| CALLER_SUBDIRS.iter().find_map(|sub| scan(&dir.join(sub))))
 }
 
-/// Locate a per-sample chrY GVCF for an alignment: the `NAVIGATOR_Y_GVCF` path override, else
-/// [`gvcf_beside_alignment`]. `None` when absent — the private-Y path then falls back to the pileup
-/// caller, and placement to a full CRAM walk.
+/// Find the chrY GVCF file of one sample, for an alignment. The `NAVIGATOR_Y_GVCF` variable gives
+/// the path when the user sets it. If not, the code calls [`gvcf_beside_alignment`].
+///
+/// The function returns `None` when it finds no file. The private-Y path then uses the pileup
+/// caller, and the placement walks the full CRAM file.
 pub(crate) fn chr_y_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("NAVIGATOR_Y_GVCF") {
         let p = PathBuf::from(p);
@@ -65,8 +78,9 @@ pub(crate) fn chr_y_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
     gvcf_beside_alignment(aln, "chry")
 }
 
-/// Locate a per-sample chrM GVCF for an alignment: the `NAVIGATOR_M_GVCF` path override, else
-/// [`gvcf_beside_alignment`]. The mtDNA counterpart to [`chr_y_gvcf_for_alignment`].
+/// Find the chrM GVCF file of one sample, for an alignment. The `NAVIGATOR_M_GVCF` variable gives
+/// the path when the user sets it. If not, the code calls [`gvcf_beside_alignment`]. This function
+/// is the mtDNA form of [`chr_y_gvcf_for_alignment`].
 pub(crate) fn chr_m_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("NAVIGATOR_M_GVCF") {
         let p = PathBuf::from(p);
@@ -77,9 +91,12 @@ pub(crate) fn chr_m_gvcf_for_alignment(aln: &Alignment) -> Option<PathBuf> {
     gvcf_beside_alignment(aln, "chrm")
 }
 
-/// The bundled-mask filename token for an alignment's reference build, or `None` when no chrY masks
-/// ship for it. CHM13 masks are native (hs1); the GRCh38 masks are lifted from them (CrossMap
-/// hs1→hg38). GRCh37 has no masks yet (bare-`Y` contig naming + no lifted set).
+/// The token in the mask file name for the reference build of an alignment. The function returns
+/// `None` when the bundle holds no chrY mask for that build.
+///
+/// The CHM13 masks are native, on hs1. CrossMap moves them from hs1 to hg38, and those files are the
+/// GRCh38 masks. There is no mask for GRCh37 yet. That build names its contig `Y`, and no code moved
+/// the masks to it.
 fn y_mask_build_token(build: &str) -> Option<&'static str> {
     match canonical_build(build) {
         Some(ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs) => Some("chm13v2"),
@@ -95,10 +112,12 @@ type YRegionsHandle = std::sync::Arc<navigator_analysis::mask::YStructuralRegion
 impl App {
     // ---- fast path: place haplogroups from precomputed pipeline GVCFs ---------
 
-    /// Build a tree's per-position base calls for an alignment from a **precomputed GVCF**
-    /// (the fast path — no CRAM pileup). Lifts tree positions onto the GVCF's build when the
-    /// tree's coordinates differ (mt rCRS-tree vs CHM13 `chrM`), exactly as the CRAM path does,
-    /// then reads the GVCF instead of walking reads.
+    /// Build the base call of each tree position for an alignment, from a **GVCF file that another
+    /// tool made**. This path is the fast path, and it does no pileup on the CRAM file.
+    ///
+    /// The method moves each tree position onto the build of the GVCF file when the two coordinate
+    /// spaces differ. One example is an mt tree in rCRS against a CHM13 `chrM` contig. The CRAM path
+    /// does the same step. The method then reads the GVCF file, and it reads no alignment record.
     pub(crate) async fn gvcf_base_calls(
         &self,
         alignment_id: i64,
@@ -108,10 +127,15 @@ impl App {
         tree_source_build: Option<&str>,
     ) -> Result<HashMap<i64, char>, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
-        // The reference is required: a GVCF hom-ref site means "the sample's base == the
-        // reference base" — and the reference (e.g. CHM13 = HG002/J1 Y) is itself deep in the
-        // tree, so its base there is often the *derived* allele, not the ancestral. We read the
-        // reference base at every callable tree position (exactly what call_bases_at observes).
+        // The method needs the reference. A hom-ref site in a GVCF file states that the base of
+        // the sample equals the base of the reference.
+        //
+        // The reference is itself deep in the tree. The CHM13 reference holds the Y chromosome of
+        // HG002, which is in haplogroup J1. So its base at a tree position is often the *derived*
+        // allele and not the ancestral one.
+        //
+        // So the code reads the reference base at each callable tree position, which is the value
+        // that `call_bases_at` also reads.
         let reference = match aln.reference_path {
             Some(p) => PathBuf::from(p),
             None => {
@@ -153,8 +177,9 @@ impl App {
                 let ref_base = self.reference_bases(&reference, contig, &called.callable).await?;
                 Ok(gvcf::assemble_calls(&called, &ref_base))
             }
-            // Lifted: read the GVCF at each lifted contig + the reference bases there, then map
-            // observations back to tree positions (reverse-complementing minus-strand lifts).
+            // The code moved the positions. It reads the GVCF file at each new contig, and it
+            // reads the reference bases there. It then maps each observation back to a tree
+            // position. For a position on the minus strand, it takes the reverse complement.
             Some(lifted) => {
                 let mut by_contig: HashMap<String, HashSet<i64>> = HashMap::new();
                 for lp in &lifted {
@@ -178,9 +203,13 @@ impl App {
         }
     }
 
-    /// Reference genome bases (uppercase A/C/G/T) at `positions` on `contig`. Reads the contig
-    /// sequence once off-thread; positions are 1-based. Non-ACGT / out-of-range positions are
-    /// omitted. Used by the GVCF fast path to resolve hom-ref tree sites to the actual base.
+    /// The reference genome bases at each of the `positions` on `contig`. Each base is an upper-case
+    /// A, C, G, or T.
+    ///
+    /// The method reads the contig sequence one time, on another thread. Each position is 1-based.
+    /// The result holds no position with another base, and no position outside the contig.
+    ///
+    /// The GVCF fast path calls this method. It needs the real base at a hom-ref tree site.
     async fn reference_bases(
         &self,
         reference: &Path,
@@ -212,19 +241,27 @@ impl App {
         Ok(map)
     }
 
-    /// Fingerprint of a GVCF-sourced placement: the GVCF's content hash ⊕ the tree's hash.
-    /// Distinct from the CRAM-based [`Self::y_score_fingerprint`] (`gv:` vs `f:` prefix) so a
-    /// later deep analyze can tell the call came from a sidecar (phase: deep-pass skip logic).
+    /// The fingerprint of a placement that came from a GVCF file. The value joins the content hash
+    /// of that file with the hash of the tree.
+    ///
+    /// The value is different from the fingerprint of [`Self::y_score_fingerprint`], which the CRAM
+    /// path writes. This one starts with `gv:`, and that one starts with `f:`. So a later deep
+    /// analysis can see that the call came from a sidecar file, and it can then skip a step.
     async fn gvcf_fingerprint(&self, gvcf: &Path, tree_json: &str, tag: &str) -> Result<String, AppError> {
         let h = sha256_file_async(gvcf.to_path_buf()).await?;
         Ok(format!("gv:{}|{}:{}", &h[..16], tag, &sha256_str(tree_json)[..16]))
     }
 
-    /// Assign a Y haplogroup from a precomputed chrY GVCF — no CRAM walk. Places against the
-    /// DecodingUs tree at the alignment's native build (liftover-free), records the call under
-    /// the same source key as the CRAM path (`aln:{id}`) with a `gv:`-prefixed fingerprint.
-    /// Errors if the build has no DecodingUs coordinates or the tree is unreachable; the caller
-    /// (`ingest_sidecars`) treats that as "leave Y for the deep pass".
+    /// Assign a Y haplogroup from a chrY GVCF file that another tool made. The method walks no CRAM
+    /// file.
+    ///
+    /// It places the sample against the DecodingUs tree, at the native build of the alignment, and
+    /// it needs no liftover. It writes the call under the same source key as the CRAM path, which is
+    /// `aln:{id}`, with a fingerprint that starts with `gv:`.
+    ///
+    /// The method fails when the DecodingUs tree has no coordinates for that build, and when it can
+    /// not read the tree. The caller is `ingest_sidecars`, and it then leaves the Y haplogroup for
+    /// the deep pass.
     pub async fn assign_y_from_gvcf(&self, alignment_id: i64, gvcf: &Path) -> Result<HaploAssignment, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let build_key = decodingus_build_key(&aln.reference_build).ok_or_else(|| {
@@ -236,13 +273,19 @@ impl App {
         let tree_json = self.fetch_decodingus_y_tree().await?;
         let tree = navigator_analysis::haplo::parse_decodingus_json(&tree_json, build_key).map_err(AppError::Import)?;
         let calls = self.gvcf_base_calls(alignment_id, "chrY", gvcf, &tree, None).await?;
-        // Robust (proportional-top) selection, not the strict alignment-tuned guard. A
-        // joint-genotyped GVCF gives confident calls that include a few stray ancestral
-        // contradictions on the deep backbone (recurrent sites, the CHM13=J1 reference, joint
-        // hard-filters); strict `path_admissible` then vetoes the genuine deep lineage and
-        // drops to a shallow node (HG00096 → A1b instead of its true R1b1a1b1a1a, which `score`
-        // ranks top at 344/364). This is the same confident-but-sparse-contradiction regime as
-        // BISDNA chip data — see [`assemble_assignment_robust`].
+        // Use the proportional-top selection, and not the strict guard that the alignment path
+        // needs.
+        //
+        // A GVCF file from a joint genotype step gives confident calls. A few of those calls
+        // contradict the deep backbone with an ancestral state. The causes are a recurrent site,
+        // the CHM13 reference, which is in haplogroup J1, and the hard filters of the joint step.
+        //
+        // The strict `path_admissible` rule then refuses the true deep lineage and takes a node
+        // near the root. Sample HG00096 gave A1b, and its true terminal is R1b1a1b1a1a. The `score`
+        // function ranks that terminal first, at 344 of 364.
+        //
+        // The data has the same shape as BISDNA chip data: confident, with a few contradictions.
+        // See [`assemble_assignment_robust`].
         let assignment = assemble_assignment_robust(&tree, &calls);
         if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
             let fp = self.gvcf_fingerprint(gvcf, &tree_json, "yt").await.ok();
@@ -260,10 +303,15 @@ impl App {
         Ok(assignment)
     }
 
-    /// Assign an mtDNA haplogroup from a precomputed chrM GVCF — no CRAM walk. Places against
-    /// the FTDNA mt tree; on CHM13 the tree's rCRS positions are lifted onto `chrM` (the cheap
-    /// self-generated rCRS↔chrM map), on GRCh38 they're read directly. Recorded under the CRAM
-    /// path's mt source key (`aln:{id}:mt`) with a `gv:`-prefixed fingerprint.
+    /// Assign an mtDNA haplogroup from a chrM GVCF file that another tool made. The method walks no
+    /// CRAM file.
+    ///
+    /// It places the sample against the mt tree of FTDNA. On GRCh38, it reads the rCRS positions of
+    /// that tree directly. On CHM13, it moves those positions onto the `chrM` contig. The code makes
+    /// that map itself, at a low cost.
+    ///
+    /// The method writes the call under the mt source key of the CRAM path, which is `aln:{id}:mt`,
+    /// with a fingerprint that starts with `gv:`.
     pub async fn assign_mt_from_gvcf(&self, alignment_id: i64, gvcf: &Path) -> Result<HaploAssignment, AppError> {
         let tree_json = self.fetch_ftdna_mt_tree().await?;
         let tree = navigator_analysis::haplo::parse_ftdna_json(&tree_json).map_err(AppError::Import)?;
@@ -271,8 +319,8 @@ impl App {
         let calls = self
             .gvcf_base_calls(alignment_id, "chrM", gvcf, &tree, source_build)
             .await?;
-        // Robust selection, as for Y (see assign_y_from_gvcf) — the GVCF's confident calls fit
-        // the proportional-top regime better than the strict alignment guard.
+        // Use the proportional-top selection, as the Y path does. See assign_y_from_gvcf. The
+        // confident calls of a GVCF file fit that rule better than the strict alignment guard.
         let assignment = assemble_assignment_robust(&tree, &calls);
         if let Ok(bio) = self.biosample_of_alignment(alignment_id).await {
             let fp = self.gvcf_fingerprint(gvcf, &tree_json, "mt").await.ok();
@@ -290,11 +338,14 @@ impl App {
         Ok(assignment)
     }
 
-    /// The sidecar paths this alignment was ingested from, as recorded by [`Self::ingest_sidecars`].
+    /// The sidecar paths that this alignment came from. [`Self::ingest_sidecars`] writes them.
     ///
-    /// Read directly, with no source-mtime freshness check: this is a record of *what was used*,
-    /// not a derived result that a changed CRAM invalidates. `None` for an alignment that never
-    /// went through the fast path (imported before this was recorded, or with no sidecars at all).
+    /// The method reads the value and does not compare the mtime of the source. This value records
+    /// *what the app used*. It is not a derived result, so a change to the CRAM file does not make
+    /// it wrong.
+    ///
+    /// The method returns `None` for an alignment that never used the fast path. Such an alignment
+    /// arrived before this record existed, or it had no sidecar file.
     pub async fn recorded_sidecars(&self, alignment_id: i64) -> Result<Option<SampleSidecars>, AppError> {
         match artifact::get(self.store.pool(), alignment_id, SIDECARS_KIND, SIDECARS_VERSION).await? {
             Some(a) => Ok(serde_json::from_str(&a.payload).ok()),
@@ -302,11 +353,17 @@ impl App {
         }
     }
 
-    /// Fast-path ingest of a sample's pipeline sidecars onto one alignment: place Y + mt from
-    /// the GVCFs, and fill sex / read-metrics / lite-coverage from the text sidecars — all
-    /// without touching the CRAM. Each step is independent and best-effort: a failure is
-    /// recorded in the returned report and the rest proceed (a missing/!matching sidecar just
-    /// leaves that result for the deep pass). Returns what it managed to fill.
+    /// Read the pipeline sidecar files of a sample onto one alignment, on the fast path.
+    ///
+    /// The method places the Y haplogroup and the mt haplogroup from the GVCF files. It fills the
+    /// sex, the read metrics, and a small coverage result from the text sidecar files. It reads no
+    /// CRAM file.
+    ///
+    /// Each step is independent, and each one is optional. A failure goes into the report that the
+    /// method returns, and the other steps continue. An absent sidecar file, or one that does not
+    /// match, leaves that result for the deep pass.
+    ///
+    /// The method returns the values that it filled.
     pub async fn ingest_sidecars(
         &self,
         alignment_id: i64,
@@ -314,12 +371,17 @@ impl App {
     ) -> Result<SidecarIngest, AppError> {
         let mut out = SidecarIngest::default();
 
-        // Record which files this alignment was ingested from, before using them. Discovery is a
-        // directory scan done once at import, so without this the fast path is a one-shot: a Y
-        // placement made from a GVCF against the tree of the day could never be re-derived, and the
-        // resulting `haplogroup_call` row outlived every tree it was placed against. See
-        // `App::replace_against_current_tree`, which replays this. Best-effort — a workspace that
-        // cannot record the paths should still get the ingest.
+        // Record the files that this alignment came from, before the code reads them.
+        //
+        // The code finds those files with one directory scan, at the import. Without this record,
+        // the fast path runs one time only. A Y placement from a GVCF file, against the tree of
+        // that day, could never run again. The `haplogroup_call` row then stayed after each later
+        // tree.
+        //
+        // `App::replace_against_current_tree` reads this record and runs the placement again.
+        //
+        // The step is optional. A workspace that can not write the paths must still receive the
+        // data.
         let _ = self
             .save_analysis_with_provenance(
                 alignment_id,
@@ -350,16 +412,20 @@ impl App {
                 Err(e) => out.errors.push(format!("sex: {e}")),
             }
         }
-        // Read metrics: richest source wins — samtools `stats` (full, with histograms) > Picard
-        // AlignmentSummaryMetrics > samtools `flagstat` (counts only).
+        // The read metrics. The source with the most data wins. The order is samtools `stats`,
+        // which holds the full data with each histogram, then Picard AlignmentSummaryMetrics, then
+        // samtools `flagstat`, which holds counts only.
         match self.ingest_read_metrics(alignment_id, sidecars).await {
             Ok(true) => out.read_metrics = true,
             Ok(false) => {}
             Err(e) => out.errors.push(format!("read metrics: {e}")),
         }
-        // Coverage: samtools `coverage` gives per-contig stats; Picard CollectWgsMetrics gives the
-        // genome-wide depth distribution (median/sd/MAD, exclusion fractions, pct_Nx). Use whichever
-        // are present, overlaying the distribution onto the per-contig breakdown.
+        // The coverage. The samtools `coverage` output holds the statistics of each contig. The
+        // Picard CollectWgsMetrics output holds the depth distribution of the full genome. That
+        // distribution is the median, the sd, the MAD, the fractions that the tool excluded, and
+        // the pct_Nx values.
+        //
+        // Use each file that exists, and write the distribution onto the table of contigs.
         if sidecars.coverage.is_some() || sidecars.wgs_metrics.is_some() {
             match self.ingest_coverage_sidecar(alignment_id, sidecars).await {
                 Ok(wrote) => out.lite_coverage = wrote,
@@ -418,7 +484,8 @@ impl App {
         } else {
             return Ok(false);
         };
-        // Don't downgrade a full deep walk on reimport — keep it if it's already equal-or-fuller.
+        // A second import must not replace a full deep walk with a smaller result. Keep the stored
+        // result when it is the same or better.
         let wrote = self
             .save_analysis_no_downgrade(
                 alignment_id,
@@ -432,8 +499,11 @@ impl App {
         Ok(wrote)
     }
 
-    /// Ingest lite coverage from the sidecar(s). Returns whether it was written (`false` = an
-    /// equal-or-fuller coverage artifact already exists, e.g. a deep walk on reimport).
+    /// Read the small coverage result from the sidecar files. The method returns `true` when it
+    /// wrote the result.
+    ///
+    /// It returns `false` when the store already holds a coverage artifact that is the same or
+    /// better. A deep walk from an earlier run gives such an artifact.
     async fn ingest_coverage_sidecar(&self, alignment_id: i64, sidecars: &SampleSidecars) -> Result<bool, AppError> {
         let read = |p: &Path| {
             let p = p.to_path_buf();
@@ -443,7 +513,8 @@ impl App {
                     .map_err(|e| AppError::Import(format!("{}: {e}", p.display())))
             }
         };
-        // Per-contig stats + callable counts from samtools coverage (empty base if absent).
+        // The statistics of each contig, and the callable counts, from the samtools coverage
+        // output. The code starts from an empty value when that file is absent.
         let lite = match &sidecars.coverage {
             Some(cp) => {
                 let cov = read(cp).await?;
@@ -455,8 +526,9 @@ impl App {
             }
             None => CoverageResult::default(),
         };
-        // Overlay Picard's genome-wide depth distribution onto the per-contig breakdown: start from
-        // the Picard result (median/sd/MAD, exclusion fractions, pct_Nx) and graft the contig stats.
+        // Write the genome-wide depth distribution of Picard onto the table of contigs. Start from
+        // the Picard result, which holds the median, the sd, the MAD, the fractions that the tool
+        // excluded, and the pct_Nx values. Then add the statistics of each contig.
         let result = match &sidecars.wgs_metrics {
             Some(wp) => match sidecar::parse_wgs_metrics(&read(wp).await?) {
                 Some(mut w) => {
@@ -475,9 +547,11 @@ impl App {
             },
             None => lite,
         };
-        // Still `partial`: no per-base depth histogram (only the deep walk produces that), so the
-        // deep pass still upgrades this. Stored under the standard coverage key. Never downgrade a
-        // full deep-walk coverage on reimport — keep it if one is already present.
+        // The result keeps the `partial` mark. It holds no depth histogram for each base, because
+        // only the deep walk makes one. So the deep pass still replaces this result.
+        //
+        // The store holds it under the standard coverage key. A second import must never replace a
+        // full deep-walk result with this one. Keep the stored result when it exists.
         let wrote = self
             .save_analysis_no_downgrade(
                 alignment_id,
@@ -491,14 +565,20 @@ impl App {
         Ok(wrote)
     }
 
-    /// Self-referential callable intervals (BED 0-based half-open) for `contig` from the
-    /// alignment's own reads. Parameters adapt to the sample: long reads (HiFi) earn
-    /// callability at lower depth, and the CALLABLE-run gate scales with molecule length
-    /// (`f`·fragment), so long molecules clear it over far more of chrY. Requires the BAM.
+    /// The callable intervals of `contig`, from the reads of the alignment itself. The intervals
+    /// are in the BED form, which is 0-based and half open.
+    ///
+    /// The parameters change with the sample. A long read from a HiFi test becomes callable at a
+    /// lower depth. The limit on a CALLABLE run also grows with the length of the molecule, at
+    /// `f` times the fragment length. So a long molecule passes that limit across much more of
+    /// chrY.
+    ///
+    /// The method needs the BAM file.
     pub async fn callable_chr_intervals(&self, alignment_id: i64, contig: &str) -> Result<Vec<(i64, i64)>, AppError> {
-        // Resolve the reference via the gateway when the alignment has no stored path — a CRAM can't
-        // be decoded without one, and most imported alignments leave `reference_path` null (the build
-        // alone is recorded). Same resolution the de-novo caller uses.
+        // Find the reference through the gateway when the alignment holds no path. No reader can
+        // decode a CRAM file without a reference, and most imported alignments hold a NULL
+        // `reference_path` value. The row then records the build only. The de-novo caller finds the
+        // reference in the same way.
         let (bam, reference) = self.alignment_bam_reference(alignment_id).await?;
         let reference = Some(reference);
         let contig = contig.to_string();
@@ -515,10 +595,14 @@ impl App {
         .map_err(Into::into)
     }
 
-    /// The **private bucket**: de-novo SNP calls on chrY that the Y placement doesn't
-    /// explain (not on the assigned backbone), classified as off-path-known (a finer/
-    /// sibling FTDNA branch) or novel (a new-branch candidate). With `callable_bed` (e.g.
-    /// the Poznik/1KG `b38_sites.bed`), calls outside reliable regions are dropped.
+    /// The **private bucket**. It holds the de-novo SNP calls on chrY that the Y placement does not
+    /// explain. Those calls are not on the backbone that the code assigned.
+    ///
+    /// The method puts each call in one of two groups. A known call off the path marks a finer FTDNA
+    /// branch, or a branch beside the assigned one. A new call is a candidate for a new branch.
+    ///
+    /// With `callable_bed`, such as the Poznik file `b38_sites.bed` from 1KG, the method removes
+    /// each call outside a reliable region.
     pub async fn private_y_variants(
         &self,
         alignment_id: i64,
@@ -531,13 +615,18 @@ impl App {
         self.private_y_core(alignment_id, mask).await
     }
 
-    /// [`private_y_variants`] using the sample's **own** callable-Y BED as the mask
-    /// (self-referential — adapts to the sample's depth and read tech; no external file).
+    /// The work of [`private_y_variants`], with the callable-Y BED of the sample itself as the
+    /// mask. That mask changes with the depth and the read technology of the sample, and it needs no
+    /// other file.
     ///
-    /// With a per-sample GVCF sidecar the self-mask is **skipped**: the GVCF's own confidence
-    /// gating is the callable evidence (re-imposing Navigator's callable-loci depth threshold would
-    /// discard GATK calls the whole point is to trust), and skipping it avoids a CRAM walk — so the
-    /// GVCF fast path stays fast. Reliability then comes from the cohort callable mask + GVCF GQ.
+    /// With a GVCF sidecar for the sample, the method **does not** apply that mask. The confidence
+    /// values in the GVCF file are the evidence that a site is callable.
+    ///
+    /// A second depth limit from Navigator would remove GATK calls, and the purpose of this path is
+    /// to trust those calls. The method also avoids a CRAM walk, so the GVCF fast path stays fast.
+    ///
+    /// The reliability then comes from the callable mask of the cohort and the GQ value of the GVCF
+    /// file.
     pub async fn private_y_variants_self_masked(&self, alignment_id: i64) -> Result<PrivateBucket, AppError> {
         let aln = self.alignment_or_err(alignment_id).await?;
         let mask = if chr_y_gvcf_for_alignment(&aln).is_some() {
@@ -547,11 +636,15 @@ impl App {
             Some(navigator_analysis::mask::RegionMask::from_intervals(intervals))
         };
         let bucket = self.private_y_core(alignment_id, mask).await?;
-        // Persist the self-masked bucket so it reloads instead of recomputing next session. Version
-        // "3": prefers a per-sample GVCF sidecar as the derived-call source (was pileup-only in v2),
-        // so v2 blobs must recompute rather than reload.
-        // Version 4: private variants are now classified against structural masks lifted to the
-        // alignment's own build. A v3 bucket on a GRCh38 alignment saw no mask at all.
+        // Write the masked bucket to the store, so the next session reads it and calculates
+        // nothing.
+        //
+        // Version 3 takes the GVCF sidecar of the sample as its source of derived calls. Version 2
+        // used the pileup only. So the code must calculate a version 2 value again, and it must not
+        // read it.
+        //
+        // Version 4 classifies each private variant against the structural masks in the build of
+        // the alignment. A version 3 bucket on a GRCh38 alignment used no mask.
         self.save_analysis(alignment_id, "private_y", "4", &bucket).await?;
         Ok(bucket)
     }
@@ -561,27 +654,36 @@ impl App {
         self.load_analysis(alignment_id, "private_y", "4").await
     }
 
-    /// Shared core: assign Y, de-novo chrY, subtract the backbone, optionally mask, classify.
-    /// The curated CHM13 chrY structural regions (palindrome/amplicon/AZF-DYZ), resolving +
-    /// caching the three BEDs on first use. Best-effort: any download/parse failure yields
-    /// `None` so the annotation never blocks the analysis.
-    /// Genome-region metadata (centromere/telomere/cytoband/PAR) for a build, via the gateway's
-    /// 2-layer cache (fetches the UCSC cytoBand table on a cold miss). For QC / display context.
+    /// The shared core. It runs five steps. It assigns the Y haplogroup and calls de-novo variants
+    /// on chrY. It then removes the backbone calls, applies a mask when the caller asks for one, and
+    /// classifies each remaining call.
+    ///
+    /// It also reads the curated structural regions of chrY on CHM13, which are the palindromes, the
+    /// amplicons, and the AZF-DYZ regions. It finds and caches the three BED files at the first use.
+    /// Each step is optional, and a failed download or a failed parse gives `None`. So this
+    /// annotation never stops the analysis.
+    ///
+    /// It also reads the genome-region metadata of a build, which is the centromere, the telomeres,
+    /// the cytobands, and the PAR regions. Those values come from the two-layer cache of the
+    /// gateway, and the gateway reads the UCSC cytoBand table when the cache holds nothing. The UI
+    /// uses them for quality checks and for context.
     pub async fn genome_regions(&self, build: &str) -> Result<std::sync::Arc<GenomeRegions>, AppError> {
         Ok(self.gateway.genome_regions(build, &mut |_, _| {}).await?)
     }
 
-    /// Region annotation for a 1-based `position` on `contig` in `build` (centromere/telomere/PAR
-    /// membership + cytoband name). Uses the cached regions only — `None` if not yet fetched.
+    /// The region of a 1-based `position` on `contig` in `build`. The value states whether the
+    /// position is in a centromere, a telomere, or a PAR region, and it gives the cytoband name. The
+    /// method reads the cache only, and it returns `None` when the cache holds nothing.
     pub fn region_annotation(&self, build: &str, contig: &str, position: i64) -> Option<RegionAnnotation> {
         self.gateway
             .cached_genome_regions(build)
             .map(|r| r.annotate(contig, position))
     }
 
-    /// Memo for [`y_structural_regions_for`]: lifting parses the whole chain file, and a project
-    /// pass over thousands of subjects would otherwise repeat that per subject — the same trap the
-    /// tree fetch fell into. The masks are static within a process, so resolve each build once.
+    /// A memory for [`y_structural_regions_for`]. A liftover parses the full chain file. A project
+    /// pass across thousands of subjects would repeat that parse for each subject, and the tree
+    /// fetch had the same fault. The masks do not change inside one process, so the code resolves
+    /// each build one time.
     fn y_regions_memo() -> &'static std::sync::Mutex<HashMap<String, Option<YRegionsHandle>>> {
         static MEMO: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Option<YRegionsHandle>>>> =
             std::sync::OnceLock::new();
@@ -590,25 +692,30 @@ impl App {
 
     /// The curated chrY structural regions **in `build`'s coordinates**.
     ///
-    /// The three BEDs are CHM13-native, so anything else is lifted. That matters more than it
-    /// sounds: without it, a GRCh38 or GRCh37 source has no structural mask at all, every
-    /// palindromic and amplicon call counts as unique sequence, and private-variant counts inflate
-    /// into the hundreds — the difference between a donor averaging 4 and one averaging 661.
+    /// The three BED files are native to CHM13, so the code moves them to any other build.
     ///
-    /// Best-effort throughout: any download / chain / parse failure yields `None` so the annotation
-    /// never blocks the analysis, exactly as before.
+    /// That step is important. Without it, a GRCh38 source or a GRCh37 source has no structural
+    /// mask. Each call in a palindrome and in an amplicon then counts as unique sequence, and the
+    /// count of private variants grows into the hundreds. One donor gave a mean of 4 with the mask
+    /// and a mean of 661 without it.
+    ///
+    /// Each step is optional. A failed download, a failed liftover, and a failed parse each give
+    /// `None`, so this annotation never stops the analysis.
     async fn y_structural_regions_for(&self, build: &str) -> Option<YRegionsHandle> {
-        // Keyed by the *canonical* build: `hs1`, `CHM13v2.0` and the masked variant share coordinates
-        // and must share one entry rather than lifting three times.
+        // The key is the *canonical* build. The builds `hs1`, `CHM13v2.0`, and the masked build
+        // use the same coordinates. So they must share one entry, and the code must not do three
+        // liftovers.
         let key = canonical_build(build)?.as_str().to_string();
         if let Some(hit) = Self::y_regions_memo().lock().unwrap().get(&key) {
             return hit.clone();
         }
         let built = self.build_y_structural_regions(build).await.map(std::sync::Arc::new);
         if built.is_none() {
-            // Cached so a batch does not retry a failing download per subject — but *said*, because
-            // "no structural mask" is the condition that inflated private-variant counts into the
-            // hundreds in the first place, and it must never be reached silently again.
+            // The code caches this state, so a batch does not try a failed download again for
+            // each subject. It also writes a message.
+            //
+            // The state "no structural mask" grew the count of private variants into the hundreds.
+            // The app must never reach that state again with no message.
             eprintln!(
                 "no chrY structural mask available for {key} — private-variant counts will include \
                  palindromic and amplicon calls"
@@ -642,8 +749,9 @@ impl App {
         if matches!(target, ReferenceBuild::Chm13v2 | ReferenceBuild::Chm13v2MaskedRcrs) {
             return Some(native);
         }
-        // PAR and heterochromatin are taken natively per build rather than lifted — a chain is least
-        // trustworthy in exactly those places (PAR is shared with chrX, Yq12 is satellite).
+        // The code reads the PAR regions and the heterochromatin natively for each build. It does
+        // not move them from CHM13. A chain file is least reliable in those places. Both chrX and
+        // chrY hold the PAR regions, and Yq12 is satellite sequence.
         let landmarks = navigator_analysis::mask::y_landmarks(build)?;
 
         self.gateway
@@ -656,8 +764,9 @@ impl App {
                 .lift_intervals(ReferenceBuild::Chm13v2.as_str(), target.as_str(), "chrY", m.intervals())
                 .ok()?;
             if iv.is_empty() {
-                // A mask that lifted to nothing is not a mask; better to annotate nothing than to
-                // report "no structural regions here" as though it had been checked.
+                // A mask that gives no interval after the liftover is not a mask. The code then
+                // writes no annotation. It must not report "no structural regions here" as a
+                // result of a real check.
                 eprintln!("chrY {what} mask lifted CHM13→{} to nothing; skipping", target.as_str());
                 return None;
             }
@@ -676,23 +785,28 @@ impl App {
             RegionMask::from_intervals(landmarks.par.to_vec()),
             lift(palindrome_m, "palindrome")?,
             lift(amplicon_m, "amplicon")?,
-            // The satellite arrays rarely survive a chain, so the build's heterochromatin bound is
-            // the load-bearing part here and the lifted AZF/DYZ intervals only refine it.
+            // A satellite array rarely survives a chain file. So the heterochromatin bound of the
+            // build carries this test, and the AZF and DYZ intervals from the liftover only make it
+            // more exact.
             lift(native.heterochromatin_mask(), "AZF/DYZ")
                 .unwrap_or_else(|| RegionMask::from_intervals(vec![]))
                 .union(&[landmarks.heterochromatin]),
         ))
     }
 
-    /// Derive chrY private-variant candidates from a per-sample GVCF, returning the same
-    /// [`VariantCall`] shape the pileup de-novo path produces so `private_y_core`'s downstream
-    /// classification is identical. GATK's reassembly recovers SNVs the pileup caller misses.
+    /// Find the private-variant candidates on chrY from the GVCF file of one sample.
+    ///
+    /// The method returns the same [`VariantCall`] shape that the pileup de-novo path returns. So
+    /// the classification in `private_y_core` is the same for both paths.
+    ///
+    /// The reassembly step of GATK finds SNVs that the pileup caller does not find.
     async fn run_denovo_from_gvcf(&self, gvcf: &Path) -> Result<Vec<VariantCall>, AppError> {
         let gvcf = gvcf.to_path_buf();
         let snvs = tokio::task::spawn_blocking(move || {
-            // min_dp 4 (over the reader's permissive default 2): a real private SNV is covered by ≥4
-            // reads, whereas a misaligned-read cluster smears 2–3 reads across many nearby false SNVs
-            // — so the depth floor removes those artifact clusters without touching the (DP≥4) truth.
+            // Use min_dp 4, and not the default of 2 that the reader allows. A real private SNV
+            // has 4 reads or more. A group of misaligned reads gives 2 or 3 reads across many false
+            // SNVs that are near each other. So this depth limit removes each artefact group, and
+            // it keeps each true call with a DP of 4 or more.
             let params = navigator_analysis::gvcf::GvcfReadParams { min_dp: 4, min_gq: 20 };
             navigator_analysis::gvcf::read_derived_snvs(&gvcf, "chrY", &params)
         })
@@ -717,15 +831,21 @@ impl App {
         alignment_id: i64,
         mask: Option<navigator_analysis::mask::RegionMask>,
     ) -> Result<PrivateBucket, AppError> {
-        // Classify novels against the **DecodingUs** tree — the app's placement authority, which
-        // folds in the cohort-derived branches (from the de-novo tree pipeline). A shared lineage
-        // variant is named there, so it reads as OffPathKnown, not a false "novel"; a variant absent
-        // from this tree yet shared across the cohort is genuinely suspect. FTDNA fallback keeps the
-        // report working when the AppView tree is unavailable or the build has no DecodingUs coords.
+        // Classify each new call against the **DecodingUs** tree. That tree has the authority for
+        // a placement in this app, and it holds the branches that the de-novo tree pipeline found
+        // in the cohort.
+        //
+        // A variant of a shared lineage has a name in that tree, so the code marks it OffPathKnown
+        // and not "novel". A variant that the tree does not hold, and that the cohort shares, is
+        // doubtful.
+        //
+        // The FTDNA tree is the second choice. It keeps the report correct when the code can not
+        // read the AppView tree, and when the build has no DecodingUs coordinates.
         let (tree, tree_calls) = match self.y_decodingus_tree_calls(alignment_id).await {
             Ok(tc) => tc,
-            // A gone alignment file is not a tree problem: the fallback reads the same absent file,
-            // so it can only fail again while logging a tree provider that was never at fault.
+            // An absent alignment file is not a fault of the tree. The second path reads the same
+            // absent file, so it also fails. It then writes a log entry that names a tree provider
+            // with no fault.
             Err(e) if e.is_missing_alignment_file() => return Err(e),
             Err(e) => {
                 eprintln!("DecodingUs Y tree unavailable ({e}); private-Y classifying against FTDNA");
@@ -741,27 +861,42 @@ impl App {
         let path = navigator_analysis::haplo::path_positions(&tree, terminal.id);
         let known = navigator_analysis::haplo::tree_positions(&tree);
 
-        // The structural BEDs are in CHM13 chrY coordinates, so they only annotate a CHM13 alignment.
-        // The cohort masks apply per build: native for CHM13, CrossMap-lifted (hs1→hg38) for GRCh38.
+        // The structural BED files hold CHM13 chrY coordinates, so they annotate a CHM13 alignment
+        // only. The cohort masks apply to each build: the CHM13 files are native, and CrossMap
+        // moved the GRCh38 files from hs1 to hg38.
         let aln = self.alignment_or_err(alignment_id).await?;
         let regions = self.y_structural_regions_for(&aln.reference_build).await;
-        // L2: the cohort **callable mask** (Poznik-style, CALLABLE in ≥90% of a ~3k-male cohort) —
-        // only ~25% of non-PAR chrY is reliably callable cohort-wide. L3: a **cohort-shared-sites**
-        // blocklist — every position that varies with ≥2 carriers across the cohort (plus homoplasy
-        // hotspots). A real shared lineage variant belongs in the DecodingUs tree (and so classifies
-        // as off-path-known above); one that is cohort-shared yet *absent* from the tree is a suspect
-        // recurrent artifact, not a private SNP. A truly private variant has a single cohort carrier,
-        // so it survives this filter. This is the single-sample stand-in for the de-novo pipeline's
-        // cohort carrier filter. Bundled per build (CHM13 native, GRCh38 lifted); absent ⇒ skipped.
+        // Layer 2 is the **callable mask** of the cohort, in the Poznik form. A position is in that
+        // mask when it is CALLABLE in 90% or more of a cohort of about 3,000 men. Only about 25% of
+        // chrY outside the PAR regions is reliably callable across a cohort.
+        //
+        // Layer 3 is a blocklist of the **sites that the cohort shares**. It holds each position
+        // that varies with two carriers or more across the cohort. It also holds the homoplasy
+        // hotspots.
+        //
+        // A real variant of a shared lineage is in the DecodingUs tree, and the step above marks it
+        // off-path-known. A variant that the cohort shares and the tree does not hold is a
+        // recurrent artefact. It is not a private SNP.
+        //
+        // A true private variant has one carrier in the cohort, so it passes this filter. This
+        // layer takes the place of the cohort carrier filter of the de-novo pipeline, for one
+        // sample.
+        //
+        // The bundle holds a file for each build. The CHM13 file is native, and CrossMap moved the
+        // GRCh38 file. The code skips this layer when the file is absent.
         let mask_token = y_mask_build_token(&aln.reference_build);
         let cohort_mask =
             mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_CALLABLE_MASK", "chrY_callable_mask", t));
         let cohort_shared =
             mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_COHORT_SHARED", "chrY_cohort_shared_sites", t));
 
-        // Derived-call source. Prefer a per-sample chrY GVCF (GATK HaplotypeCaller's local haplotype
-        // reassembly resolves misaligned-ref ~50/50 sites the pileup caller drops — see the WGS229
-        // recall gap); fall back to Navigator's de-novo pileup caller when no sidecar is present.
+        // The source of the derived calls. Take the chrY GVCF file of the sample first.
+        //
+        // GATK HaplotypeCaller builds the local haplotypes again. Take a site with about 50%
+        // reference reads, where the mapper placed the reference reads wrongly. That step gives an
+        // answer at such a site, and the pileup caller removes it. See the recall gap of WGS229.
+        //
+        // When the sample has no sidecar file, use the de-novo pileup caller of Navigator.
         let denovo = match chr_y_gvcf_for_alignment(&aln) {
             Some(gvcf) => {
                 eprintln!("private-Y: sourcing chrY calls from GVCF sidecar {}", gvcf.display());
@@ -817,7 +952,7 @@ mod gvcf_discovery_tests {
         }
     }
 
-    /// Each case gets its own directory — these run in parallel.
+    /// Each case has its own directory, because these tests run at the same time.
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("nav-gvcf-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -836,9 +971,11 @@ mod gvcf_discovery_tests {
 
     #[test]
     fn finds_a_bare_named_gvcf_in_a_caller_subdirectory() {
-        // The D2C per-run layout: `<run>/CP086569.2/gatk4/chrY.g.vcf.gz`, with no sample prefix and
-        // one directory down. Matching only `*.chry.g.vcf.gz` beside the CRAM found none of these,
-        // so every subject fell back to decoding the whole chromosome.
+        // The D2C layout for one run: `<run>/CP086569.2/gatk4/chrY.g.vcf.gz`. That name holds no
+        // sample prefix, and the file is one directory below the alignment.
+        //
+        // An earlier version matched `*.chry.g.vcf.gz` beside the CRAM file only, and it found no
+        // file of this kind. So each subject decoded the full chromosome.
         let d = scratch("subdir");
         std::fs::write(d.join("chrYM.cram"), "").unwrap();
         std::fs::create_dir_all(d.join("gatk4")).unwrap();
@@ -885,72 +1022,100 @@ mod gvcf_discovery_tests {
 /// path's floor: below this, a call is far more likely a misaligned-read cluster than a real SNV.
 const VCF_PRIVATE_MIN_DP: u32 = 4;
 
-/// Genotype-quality floor, matching the GVCF path's `min_gq`. Aligns the two sources' gates as far
-/// as the evidence allows — though it does not make them comparable: see
-/// [`App::private_y_from_variant_set`] on why a vendor caller's call set is a different instrument.
+/// The lowest genotype quality that a call can have. The value equals the `min_gq` value of the GVCF
+/// path.
+///
+/// This value makes the gates of the two sources as similar as the evidence permits. It does not
+/// make their results comparable. [`App::private_y_from_variant_set`] gives the reason: the call set
+/// of a vendor comes from a different instrument.
 const VCF_PRIVATE_MIN_GQ: u32 = 20;
 
-/// Derived-allele fraction a call must reach to count as **deterministic** on a haploid chromosome.
-/// chrY carries one copy, so a genuine call is essentially all-alt; a middling fraction is an
-/// ambiguous locus, and an ambiguous call cannot support a private-variant claim.
+/// The fraction of derived reads that a call needs to be **deterministic** on a haploid chromosome.
+///
+/// A cell holds one copy of chrY. So a true call has almost no reference read. A fraction between
+/// the two states marks a locus with two answers, and such a call can not support a claim about a
+/// private variant.
 const VCF_PRIVATE_MIN_AF: f64 = 0.95;
 
-/// Depth ceiling, as a multiple of the donor's own typical depth at good calls.
+/// The maximum depth of a call, as a factor of the usual depth of that donor at a good call.
 ///
-/// chrY carries one copy, so a locus drawing far more reads than the rest of the chromosome is
-/// collecting them from somewhere else — a collapsed repeat. This was found by reviewing a candidate
-/// branch whose two carriers sat at DP 413 and 504 against a median of 57, each holding a stubborn
-/// ~5% reference allele: the shape of a paralogous pile-up, and it cleared every other gate. Three
-/// times the median keeps ~91% of quality calls while removing that tail.
+/// A cell holds one copy of chrY. A locus with many more reads than the rest of the chromosome takes
+/// those reads from another place. That place is a collapsed repeat.
+///
+/// A review of one candidate branch found this fault. Its two carriers had a DP of 413 and 504,
+/// against a median of 57. Each one also held about 5% reference reads. That shape is a pile of
+/// reads from a paralog, and the call passed each other gate.
+///
+/// A limit of three times the median keeps about 91% of the good calls and removes that group.
 const VCF_PRIVATE_MAX_DEPTH_RATIO: u32 = 3;
 
-/// Minimum quality-passing calls before a depth ratio is trustworthy. Below this the median is not a
-/// description of the donor's coverage, and the rule abstains rather than judging against noise.
+/// The count of good calls that the code needs before it can trust a depth ratio. Below this count,
+/// the median does not describe the coverage of the donor. The rule then does nothing, and it makes
+/// no comparison against noise.
 const VCF_PRIVATE_MIN_CALLS_FOR_RATIO: usize = 20;
 
 impl App {
-    /// The **private bucket for a variant set** — the VCF counterpart of [`Self::private_y_variants`].
+    /// The **private bucket of a variant set**. It is the VCF form of
+    /// [`Self::private_y_variants`].
     ///
-    /// Private-Y has always been keyed on an alignment: it walks a BAM/CRAM (or its GVCF sidecar) and
-    /// caches against `alignment_id`. A subject whose Y data arrived as an externally processed VCF
-    /// has no alignment, so the option was never offered — on R1b-CTS4466Plus that is ~1,600 of 1,881
-    /// members, and it is why cohort features that depend on private variants had almost nothing to
-    /// work with.
+    /// The key of the private-Y data was always an alignment. The code walks a BAM file or a CRAM
+    /// file, or its GVCF sidecar, and it caches the result under `alignment_id`.
     ///
-    /// The classification is deliberately the same as the alignment path's: subtract the placed
-    /// backbone, drop anything outside the cohort callable mask or on the cohort-shared blocklist,
-    /// then split off-path-known from novel. What differs is where the evidence comes from and how
-    /// the donor's own reliability is judged:
+    /// A subject whose Y data arrived as a VCF file from another tool has no alignment. So the app
+    /// never offered this option to that subject. On R1b-CTS4466Plus, about 1,600 of the 1,881
+    /// members are in that group. For this reason, each cohort feature that needs private variants
+    /// had almost no data.
     ///
-    /// - **Placement** uses [`Self::vset_base_calls`], so the terminal is derived from tree-position
-    ///   genotypes (including hom-ref) rather than the handful of derived calls alone.
-    /// - **There is no self-callable mask** — a VCF carries no coverage track. Its place is taken by
-    ///   the source's own per-call evidence: a `FILTER`-flagged call is dropped, as is one below
-    ///   [`VCF_PRIVATE_MIN_DP`], and a chrY heterozygote is dropped outright — on a haploid
-    ///   chromosome that is a paralog or mismapping artefact, and it is ~2/3 of a Big Y's chrY rows.
-    /// - **Depth and allele fraction are the source's**, so [`PublishGate`] judges these calls on real
-    ///   read evidence. A set imported before evidence capture (`call_schema` 1) therefore yields
-    ///   nothing publishable, which is the honest outcome rather than a fabricated one.
+    /// The classification is the same as the classification of the alignment path, by design. The
+    /// code removes the backbone that it placed. It then removes each call outside the callable mask
+    /// of the cohort, and each call on the blocklist of the cohort. It then separates the known
+    /// off-path calls from the new ones.
     ///
-    /// **Not comparable to the alignment path's counts, and not yet fit for branch inference.** This
-    /// yields a median ~175 novel calls per donor against the GVCF path's 3–13. The gap is the
-    /// instrument, not a defect here: the alignment path reads GATK HaplotypeCaller at ploidy 1,
-    /// while a vendor export is a diploid caller emitting far more chrY calls, and only ~10% of the
-    /// difference is reachable by matching DP/GQ gates. Note also that `Novel` means "not
-    /// branch-defining in *this* tree" — the tree is FTDNA's supported branches plus splits solved
-    /// from the cohort, not a catalogue of known Y variation — so a real, well-known variant that
-    /// defines no branch classifies as novel here. Feeding these buckets to the block tree's
-    /// candidate detection took CTS4466 from 3 candidates to 20 (39 conflicts, 105 recurrent
-    /// positions dropped) on only 111 of ~1,600 sets, which is why
-    /// [`Self::private_y_for_biosamples`] does not union them yet.
+    /// Two things are different: the source of the evidence, and the test of the reliability of the
+    /// donor.
+    ///
+    /// - **The placement** uses [`Self::vset_base_calls`]. So the terminal comes from the genotypes
+    ///   at each tree position, and those genotypes include the hom-ref calls. It does not come from
+    ///   the few derived calls alone.
+    /// - **There is no self-callable mask**, because a VCF file holds no coverage track. The
+    ///   evidence of each call takes its place. The code removes a call with a `FILTER` flag, a call
+    ///   below [`VCF_PRIVATE_MIN_DP`], and each heterozygous call on chrY. A cell holds one copy of
+    ///   chrY, so such a call comes from a paralog or from a read that the mapper placed wrongly.
+    ///   Those calls are about two thirds of the chrY rows of a Big Y test.
+    /// - **The depth and the allele fraction come from the source**, so [`PublishGate`] judges these
+    ///   calls on real read evidence. A set that the app imported before it stored the evidence has
+    ///   a `call_schema` of 1. Such a set gives nothing that the app can publish, and that result is
+    ///   correct.
+    ///
+    /// **These counts do not compare with the counts of the alignment path, and they are not yet
+    /// good enough for branch inference.**
+    ///
+    /// This path gives a median of about 175 new calls for each donor. The GVCF path gives 3 to 13.
+    /// The difference is the instrument and not a fault here. The alignment path reads GATK
+    /// HaplotypeCaller at ploidy 1. A vendor export comes from a diploid caller, and that caller
+    /// writes many more chrY calls. A match of the DP gates and the GQ gates removes only about 10%
+    /// of the difference.
+    ///
+    /// Note also that `Novel` means "this variant defines no branch in *this* tree". The tree holds
+    /// the branches that FTDNA supports, and the splits that the cohort resolved. It is not a
+    /// catalogue of each known Y variant. So a real, well-known variant that defines no branch is
+    /// `Novel` here.
+    ///
+    /// The block tree read these buckets for its candidate detection. On CTS4466 the count of
+    /// candidates went from 3 to 20, with 39 conflicts and 105 recurrent positions removed. Only 111
+    /// of about 1,600 sets took part. For this reason,
+    /// [`Self::private_y_for_biosamples`] does not yet join them.
     pub async fn private_y_from_variant_set(&self, set: &VariantSet) -> Result<PrivateBucket, AppError> {
         use navigator_analysis::haplo;
 
-        // Without per-call evidence every quality gate below is a no-op, and the result is a list of
-        // whatever the vendor's caller emitted — on a real set that is 400-550 "novel" calls against
-        // ~70 for the same donor's evidence-bearing set. A call we cannot judge is the most
-        // non-deterministic kind there is, so refuse rather than publish a number that looks like a
-        // finding. Re-importing the source populates `CallEvidence` (migration 0042).
+        // With no evidence for each call, every quality gate below does nothing. The result is
+        // then the list that the caller of the vendor wrote. On a real set that list holds 400 to
+        // 550 "new" calls. The set of the same donor with evidence holds about 70.
+        //
+        // A call that the app can not judge is the least deterministic call of all. So the method
+        // refuses, and it does not publish a number that looks like a result.
+        //
+        // A second import of the source writes the `CallEvidence` rows. See migration 0042.
         if !set.has_evidence() {
             return Err(AppError::Import(format!(
                 "variant set {} carries no per-call evidence (call_schema {}); re-import it to enable private-Y",
@@ -966,9 +1131,12 @@ impl App {
                 .values()
                 .flat_map(|n| n.loci.iter().map(|l| l.position))
                 .collect();
-            // `pv2`: the chrY structural masks are now lifted to the set's own build, so a `pv1`
-            // bucket was classified with **no** structural mask on anything but CHM13 and its counts
-            // are inflated. The version is the invalidation — `--force` cannot reach this cache.
+            // The `pv2` key. The code now moves the chrY structural masks to the build of the
+            // set.
+            //
+            // A `pv1` bucket used **no** structural mask on any build except CHM13, so its counts
+            // are too high. The version number removes the old value from the cache, and the
+            // `--force` option can not reach this cache.
             format!("pv2:{}", crate::haplogroup::genotype_cache_key("chrY", None, &targets))
         };
         if let Ok(Some(json)) = variant_set_private_y::get(self.store.pool(), set.id, &cache_key).await {
@@ -992,12 +1160,14 @@ impl App {
             mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_CALLABLE_MASK", "chrY_callable_mask", t));
         let cohort_shared =
             mask_token.and_then(|t| load_y_position_bed("NAVIGATOR_Y_COHORT_SHARED", "chrY_cohort_shared_sites", t));
-        // The structural BEDs are CHM13-native and lifted to whatever this set is in — without that
-        // a GRCh38 set has no structural mask and its private counts inflate into the hundreds.
+        // The structural BED files are native to CHM13, and the code moves them to the build of
+        // this set. Without that step, a GRCh38 set has no structural mask, and its count of private
+        // variants grows into the hundreds.
         let regions = self.y_structural_regions_for(&build).await;
 
-        // Quality-passing calls first, so the depth ceiling below is measured against the donor's own
-        // good coverage rather than against a median dragged down by the junk we are about to drop.
+        // Take the calls that pass the quality gates first. The depth limit below then compares
+        // against the good coverage of the donor. Without this order, it compares against a median
+        // that the calls below the gates make smaller.
         let passing: Vec<&navigator_domain::variants::VariantCall> = set
             .calls
             .iter()
@@ -1025,8 +1195,9 @@ impl App {
                     position: c.position,
                     reference,
                     alternate,
-                    // The source's own numbers; absent when it gave none, which the publish gate
-                    // then (correctly) refuses rather than treating as evidence.
+                    // The numbers of the source. The value is absent when the source gave none.
+                    // The publish gate then refuses that call, and that decision is correct. It
+                    // must not read an absent value as evidence.
                     depth: c.evidence.dp.unwrap_or(0),
                     alt_depth: c.evidence.ad_alt.unwrap_or(0),
                     allele_fraction: c.evidence.allele_fraction().unwrap_or(0.0),
@@ -1051,12 +1222,17 @@ impl App {
     }
 }
 
-/// Whether a genotype is a single-allele (hemizygous / homozygous-alt) call.
+/// Shows whether a genotype holds one allele. Such a call is hemizygous or homozygous for the
+/// alternate allele.
 ///
-/// chrY is haploid, so a heterozygous call there has no biological reading: it is a paralogous or
-/// mismapped locus. In a real Big Y export those are ~2/3 of the chrY rows, and admitting them would
-/// make the private set mostly artefact. An absent genotype is admitted — a source that reports no GT
-/// is not asserting heterozygosity.
+/// A cell holds one copy of chrY. So a heterozygous call there is not possible in biology. It marks
+/// a paralog, or a locus where the mapper placed the reads wrongly.
+///
+/// In a real Big Y export, those calls are about two thirds of the chrY rows. With them, most of the
+/// private set is an artefact.
+///
+/// The function accepts a call with no genotype. A source that writes no GT field makes no statement
+/// about heterozygosity.
 fn is_hemizygous(gt: Option<&str>) -> bool {
     let Some(gt) = gt else { return true };
     let alleles: Vec<&str> = gt.split(['/', '|']).filter(|a| *a != ".").collect();
@@ -1069,8 +1245,9 @@ mod vcf_private_y_tests {
 
     #[test]
     fn a_chr_y_heterozygote_is_rejected() {
-        // chrY is haploid: a het call is a paralog or a mismapping, and it is ~2/3 of a Big Y's
-        // chrY rows — admitting them would make the private set mostly artefact.
+        // A cell holds one copy of chrY. So a heterozygous call marks a paralog, or a read that
+        // the mapper placed wrongly. Those calls are about two thirds of the chrY rows of a Big Y
+        // test. With them, most of the private set is an artefact.
         assert!(!is_hemizygous(Some("0/1")));
         assert!(!is_hemizygous(Some("1|2")));
         assert!(!is_hemizygous(Some("1/2")));
@@ -1086,16 +1263,18 @@ mod vcf_private_y_tests {
 
     #[test]
     fn a_source_that_reports_no_genotype_is_not_treated_as_heterozygous() {
-        // Absence of a GT is not an assertion about ploidy; rejecting it would silently discard
-        // every sites-only or CSV-derived set.
+        // An absent GT field makes no statement about the ploidy. A rule that refused it would
+        // remove each set with sites only, and each set from a CSV file, with no message.
         assert!(is_hemizygous(None));
         assert!(is_hemizygous(Some("1/.")), "a partial call still carries one allele");
     }
 }
 
-/// Median read depth across `calls`, or `None` when too few carry one to describe the donor's
-/// coverage. Median rather than mean: the pile-ups this exists to find would drag a mean upward and
-/// hide themselves behind it.
+/// The median read depth across `calls`. The function returns `None` when too few calls hold a depth
+/// to describe the coverage of the donor.
+///
+/// The function takes the median and not the mean. The piles of reads that this code must find make
+/// a mean larger, and they then hide behind that larger value.
 fn median_depth(calls: &[&navigator_domain::variants::VariantCall]) -> Option<u32> {
     let mut depths: Vec<u32> = calls.iter().filter_map(|c| c.evidence.dp).collect();
     if depths.len() < VCF_PRIVATE_MIN_CALLS_FOR_RATIO {
@@ -1127,7 +1306,7 @@ mod depth_ratio_tests {
 
     #[test]
     fn the_median_ignores_the_pile_ups_it_exists_to_find() {
-        // A mean would be dragged up by the outliers and hide them behind itself.
+        // The extreme values make a mean larger, and they then hide behind that larger value.
         let mut calls: Vec<VariantCall> = (0..VCF_PRIVATE_MIN_CALLS_FOR_RATIO).map(|_| call(Some(50))).collect();
         calls.push(call(Some(2584)));
         calls.push(call(Some(1191)));

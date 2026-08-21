@@ -1,9 +1,11 @@
 //! Drive a whole-genome realignment headlessly, for the phase 5 WGS-scale validation.
 //!
-//! The GUI can start this job, but a run measured in hours should not depend on a window staying
-//! open — and the validation wants a timestamped log of where the time went, which the progress
-//! cards do not keep. This is the same `App::realign_alignment` the UI calls, with the stage
-//! reports printed instead of drawn.
+//! The GUI can start this job. But a run of many hours must not depend on an open window. The
+//! validation also needs a log with a timestamp for each stage, and the progress cards do not keep
+//! one.
+//!
+//! This example calls the same `App::realign_alignment` function that the UI calls. It prints each
+//! stage report, and the UI draws it.
 //!
 //! ```bash
 //! cargo run --release -p navigator-app --example realign_wgs -- <alignment_id>
@@ -13,8 +15,8 @@
 //! #   to find; a run that is killed outright leaves them regardless
 //! ```
 //!
-//! Ctrl-C cancels through the job's own token rather than killing the process, so the scratch
-//! directory — hundreds of GB at WGS scale — is still cleaned up on the way out.
+//! Ctrl-C stops the job through the cancel token of that job. It does not stop the process. So the
+//! example still removes the scratch directory, which holds hundreds of GB for a WGS sample.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -34,9 +36,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| home.join(".decodingus/references/chm13v2.0.fa"));
     let scratch_root = std::env::var("SCRATCH").ok().map(PathBuf::from);
-    // `PRESET` overrides the technology inference, which refuses any test type it does not know
-    // rather than guessing — correct for the app, but it puts real vendor products (`Y_ELITE`)
-    // out of reach of a smoke test.
+    // `PRESET` replaces the value that the code deduces from the technology. That code refuses a
+    // test type that it does not know, and it never makes an estimate. This behaviour is correct
+    // for the app. But it also puts a real vendor product, such as `Y_ELITE`, out of the reach of
+    // a quick test.
     let preset = match std::env::var("PRESET") {
         Ok(p) => Some(Preset::parse(&p).map_err(|e| format!("PRESET={p}: {e}"))?),
         Err(_) => None,
@@ -113,9 +116,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match app.realign_alignment(alignment_id, params, cancel, progress).await {
         Ok(outcome) => {
-            // A resumed run did not necessarily run the stage that counts a given figure, and the
-            // earlier attempt may have been killed before it wrote one down. "not measured" is the
-            // honest rendering; a zero here would read as a result.
+            // A run that continues an earlier run does not always do the stage that counts a
+            // figure. The earlier run can also stop before it writes that figure. So the report
+            // shows "not measured". A zero value here looks like a result.
             let count = |n: Option<u64>| n.map(|n| n.to_string()).unwrap_or_else(|| "not measured".into());
             println!(
                 "\ndone in {:.1} min\n  alignment #{} at {}\n  reads written: {}\n  duplicates marked: {}\n  source unmapped reads (had a chance to place): {}",

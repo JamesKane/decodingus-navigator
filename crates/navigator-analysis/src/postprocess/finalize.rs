@@ -1,28 +1,29 @@
 //! The last step of stage C: put the marked alignment where it belongs and index it.
 //!
-//! ## Why this emits BAM rather than CRAM
+//! ## Why this gives a BAM, and not a CRAM
 //!
-//! CRAM is the better container on paper — reference-based compression makes a 30x WGS roughly
-//! 17 GB against 60–80 GB of BAM — and stage C was built to produce it. Two defects in
-//! `noodles-cram` 0.94 make that unreachable today, and both surfaced only at real scale:
+//! On paper a CRAM is the better container. Its compression against a reference makes a 30x WGS
+//! about 17 GB, against 60 to 80 GB for a BAM. Stage C exists to make one. Two defects in
+//! `noodles-cram` 0.94 put that out of reach today, and both appeared only at real scale:
 //!
-//! - **Writing** panics on a secondary alignment with `SEQ: *`, which is legal SAM and what
-//!   minimap2 emits, because CRAM encodes a read as its difference from the reference and there
-//!   are no bases to difference. [`super::cram`] handles it by dropping those records.
-//! - **Indexing** then panics on any *multi-reference* slice: `cram::fs::index` decodes records
-//!   with `fasta::Repository::default()` — an empty one, still carrying its `// TODO` upstream —
-//!   and the reader `expect`s a name that cannot be there. With 25 contigs, every slice that
-//!   straddles a contig boundary is multi-reference, so a whole-genome CRAM cannot be indexed at
-//!   all. Only the coordinates are actually needed, which is why the decode is a bug rather than
-//!   a requirement.
+//! - The **write** panics on a secondary alignment with a `SEQ` of `*`. That is legal SAM, and it
+//!   is what minimap2 gives. A CRAM encodes a read as its difference from the reference, and there
+//!   is no base to take a difference of. [`super::cram`] handles it, and drops those records.
+//! - The **index** then panics on any slice that holds *more than one reference*.
+//!   `cram::fs::index` decodes the records with a `fasta::Repository::default()`, which is empty
+//!   and still carries its `// TODO` upstream. The reader then calls `expect` on a name that can
+//!   not be there. With 25 contigs, every slice that crosses a contig boundary holds more than one
+//!   reference, so nothing can index a whole-genome CRAM at all. The index needs the coordinates
+//!   alone, and that is why the decode is a bug, and not a requirement.
 //!
-//! Emitting BAM avoids both, and costs less than it looks: duplicate marking has already written
-//! exactly the bytes that belong in the output, so finalising is a rename and an index instead of
-//! a whole re-compression pass over the alignment. The trade is disk, and for the handful of
-//! whole genomes a desktop user holds that is the cheaper side.
+//! A BAM avoids both, and it costs less than it looks. The duplicate mark already wrote exactly
+//! the bytes that belong in the output. So this last step is a rename and an index, and not a
+//! second compression pass over the whole alignment. The cost is disk space. For the few whole
+//! genomes that a desktop user holds, that is the cheaper side.
 //!
-//! The CRAM path is kept and still tested — the defects are upstream and fixable, and the choice
-//! should be revisitable without rebuilding the stage.
+//! The CRAM path stays, and the tests still cover it. The defects are upstream, and somebody can
+//! fix them. The choice must then be open again, and nobody should have to build the stage
+//! anew.
 
 use std::path::{Path, PathBuf};
 
@@ -30,7 +31,7 @@ use noodles::bam;
 
 use crate::error::AnalysisError;
 
-/// What finalising produced.
+/// What this last step made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinalizedAlignment {
     pub bam: PathBuf,
@@ -39,8 +40,9 @@ pub struct FinalizedAlignment {
 
 /// Move `input` to `output` and write its `.bai`.
 ///
-/// A rename when both sit on one filesystem, which is the normal case — the scratch directory
-/// lives beside the output precisely so this costs nothing. Falls back to a copy across devices.
+/// This is a rename when both paths sit on one filesystem, and that is the usual case. The scratch
+/// directory lives beside the output for exactly that reason, so the move costs nothing. Across
+/// two devices it falls back to a copy.
 pub fn finalize_bam(input: &Path, output: &Path) -> Result<FinalizedAlignment, AnalysisError> {
     if let Some(parent) = output.parent() {
         std::fs::create_dir_all(parent).map_err(|e| AnalysisError::io(parent, e))?;
@@ -58,10 +60,10 @@ pub fn finalize_bam(input: &Path, output: &Path) -> Result<FinalizedAlignment, A
     })
 }
 
-/// Build the `.bai` for a finished BAM, returning its path.
+/// Build the `.bai` of a finished BAM. Returns its path.
 ///
-/// Separate from [`finalize_bam`] because it reads the completed file back, so it is also what a
-/// "reindex this alignment" repair would call.
+/// It sits apart from [`finalize_bam`] because it reads the completed file back. So it is also the
+/// function that a repair which makes the index again would call.
 pub fn index_bam(bam_path: &Path) -> Result<PathBuf, AnalysisError> {
     let index = bam::fs::index(bam_path).map_err(|e| AnalysisError::io(bam_path, e))?;
     let index_path = bai_path(bam_path);

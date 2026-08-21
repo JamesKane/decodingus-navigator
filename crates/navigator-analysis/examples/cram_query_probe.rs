@@ -1,6 +1,7 @@
-//! Time the phases of an indexed region read, so a slow BAM/CRAM path can be attributed to the
-//! part actually responsible (open, header, first query, warm query, bulk region iteration) rather
-//! than to whichever call the wall-clock happened to land in.
+//! Time each phase of a region read that uses an index. A slow path over a BAM or a CRAM then goes
+//! to the part that caused it. Those parts are the open, the header, the first query, a warm
+//! query, and the walk over the whole region. Without this, the blame lands on whichever call the
+//! wall clock happened to be inside.
 //!
 //! Written to diagnose a CRAM that took ~500x longer than an equivalent BAM for one region query.
 //!
@@ -29,7 +30,8 @@ fn main() {
     let (header, mut reader) = open_indexed(path, Some(refp)).expect("open");
     println!("open + header            : {:>8.2?}", t0.elapsed());
 
-    // A single-base region: cost here is per-query overhead, not per-record work.
+    // A region of one base. The cost here is the overhead of one query, and not the work at each
+    // record.
     let one = |p: usize| -> Region { format!("{contig}:{p}-{p}").parse().expect("region") };
 
     let t = Instant::now();
@@ -64,10 +66,13 @@ fn main() {
         el / (span as u32 / 1_000_000).max(1)
     );
 
-    // VERIFY=1 checks the container-skipping query against noodles' own (whole-contig) Query on
-    // REAL data. The checked-in fixture is a single container, so only a large multi-container CRAM
-    // can catch a container wrongly skipped -- which would present as a faster caller, not a broken
-    // one. Slow by construction: the oracle is the implementation we replaced.
+    // With `VERIFY=1` the probe checks the query that skips containers against the own `Query` of
+    // noodles, which walks the whole contig, on REAL data.
+    //
+    // The fixture in the repo holds one container. Only a large CRAM with many containers can
+    // catch a container that the code skips wrongly. Such a fault would look like a faster caller,
+    // and not a broken one. This check is slow by construction, because the oracle is the code
+    // that we replaced.
     if std::env::var("VERIFY").is_ok_and(|v| v == "1") {
         use noodles::cram;
 

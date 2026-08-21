@@ -40,7 +40,7 @@ pub async fn create(pool: &SqlitePool, p: &NewProject) -> Result<Project, StoreE
     })
 }
 
-/// Update a project's editable fields. Returns whether a row was affected.
+/// Update the fields of a project that a user can edit. It returns whether it changed a row.
 pub async fn update(
     pool: &SqlitePool,
     id: i64,
@@ -59,8 +59,9 @@ pub async fn update(
     Ok(affected > 0)
 }
 
-/// Delete a project row. Returns whether a row was removed. Callers must ensure no biosample
-/// still references it (FKs are enforced) — the app layer guards this.
+/// Delete a project row. It returns whether it removed a row. A caller must make sure that no
+/// biosample still names the project, because the database enforces the FKs. The app layer guards
+/// that.
 pub async fn delete(pool: &SqlitePool, id: i64) -> Result<bool, StoreError> {
     let affected = sqlx::query("DELETE FROM project WHERE id = ?")
         .bind(id)

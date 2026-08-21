@@ -1,6 +1,7 @@
-//! Navigator local persistence — SQLite via `sqlx`, replacing the H2/Slick layer.
-//! Query-module-per-aggregate over a `SqlitePool`; complex children modelled as proper
-//! rows, with versioned, reversible migrations. Persisted state is authoritative.
+//! Navigator local persistence: SQLite through `sqlx`, in place of the H2/Slick layer.
+//!
+//! Each aggregate has one query module over a `SqlitePool`. A complex child is a real row, and the
+//! migrations carry a version and can go backwards. The stored state has authority.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -49,16 +50,18 @@ pub struct Store {
 }
 
 impl Store {
-    /// Open (creating if absent) the SQLite database at `path` and run migrations.
+    /// Open the SQLite database at `path`, make it when it is absent, and run the migrations.
     pub async fn open(path: &Path) -> Result<Self, StoreError> {
         let opts = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .foreign_keys(true)
-            // WAL + a generous busy timeout so the GUI and a concurrent CLI (`navigator analyze`)
-            // can share the one workspace file without immediate "database is locked" failures:
-            // WAL lets readers run alongside a single writer, and the timeout makes a contended
-            // writer wait for the other to finish instead of erroring out.
+            // WAL, with a long busy timeout. The GUI and a CLI can then run at the same time, such
+            // as `navigator analyze`, and share the one workspace file. Neither one then sees an
+            // immediate `database is locked` failure.
+            //
+            // WAL lets a reader run beside the one writer. The timeout makes a second writer wait
+            // for the first to finish, and it gives no error.
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
             .busy_timeout(std::time::Duration::from_secs(30));

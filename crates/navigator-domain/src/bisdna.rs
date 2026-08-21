@@ -145,7 +145,7 @@ pub struct ResolveOutcome {
     pub no_call: usize,
     /// Back-mutated markers — flagged, excluded from placement.
     pub back_mutated: usize,
-    /// Positive markers whose name the dictionary couldn't place on this build.
+    /// Positive markers whose name the dictionary could not place on this build.
     pub unresolved: usize,
     /// A capped sample of unresolved names (for diagnostics).
     pub unresolved_names: Vec<String>,
@@ -336,7 +336,7 @@ S163\ths1\tchrY\t15000000\t+\tA\tC
         let calls = parse(SAMPLE).unwrap(); // Apt-, CTS10003-, CTS10149+, CTS12633+, CTS3281 no_call, S163 (positive)
         let out = resolve_calls(&calls, &dict(), "hs1", 10);
 
-        // Apt + CTS10003 are negative → counted, not emitted; CTS10003 also isn't in the dict.
+        // Apt + CTS10003 are negative → counted, not emitted; CTS10003 also is not in the dict.
         assert_eq!(out.ancestral, 2);
         assert_eq!(out.no_call, 1); // CTS3281
                                     // Three positives (CTS10149, CTS12633, S163) are all in the dict → three calls.
@@ -351,7 +351,7 @@ S163\ths1\tchrY\t15000000\t+\tA\tC
 
     #[test]
     fn unresolved_positive_is_tallied_not_emitted() {
-        // A positive whose name isn't in the dictionary.
+        // A positive whose name is not in the dictionary.
         let f = "SNPID\tgenotype\tresult\nUNKNOWNSNP\tGG\tpositive\nCTS10149\tGG\tpositive\n";
         let out = resolve_calls(&parse(f).unwrap(), &dict(), "hs1", 10);
         assert_eq!(out.calls.len(), 1);

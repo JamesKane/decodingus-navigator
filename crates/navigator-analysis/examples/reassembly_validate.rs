@@ -1,9 +1,14 @@
-//! Validate the phase-2 reassembly wiring end-to-end on a real CRAM: for each position, run the
-//! bounded de-novo caller with reassembly OFF (pileup only) vs ON, and report whether the position
-//! is now called. Confirms the misaligned-ref truth privates the paralog gate drops are recovered.
+//! Check the phase-2 reassembly path from end to end, on a real CRAM. At each position it runs the
+//! bounded de-novo caller twice: once with the reassembly OFF, which is the pileup alone, and once
+//! with it ON. It then reports whether the position now has a call.
 //!
-//!   cargo run --release --example reassembly_validate -p navigator-analysis -- \
-//!       <bam/cram> <ref.fa> chrY <pos[,pos,...]>
+//! That confirms one thing: the code recovers the true private variants, at a misaligned reference,
+//! that the paralog gate drops.
+//!
+//! ```text
+//! cargo run --release --example reassembly_validate -p navigator-analysis -- \
+//!     <bam/cram> <ref.fa> chrY <pos[,pos,...]>
+//! ```
 
 use std::path::Path;
 

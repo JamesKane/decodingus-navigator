@@ -126,7 +126,7 @@ fn clean_cell(s: &str) -> &str {
     s.trim().trim_matches('"').trim()
 }
 
-/// A value is "missing" when it's blank or a placeholder dash.
+/// A value is "missing" when it is blank or a placeholder dash.
 fn is_blank_value(v: &str) -> bool {
     v.is_empty() || v == "-"
 }

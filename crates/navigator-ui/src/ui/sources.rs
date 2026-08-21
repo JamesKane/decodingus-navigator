@@ -280,7 +280,7 @@ impl NavigatorApp {
                     ui.label(format!("Already on {target} — there is nothing to realign."));
                     return;
                 }
-                // A row with no file cannot be re-mapped; the job fails at `MissingPaths`. The app's
+                // A row with no file can not be re-mapped; the job fails at `MissingPaths`. The app's
                 // `realignable_for_subject` has always excluded these — this card did not.
                 if alignment.bam_path.is_none() {
                     ui.label("This alignment has no file to re-map.");

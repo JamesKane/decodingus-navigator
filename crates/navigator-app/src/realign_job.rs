@@ -1,9 +1,10 @@
-//! Running a realignment end to end — stages A through D as one cancellable job.
+//! One realignment from start to end. This module runs stage A to stage D as one job, and the user
+//! can stop that job.
 //!
-//! The stages exist as independent, separately-tested pieces
-//! ([`revert`](navigator_analysis::revert), [`navigator_align`],
-//! [`postprocess`](navigator_analysis::postprocess), and `crate::realign`). This is the part that
-//! knows the order, what to do between them, and how to stop.
+//! Each stage is a separate piece of code with its own tests. They are
+//! [`revert`](navigator_analysis::revert), [`navigator_align`],
+//! [`postprocess`](navigator_analysis::postprocess), and `crate::realign`. This module knows their
+//! order, the work between them, and the way to stop them.
 //!
 //! ## Shape of the job
 //!
@@ -11,23 +12,25 @@
 //! preflight ──► revert ──► index ──► map ──► sort ──► markdup ──► finalize ──► register
 //! ```
 //!
-//! It is hours of work on tens of GB of scratch, so three things matter more than they would in a
-//! shorter job:
+//! The job needs hours of work and tens of GB of scratch space. So three rules matter more here
+//! than in a short job.
 //!
-//! - **Nothing is destroyed.** The source alignment is read and never written. If any stage fails
-//!   or is cancelled, the workspace is exactly as it was — the new row is inserted last, after the
-//!   final artifact exists, so there is no window where a half-built alignment is registered.
-//! - **Scratch is cleaned up.** Intermediates are the size of the input, several times over.
-//!   [`JobScratch`] removes them on the way out whether the job succeeded, failed, or was
-//!   cancelled.
-//! - **It can be stopped.** Every stage takes the cancel token, and a cancelled job reports itself
-//!   as cancelled rather than as a failure — the user pressed the button.
+//! - **The job destroys nothing.** It reads the source alignment and never writes to it. After a
+//!   failed stage, and after a stop, the workspace holds what it held before. The code adds the new
+//!   row last, after the final file exists. So the workspace never holds a row for an alignment
+//!   that the job did not complete.
+//! - **The job removes its scratch files.** Those files are some times the size of the input.
+//!   [`JobScratch`] removes them at the end, after a success, after a failure, and after a stop.
+//! - **The user can stop the job.** Each stage takes the cancel token. A job that the user stopped
+//!   reports a stop and not a failure, because the user pressed the button.
 //!
 //! ## Preflight
 //!
-//! Checking disk and memory before starting is not politeness. Filling a disk partway through hour
-//! three fails the job *and* leaves the machine unusable until someone finds the scratch directory;
-//! and the index sizing needs the RAM figure anyway. See [`preflight`].
+//! The job checks the disk and the memory before it starts, and that check is necessary.
+//!
+//! A disk that fills in the third hour fails the job. It also leaves the machine unusable until
+//! somebody finds the scratch directory. The size of the index also needs the RAM value. See
+//! [`preflight`].
 
 use std::path::{Path, PathBuf};
 
@@ -40,10 +43,10 @@ use navigator_domain::workspace::Alignment;
 use crate::error::AppError;
 use crate::App;
 
-/// The stages, in order, for progress reporting.
+/// The stages, in their order, for the progress report.
 ///
-/// Named rather than numbered in the UI: "sorting" tells a user waiting two hours something that
-/// "step 5 of 8" does not.
+/// The UI shows a name and not a number. The word "sorting" tells a user who waits two hours more
+/// than the text "step 5 of 8".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RealignStage {
     Preflight,
@@ -87,34 +90,38 @@ impl RealignStage {
     }
 }
 
-/// Progress from a running job.
+/// The progress of a job that is in operation.
 #[derive(Debug, Clone)]
 pub struct RealignProgress {
     pub stage: RealignStage,
     pub total_stages: usize,
-    /// Free-text detail — a record count, a part number. May be empty.
+    /// Text with more detail, such as a count of records or a part number. The value can be
+    /// empty.
     pub detail: String,
 }
 
-/// What a finished job produced.
+/// The result of a job that is complete.
 ///
-/// The counts are optional because a resumed job did not necessarily run the stage that produces
-/// them. A run that picks up from a previous attempt's sorted BAM never reverted anything, so it
-/// cannot report how many unmapped reads that revert saw; [`ScratchState`] carries the figure
-/// across when the earlier attempt recorded it, and `None` says plainly that nobody measured it
-/// rather than reporting a zero that reads like a finding.
+/// Each count is optional, because a job that continues an earlier job does not always run the stage
+/// that makes that count.
+///
+/// A run that starts from the sorted BAM file of an earlier run does no revert step. So it can not
+/// report the count of unmapped reads that the revert step saw.
+///
+/// [`ScratchState`] holds that value when the earlier run wrote it. A value of `None` states that no
+/// code measured the count. A zero value looks like a measurement, and it would be wrong.
 #[derive(Debug, Clone)]
 pub struct RealignOutcome {
     pub alignment: Alignment,
-    /// Reads that were unmapped in the source and therefore had a chance to be placed by the new
-    /// reference. This is the number the module exists to move, so it is surfaced rather than
-    /// buried in a log.
+    /// The count of reads with no place in the source alignment. The new reference can give each of
+    /// them a place. This module exists to increase that count, so the report holds it. A log entry
+    /// alone would hide it.
     pub source_unmapped_reads: Option<u64>,
     pub reads_written: Option<u64>,
     pub duplicates_marked: Option<u64>,
 }
 
-/// Tuning a caller may override; the defaults are what the UI uses.
+/// The values that a caller can change. The UI uses the default values.
 #[derive(Debug, Clone)]
 pub struct RealignParams {
     /// Target build, e.g. `chm13v2.0`.
@@ -125,27 +132,29 @@ pub struct RealignParams {
     pub preset: Option<Preset>,
     /// Where intermediates live. `None` puts them beside the output.
     pub scratch_root: Option<PathBuf>,
-    /// Pick up from a previous attempt's intermediates instead of starting over.
+    /// Use the intermediate files of an earlier run, and do not start again from the source.
     ///
-    /// Off by default, because reusing files a *different* job left behind would be a correctness
-    /// bug, and the scratch path alone cannot prove they came from this source and this target.
-    /// The caller opting in is what supplies that knowledge. See [`Resumed`].
+    /// The default is off. A run that used the files of a *different* job gives a wrong result.
+    /// The scratch path alone does not prove that those files came from this source and this
+    /// target. The caller who sets this field supplies that knowledge. See [`Resumed`].
     pub resume: bool,
 }
 
-/// How far a previous attempt got, judged from what it left in the scratch directory.
+/// The last stage that an earlier run completed. The code decides from the files in the scratch
+/// directory.
 ///
-/// Ordered by how much work it saves, and checked newest-artifact-first: a complete `marked.bam`
-/// makes the sort behind it irrelevant, so there is no reason to ask about `sorted.bam` as well.
+/// The order is the quantity of work that each value saves. The code tests the newest file first. A
+/// complete `marked.bam` file makes the sort behind it unnecessary, so the code does not test
+/// `sorted.bam` also.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 enum Resumed {
     /// Start from the source alignment.
     Nothing,
-    /// Reads were recovered and mapped; sorting is next.
+    /// The run recovered the reads and mapped them. The sort is next.
     Mapped,
-    /// The mapped BAM was sorted; duplicate marking is next.
+    /// The run sorted the mapped BAM file. The duplicate mark step is next.
     Sorted,
-    /// Duplicates were marked; only finalising and registration remain.
+    /// The run marked the duplicates. Only the finalize step and the register step remain.
     Marked,
 }
 
@@ -161,23 +170,29 @@ impl Resumed {
     }
 }
 
-/// Counts a resumed job cannot re-derive, left beside the intermediates they describe.
+/// The counts that a job which continues an earlier job can not calculate again. The file sits
+/// beside the intermediate files that it describes.
 ///
-/// Each stage's contribution to [`RealignOutcome`] is measured while that stage runs and is gone
-/// once it has. A resumed job skips stages by design, so the numbers are written down as they are
-/// produced. Best-effort throughout: failing to write this file must not fail a job that has
-/// otherwise done hours of correct work, and a missing or unreadable file simply means the counts
-/// come back `None`.
+/// Each stage measures its part of [`RealignOutcome`] while that stage runs, and that value is gone
+/// after the stage ends. A job that continues an earlier job skips stages, by design. So the code
+/// writes each number to this file as a stage produces it.
+///
+/// Each write is optional. A failed write of this file must not fail a job that did hours of correct
+/// work. An absent file, and a file that the code can not read, give counts of `None`.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct ScratchState {
     unmapped_reads: Option<u64>,
     reads_written: Option<u64>,
     duplicates_marked: Option<u64>,
-    /// The furthest stage that *returned successfully*, as opposed to merely leaving a file behind.
+    /// The last stage that *returned a success*. A stage that only left a file behind does not
+    /// count.
     ///
-    /// Written after the stage returns, never before, so it says something the file itself cannot:
-    /// see [`discard_partial`] for why a finished-looking BAM is not proof on its own. A scratch
-    /// directory predating this field has `None`, and then the marker is all there is to go on.
+    /// The code writes this value after the stage returns, and never before. So the value states
+    /// something that the file itself can not state. [`discard_partial`] gives the reason: a BAM
+    /// file that looks complete is not proof on its own.
+    ///
+    /// A scratch directory from before this field holds `None`. The code then has the marker
+    /// only.
     completed_through: Option<Resumed>,
 }
 
@@ -198,20 +213,26 @@ impl ScratchState {
     }
 }
 
-/// Remove a stage's output when the stage did not finish.
+/// Remove the output of a stage that did not complete.
 ///
-/// The BGZF end-of-file marker cannot carry the whole weight of "this file is complete", and
-/// finding that out the hard way is what this function exists to prevent. noodles' multithreaded
-/// writer finishes its stream from `Drop`, so a stage that *unwinds* — cancelled, failed, panicked
-/// — leaves a partial file wearing a finished file's marker. Measured: a merge cancelled at 13.2 GB
-/// of an expected ~30 GB, whose output `is_complete_bam` then accepted. Resuming from it would have
-/// marked duplicates on a truncated alignment and registered the result, with nothing anywhere
-/// saying the reads were missing.
+/// The BGZF end-of-file marker alone does not prove that a file is complete. This function exists,
+/// so that no user learns that fact from a broken result.
 ///
-/// A hard kill is the opposite case, and the one resume was built for: no `Drop` runs, no marker is
-/// written, and the file is correctly refused. So the rule that makes the marker trustworthy again
-/// is this one — whenever the job is still alive to notice a stage did not finish, its output does
-/// not survive to be mistaken for one that did.
+/// The writer of noodles uses many threads, and it closes its stream from `Drop`. So a stage that
+/// *unwinds* leaves a partial file with the marker of a complete file. A stop, a failure, and a
+/// panic each unwind.
+///
+/// One measurement showed this. A user stopped a merge at 13.2 GB of an expected 30 GB, and
+/// `is_complete_bam` then accepted that output. A run from that file would mark the duplicates of a
+/// short alignment and add the result to the workspace. No record anywhere would state that the
+/// reads were absent.
+///
+/// A hard kill is the opposite case, and the resume feature exists for it. No `Drop` runs, the code
+/// writes no marker, and it correctly refuses the file.
+///
+/// So this rule makes the marker reliable again. While the job runs and can see that a stage did not
+/// complete, the output of that stage must not survive. If it survives, a later run reads it as the
+/// output of a stage that did complete.
 fn discard_partial(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
@@ -227,13 +248,16 @@ async fn stage<T>(output: &Path, work: impl std::future::Future<Output = Result<
     }
 }
 
-/// How far a previous attempt in `scratch` got, or [`Resumed::Nothing`] if it left nothing usable.
+/// The last stage that an earlier run in `scratch` completed. The function returns
+/// [`Resumed::Nothing`] when that run left nothing that this run can use.
 ///
-/// Two things have to agree. The file must carry the BGZF end-of-file marker, and — when the
-/// previous attempt was new enough to have recorded one — its own account of the last stage it
-/// completed must reach at least as far. The lower of the two wins, because each catches a case the
-/// other cannot: the marker catches a scratch directory written by an older build, and the record
-/// catches a file whose marker was written by an unwinding `Drop`. See [`discard_partial`].
+/// Two values must agree. The file must hold the BGZF end-of-file marker. The earlier run must also
+/// record a last stage that reaches at least as far. Only a run from a new enough build writes such
+/// a record.
+///
+/// The lower of the two values wins, because each one finds a case that the other can not. The
+/// marker finds a scratch directory from an older build. The record finds a file whose marker a
+/// `Drop` call wrote while the code unwound. See [`discard_partial`].
 fn resumable(scratch: &Path, state: &ScratchState) -> Resumed {
     let by_marker = resumable_by_marker(scratch);
     match state.completed_through {
@@ -242,7 +266,8 @@ fn resumable(scratch: &Path, state: &ScratchState) -> Resumed {
     }
 }
 
-/// The marker-only half of [`resumable`], kept separate so the two rules can be tested apart.
+/// The half of [`resumable`] that reads the marker only. It is a separate function, so a test can
+/// cover each of the two rules alone.
 fn resumable_by_marker(scratch: &Path) -> Resumed {
     if postprocess::is_complete_bam(&scratch.join("marked.bam")) {
         Resumed::Marked
@@ -255,21 +280,25 @@ fn resumable_by_marker(scratch: &Path) -> Resumed {
     }
 }
 
-/// Clear a stage's working directory before that stage runs.
+/// Empty the directory of a stage before that stage runs.
 ///
-/// A resumed job re-runs the first stage it cannot skip, and that stage's leftovers from the
-/// killed attempt are pure cost: the sort ignores run files it did not write itself, so stale ones
-/// are not a correctness problem, but at WGS scale they are tens of GB held against a disk that
-/// the same job is about to need. Best-effort — a directory that will not clear is not a reason to
-/// refuse to start.
+/// A job that continues an earlier job runs the first stage that it can not skip. The files of that
+/// stage from the earlier run give nothing.
+///
+/// They are not a correctness problem, because the sort ignores a run file that it did not write.
+/// But for a WGS sample they hold tens of GB on a disk that this same job needs.
+///
+/// The step is optional. A directory that the code can not empty is not a reason to refuse the
+/// job.
 fn clear_stage_dir(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
 impl App {
-    /// Realign `source_id` onto another reference, end to end.
+    /// Realign `source_id` onto another reference, from start to end.
     ///
-    /// Long-running and cancellable. `progress` is called as each stage begins.
+    /// The job runs for a long time, and the user can stop it. The code calls `progress` at the
+    /// start of each stage.
     pub async fn realign_alignment(
         &self,
         source_id: i64,
@@ -291,8 +320,8 @@ impl App {
             .scratch_root
             .clone()
             .unwrap_or_else(|| output.with_extension("scratch"));
-        // Removes every intermediate on the way out, however the job ends — unless
-        // [`keep_scratch_on_failure`] is set and the job dies.
+        // This value removes each intermediate file at the end of the job, after each result. The
+        // one exception is a failed job with [`keep_scratch_on_failure`] set.
         let mut scratch = JobScratch::new(scratch)?;
 
         let report = |stage: RealignStage, detail: &str| {
@@ -307,7 +336,7 @@ impl App {
         let sorted = scratch.path().join("sorted.bam");
         let marked = scratch.path().join("marked.bam");
 
-        // What a previous attempt left behind, and what it measured while it was running.
+        // The files that an earlier run left, and the values that it measured.
         let previous = ScratchState::load(scratch.path());
         let resumed = if params.resume {
             resumable(scratch.path(), &previous)
@@ -320,12 +349,12 @@ impl App {
             previous
         };
 
-        // Watch the machine for as long as the job runs. It reports; it never intervenes — see
-        // `navigator_resource`. Started here so that it covers every stage, including the ones a
-        // resumed job skips over quickly.
+        // Watch the machine while the job runs. This watch reports, and it never stops the job.
+        // See `navigator_resource`. It starts here, so it covers each stage. That set holds the
+        // stages that a job which continues an earlier job passes quickly.
         let _watch = navigator_resource::ResourceWatch::start(navigator_resource::DEFAULT_INTERVAL, |sample| {
-            // Anything short of trouble is a log line; the bands exist so that trouble is
-            // greppable afterwards rather than buried in six hours of normal readings.
+            // A normal reading is one line in the log. The bands exist so that a user can find a
+            // problem in that log later. Without them, six hours of normal readings hide it.
             if sample.pressure == navigator_resource::Pressure::Normal {
                 eprintln!("realign: {}", sample.summary());
             } else {
@@ -337,9 +366,11 @@ impl App {
         report(RealignStage::Preflight, resumed.detail());
         cancel.check()?;
         let source_size = std::fs::metadata(&source_bam).map(|m| m.len()).unwrap_or(0);
-        // A resumed job is sized from the intermediate it is resuming from, not from the source.
-        // The source's expansion — CRAM to FASTQ and back to BAM — has already happened and is
-        // sitting on the disk; charging for it a second time would refuse a job that fits.
+        // A job that continues an earlier job takes its size from the intermediate file that it
+        // starts from, and not from the source.
+        //
+        // The growth of the source, from CRAM to FASTQ and then back to BAM, already happened, and
+        // those files are on the disk. A second count of that space refuses a job that fits.
         let plan = if resumed == Resumed::Nothing {
             preflight(scratch.path(), Path::new(&source_bam), source_size)?
         } else {
@@ -444,14 +475,17 @@ impl App {
             state.completed_through = Some(Resumed::Mapped);
             state.store(scratch.path());
         } else {
-            // Still reported, even though there is nothing to do: a progress display that skips
-            // from stage 3 to stage 5 reads as a missing step rather than a saved one.
+            // Report the stage, although it has no work. A progress display that goes from stage
+            // 3 to stage 5 looks like a step that the code lost. It does not look like a step that
+            // the code saved.
             report(RealignStage::Map, resumed.detail());
         }
 
-        // Every stage's input is dead once the next stage has read it, and at WGS scale each is
-        // tens of GB. Holding them all until the job ends — which is what this did first — roughly
-        // doubles the peak and is the difference between fitting on a normal disk and not.
+        // The input of a stage has no more use after the next stage reads it. For a WGS sample,
+        // each input is tens of GB.
+        //
+        // An earlier version kept each input until the end of the job. That version needed about
+        // two times the peak space, and a normal disk was then too small.
         let discard = discard_partial;
         if let Some(reverted) = &reverted {
             discard(&reverted.read1);
@@ -464,8 +498,9 @@ impl App {
         if resumed < Resumed::Sorted {
             let (input, out) = (mapped.clone(), sorted.clone());
             let dir = scratch.path().join("sort");
-            // A resumed job re-sorts from the start, so the killed attempt's spilled runs are dead
-            // weight — and at WGS scale they are tens of GB the sort is about to want back.
+            // A job that continues an earlier job sorts from the start. So the spilled runs of the
+            // earlier run have no use. For a WGS sample they are tens of GB, and the sort needs
+            // that space.
             clear_stage_dir(&dir);
             let token = cancel.clone();
             let params = SortParams::default();
@@ -480,17 +515,20 @@ impl App {
             })
             .await?;
 
-            // The runs are consumed by the merge; the sorted BAM is what the next stage reads.
+            // The merge reads each run file. The next stage reads the sorted BAM file.
             clear_stage_dir(&scratch.path().join("sort"));
             state.completed_through = Some(Resumed::Sorted);
             state.store(scratch.path());
         }
 
-        // Only what *this* run produced is disposable. A resumed run that skipped the sort has
-        // re-derived nothing, and deleting the mapped BAM it resumed past would throw away the most
-        // expensive artifact in the pipeline on the strength of a belief about a file it did not
-        // write. That is not hypothetical: combined with the marker bug in `discard_partial`, it is
-        // exactly how a 59 GB `mapped.bam` — 3 h 58 m of revert and mapping — was destroyed.
+        // The code can remove only the files that *this* run made.
+        //
+        // A run that continues an earlier run and skips the sort made nothing again. A delete of the
+        // mapped BAM file that it started from removes the file that costs the most in this
+        // pipeline. The code would remove a file that it did not write, on a belief about that file.
+        //
+        // That fault occurred. With the marker fault in `discard_partial`, it destroyed a 59 GB
+        // `mapped.bam` file, which was 3 hours and 58 minutes of revert work and mapping work.
         if resumed < Resumed::Sorted {
             discard(&mapped);
         }
@@ -499,8 +537,8 @@ impl App {
         if resumed < Resumed::Marked {
             let (input, out) = (sorted.clone(), marked.clone());
             let token = cancel.clone();
-            // Long-read libraries are typically PCR-free and long reads rarely share endpoints, so
-            // marking them would discard real coverage.
+            // A long-read library usually needs no PCR step, and two long reads rarely have the
+            // same end points. So a mark on those reads removes real coverage.
             let md_params = MarkDupParams {
                 enabled: preset.is_paired(),
                 ..Default::default()
@@ -533,16 +571,18 @@ impl App {
                 .map_err(|e| AppError::Join(e.to_string()))??
         };
 
-        // The output exists, so the intermediates behind it are disposable even if registration
-        // then fails — re-registering is seconds of work, not hours. `marked` is not discarded
-        // here because finalising *moved* it into place rather than copying it.
+        // The output file exists, so the code can remove each intermediate file behind it. A failed
+        // registration then costs seconds of work and not hours.
+        //
+        // The code does not remove `marked` here. The finalize stage *moved* that file into its
+        // place, and it made no copy.
         scratch.completed();
 
         // ---- stage D: register ----
         //
-        // Last, deliberately. The row is only inserted once the artifact it points at exists, so a
-        // job that fails or is cancelled leaves no alignment referring to a file that was never
-        // finished.
+        // This stage is last, by design. The code adds the row only after the file that it names
+        // exists. So a failed job, and a job that the user stopped, leave no alignment that names a
+        // file with no content.
         report(RealignStage::Register, "");
         cancel.check()?;
         let alignment = self
@@ -570,8 +610,9 @@ impl App {
             .await?
             .ok_or(AppError::MissingPaths(source.id))?;
         Preset::infer(Some(&run.test_type), Some(&run.platform_name)).map_err(|e| {
-            // A refusal here is the right outcome — mapping long reads under a short-read preset
-            // produces plausible, wrong alignments rather than failing — so it is surfaced as-is.
+            // A refusal here is the correct result. A map of long reads under a short-read preset
+            // does not fail. It gives alignments that look correct and are wrong. So the code
+            // reports the refusal to the user.
             AppError::Import(format!(
                 "cannot choose a mapper preset for alignment #{}: {e}",
                 source.id
@@ -585,43 +626,51 @@ impl App {
 pub struct RealignPlan {
     /// Index batch size, chosen from the machine's memory.
     pub batch: BatchSize,
-    /// Bytes of scratch the job is expected to need.
+    /// The count of scratch bytes that the job needs.
     pub scratch_needed: u64,
     /// Bytes free where the scratch will live.
     pub scratch_free: u64,
 }
 
-/// Scratch multiple of the source's **uncompressed** volume.
+/// The factor between the scratch space and the **uncompressed** volume of the source.
 ///
-/// Calibrated against a measured run, not reasoned from stage sizes — the reasoned figure was 25%
-/// low. Realigning WGS229 (17.3 GB CRAM) peaked at **276 GB of scratch**, i.e. 16x the source
-/// file, which this reproduces as `4` here times the CRAM expansion factor below.
+/// This value comes from a measured run. An estimate from the size of each stage gave a value that
+/// was 25% too small.
 ///
-/// The peak is inside the revert, not where the stage list suggests: its spill runs are the
-/// bespoke uncompressed encoding while its FASTQ output is gzipped, so the two coexist at very
-/// different densities and the sum beats anything later in the pipeline.
+/// A realignment of WGS229, from a CRAM file of 17.3 GB, reached a peak of **276 GB of scratch**.
+/// That peak is 16 times the size of the source file. The value `4` here, times the CRAM expansion
+/// factor below, gives that result.
+///
+/// The peak is inside the revert stage, and not at the place that the stage list suggests. The
+/// spill runs of that stage use an uncompressed format of this project, and its FASTQ output uses
+/// gzip. So the two files exist together at very different densities, and their sum is larger than
+/// any later stage.
 const SCRATCH_MULTIPLE: u64 = 4;
 
-/// How much larger the data is than the file holding it.
+/// The factor between the size of the data and the size of the file that holds it.
 ///
-/// This is the correction that matters, and getting it wrong is not a rounding error. A CRAM is
-/// reference-compressed: 17 GB of CRAM is ~70 GB of BAM-equivalent data and, reverted to FASTQ,
-/// larger still — FASTQ spends an ASCII byte per base on quality where BAM packs. Estimating
-/// scratch from the *file* size would have told a user that a job needing ~200 GB needed 69, and
-/// the disk would have filled somewhere in the third hour.
+/// This correction is important, and a wrong value here is not a small error.
+///
+/// A CRAM file uses the reference to compress its data. A CRAM file of 17 GB holds about 70 GB of
+/// data in the BAM form. The revert step writes FASTQ, and that file is larger again. A FASTQ file
+/// uses one ASCII byte for the quality of each base, and a BAM file packs those values.
+///
+/// An estimate from the size of the *file* tells a user that a job needs 69 GB, when it needs about
+/// 200 GB. The disk then fills in the third hour.
 fn expansion_factor(source: &Path) -> u64 {
     match source.extension().and_then(|e| e.to_str()) {
         Some(e) if e.eq_ignore_ascii_case("cram") => 4,
-        // BAM is bgzf-compressed at roughly 4x, but the reverted FASTQ that comes out of it is
-        // gzipped too, so the ratio between them is far closer to 1.
+        // A BAM file uses bgzf compression, at a factor of about 4. But the revert step writes a
+        // FASTQ file with gzip compression. So the ratio between the two files is near 1.
         _ => 2,
     }
 }
 
-/// Check that the job can finish before starting it.
+/// Check that the job can complete, before it starts.
 ///
-/// Running out of disk in hour three fails the job *and* leaves the machine wedged until someone
-/// finds the scratch directory. The RAM figure is needed regardless, to size the index.
+/// A disk that fills in the third hour fails the job. It also leaves the machine unusable until
+/// somebody finds the scratch directory. The code also needs the RAM value in each case, to size the
+/// index.
 pub fn preflight(scratch: &Path, source: &Path, source_size: u64) -> Result<RealignPlan, AppError> {
     let needed = source_size
         .saturating_mul(expansion_factor(source))
@@ -629,28 +678,33 @@ pub fn preflight(scratch: &Path, source: &Path, source_size: u64) -> Result<Real
     plan_for(scratch, needed, "realign")
 }
 
-/// Preflight for a job resuming from intermediates that already exist.
+/// The preflight of a job that continues from intermediate files that exist.
 ///
-/// The full [`preflight`] estimate is anchored to the *source* file, and multiplies it by the
-/// expansion the pipeline is about to perform. For a resumed job that expansion is already on the
-/// disk, so the same sum charges twice for it — enough to refuse a job with room to spare.
+/// The full [`preflight`] estimate starts from the *source* file. It then multiplies that size by
+/// the growth that the pipeline gives.
 ///
-/// The remaining stages are each roughly the size of the intermediate they read, and at most two
-/// coexist: the sort holds its spilled runs while the mapped BAM is still there, and duplicate
-/// marking writes its output while the sorted BAM is still there. Three times the largest
-/// surviving intermediate covers that with a margin, and the intermediate's size is a measurement
-/// rather than a guess.
+/// For a job that continues an earlier job, that growth is already on the disk. So the same sum
+/// counts it two times, and it refuses a job that has enough space.
+///
+/// Each remaining stage needs about the size of the intermediate file that it reads, and at most two
+/// files exist together. The sort holds its spilled runs while the mapped BAM file is still there.
+/// The duplicate mark step writes its output while the sorted BAM file is still there.
+///
+/// Three times the largest intermediate file covers that need, with a margin. The size of that file
+/// is a measurement and not an estimate.
 fn resume_preflight(scratch: &Path, mapped: &Path, sorted: &Path, marked: &Path) -> Result<RealignPlan, AppError> {
     let size = |path: &Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let largest = size(mapped).max(size(sorted)).max(size(marked));
     plan_for(scratch, largest.saturating_mul(3), "resume the realignment")
 }
 
-/// Measure the disk, refuse a job that cannot finish on it, and describe what was decided.
+/// Measure the disk, refuse a job that it can not hold, and report the decision.
 ///
-/// The two preflights differ only in how they size `needed`; everything after that — probing free
-/// space, the refusal, the wording, the plan — was written out twice and had to be kept in step by
-/// hand. `what` is the verb in the refusal, so the two messages stay exactly as they were.
+/// The two preflight functions differ only in the way that they calculate `needed`. Each later step
+/// was the same code two times, and a developer had to change both. Those steps are the read of the
+/// free space, the refusal, the text, and the plan.
+///
+/// The `what` value is the verb of the refusal, so each message stays as it was.
 fn plan_for(scratch: &Path, needed: u64, what: &str) -> Result<RealignPlan, AppError> {
     let free = free_space(scratch);
 
@@ -677,29 +731,32 @@ fn gb(bytes: u64) -> u64 {
     bytes / 1_000_000_000
 }
 
-/// Record the spill budget a stage is about to run with.
+/// Record the spill budget that a stage will use.
 ///
-/// Both budgets now come from the machine rather than a constant, so the run count they produce is
-/// no longer inferable from the version number. Without this line, "it spilled 400 runs" in a bug
-/// report is a fact with nothing to attach it to.
+/// The machine now gives both budgets, and no constant holds them. So the version number no longer
+/// gives the count of runs that a stage produces. Without this log line, the statement "it spilled
+/// 400 runs" in a bug report has no context.
 fn log_buffer(stage: &str, bytes: usize) {
     eprintln!("realign: {stage} with a {} MB buffer", bytes / (1024 * 1024));
 }
 
-/// Whether a job needing `needed` bytes may start given `free` bytes available.
+/// Shows whether a job that needs `needed` bytes can start with `free` bytes available.
 ///
-/// Split from the syscall so the *decision* is testable on any machine; the probe itself is not.
-/// `free == 0` means the platform would not say, and is treated as permission to proceed —
-/// refusing a multi-hour job because a free-space call failed would be a worse outcome than
-/// letting it run and fail honestly on a real write.
+/// This function is separate from the system call, so a test can cover the *decision* on any
+/// machine. No test can cover the system call itself.
+///
+/// A `free` value of 0 means that the platform gave no answer, and the function then permits the
+/// job. A job of many hours must not stop because a call for the free space failed. It is better to
+/// run that job and let it fail on a real write.
 fn has_room(needed: u64, free: u64) -> bool {
     free == 0 || free >= needed
 }
 
-/// Free bytes on the filesystem holding `path`, or 0 when it cannot be determined.
+/// The count of free bytes on the file system of `path`. The function returns 0 when it can not
+/// find that value.
 ///
-/// Zero means "unknown", and preflight treats it as "do not block" — refusing a job because the
-/// free-space call failed would be worse than letting it run and fail honestly on a real write.
+/// A zero means "unknown", and the preflight then permits the job. A refusal, because a call for the
+/// free space failed, is worse than a job that runs and then fails on a real write.
 fn free_space(path: &Path) -> u64 {
     // Walk up to the nearest existing ancestor: the scratch directory itself may not exist yet.
     let mut probe = path;
@@ -732,25 +789,27 @@ fn fs_free_space(path: &Path) -> u64 {
     }
 }
 
-/// Free bytes on the volume holding `path`.
+/// The count of free bytes on the volume of `path`.
 ///
-/// `lpFreeBytesAvailableToCaller` rather than the volume's total free space, which is the subtle
-/// half of this call: on a volume with disk quotas the two differ, and the number preflight needs is
-/// what *this user* may actually write. It is the same choice the Unix arm makes in taking
-/// `f_bavail` (blocks available to an unprivileged process) over `f_bfree`.
+/// The code reads `lpFreeBytesAvailableToCaller`, and not the total free space of the volume. That
+/// choice is the important part of this call. On a volume with a disk quota, the two values differ,
+/// and the preflight needs the quantity that *this user* can write.
+///
+/// The Unix code makes the same choice. It reads `f_bavail`, which is the count of blocks for a
+/// process with no special rights, and not `f_bfree`.
 #[cfg(windows)]
 fn fs_free_space(path: &Path) -> u64 {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
-    // `encode_wide` does not NUL-terminate, and the API requires it.
+    // `encode_wide` writes no NUL character at the end, and the API needs one.
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     wide.push(0);
 
     let mut available: u64 = 0;
-    // SAFETY: `wide` is a valid NUL-terminated UTF-16 buffer owned here and outliving the call, and
-    // `available` is a `u64` we own. The two totals this does not need are passed as null, which the
-    // API documents as permitted.
+    // SAFETY: `wide` is a correct UTF-16 buffer with a NUL character at the end. This function owns
+    // it, and it lives longer than the call. This function also owns `available`, which is a `u64`.
+    // The two other totals are null, and the API permits that value.
     let ok = unsafe {
         GetDiskFreeSpaceExW(
             wide.as_ptr(),
@@ -760,8 +819,8 @@ fn fs_free_space(path: &Path) -> u64 {
         )
     };
 
-    // A failure is reported as "unknown" rather than as zero free space, so that a probe that could
-    // not answer does not masquerade as a full disk and refuse the job. See `has_room`.
+    // A failure gives "unknown" and not a free space of zero. So a call that gave no answer does
+    // not look like a full disk, and it does not refuse the job. See `has_room`.
     if ok == 0 {
         return 0;
     }
@@ -770,16 +829,17 @@ fn fs_free_space(path: &Path) -> u64 {
 
 #[cfg(not(any(unix, windows)))]
 fn fs_free_space(_path: &Path) -> u64 {
-    // No probe for this platform. Preflight reports "unknown" and declines to block — see
+    // This platform has no such call. The preflight reports "unknown" and permits the job. See
     // `free_space`.
     0
 }
 
 /// A scratch directory that removes itself.
 ///
-/// Intermediates are several times the size of the input, so leaving them behind after a failed or
-/// cancelled job would quietly consume a disk. Removal is best-effort: it must never mask the error
-/// that is already unwinding.
+/// The intermediate files are some times the size of the input. After a failed job, and after a job
+/// that the user stopped, those files fill a disk and the user sees no message.
+///
+/// The removal is optional. It must never hide the error that already unwinds the code.
 struct JobScratch {
     path: PathBuf,
     /// Set once the job has produced its output, so [`Drop`] can tell "finished" from "died".
@@ -788,22 +848,25 @@ struct JobScratch {
     keep_on_failure: bool,
 }
 
-/// Opt in to keeping a failed job's intermediates (`NAVIGATOR_REALIGN_KEEP_SCRATCH=1`).
+/// Keep the intermediate files of a failed job. Set `NAVIGATOR_REALIGN_KEEP_SCRATCH=1`.
 ///
-/// Off by default, and that default is deliberate: at WGS scale this directory is hundreds of GB,
-/// and a desktop application that leaves that behind after a failure has taken the user's disk
-/// hostage over a bug they did not cause.
+/// The default is off, by design. For a WGS sample this directory holds hundreds of GB. A desktop
+/// application must not leave that data after a failure. The user then loses that disk space for a
+/// fault that they did not cause.
 ///
-/// It exists because the opposite default has a matching failure of its own. A realignment that
-/// dies in stage 7 of 8 discards the seven stages that worked — a measured 10.7 hours on a 30x WGS.
-/// For anyone iterating on the pipeline, that trade is the wrong way round, so they can invert it.
+/// The setting exists because the other default has its own fault. A realignment that fails in
+/// stage 7 of 8 removes the work of the seven stages that succeeded. On a 30x WGS sample, one
+/// measurement gave 10.7 hours of such work. A developer who works on the pipeline needs the
+/// opposite behaviour, so this setting gives it.
 ///
-/// This is now also the switch that makes [`RealignParams::resume`] worth anything: resume reads
-/// the intermediates a previous attempt left, and by default a failed attempt does not leave any.
-/// The two are meant to be used together when a run is expected to be interrupted — which, at six
-/// hours a run on a machine someone is still using, is a reasonable thing to expect. A job killed
-/// outright (a session teardown, a power loss) never runs `Drop` at all, so its scratch survives
-/// regardless of this setting; that is the case resume was built for.
+/// This setting also makes [`RealignParams::resume`] useful. A new run reads the intermediate files
+/// of an earlier run, and by default a failed run leaves none.
+///
+/// Use the two together when something can stop a run. A run of six hours, on a machine that
+/// somebody also uses, meets that condition often.
+///
+/// A job that stops at once runs no `Drop` call, so its scratch files stay in each case. The causes
+/// are the end of a login session and a power loss. The resume feature exists for that case.
 fn keep_scratch_on_failure() -> bool {
     std::env::var("NAVIGATOR_REALIGN_KEEP_SCRATCH")
         .map(|v| v != "0" && !v.is_empty())
@@ -856,12 +919,12 @@ mod tests {
         }
     }
 
-    /// Preflight must refuse a job that cannot finish, and say how much is needed rather than
-    /// leaving the user to guess.
+    /// The preflight must refuse a job that it can not complete. It must also state the quantity of
+    /// space that the job needs, so the user makes no estimate.
     ///
-    /// Runs wherever [`fs_free_space`] has a real implementation, which is now both desktop
-    /// families. Platforms without one report "unknown" and cannot refuse anything — pinned
-    /// separately by `preflight_cannot_refuse_where_free_space_is_unknown`.
+    /// This test runs on each platform where [`fs_free_space`] has real code, and that set now
+    /// holds both desktop families. A platform with no such code reports "unknown" and can refuse
+    /// nothing. The test `preflight_cannot_refuse_where_free_space_is_unknown` covers that case.
     #[cfg(any(unix, windows))]
     #[test]
     fn preflight_refuses_when_the_disk_is_too_small() {
@@ -880,8 +943,9 @@ mod tests {
         assert!(plan.batch.bases() > 0);
     }
 
-    /// The correction that matters: a CRAM holds several times its own size in read data, so
-    /// estimating scratch from the file size understates a WGS job by well over 100 GB.
+    /// The important correction. A CRAM file holds some times its own size in read data. So an
+    /// estimate of the scratch space from the size of that file is more than 100 GB too small for a
+    /// WGS job.
     #[test]
     fn a_cram_is_estimated_larger_than_a_bam_of_the_same_size() {
         let dir = std::env::temp_dir();
@@ -896,9 +960,9 @@ mod tests {
         assert_eq!(cram.scratch_needed, 1_000_000 * 4 * SCRATCH_MULTIPLE);
     }
 
-    /// Free space is a check, not a gate on the check working: if the platform will not say, the
-    /// job runs and fails honestly on a real write rather than being refused for an unrelated
-    /// reason.
+    /// The free space is a check. The check itself must not depend on it. When the platform gives
+    /// no answer, the job runs and fails on a real write. It must not stop for a reason that has no
+    /// connection to the data.
     #[test]
     fn an_unknown_free_space_does_not_block_the_job() {
         assert!(has_room(u64::MAX, 0), "0 means unknown, not full");
@@ -906,12 +970,12 @@ mod tests {
         assert!(!has_room(101, 100), "one byte short is short");
     }
 
-    /// The scratch directory does not exist when preflight runs — it is created by the job — so the
-    /// probe has to answer for the filesystem that will hold it, which means walking up to the
-    /// nearest existing ancestor rather than giving up.
+    /// The scratch directory does not exist while the preflight runs, because the job makes it. So
+    /// the call must answer for the file system that will hold that directory. The code moves up the
+    /// path to the nearest directory that exists, and it does not stop.
     ///
-    /// Both desktop families, for the same reason as above: the ancestor walk is platform-
-    /// independent, but it is only meaningful where the call it ends at can answer.
+    /// The test covers both desktop families, for the reason above. The move up the path does not
+    /// depend on the platform, but it has a result only where the call at the end can answer.
     #[cfg(any(unix, windows))]
     #[test]
     fn free_space_resolves_through_a_directory_that_does_not_exist_yet() {
@@ -923,13 +987,15 @@ mod tests {
         );
     }
 
-    /// What the platforms without a free-space probe actually do, stated as a test rather than left
-    /// as the absence of one.
+    /// The behaviour of a platform with no call for the free space. This test states that
+    /// behaviour, and the absence of a test does not.
     ///
-    /// `preflight` cannot refuse a job it has no measurement for, and refusing on an unknown would
-    /// block every realignment on that platform. So a job that would obviously not fit is allowed
-    /// to start and fail honestly on a real write. Windows used to be in this bucket; it now has
-    /// `GetDiskFreeSpaceExW` and is tested by the two above.
+    /// `preflight` can refuse no job that it did not measure. A refusal on an unknown value stops
+    /// each realignment on that platform. So the code starts a job that clearly does not fit, and
+    /// that job fails on a real write.
+    ///
+    /// Windows was in this group. It now has `GetDiskFreeSpaceExW`, and the two tests above cover
+    /// it.
     #[cfg(not(any(unix, windows)))]
     #[test]
     fn preflight_cannot_refuse_where_free_space_is_unknown() {
@@ -941,7 +1007,8 @@ mod tests {
         assert!(plan.scratch_needed > 0, "the estimate is still made and reported");
     }
 
-    /// Scratch is several times the size of the input; a cancelled job must not leave it behind.
+    /// The scratch files are some times the size of the input. A job that the user stopped must
+    /// remove them.
     #[test]
     fn scratch_is_removed_when_the_job_ends() {
         let dir = std::env::temp_dir().join(format!("dun-jobscratch-{}", std::process::id()));
@@ -958,7 +1025,7 @@ mod tests {
 mod resume_tests {
     use super::*;
 
-    /// A scratch directory of this test's own, holding whatever files it names.
+    /// A scratch directory for this test alone. It holds the files that the test names.
     fn scratch(tag: &str, files: &[(&str, bool)]) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("navigator-resume-{tag}"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -966,8 +1033,8 @@ mod resume_tests {
 
         for (name, complete) in files {
             let path = dir.join(name);
-            // A "complete" BAM is one carrying the BGZF end-of-file marker; an incomplete one is
-            // the same bytes with the marker cut short, which is what a killed writer leaves.
+            // A "complete" BAM file holds the BGZF end-of-file marker. An incomplete file holds
+            // the same bytes with a short marker, and a writer that stopped leaves such a file.
             let mut bytes = vec![0u8; 64];
             let eof: [u8; 28] = [
                 0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00, 0x1b,
@@ -989,13 +1056,19 @@ mod resume_tests {
         assert_eq!(resumable(&dir, &ScratchState::default()), Resumed::Nothing);
     }
 
-    /// The bug this pair of rules exists for, reproduced.
+    /// The fault that these two rules exist for. This test reproduces it.
     ///
-    /// A cancelled merge left 13.2 GB of an expected ~30 GB `sorted.bam` carrying a valid BGZF
-    /// end-of-file marker, because noodles' multithreaded writer finishes its stream from `Drop`
-    /// while the job unwinds. The marker check alone accepted it and the next run went straight to
-    /// marking duplicates on a truncated alignment. The stage record is what refuses it: the sort
-    /// never returned, so nothing ever claimed it completed.
+    /// A user stopped a merge. It left a `sorted.bam` file of 13.2 GB, and the full file is about
+    /// 30 GB.
+    ///
+    /// That partial file held a correct BGZF end-of-file marker. The writer of noodles uses many
+    /// threads, and it closes its stream from `Drop` while the code unwinds.
+    ///
+    /// The marker test alone accepted that file. The next run then marked the duplicates of a short
+    /// alignment.
+    ///
+    /// The stage record refuses the file. The sort never returned, so no code stated that it
+    /// completed.
     #[test]
     fn a_marker_written_by_an_unwinding_drop_is_not_enough() {
         let dir = scratch("unwound", &[("mapped.bam", true), ("sorted.bam", true)]);
@@ -1017,8 +1090,9 @@ mod resume_tests {
         );
     }
 
-    /// The record cannot promise more than the files deliver either — a scratch directory whose
-    /// `marked.bam` was removed must not be resumed from just because a stale record mentions it.
+    /// The record can also promise no more than the files hold. A scratch directory with no
+    /// `marked.bam` file must not start a new run, and an old record that names that file changes
+    /// nothing.
     #[test]
     fn the_record_cannot_outrun_the_files() {
         let dir = scratch("stale-record", &[("mapped.bam", true)]);
@@ -1030,18 +1104,18 @@ mod resume_tests {
         assert_eq!(resumable(&dir, &state), Resumed::Mapped);
     }
 
-    /// A scratch directory written before the stage record existed still has to work: the Aug-13
-    /// `mapped.bam` was left by a process killed outright, so no `Drop` ran and the marker means
-    /// exactly what it says.
+    /// A scratch directory from before the stage record must still work. A process that stopped at
+    /// once left the `mapped.bam` file of 13 August. No `Drop` call ran, so the marker states the
+    /// truth.
     #[test]
     fn a_scratch_without_a_record_falls_back_to_the_marker() {
         let dir = scratch("legacy", &[("mapped.bam", true)]);
         assert_eq!(resumable(&dir, &ScratchState::default()), Resumed::Mapped);
     }
 
-    /// The 2026-08-13 case exactly: mapping finished, the sort was killed partway through writing
-    /// its output. The mapped BAM is worth four hours and must be picked up; the half-written
-    /// sorted BAM must not be.
+    /// The exact case of 2026-08-13. The mapping stage completed, and the sort stopped while it
+    /// wrote its output. The mapped BAM file holds four hours of work, and a new run must use it.
+    /// That run must not use the partial sorted BAM file.
     #[test]
     fn a_complete_map_and_a_truncated_sort_resumes_from_the_map() {
         let dir = scratch("mid-sort", &[("mapped.bam", true), ("sorted.bam", false)]);
@@ -1060,8 +1134,9 @@ mod resume_tests {
         assert_eq!(resumable(&dir, &ScratchState::default()), Resumed::Sorted);
     }
 
-    /// The stage guards are written as `resumed < Resumed::Sorted`, so the ordering is load-bearing
-    /// rather than cosmetic: getting it backwards would skip work that has not been done.
+    /// Each stage guard is a test of the form `resumed < Resumed::Sorted`. So the order of these
+    /// values controls the code, and it is not only for the reader. A wrong order skips a stage that
+    /// did not run.
     #[test]
     fn the_stages_are_ordered_by_how_much_they_skip() {
         assert!(Resumed::Nothing < Resumed::Mapped);
@@ -1090,8 +1165,8 @@ mod resume_tests {
         assert_eq!(loaded.completed_through, Some(Resumed::Marked));
     }
 
-    /// A resumed job is sized from what is already on disk. Sizing it from the source again would
-    /// charge twice for an expansion that has already happened and refuse a job that fits.
+    /// A job that continues an earlier job takes its size from the files on the disk. A size from
+    /// the source counts the growth of that source two times, and it refuses a job that fits.
     #[test]
     fn resume_preflight_sizes_from_the_surviving_intermediate() {
         let dir = scratch("preflight", &[("mapped.bam", true)]);

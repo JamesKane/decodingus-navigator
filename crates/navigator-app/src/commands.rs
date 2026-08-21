@@ -34,15 +34,22 @@ impl App {
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("project {id}"))))
     }
 
-    /// Delete a project, detaching its members first. Subjects are first-class and shared across
-    /// projects, so deleting the grouping keeps the subjects — it only removes their membership in
-    /// this project (and clears the legacy home column for subjects homed here).
+    /// Delete a project, and remove its members from it first.
+    ///
+    /// A subject is an independent record, and many projects can hold the same subject. So a delete
+    /// of the project keeps each subject. It removes only the membership of that subject in this
+    /// project. It also clears the old home column of a subject whose home is this project.
     pub async fn delete_project(&self, id: i64) -> Result<(), AppError> {
-        // A project is only a grouping — subjects are first-class and shared across projects. Deleting
-        // it detaches its members (drops the M:N memberships + clears the legacy home column for
-        // subjects homed here) and removes the project; the subjects themselves remain in the
-        // workspace. This lets a mis-targeted import be undone: delete the project and re-import
-        // cleanly, rather than being stuck because "N subjects still belong to it".
+        // A project is only a group. A subject is an independent record, and many projects can
+        // hold the same subject.
+        //
+        // A delete does three steps. It removes each membership from the M:N table. It clears the
+        // old home column of a subject whose home is this project. It then removes the project.
+        // Each subject stays in the workspace.
+        //
+        // So a user can undo an import that went to the wrong project. The user deletes the project
+        // and imports again. Without this behaviour, the message "N subjects still belong to it"
+        // stops the user.
         biosample_project::remove_all_for_project(self.store.pool(), id).await?;
         biosample::clear_home_project(self.store.pool(), id).await?;
         if !project::delete(self.store.pool(), id).await? {
@@ -51,9 +58,9 @@ impl App {
         Ok(())
     }
 
-    /// Register a biosample, assigning its stable `SampleGuid` here (identity is an
-    /// app-layer decision, not the UI's). Verifies the target project exists first so
-    /// the caller gets a clear `NotFound` rather than a raw foreign-key error.
+    /// Add a biosample and give it a stable `SampleGuid` here. The app layer decides the identity,
+    /// and the UI does not. The method checks that the target project exists first. So the caller
+    /// receives a clear `NotFound` error and not a raw foreign-key error.
     pub async fn add_biosample(
         &self,
         project_id: Option<i64>,
@@ -76,8 +83,9 @@ impl App {
         Ok(b)
     }
 
-    /// Update a subject's editable fields (identity, accession, description, center, sex).
-    /// Empty strings are normalized to NULL. Returns the updated record.
+    /// Change the fields of a subject that the user can edit. They are the identity, the
+    /// accession, the description, the center, and the sex. The method changes an empty string to
+    /// NULL. It returns the new record.
     pub async fn update_biosample(
         &self,
         guid: SampleGuid,
@@ -111,7 +119,8 @@ impl App {
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("biosample {}", guid.0))))
     }
 
-    /// Assign a subject to a project (validating the project exists). `None` clears it.
+    /// Add a subject to a project. The method checks that the project exists. A value of `None`
+    /// removes the subject from its project.
     pub async fn add_biosample_to_project(&self, guid: SampleGuid, project_id: Option<i64>) -> Result<(), AppError> {
         if let Some(pid) = project_id {
             if project::get(self.store.pool(), pid).await?.is_none() {
@@ -124,9 +133,11 @@ impl App {
         Ok(())
     }
 
-    /// Delete a subject. Refused (with a clear message) when it still has dependent data —
-    /// sequencing runs or any imported profile — so the user removes data first rather than
-    /// silently orphaning rows.
+    /// Delete a subject.
+    ///
+    /// The method refuses, and gives a clear message, when the subject still has data. That data is
+    /// a sequence run or an imported profile. So the user removes the data first. Without this
+    /// guard, the delete leaves rows with no subject and gives no message.
     pub async fn delete_biosample(&self, guid: SampleGuid) -> Result<(), AppError> {
         let runs = self.list_sequence_runs(guid).await?.len();
         let strs = self.list_str_profiles(guid).await?.len();
@@ -140,9 +151,10 @@ impl App {
                  {variants} variant-set, {chips} chip, {mt} mtDNA record(s) — remove its data first"
             )));
         }
-        // The guard above ensures no runs/profiles remain; sweep any derived-only orphans
-        // (stale haplogroup/consensus/reconciliation/ancestry/IBD rows from an earlier
-        // incomplete delete) so removing the subject can never leave dangling rows.
+        // The guard above makes sure that no run and no profile stays. This step then removes
+        // each derived row with no owner. Such a row is an old haplogroup, consensus,
+        // reconciliation, ancestry, or IBD row from a delete that did not complete. So the delete
+        // of the subject can never leave a row behind.
         biosample::clear_data(self.store.pool(), guid).await?;
         if !biosample::delete(self.store.pool(), guid).await? {
             return Err(AppError::Store(StoreError::NotFound(format!("biosample {}", guid.0))));
@@ -157,10 +169,14 @@ impl App {
         Ok(created)
     }
 
-    /// A Y-targeted test (Big Y, Targeted Y, a Y-SNP pack, …) or any Y-STR profile is definitive
-    /// evidence of a male subject. Set the biosample's sex to "Male" when such data is present and
-    /// it isn't already recorded as male. Best-effort and idempotent — safe to call after any run
-    /// or STR-profile import (it re-derives the verdict from the stored data each time).
+    /// A Y test or a Y-STR profile is proof that the subject is male. A Y test is a Big Y test, a
+    /// Targeted Y test, or a Y-SNP pack.
+    ///
+    /// The method sets the sex of the biosample to "Male" when such data exists and the record does
+    /// not already hold that value.
+    ///
+    /// The step is optional, and a second call is safe. Call it after any run import or STR-profile
+    /// import. It reads the stored data and decides again at each call.
     pub(crate) async fn assign_male_for_y_evidence(&self, guid: SampleGuid) -> Result<(), AppError> {
         use navigator_domain::testtype::{by_code, TargetType};
         let has_y_test = self
@@ -186,9 +202,9 @@ impl App {
         Ok(alignment::create(self.store.pool(), &aln).await?)
     }
 
-    /// Update a sequence run's descriptive fields (test type required; platform defaults to
-    /// "UNKNOWN" when blank; instrument/layout optional). Read metrics are preserved. Returns
-    /// the updated record.
+    /// Change the descriptive fields of a sequence run. The test type is necessary. A blank
+    /// platform becomes "UNKNOWN". The instrument and the layout are optional. The method keeps the
+    /// read metrics and returns the new record.
     pub async fn update_sequence_run(
         &self,
         id: i64,
@@ -223,8 +239,9 @@ impl App {
             .ok_or_else(|| AppError::Store(StoreError::NotFound(format!("sequence run {id}"))))
     }
 
-    /// Update an alignment's descriptive fields (reference build + aligner required; variant
-    /// caller optional). File paths are managed by import/probe. Returns the updated record.
+    /// Change the descriptive fields of an alignment. The reference build and the aligner are
+    /// necessary, and the variant caller is optional. The import step and the probe step control
+    /// the file paths. The method returns the new record.
     pub async fn update_alignment(
         &self,
         id: i64,
@@ -245,16 +262,18 @@ impl App {
         self.alignment_or_err(id).await
     }
 
-    /// An alignment by id, or `None` if there is no such row.
+    /// The alignment with this id, or `None` when the store holds no such row.
     ///
-    /// Public because provenance made alignments something callers ask about directly — the UI
-    /// needs the row to say "realigned to hs1 from alignment #N" rather than just listing files.
+    /// This method is public because a caller now asks about one alignment directly. The provenance
+    /// feature caused that change. The UI needs the row to write "realigned to hs1 from alignment
+    /// #N". Before, it only listed the files.
     pub async fn alignment(&self, id: i64) -> Result<Option<Alignment>, AppError> {
         Ok(alignment::get(self.store.pool(), id).await?)
     }
 
-    /// Fetch an alignment by id, mapping a missing row to a `NotFound` error. The standard way
-    /// the analysis/query methods resolve an `alignment_id` before touching its BAM/CRAM.
+    /// Read the alignment with this id, and change an absent row into a `NotFound` error. Each
+    /// analysis method and each query method uses this method to resolve an `alignment_id` before
+    /// it opens the BAM file or the CRAM file.
     pub(crate) async fn alignment_or_err(&self, id: i64) -> Result<Alignment, AppError> {
         alignment::get(self.store.pool(), id)
             .await?
@@ -264,17 +283,23 @@ impl App {
     /// The alignment's BAM/CRAM path, confirmed to still resolve on disk. The standard way a read
     /// path turns an [`Alignment`] into a path to open.
     ///
-    /// Both checks belong together and belong *early*. A recorded path that no longer resolves is
-    /// routine in a long-lived workspace — vendor downloads get cleaned out, volumes get unmounted —
-    /// but nothing checked for it, so the failure surfaced as a bare `No such file or directory`
-    /// from inside the reader, after the caller had already fetched a multi-MB haplotree. Worse, one
-    /// caller read that io error as *the tree* being unavailable and fell back to the FTDNA tree,
-    /// which then failed on the same absent file: a misleading log line, a wasted download, and a
-    /// silent change of tree provider, all from a deleted BAM.
+    /// The two checks belong together, and they belong *early*.
     ///
-    /// The existence check races anything that deletes the file a microsecond later; that is fine.
-    /// It is here to name the common case correctly and cheaply, not to make opening infallible —
-    /// callers still handle a read error from the open itself.
+    /// A recorded path that no longer points to a file is normal in a workspace with a long life. A
+    /// user removes old vendor downloads, and a user disconnects a volume.
+    ///
+    /// No code checked for that state. So the fault appeared as a plain `No such file or directory`
+    /// error from inside the reader. By that point the caller had already downloaded a haplotree of
+    /// many MB.
+    ///
+    /// The result was worse than one unclear message. One caller read that io error as an absent
+    /// *tree*. It then used the FTDNA tree, and that read failed on the same absent file. One
+    /// deleted BAM file gave an incorrect log line, a download with no purpose, and a change of
+    /// tree provider with no message.
+    ///
+    /// Another process can delete the file directly after this check. That result is acceptable.
+    /// The check names the common case correctly and at a low cost. It does not make the open
+    /// operation safe, and each caller still handles a read error from that operation.
     pub(crate) fn alignment_file(aln: &Alignment) -> Result<PathBuf, AppError> {
         let path = aln.bam_path.clone().ok_or(AppError::MissingPaths(aln.id))?;
         let p = PathBuf::from(&path);
@@ -287,8 +312,9 @@ impl App {
     /// Delete a sequence run and everything beneath it (its alignments + cached analysis
     /// artifacts). This is how a mistaken BAM/CRAM import is undone.
     pub async fn delete_sequence_run(&self, id: i64) -> Result<(), AppError> {
-        // Capture the run's subject + alignments before the cascade so we can purge any derived
-        // haplogroup/consensus data keyed on those alignments (it would otherwise go stale).
+        // Read the subject and the alignments of the run before the cascade. The code then
+        // removes each derived haplogroup row and consensus row with a key on those alignments.
+        // Without this step, those rows stay and become incorrect.
         let biosample = sequence_run::get(self.store.pool(), id)
             .await?
             .map(|r| r.biosample_guid);
@@ -306,10 +332,15 @@ impl App {
         Ok(())
     }
 
-    /// Merge `secondary` sequence run into `primary` (both must belong to `biosample_guid`):
-    /// reparent the secondary run's alignments onto the primary, then delete the now-empty secondary
-    /// (its analysis artifacts travel with the alignments — they're alignment-keyed). Destructive +
-    /// irreversible. Returns the number of alignments moved.
+    /// Join the `secondary` sequence run to the `primary` run. Both runs must belong to
+    /// `biosample_guid`.
+    ///
+    /// The method moves each alignment of the secondary run to the primary run. It then deletes the
+    /// secondary run, which is now empty. Each analysis artifact moves with its alignment, because
+    /// the key of an artifact is the alignment.
+    ///
+    /// This method destroys data, and the user can not undo it. It returns the count of the
+    /// alignments that it moved.
     pub async fn merge_sequence_runs(
         &self,
         biosample_guid: SampleGuid,
@@ -335,14 +366,17 @@ impl App {
                 count += 1;
             }
         }
-        // The secondary is now empty; delete it (cascade is a no-op for alignments — already moved).
+        // The secondary run is now empty, so delete it. The cascade does nothing for the
+        // alignments, because the code already moved them.
         sequence_run::delete(self.store.pool(), secondary).await?;
         Ok(count)
     }
 
-    /// Delete a single alignment and its cached analysis artifacts (the parent run is kept).
+    /// Delete one alignment and each analysis artifact in its cache. The method keeps the parent
+    /// run.
     pub async fn delete_alignment(&self, id: i64) -> Result<(), AppError> {
-        // Resolve the subject (via run) before deleting, to purge derived haplogroup/consensus data.
+        // Find the subject through the run before the delete. The code then removes each derived
+        // haplogroup row and consensus row.
         let biosample = match alignment::get(self.store.pool(), id).await? {
             Some(a) => sequence_run::get(self.store.pool(), a.sequence_run_id)
                 .await?
@@ -358,53 +392,73 @@ impl App {
         Ok(())
     }
 
-    /// Remove derived data keyed on now-deleted alignments: each alignment's Y + mt haplogroup calls
-    /// (`aln:<id>` / `aln:<id>:mt`), and the subject's genome-level consensus profiles + painting
-    /// (Y/mt/Auto), which were pooled from sources that may no longer exist. The consensus is
-    /// recomputable on demand; clearing it makes the displayed haplogroup fall back to reconciling the
-    /// remaining cached calls (or nothing), rather than showing a stale placement. A user manual
-    /// override is left intact.
+    /// Remove the derived data whose key is an alignment that the app deleted.
+    ///
+    /// That data is the Y haplogroup call and the mt haplogroup call of each alignment, which use
+    /// the keys `aln:<id>` and `aln:<id>:mt`. It is also the genome-level consensus profiles and
+    /// the painting of the subject, for Y, mt, and Auto. The app pooled those results from sources
+    /// that can now be absent.
+    ///
+    /// The app can calculate a consensus again at any time. After this method clears it, the
+    /// displayed haplogroup comes from the cached calls that remain, or from nothing. Without this
+    /// step, the app shows an old placement.
+    ///
+    /// The method keeps a value that the user set.
     async fn purge_alignment_derived(&self, biosample: SampleGuid, alignment_ids: &[i64]) -> Result<(), AppError> {
         let pool = self.store.pool();
         for &aln in alignment_ids {
             haplogroup_call::delete_one(pool, biosample, DnaType::Y, &format!("aln:{aln}")).await?;
             haplogroup_call::delete_one(pool, biosample, DnaType::Mt, &format!("aln:{aln}:mt")).await?;
-            // The per-alignment ancestry estimates die with the alignment.
+            // The ancestry estimate of each alignment goes with that alignment.
             ancestry_result::delete_for_alignment(pool, aln).await?;
         }
         for dna in ["Y", "Mt", "Auto"] {
             consensus_profile::delete(pool, biosample, dna).await?;
         }
-        // Every signature-keyed cache, from the one list — this used to name three of the four by
-        // hand and leave the Tier-B archaic segments behind, still keyed to a deleted alignment.
+        // Each signature-keyed cache, from the one list. Before this list, the code named three
+        // of the four caches by hand. It left the Tier-B archaic segments in the store, with a key
+        // on an alignment that the app had deleted.
         for cache in sig_cache::ALL {
             cache.delete(pool, biosample).await?;
         }
-        // The audit log describes the consensus we just wiped; clear it so deleting the last run
-        // can't leave a stale RUN_RECORDED history pointing at gone alignments. It is re-appended
-        // when the consensus is next rebuilt from any remaining calls.
+        // The audit log describes the consensus that this method removed. Clear the log also.
+        // Without that step, a delete of the last run leaves an old RUN_RECORDED entry that names
+        // absent alignments. The app writes the log again at the next rebuild of the consensus,
+        // from the calls that remain.
         recon_store::clear_audit(pool, biosample, DnaType::Y).await?;
         recon_store::clear_audit(pool, biosample, DnaType::Mt).await?;
         Ok(())
     }
 
-    /// Reset a subject's analysis: clear **all** sequencing + derived/imported data (runs,
-    /// alignments, cached artifacts, Y/mt haplogroups + consensus + reconciliation, ancestry, IBD
-    /// results, and chip/STR/variant/mtDNA profiles) while keeping the subject itself — its
-    /// identity (name/sex/center), vendor IDs, project memberships, and MDKA genealogy. The
-    /// recovery tool for a botched import: clears orphaned/garbage rows so the subject can be
-    /// re-imported cleanly. Atomic ([`biosample::clear_data`] runs in one transaction).
+    /// Reset the analysis of a subject. The method clears **all** sequence data and each derived
+    /// or imported result.
+    ///
+    /// It removes the runs, the alignments, and the cached artifacts. It removes the Y and mt
+    /// haplogroups with their consensus and reconciliation rows. It also removes the ancestry, the
+    /// IBD results, and the chip, STR, variant, and mtDNA profiles.
+    ///
+    /// It keeps the subject. It also keeps the identity of that subject, which is the name, the
+    /// sex, and the center. It keeps the vendor IDs, the project memberships, and the MDKA
+    /// genealogy.
+    ///
+    /// This method is the recovery tool for an import that went wrong. It removes each row with no
+    /// owner, so the user can import the subject again. The work is atomic, because
+    /// [`biosample::clear_data`] runs in one transaction.
     pub async fn clear_biosample_data(&self, guid: SampleGuid) -> Result<(), AppError> {
         biosample::clear_data(self.store.pool(), guid).await?;
-        // Imported external autosomal call-set dosages live in their own table (outside the
-        // biosample cascade) — drop them too so a cleared subject starts truly empty.
+        // The dosages of an imported external autosomal call set are in their own table, outside
+        // the cascade of the biosample. Remove them also, so a subject that the user clears holds
+        // nothing.
         navigator_store::external_panel_dosage::delete_for_biosample(self.store.pool(), guid).await?;
         Ok(())
     }
 
-    /// Reset only the subject's haplogroup placement (calls + consensus + override/audit, Y & mt),
-    /// keeping coverage/ancestry/imported data. Drops a stale legacy lineage so re-analysis re-places
-    /// it; the placement repopulates on the next full analysis (WGS) or re-import (vendor data).
+    /// Reset only the haplogroup placement of the subject. That placement is the calls, the
+    /// consensus, and the override and audit rows, for Y and for mt.
+    ///
+    /// The method keeps the coverage, the ancestry, and the imported data. It removes an old
+    /// lineage, so the next analysis places the subject again. The placement returns at the next
+    /// full analysis of a WGS sample, or at the next import of vendor data.
     pub async fn clear_haplogroup_data(&self, guid: SampleGuid) -> Result<(), AppError> {
         biosample::clear_haplogroup_data(self.store.pool(), guid).await?;
         Ok(())
@@ -457,10 +511,13 @@ impl App {
             .await
     }
 
-    /// Like [`save_analysis`] but stamps provenance: `source` (`navigator-walk` |
-    /// `pipeline-sidecar`) and `completeness` (`full` | `partial`). The fast-path sidecar
-    /// ingest uses this so the manual deep pass can tell a sidecar/partial result apart from a
-    /// full walk and upgrade it rather than skip it.
+    /// The same work as [`save_analysis`], but the method also writes the provenance. The
+    /// provenance is `source`, which is `navigator-walk` or `pipeline-sidecar`, and `completeness`,
+    /// which is `full` or `partial`.
+    ///
+    /// The fast-path sidecar import uses this method. The manual deep pass can then see the
+    /// difference between a partial sidecar result and a full walk. It replaces the partial result
+    /// and does not skip it.
     pub async fn save_analysis_with_provenance<T: Serialize>(
         &self,
         alignment_id: i64,
@@ -488,12 +545,18 @@ impl App {
         .await?)
     }
 
-    /// Like [`save_analysis_with_provenance`] but refuses to **downgrade** an existing artifact:
-    /// if a result is already stored for this `(kind, version)` whose completeness is at least the
-    /// incoming one (e.g. a full `navigator-walk` scan vs an incoming `partial` sidecar), the
-    /// existing artifact is kept untouched. The fast-path sidecar ingest uses this so re-importing
-    /// a project folder can't clobber real deep scans with lite sidecar stats. Returns whether the
-    /// write actually happened (`false` = kept the existing, equal-or-fuller result).
+    /// The same work as [`save_analysis_with_provenance`], but the method never replaces a better
+    /// artifact with a worse one.
+    ///
+    /// The store can already hold a result for this `(kind, version)` pair. When the completeness
+    /// of that result is the same as the new one, or higher, the method keeps the stored artifact.
+    /// One example is a full `navigator-walk` scan against a new `partial` sidecar result.
+    ///
+    /// The fast-path sidecar import uses this method. So a second import of a project folder can
+    /// not replace a real deep scan with the smaller statistics of a sidecar.
+    ///
+    /// The method returns `true` when it wrote the artifact. It returns `false` when it kept the
+    /// stored result, which was the same or better.
     pub async fn save_analysis_no_downgrade<T: Serialize>(
         &self,
         alignment_id: i64,
@@ -513,10 +576,15 @@ impl App {
         Ok(true)
     }
 
-    /// Persist a marker that a Navigator walk failed for this alignment (e.g. an undecodable /
-    /// corrupt CRAM). Stored as the `error`/`"1"` artifact so the project report can surface a
-    /// "Failed" cell instead of a silent blank; cleared by [`clear_analysis_error`] on the next
-    /// successful walk. Best-effort — a failure to record the marker is swallowed (it's diagnostic).
+    /// Write a mark that shows a failed Navigator walk for this alignment. One cause is a CRAM
+    /// file that the reader can not decode.
+    ///
+    /// The store holds the mark as the `error` artifact with the value `"1"`. The project report
+    /// then shows a "Failed" cell and not an empty cell. [`clear_analysis_error`] removes the mark
+    /// after the next good walk.
+    ///
+    /// The step is optional. The code hides a failure to write the mark, because the mark is only a
+    /// diagnostic.
     pub async fn record_analysis_error(&self, alignment_id: i64, step: &str, message: &str) {
         let mut message = message.to_string();
         message.truncate(500); // keep the payload small; the head carries the cause
@@ -543,17 +611,23 @@ impl App {
         }
     }
 
-    /// The alignment's source-file signature (`mtime:size`) for cache staleness. `None` when the
-    /// alignment / its path is gone or unstattable — then the cache is trusted (nothing to
-    /// recompute against). Cheap: a metadata stat, no file read (content hashing is the separate,
-    /// deferred federation-identity path).
+    /// The signature of the source file of the alignment, as `mtime:size`. The code uses it to
+    /// find an old cache entry.
+    ///
+    /// The value is `None` when the alignment is absent, when its path is absent, or when the
+    /// operating system can not read the metadata. The code then trusts the cache, because it has
+    /// no value to compare.
+    ///
+    /// The call is fast. It reads the metadata and does not read the file. The content hash is a
+    /// separate path for the federation identity, and it runs later.
     async fn bam_source_sig(&self, alignment_id: i64) -> Option<String> {
         let aln = alignment::get(self.store.pool(), alignment_id).await.ok().flatten()?;
         file_signature(Path::new(&aln.bam_path?))
     }
 
-    /// `(source, completeness)` of a cached artifact, defaulting `None` columns to
-    /// `("navigator-walk", "full")` (pre-provenance rows). `None` when no artifact exists.
+    /// The `(source, completeness)` pair of a cached artifact. A `None` column becomes
+    /// `("navigator-walk", "full")`, because a row from before the provenance change holds no
+    /// value. The method returns `None` when no artifact exists.
     pub async fn analysis_provenance(
         &self,
         alignment_id: i64,
@@ -579,8 +653,9 @@ impl App {
     ) -> Result<Option<T>, AppError> {
         match artifact::get(self.store.pool(), alignment_id, kind, algorithm_version).await? {
             Some(a) => {
-                // Treat a cached result as a miss when the source file changed since it was computed
-                // (BAM-mtime invalidation) — the caller then recomputes + re-stamps it.
+                // Treat a cached result as absent when the source file changed after the
+                // calculation. The mtime of the BAM file shows that change. The caller then
+                // calculates the result again and writes a new signature.
                 let current = self.bam_source_sig(alignment_id).await;
                 if !artifact_is_fresh(a.source_sig.as_deref(), current.as_deref()) {
                     return Ok(None);

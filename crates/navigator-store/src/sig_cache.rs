@@ -1,24 +1,29 @@
-//! Signature-keyed result caches — one row per biosample, holding an opaque JSON result plus the
-//! signature of the input it was computed from.
+//! Result caches with a signature key. Each row holds one result for one biosample. The result is
+//! JSON text. The row also holds the signature of the input data that made the result.
 //!
-//! Four tables share this exact shape, and the app uses them the same way every time: read the row,
-//! compare its signature against what the current inputs hash to, and recompute on a mismatch. They
-//! were four hand-copied modules until this one replaced them; the copies had already drifted (the
-//! two purge paths in the app each forgot a different table), which is the argument for having one.
+//! Four tables have this shape. The app uses each of the four tables in the same sequence:
 //!
-//! The columns are *named* differently per table for historical reasons — `consensus_sig` vs
-//! `source_sig`, `roh` vs `archaic` vs `segments`, `computed_at` vs `painted_at` — so each cache
-//! carries its column names and `get` aliases them back to the common [`Cached`] shape. The schema
-//! is untouched; only the Rust side is unified.
+//! 1. Read the row for the biosample.
+//! 2. Compare the signature in the row with the signature of the current input data.
+//! 3. If the two signatures are different, calculate the result again.
+//!
+//! Before this module, there were four modules with the same code. The four copies became
+//! different. Each of the two purge paths in the app forgot a different table. One module prevents
+//! this fault.
+//!
+//! Each table gives different names to its columns. One table has `consensus_sig` and another table
+//! has `source_sig`. So each cache keeps its own column names, and `get` changes these names to the
+//! names in the [`Cached`] structure. This module does not change the database schema. It changes
+//! only the Rust code.
 
 use du_domain::ids::SampleGuid;
 use sqlx::SqlitePool;
 
 use crate::StoreError;
 
-/// A cached result: the signature of the inputs it came from, the result itself as opaque JSON,
-/// and when it was computed. The caller compares [`Cached::sig`] against the current inputs to
-/// decide whether the payload is still good.
+/// One cached result. `sig` is the signature of the input data. `payload` is the result as JSON
+/// text. `computed_at` is the time of the calculation. The caller compares [`Cached::sig`] with the
+/// signature of the current input data. If the two are different, the payload is out of date.
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct Cached {
     pub biosample_guid: String,
@@ -27,38 +32,39 @@ pub struct Cached {
     pub computed_at: String,
 }
 
-/// One signature-keyed cache table, identified by its name and its three non-key columns.
+/// One cache table. The table name and the three columns that are not the key define it.
 #[derive(Debug, Clone, Copy)]
 pub struct SigCache {
-    /// The table name. A compile-time constant in every case — never caller input — so
-    /// interpolating it into SQL is safe.
+    /// The table name. This value is always a constant in the code. The caller never supplies it.
+    /// For this reason, it is safe to put the value into the SQL text.
     table: &'static str,
     sig_col: &'static str,
     payload_col: &'static str,
     at_col: &'static str,
 }
 
-/// Cached chromosome painting (local-ancestry segments), keyed to the autosomal consensus's
-/// `last_reconciled_at`.
+/// The cached chromosome painting. The painting holds the local ancestry segments. The key is the
+/// `last_reconciled_at` value of the autosomal consensus.
 pub const PAINTING: SigCache = SigCache::new("consensus_painting", "consensus_sig", "segments", "painted_at");
 
-/// Cached runs-of-homozygosity result (segments + summary), keyed to the autosomal consensus.
+/// The cached runs-of-homozygosity result. The result holds the segments and a summary. The key is
+/// the autosomal consensus.
 pub const ROH: SigCache = SigCache::new("consensus_roh", "consensus_sig", "roh", "computed_at");
 
-/// Cached archaic (Neanderthal / Denisovan) **Tier A** marker count, keyed to the autosomal
-/// consensus.
+/// The cached archaic **Tier A** marker count for Neanderthal and Denisovan. The key is the
+/// autosomal consensus.
 pub const ARCHAIC: SigCache = SigCache::new("consensus_archaic", "consensus_sig", "archaic", "computed_at");
 
-/// Cached archaic **Tier B** segment calls. Keyed to the *alignment* they were called from rather
-/// than to the consensus: segments come from genome-wide de-novo diploid calls on one alignment,
-/// whereas the consensus only carries the 1240k panel loci. The signature is the alignment id plus
-/// the caller's genotype version, so re-calling with a newer caller invalidates the cache.
+/// The cached archaic **Tier B** segment calls. The key is the alignment, not the consensus. The
+/// caller finds these segments from de-novo diploid calls on one alignment across the genome. The
+/// consensus holds only the 1240k panel loci. The signature is the alignment id and the genotype
+/// version of the caller. So a newer caller makes the cache out of date.
 pub const ARCHAIC_SEGMENTS: SigCache =
     SigCache::new("consensus_archaic_segments", "source_sig", "segments", "computed_at");
 
-/// Every signature-keyed cache, in one list — so a purge that means "drop this subject's derived
-/// results" drops *all* of them. Both purge paths used to enumerate tables by hand and both had
-/// fallen behind the set.
+/// All of the caches, in one list. A purge that must remove the derived results of a subject
+/// removes all of them. Before this list, the two purge paths named the tables one by one. Each
+/// path did not name all of the tables.
 pub const ALL: [SigCache; 4] = [PAINTING, ROH, ARCHAIC, ARCHAIC_SEGMENTS];
 
 impl SigCache {
@@ -71,13 +77,14 @@ impl SigCache {
         }
     }
 
-    /// The table this cache lives in — for callers that must fold it into a wider delete inside
-    /// their own transaction, where [`SigCache::delete`]'s pool-level call would not enlist.
+    /// The table of this cache. A caller needs the name when it deletes many tables in its own
+    /// transaction. The [`SigCache::delete`] function uses the pool, so that function can not join
+    /// such a transaction.
     pub const fn table(&self) -> &'static str {
         self.table
     }
 
-    /// Insert or replace this biosample's cached result.
+    /// Insert or replace the cached result for this biosample.
     pub async fn upsert(
         &self,
         pool: &SqlitePool,
@@ -101,8 +108,8 @@ impl SigCache {
         Ok(())
     }
 
-    /// This biosample's cached result, if one exists. The caller checks [`Cached::sig`] for
-    /// staleness — a row here is not by itself a usable result.
+    /// The cached result for this biosample, if a result exists. The caller must check
+    /// [`Cached::sig`]. A row is not a usable result until that check passes.
     pub async fn get(&self, pool: &SqlitePool, guid: SampleGuid) -> Result<Option<Cached>, StoreError> {
         let (table, s, p, a) = (self.table, self.sig_col, self.payload_col, self.at_col);
         let row: Option<Cached> = sqlx::query_as(&format!(
@@ -115,7 +122,7 @@ impl SigCache {
         Ok(row)
     }
 
-    /// Remove this biosample's cached result. `false` means there was nothing to remove.
+    /// Remove the cached result for this biosample. `false` shows that there was no result.
     pub async fn delete(&self, pool: &SqlitePool, guid: SampleGuid) -> Result<bool, StoreError> {
         let affected = sqlx::query(&format!("DELETE FROM {} WHERE biosample_guid = ?", self.table))
             .bind(guid.0.to_string())
@@ -131,9 +138,9 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
-    /// Every cache round-trips, and upsert replaces rather than duplicating (a recompute after the
-    /// inputs changed). Running the same body over [`ALL`] is what keeps a newly added table from
-    /// silently going untested.
+    /// Each cache keeps and returns the same data. `upsert` replaces a row and does not add a
+    /// second row. This occurs when the input data changes and the app calculates the result again.
+    /// The test uses [`ALL`], so a new table always gets a test.
     #[tokio::test]
     async fn every_cache_round_trips_and_upsert_replaces() {
         let pool = crate::Store::open_in_memory().await.unwrap();
@@ -166,8 +173,9 @@ mod tests {
         }
     }
 
-    /// The caches are independent: writing one must not disturb another that happens to share a
-    /// column name (`segments` is `consensus_painting`'s *and* `consensus_archaic_segments`'s).
+    /// The caches are independent. A write to one cache must not change a different cache. Two of
+    /// the tables use the column name `segments`: `consensus_painting` and
+    /// `consensus_archaic_segments`.
     #[tokio::test]
     async fn caches_do_not_alias_each_other() {
         let pool = crate::Store::open_in_memory().await.unwrap();

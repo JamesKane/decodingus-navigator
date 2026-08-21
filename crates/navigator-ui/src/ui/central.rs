@@ -90,7 +90,7 @@ impl NavigatorApp {
             });
             ui.separator();
         }
-        // Members vs Report on tabs — both can run to thousands of rows, so they don't stack.
+        // Members vs Report on tabs — both can run to thousands of rows, so they do not stack.
         ui.add_space(4.0);
         self.project_tab = self.sub_bar(ui, self.project_tab, &ProjectTab::ALL);
         match self.project_tab {
@@ -194,7 +194,7 @@ impl NavigatorApp {
         });
     }
 
-    /// When the selected subject has imported data that hasn't been analyzed yet, show a prominent
+    /// When the selected subject has imported data that has not been analyzed yet, show a prominent
     /// call-to-action to run the analysis pipeline — the brief stays empty until it runs. Shown only
     /// in the `Pending` state (has alignments, coverage not yet computed); hidden once analysis
     /// completes (→ `Complete`) or when the subject has nothing to analyze (no status row).
@@ -421,7 +421,7 @@ impl NavigatorApp {
                         asset_status_line(ui, &self.asset_status);
                         self.donor_ancestry_summary(ui);
                         // Publish the subject's consensus ancestry breakdown (one record per method)
-                        // — available once it's been estimated.
+                        // — available once it is been estimated.
                         if self.donor_ancestry.is_some() {
                             self.publish_row(ui, "Publish ancestry to PDS", Command::PublishAncestry { biosample_guid: guid });
                         }
@@ -534,7 +534,7 @@ impl NavigatorApp {
                             draw_roh(ui, result, regions);
                         }
                     });
-                    // Per-tab AI explanation of the ROH result (M5) — only once it's been computed.
+                    // Per-tab AI explanation of the ROH result (M5) — only once it is been computed.
                     if self.roh.is_some() {
                         ui.add_space(8.0);
                         self.ai_explain(ui, guid, SignalKind::Roh);
@@ -601,7 +601,7 @@ impl NavigatorApp {
                                 }
                                 _ => {
                                     // Sparse input (a chip covers a few % of the panel, biased to its
-                                    // common tail) cannot be ranked against the WGS-scored cohort.
+                                    // common tail) can not be ranked against the WGS-scored cohort.
                                     ui.label(
                                         egui::RichText::new(self.tr("archaic.noPercentile"))
                                             .weak()
@@ -617,7 +617,7 @@ impl NavigatorApp {
                             );
                         }
                     });
-                    // Per-tab AI explanation of the archaic result — only once it's been computed.
+                    // Per-tab AI explanation of the archaic result — only once it is been computed.
                     if self.archaic.is_some() {
                         ui.add_space(8.0);
                         self.ai_explain(ui, guid, SignalKind::Archaic);
@@ -675,7 +675,7 @@ impl NavigatorApp {
                             // footnote: this figure is measured against four sequenced archaic
                             // genomes that represent some ancestries better than others, so
                             // comparing it between people of different ancestry is the one use it
-                            // cannot support. Stated where the number is read, or it will not be.
+                            // can not support. Stated where the number is read, or it will not be.
                             ui.label(
                                 egui::RichText::new(self.tr("archaicSegments.withinPopulation"))
                                     .color(egui::Color32::from_rgb(230, 180, 90)),

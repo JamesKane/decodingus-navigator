@@ -1,7 +1,9 @@
-//! Evidence clusterer — port of the Scala `SvEvidenceClusterer`. Clusters discordant
-//! pairs + split reads into SV calls: inter-chromosomal -> BND, intra-chromosomal
-//! positional clustering with orientation/insert-based type inference, then integration
-//! with depth-based CNV segments.
+//! The step that puts the evidence into groups. It is the port of the Scala
+//! `SvEvidenceClusterer`. It turns the discordant pairs and the split reads into SV calls.
+//!
+//! A pair across two chromosomes gives a BND. A pair inside one chromosome goes into a group by
+//! position, and the orientation and the insert size then give the type. Last, the code puts the
+//! CNV segments from the depth together with those calls.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,7 +18,8 @@ enum EvidencePoint {
     Split(SplitRead),
 }
 
-/// Cluster all SV evidence into calls, integrating depth segments.
+/// Put all of the SV evidence into groups, and make calls from them. It also brings in the depth
+/// segments.
 pub fn cluster(
     evidence: &SvEvidenceCollection,
     depth_segments: &[DepthSegment],
@@ -291,7 +294,8 @@ fn breakpoint_cluster_to_call(
     }
 }
 
-/// Attach depth evidence to overlapping PE/SR calls; append depth-only calls.
+/// Attach the depth evidence to the PE and SR calls that it overlaps. Then add the calls that come
+/// from the depth alone.
 fn integrate_pe_sr_with_depth(
     pe_sr_calls: Vec<SvCall>,
     depth_segments: &[DepthSegment],

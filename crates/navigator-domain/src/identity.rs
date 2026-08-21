@@ -118,7 +118,7 @@ fn is_hgdp_name(s: &str) -> bool {
     matches!(rest, Some(r) if !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// The INSDC **sample**-accession namespace for `acc`, if it's a real one (not a friendly name):
+/// The INSDC **sample**-accession namespace for `acc`, if it is a real one (not a friendly name):
 /// `SAM*` → BIOSAMPLE, `ERS…` → ENA, `SRS…` → SRA. `None` for anything else (a plain friendly name).
 /// Used both by [`catalog_ids_from_provenance`] and by the API-driven accession backfill.
 pub fn insdc_sample_namespace(acc: &str) -> Option<&'static str> {
@@ -138,7 +138,7 @@ pub fn insdc_sample_namespace(acc: &str) -> Option<&'static str> {
     }
 }
 
-/// FTDNA-reported member labels only (the batch-file metadata we don't otherwise model). Computed
+/// FTDNA-reported member labels only (the batch-file metadata we do not otherwise model). Computed
 /// haplogroups stay in the haplogroup-call store — different provenance (design §4.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FtdnaMember {

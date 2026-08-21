@@ -1,16 +1,17 @@
 //! AT Proto record contracts Navigator publishes.
 //!
-//! **No floats:** atproto records are DAG-CBOR, which has no float type — the PDS
-//! rejects them. So every f64 metric (mean depth, % at depth, …) is encoded as a
-//! string (lossless shortest round-trip) and parsed back by the consumer; only genuine
-//! integers stay numeric. See documents/atmosphere/13-Local-PDS-Testing.md.
+//! **No floats.** An atproto record is DAG-CBOR, which has no float type, and the PDS refuses
+//! one. So every f64 metric, such as the mean depth or a percent at depth, goes out as a string.
+//! That string is the shortest form that round-trips with no loss, and the consumer parses it
+//! back. Only a true integer stays a number. See documents/atmosphere/13-Local-PDS-Testing.md.
 
 use serde::{Deserialize, Serialize};
 
-// NOTE: the per-sample coverage summary record now lives in the shared
-// `du_domain::fed::AlignmentRecord` (collection `com.decodingus.atmosphere.alignment`),
-// so the publisher and the AppView's Jetstream consumer share one contract. The old
-// `com.decodingus.navigator.coverageSummary` shape was a drift the AppView never ingested.
+// NOTE: the coverage summary record of each sample now lives in the shared
+// `du_domain::fed::AlignmentRecord`, in collection `com.decodingus.atmosphere.alignment`. So the
+// publisher and the AppView's Jetstream consumer share one contract. The old
+// `com.decodingus.navigator.coverageSummary` shape was ours alone, and the AppView never ingested
+// it.
 
 /// Collection NSID for a sample's de-novo / private variant calls on one contig.
 pub const PRIVATE_VARIANTS_COLLECTION: &str = "com.decodingus.navigator.privateVariants";
@@ -96,9 +97,9 @@ pub struct RecordMeta {
     pub last_modified_field: Option<String>,
 }
 
-/// `#reconciliationStatus`: the summary consensus across runs. The lexicon types
-/// `confidence`/`branchCompatibilityScore`/`snpConcordance` as floats, but DAG-CBOR has
-/// no float type (module docs), so they ride as strings like every other f64 metric.
+/// `#reconciliationStatus`: the summary consensus across runs. The lexicon gives
+/// `confidence`, `branchCompatibilityScore`, and `snpConcordance` the float type. But DAG-CBOR has
+/// no float type, see the module docs. So they go out as strings, like every other f64 metric.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReconciliationStatusRecord {
@@ -193,9 +194,9 @@ pub struct AuditEntryRecord {
     pub notes: Option<String>,
 }
 
-/// The donor-level multi-run haplogroup reconciliation record. The app maps its domain
-/// types into these primitives; `at_uri` is assigned by the PDS on create, so it is
-/// written empty and the consumer reads the record's own URI.
+/// The donor-level multi-run haplogroup reconciliation record. The app maps its domain types into
+/// these primitives. The PDS gives `at_uri` its value at create time, so the app writes it empty,
+/// and the consumer reads the record's own URI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HaplogroupReconciliationRecord {
@@ -365,14 +366,15 @@ mod tests {
 
 // ---- ancestral origin ----------------------------------------------------
 
-/// Collection NSID for a lineage's most distant known ancestor — surname, origin, dates.
+/// Collection NSID for a lineage's most distant known ancestor: surname, origin, and dates.
 ///
 /// This is an **atmosphere** collection, not a `navigator.*` one, because the AppView ingests it
 /// into `fed.ancestral_origin` and renders it as the genealogical-era origins icicle. See
 /// `proposals/ancestral-origin-icicle.md` in the AppView repo.
 pub const ANCESTRAL_ORIGIN_COLLECTION: &str = "com.decodingus.atmosphere.ancestralOrigin";
 
-/// A published external identifier — the key the AppView resolves a record to its tree sample by.
+/// A published external identifier. The AppView uses it as the key to resolve a record to its
+/// tree sample.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OriginExternalId {
     pub namespace: String,
@@ -381,14 +383,16 @@ pub struct OriginExternalId {
 
 /// One lineage's most distant known ancestor, as published.
 ///
-/// **This type is a privacy boundary.** An MDKA's surname, origin and dates are genealogical
-/// context and may be published; a given name is not, and the living tester never is. The fields
-/// here are the complete list of what may leave the workspace — there is deliberately no
-/// `ancestorName`, no `notes`, and no donor identifier. [`Self::build`] is the only constructor,
-/// so the gates cannot be bypassed by assembling one field-by-field.
+/// **This type is a privacy boundary.** An MDKA's surname, origin, and dates are genealogical
+/// context, and the app may publish them. A given name is not, and the tester who is alive never
+/// is.
 ///
-/// **No floats:** DAG-CBOR has none, so the coordinate is a pair of strings (see the module
-/// header). The AppView parses numbers or numeric strings either way.
+/// The fields here are the complete list of what may leave the workspace. There is no
+/// `ancestorName`, no `notes`, and no donor identifier, and that is on purpose. [`Self::build`] is
+/// the only constructor. So nobody can go around the gates and fill in one field at a time.
+///
+/// **No floats:** DAG-CBOR has none, so the coordinate is a pair of strings. See the module
+/// header. The AppView parses a number or a numeric string, either way.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AncestralOriginRecord {
@@ -397,12 +401,13 @@ pub struct AncestralOriginRecord {
     /// at-uri of the parent biosample record, when the sample is itself federated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub biosample_ref: Option<String>,
-    /// Vendor/catalog identifiers — the join that actually resolves on the AppView's tree, whose
-    /// tips were bulk-loaded and carry no at-uri.
+    /// Vendor and catalog identifiers. This is the join that resolves on the AppView's tree, whose
+    /// tips came from a bulk load and carry no at-uri.
     pub external_ids: Vec<OriginExternalId>,
     /// `Y_DNA` | `MT_DNA`.
     pub lineage: String,
-    /// Family name only. Never a given name — see [`navigator_domain::identity::surname_of`].
+    /// The family name alone. Never a given name. See
+    /// [`navigator_domain::identity::surname_of`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub surname: Option<String>,
     /// Place as recorded; the AppView normalizes it (one implementation, fixable without a client
@@ -423,26 +428,28 @@ pub struct AncestralOriginRecord {
     pub created_at: String,
 }
 
-/// The latest ancestor birth year that may carry place-level detail. Someone born in 1900 is 126
-/// today; this is the check that makes "an MDKA is not living-donor PII" verifiable rather than
-/// asserted. Mirrored by the AppView, which re-checks on ingest.
+/// The latest ancestor birth year that may carry detail at the level of a place. A person born in
+/// 1900 is 126 today. This check makes "an MDKA is not the PII of a donor who is alive" something
+/// you can test, and not something we claim. The AppView mirrors it, and checks again at ingest.
 pub const ANCESTOR_BIRTH_YEAR_MAX: i32 = 1900;
 const ANCESTOR_BIRTH_YEAR_MIN: i32 = 1000;
 
 /// Coarsen a coordinate to ~1 km before it leaves the workspace. A rooftop coordinate plus a
-/// surname narrows to one family; a county-scale view cannot use the precision anyway.
+/// surname narrows to one family; a county-scale view can not use the precision anyway.
 fn coarsen(v: f64) -> String {
     format!("{:.2}", (v * 100.0).round() / 100.0)
 }
 
 impl AncestralOriginRecord {
-    /// Build a publishable record, applying every field gate — or `None` when this MDKA must not
-    /// be published at all.
+    /// Build a record that the app may publish, and apply the gate on every field. It gives `None`
+    /// when the app must not publish this MDKA at all.
     ///
-    /// Refuses when there is no join key (nothing could ever resolve it), when the ancestor's
-    /// birth year is outside the plausible range, and when nothing but the lineage survives the
-    /// gates. Withholds place and coordinate — but keeps the country — when there is no birth
-    /// year, since nothing then establishes that the ancestor is long dead.
+    /// It refuses in three cases. There is no join key, so nothing could ever resolve it. The
+    /// ancestor's birth year is outside the plausible range. Or nothing but the lineage gets
+    /// through the gates.
+    ///
+    /// With no birth year it withholds the place and the coordinate, but it keeps the country.
+    /// Nothing then shows that the ancestor died long ago.
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         biosample_ref: Option<String>,
@@ -472,8 +479,8 @@ impl AncestralOriginRecord {
             _ => (None, None),
         };
         let origin_country = origin_country.map(str::to_string);
-        // Nothing worth publishing: no name, no place, no country. The record would resolve to a
-        // sample and say nothing about it.
+        // There is nothing to publish: no name, no place, and no country. The record would resolve
+        // to a sample and say nothing about it.
         if surname.is_none() && origin_place.is_none() && origin_country.is_none() {
             return None;
         }
@@ -531,7 +538,8 @@ mod ancestral_origin_tests {
         assert!(!json.contains("ancestorName"), "there is no field for it");
     }
 
-    /// The check that makes "not living-donor PII" verifiable rather than asserted.
+    /// The check that makes "this is not the PII of a donor who is alive" something you can test,
+    /// and not something we claim.
     #[test]
     fn an_ancestor_born_after_the_ceiling_is_not_published() {
         assert!(build(Some("Thomas Kane"), Some(1975)).is_none());
@@ -543,8 +551,8 @@ mod ancestral_origin_tests {
         );
     }
 
-    /// Without a birth year nothing establishes the ancestor is long dead, so the country survives
-    /// and the precise place does not. The record is kept; the detail is not.
+    /// With no birth year, nothing shows that the ancestor died long ago. So the country gets
+    /// through and the exact place does not. The app keeps the record, and drops the detail.
     #[test]
     fn without_a_birth_year_only_the_country_is_published() {
         let r = build(Some("Thomas Kane"), None).expect("kept, not refused");
@@ -554,8 +562,9 @@ mod ancestral_origin_tests {
         assert_eq!(r.death_year, None, "an undated ancestor has no dates at all");
     }
 
-    /// A rooftop coordinate plus a surname narrows to one family; a county-scale view cannot use
-    /// the precision anyway. Floats also cannot cross DAG-CBOR, hence the strings.
+    /// A coordinate at the level of one roof, plus a surname, narrows to one family. A view at the
+    /// scale of a county can not use that precision anyway. A float also can not cross DAG-CBOR,
+    /// which is why these are strings.
     #[test]
     fn coordinates_are_coarsened_and_sent_as_strings() {
         let r = build(Some("Thomas Kane"), Some(1830)).expect("publishable");
@@ -565,7 +574,7 @@ mod ancestral_origin_tests {
         assert!(json["lat"].is_string(), "DAG-CBOR has no float type");
     }
 
-    /// A record with no way to reach a sample can never be rendered, and can still be read.
+    /// Nothing can draw a record that has no way to reach a sample, but anybody can still read it.
     #[test]
     fn a_record_with_no_join_key_is_not_published() {
         assert!(AncestralOriginRecord::build(
@@ -614,7 +623,7 @@ mod ancestral_origin_tests {
             "2026-08-07T00:00:00Z"
         )
         .is_none());
-        // …but a bare country is worth publishing.
+        // …but a country on its own is worth a publish.
         assert!(AncestralOriginRecord::build(
             None,
             ids(),

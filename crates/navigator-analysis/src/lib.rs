@@ -1,13 +1,18 @@
-//! Navigator analysis — the htsjdk/GATK replacement, Navigator-side.
+//! The analysis crate of Navigator. It replaces htsjdk and GATK, on the Navigator side.
 //!
-//! Owns the `noodles` BAM/CRAM/FASTA/BGZF/index I/O layer (kept out of shared
-//! `du-bio`, which stays IO-light coordinate math + text parsing), the ported GATK
-//! walkers (`coverage`, `read_metrics`, `sv`, `sex`), and the purpose-built haploid
-//! variant caller: force-call genotyping at known sites plus de-novo Y/mtDNA discovery
-//! for private-variant matching and branch creation.
+//! It owns the I/O layer over `noodles`, for BAM, CRAM, FASTA, BGZF and the index files. That layer
+//! stays out of the shared `du-bio` crate. `du-bio` holds coordinate arithmetic, and it reads text,
+//! and it does little I/O.
 //!
-//! Built on `du-bio` for liftover/callable/coordinate primitives. A GATK-vs-Rust
-//! golden-truth parity harness gates cutover. Implemented in roadmap phases 2–3.
+//! It also owns the GATK walkers that this project ported: `coverage`, `read_metrics`, `sv` and
+//! `sex`. And it owns the haploid variant caller that somebody built for this purpose.
+//!
+//! That caller does two things. It force-calls a genotype at a known site. And it discovers
+//! de-novo on the Y and the mtDNA, for private-variant matching and for a new branch.
+//!
+//! It stands on `du-bio` for the primitives of liftover, callability and coordinates. A parity
+//! harness, of GATK against Rust, over a golden truth, gates the cutover. Phases 2 and 3 of the
+//! roadmap built it.
 
 pub mod ancestry;
 pub mod archaic;
@@ -33,9 +38,10 @@ pub mod library_stats;
 pub mod manifest;
 pub mod mask;
 pub mod mastervar;
-/// mtDNA variant derivation + CHM13 `chrM`↔rCRS liftover. Moved to the shared `du-bio` crate
-/// so the AppView and Navigator share one implementation; re-exported here under the original
-/// path so existing `navigator_analysis::mtvariants::…` call sites are unchanged.
+/// The derivation of the mtDNA variants, and the liftover between the CHM13 `chrM` and the rCRS.
+/// This code moved to the shared `du-bio` crate, so that the AppView and Navigator share one
+/// implementation. This module exports it again, under its original path, so that a call site that
+/// says `navigator_analysis::mtvariants::…` does not change.
 pub use du_bio::mt as mtvariants;
 pub mod parity;
 pub mod phasing;

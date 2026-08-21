@@ -51,7 +51,8 @@ fn read_metrics_match_hand_computed_values() {
 
 #[test]
 fn cram_read_metrics_match_bam() {
-    // Same pairs as paired.bam, ref-compressed — the unified reader must give identical metrics.
+    // The same pairs as in paired.bam, compressed against the reference. The unified reader must
+    // give the same metrics.
     let dir = fixtures();
     let bam = collect_read_metrics(&dir.join("paired.bam"), None).unwrap();
     let cram = collect_read_metrics(&dir.join("paired.cram"), Some(&dir.join("ref.fa"))).unwrap();

@@ -1,7 +1,9 @@
-//! Live network tests — `#[ignore]` (like the live-PDS tests), never run in CI. They hit
-//! the real public reference hosts. Run a single one explicitly, e.g.:
-//!   cargo test -p navigator-refgenome --test live -- --ignored resolve_chm13 --nocapture
-//! Note: the reference FASTA download is ~1 GB.
+//! Live network tests. Each one carries `#[ignore]`, as the live-PDS tests do, and CI never runs
+//! them. They go to the real public reference hosts. Run one of them explicitly, for example:
+//!
+//!   `cargo test -p navigator-refgenome --test live -- --ignored resolve_chm13 --nocapture`
+//!
+//! Note: the reference FASTA download is about 1 GB.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,7 +31,7 @@ async fn resolve_chm13() {
     };
     let fa = g.resolve_reference("chm13v2.0", &mut progress).await.expect("resolve");
     assert!(fa.exists());
-    // The .fai must have been built and carry chr1 (CHM13 uses chr-prefixed names).
+    // The .fai must exist and hold chr1. CHM13 puts a `chr` prefix on a contig name.
     let fai = std::fs::read_to_string(fa.with_extension("fa.fai")).expect("fai");
     assert!(fai.lines().any(|l| l.starts_with("chr1\t")), "expected chr1 in .fai");
     let _ = std::fs::remove_dir_all(&base);
@@ -51,9 +53,9 @@ async fn resolve_grch38_to_chm13_chain() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// The CHM13 chrY structural masks are only useful on GRCh38/37 if they lift, and only *safe* if a
-/// bad lift is dropped rather than smeared across the chromosome. Both are properties of the real
-/// chain, so this is a live test.
+/// The CHM13 chrY structural masks help on GRCh38 and GRCh37 only if they lift. They are *safe*
+/// only if the code drops a bad lift, and does not spread it across the chromosome. The real chain
+/// decides both, so this is a live test.
 #[tokio::test]
 #[ignore = "downloads a real liftover chain"]
 async fn lift_chry_intervals_chm13_to_grch38() {

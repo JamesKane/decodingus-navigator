@@ -28,7 +28,7 @@ impl NavigatorApp {
     ///
     /// The reference-download and "not analyzed yet" prompts render *above* the split rather than in
     /// a panel — both block every panel equally, so burying either one behind a rail click would let
-    /// a user wander an empty view without being told why it's empty.
+    /// a user wander an empty view without being told why it is empty.
     pub(crate) fn simple_subject_view(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         ui.separator();
         self.reference_prompt(ui);
@@ -119,7 +119,7 @@ impl NavigatorApp {
             self.simple_panel = panel;
         }
 
-        // The bridge to the full power-user view lives at the foot of the rail, where it's reachable
+        // The bridge to the full power-user view lives at the foot of the rail, where it is reachable
         // from every panel rather than only from the bottom of one long scroll.
         ui.add_space(12.0);
         ui.separator();
@@ -294,7 +294,7 @@ impl NavigatorApp {
 
     /// The at-a-glance grid: one tile per remaining panel, each showing its headline value and
     /// opening that panel when clicked. This is the landing screen's index — it is why the story
-    /// panel doesn't need to restate the paternal line, the ancestry donut, and the match list.
+    /// panel does not need to restate the paternal line, the ancestry donut, and the match list.
     fn simple_glance_grid(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         let tiles: Vec<(SimplePanel, &'static str, &'static str, Option<String>)> = SimplePanel::ALL
             .iter()
@@ -352,7 +352,7 @@ impl NavigatorApp {
 
     /// One lineage panel. Renders the brief's lineage card (haplogroup, age, origin, story,
     /// confidence, descent trail) or, when this subject has no such line, an explanation of *why*
-    /// there isn't one — "no data" with no reason is the complaint this redesign exists to fix.
+    /// there is not one — "no data" with no reason is the complaint this redesign exists to fix.
     fn simple_lineage_panel(&mut self, ui: &mut egui::Ui, guid: SampleGuid, kind: LineageKind) {
         let Some(brief) = self.subject_brief.as_ref().filter(|(g, _)| *g == guid).map(|(_, b)| b) else {
             self.simple_brief_placeholder(ui);
@@ -491,7 +491,7 @@ impl NavigatorApp {
         ui.add_space(10.0);
 
         // The fine breakdown gets its own card rather than a collapsed row inside the one above:
-        // the panel has the vertical room the old single scroll didn't, and it is the section most
+        // the panel has the vertical room the old single scroll did not, and it is the section most
         // readers came for.
         if !a.fine_pops.is_empty() {
             card(ui, detail_title, |ui| {
@@ -533,7 +533,7 @@ impl NavigatorApp {
     /// a **confirmed** relative, where an encrypted segment exchange has actually run and produced a
     /// shared-cM total, and a **candidate**, where the AppView has only scored the signals we both
     /// published. They are grouped by the same three bands, but the band is chosen from measured cM
-    /// where we have it and from the suggestion's tier where we don't — and the row says which,
+    /// where we have it and from the suggestion's tier where we do not — and the row says which,
     /// because "close family" inferred from a score is a much weaker claim than the same words
     /// backed by 1,800 shared centimorgans.
     fn simple_relatives_panel(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
@@ -649,7 +649,7 @@ impl NavigatorApp {
                         }
                     });
                 });
-                // The evidence line. Measured sharing beats a score, so it's what's shown when we
+                // The evidence line. Measured sharing beats a score, so it is what is shown when we
                 // have it; the tier note above already said which kind of row this is.
                 match &row.shared {
                     Some(s) => {

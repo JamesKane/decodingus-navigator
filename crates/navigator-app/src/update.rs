@@ -1,38 +1,46 @@
-//! Checking GitHub Releases for a newer installer, and *notifying* the user — never auto-updating.
+//! A check of GitHub Releases for a newer installer. This module only *tells* the user. It never
+//! updates the app without a command from the user.
 //!
-//! Installers are published to the GitHub Releases of `JamesKane/decodingus-navigator` (`v*` tags;
-//! Alpha/Beta/RC builds are marked *prerelease*). This module fetches that list, finds the highest
-//! version, compares it against the running build ([`BUILD_VERSION`]), and — if it's
-//! newer and the user hasn't chosen to skip it — returns an [`UpdateInfo`] pointing at the release
-//! page and the platform-appropriate installer asset. The UI turns that into a dismissible prompt;
-//! downloading/installing is entirely the user's choice.
+//! The team publishes each installer to the GitHub Releases of `JamesKane/decodingus-navigator`,
+//! under a `v*` tag. An Alpha build, a Beta build, and an RC build each have the *prerelease*
+//! mark.
+//!
+//! This module reads that list and finds the highest version. It then compares that version with
+//! the version of this build, which is [`BUILD_VERSION`]. The module returns an [`UpdateInfo`]
+//! value when the published version is newer and the user did not choose to skip it. The value
+//! points to the release page and to the correct installer for the platform.
+//!
+//! The UI shows this information as a prompt that the user can close. Only the user can start the
+//! download and the installation.
 
 use serde::Deserialize;
 
 use crate::error::AppError;
 use crate::settings::AppSettings;
 
-/// The GitHub Releases API for the app repo. We list releases (rather than `/releases/latest`, which
-/// excludes prereleases) so Alpha/Beta builds are considered too.
+/// The GitHub Releases API for the repository of the app. The code lists all releases. It does not
+/// use `/releases/latest`, because that endpoint hides a prerelease. So the check also sees an
+/// Alpha build and a Beta build.
 const RELEASES_URL: &str = "https://api.github.com/repos/JamesKane/decodingus-navigator/releases";
 
-/// The version this build calls itself when comparing against published releases.
+/// The version name of this build. The code compares this name with the published releases.
 ///
-/// `CARGO_PKG_VERSION` alone is not usable for that comparison, and the reason is easy to miss:
-/// the workspace version is a bare `0.1.0` while every shipped tag is `v0.1.0-alpha.N`. Under
-/// SemVer a release outranks its own prereleases, so the running build always looked *newer* than
-/// every alpha on offer and the check returned "up to date" every single time. Sixteen alphas were
-/// published without one user ever being notified.
+/// `CARGO_PKG_VERSION` alone does not work for that comparison. The reason is easy to miss. The
+/// workspace version is a plain `0.1.0`, but each tag that the team ships is `v0.1.0-alpha.N`.
 ///
-/// The workspace version deliberately stays numeric — the Windows installer formats want
-/// `x.y.z` — so the full version is injected at package time instead, from the tag being built.
-/// A developer build has no such tag and falls back, which is correct: it should not claim to be
-/// any particular release.
+/// In SemVer, a release has a higher rank than its own prereleases. So this build always looked
+/// *newer* than each alpha on the server, and the check always answered "up to date". The team
+/// published sixteen alphas, and no user received a notification.
 ///
-/// Note for anyone testing this locally: `option_env!` is read at compile time and Cargo does not
-/// treat the variable as an input, so changing it does not by itself trigger a rebuild — touch this
-/// file, or build clean, or you will keep measuring the previous value. CI builds from a fresh
-/// checkout, so the packaged artifact is never affected.
+/// The workspace version stays numeric by design, because a Windows installer format needs `x.y.z`.
+/// So the package step puts the full version here, from the tag of that build. A build on a
+/// developer machine has no tag and uses the default value. That result is correct, because such a
+/// build must not claim to be a release.
+///
+/// A note for a local test. Rust reads `option_env!` at compile time, and Cargo does not treat the
+/// variable as an input. So a change to the variable does not start a rebuild. Touch this file, or
+/// build clean. If not, you continue to see the value from the earlier build. CI always builds from
+/// a new checkout, so this problem never reaches a packaged artifact.
 pub(crate) const BUILD_VERSION: &str = match option_env!("NAVIGATOR_RELEASE_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
@@ -41,13 +49,14 @@ pub(crate) const BUILD_VERSION: &str = match option_env!("NAVIGATOR_RELEASE_VERS
 /// A newer installer is available. Serialized so it can cross the worker `Command`/`Event` channel.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UpdateInfo {
-    /// The running build's version ([`BUILD_VERSION`]).
+    /// The version of this build ([`BUILD_VERSION`]).
     pub current_version: String,
-    /// The newest published version (tag, without a leading `v`).
+    /// The newest published version. The value is the tag with no `v` at the start.
     pub latest_version: String,
     /// The release's display name (falls back to the tag).
     pub name: String,
-    /// The GitHub release page — always present, used as the fallback download link.
+    /// The GitHub release page. This value is always present, and the UI uses it as the second
+    /// download link.
     pub release_url: String,
     /// The direct download URL for this platform's installer asset, if one matched.
     pub download_url: Option<String>,
@@ -84,18 +93,23 @@ struct GhAsset {
 }
 
 impl crate::App {
-    /// Check GitHub Releases for a newer installer than the running build. Returns `Ok(None)` when
-    /// already current (or the newest release is one the user chose to skip); `Ok(Some(info))` when
-    /// a newer version is available. Network/parse failures are surfaced as [`AppError::Update`] —
-    /// callers treat a failed check as non-fatal.
+    /// Check GitHub Releases for an installer that is newer than this build.
+    ///
+    /// The method returns `Ok(None)` when this build is current. It also returns `Ok(None)` when
+    /// the user chose to skip the newest release. It returns `Ok(Some(info))` when a newer version
+    /// exists.
+    ///
+    /// A network fault or a parse fault becomes an [`AppError::Update`] value. A caller must
+    /// continue after a failed check.
     pub async fn check_for_update(&self) -> Result<Option<UpdateInfo>, AppError> {
         let current_str = BUILD_VERSION;
         let current = Version::parse(current_str)
             .ok_or_else(|| AppError::Update(format!("unparseable build version {current_str}")))?;
 
         let releases = fetch_releases().await?;
-        // Highest version among non-draft releases (prereleases included, so Alpha→Alpha upgrades
-        // are offered). `max_by` needs the parsed version; releases with a non-version tag are skipped.
+        // Find the highest version among the releases that are not a draft. The set holds each
+        // prerelease, so the check offers an upgrade from one Alpha to the next Alpha. `max_by`
+        // needs the parsed version. The code skips a release when its tag is not a version.
         let best = releases
             .into_iter()
             .filter(|r| !r.draft)
@@ -110,15 +124,17 @@ impl crate::App {
         }
 
         let latest_version = rel.tag_name.trim_start_matches(['v', 'V']).to_string();
-        // Honor a "skip this version" choice — but a version *newer* than the skipped one still
-        // notifies (the skip is keyed to the exact version string).
+        // Obey a "skip this version" choice from the user. But a version that is *newer* than the
+        // skipped version still gives a notification, because the skip holds one exact version
+        // string.
         if AppSettings::load().skip_update_version.as_deref() == Some(latest_version.as_str()) {
             return Ok(None);
         }
 
         Ok(Some(UpdateInfo {
-            // Trimmed the same way `latest_version` is, so the UI's "current › latest" reads
-            // consistently — the injected value is a tag and carries a leading `v`.
+            // Remove the same characters that the code removes from `latest_version`. The
+            // "current > latest" text in the UI is then consistent. The build step supplies a tag,
+            // and a tag starts with `v`.
             current_version: current_str.trim_start_matches(['v', 'V']).to_string(),
             latest_version,
             name: rel.name.clone().unwrap_or_else(|| rel.tag_name.clone()),
@@ -152,9 +168,13 @@ async fn fetch_releases() -> Result<Vec<GhRelease>, AppError> {
         .map_err(|e| AppError::Update(e.to_string()))
 }
 
-/// Pick the installer asset for the current platform from a release's assets. macOS ships a single
-/// universal2 `.dmg`; Windows an NSIS `*-setup.exe`; Linux an `.AppImage` / `.deb` per-arch. Returns
-/// the first name-matching asset (preferring one whose name carries this arch or "universal").
+/// Select the installer asset for this platform from the assets of a release.
+///
+/// macOS has one universal2 `.dmg` file. Windows has an NSIS `*-setup.exe` file. Linux has an
+/// `.AppImage` file and a `.deb` file for each architecture.
+///
+/// The function returns the first asset with a name that matches. It selects an asset whose name
+/// holds this architecture or the word "universal" before it selects another asset.
 fn pick_installer_asset(assets: &[GhAsset]) -> Option<String> {
     let exts: &[&str] = if cfg!(target_os = "macos") {
         &[".dmg"]
@@ -182,9 +202,11 @@ fn pick_installer_asset(assets: &[GhAsset]) -> Option<String> {
         .map(|a| a.browser_download_url.clone())
 }
 
-/// A minimal `MAJOR.MINOR.PATCH[-prerelease]` version. Ordered so a release outranks its own
-/// prereleases (`0.2.0` > `0.2.0-alpha.1`) and higher numbers win — sufficient for our `vX.Y.Z`
-/// release tags; we deliberately don't implement full SemVer build-metadata precedence.
+/// A small `MAJOR.MINOR.PATCH[-prerelease]` version.
+///
+/// The order puts a release above its own prereleases, so `0.2.0` is above `0.2.0-alpha.1`. A
+/// higher number also wins. This order is enough for a `vX.Y.Z` release tag. The code does not
+/// implement the full SemVer rule for build metadata, by design.
 #[derive(Debug, PartialEq, Eq)]
 struct Version {
     nums: (u64, u64, u64),
@@ -227,11 +249,12 @@ impl Ord for Version {
 
 /// Compare two prerelease strings dot-part by dot-part, numerically where both parts are numbers.
 ///
-/// A plain string compare is wrong the moment a counter reaches two digits: `"alpha.9"` sorts
-/// *above* `"alpha.16"`, because `'9' > '1'`. That is not hypothetical here — the project reached
-/// `alpha.16` with this comparator in place, and picking the highest of the published tags returned
-/// `alpha.9`. SemVer's own rule is the fix: numeric identifiers compare numerically, and a numeric
-/// identifier ranks below an alphanumeric one.
+/// A plain string compare is wrong when a counter reaches two digits. `"alpha.9"` then sorts
+/// *above* `"alpha.16"`, because the character `9` is above the character `1`.
+///
+/// This fault occurred in this project. The version reached `alpha.16` with the old comparator, and
+/// a search for the highest published tag returned `alpha.9`. The SemVer rule is the correction. A
+/// numeric part compares as a number, and a numeric part ranks below a part with letters.
 fn compare_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
 
@@ -293,9 +316,9 @@ mod tests {
         assert_eq!(v("0.1.0"), v("v0.1.0"));
     }
 
-    /// The bug that made the whole feature inert: a build calling itself `0.1.0` outranks every
-    /// `0.1.0-alpha.N` tag, so the newest alpha never looked newer and no user was ever notified.
-    /// A released build has to identify itself with its own prerelease to be comparable.
+    /// The fault that made the full feature inert. A build with the name `0.1.0` ranks above each
+    /// `0.1.0-alpha.N` tag. So the newest alpha never looked newer, and no user received a
+    /// notification. A release build must use its own prerelease name, or the comparison fails.
     #[test]
     fn a_release_build_compares_against_the_alphas_it_shipped_beside() {
         // What the bare workspace version did.
@@ -307,8 +330,8 @@ mod tests {
         assert!(v("v0.1.0-alpha.17") > v("0.1.0-alpha.16"));
     }
 
-    /// Whatever this build calls itself, it must at least be parseable — otherwise the check fails
-    /// with "unparseable build version" rather than doing anything useful.
+    /// The parser must accept the name of this build. If not, the check stops with the message
+    /// "unparseable build version" and does no useful work.
     #[test]
     fn the_build_version_is_a_version() {
         assert!(
@@ -328,8 +351,9 @@ mod tests {
 
     #[test]
     fn picks_platform_asset() {
-        // Include an asset for every platform so the test is meaningful on any CI runner (macOS,
-        // Windows, and Linux — where the picker looks for .AppImage/.deb).
+        // Add an asset for each platform, so the test is useful on any CI runner. The runners are
+        // macOS, Windows, and Linux. On Linux the code looks for a .AppImage file or a .deb
+        // file.
         let assets = vec![
             GhAsset {
                 name: "DUNavigator_0.2.0_universal.dmg".into(),
@@ -359,8 +383,10 @@ mod tests {
         } else if cfg!(target_os = "windows") {
             assert_eq!(picked.as_deref(), Some("https://example/exe"));
         } else {
-            // Linux: an .AppImage or .deb (the picker prefers an arch/universal-tagged asset — the
-            // x86_64 AppImage on an x86_64 runner — else the first extension match).
+            // On Linux, the code selects a .AppImage file or a .deb file. It first looks for an
+            // asset with this architecture or the word "universal" in its name. One example is the
+            // x86_64 AppImage on an x86_64 runner. If it finds none, it takes the first file with
+            // a correct extension.
             assert!(matches!(
                 picked.as_deref(),
                 Some("https://example/appimage") | Some("https://example/deb")

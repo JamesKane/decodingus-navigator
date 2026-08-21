@@ -1,8 +1,13 @@
-//! One-off placement debug for a vendor Y VCF (FTDNA Big Y / YSEQ / Full Genomes): parse the VCF's
-//! chrY calls, place them on the FTDNA tree, and print the terminal + lineage. Mirrors the app's
-//! `place_chip_panel` (score → path_admissible → deepen_terminal) without the store/network.
+//! A one-off debug of a placement, for a Y VCF from a vendor: an FTDNA Big Y, a YSEQ test, or a
+//! Full Genomes test.
 //!
-//!   cargo run --release --example place_y_vcf -p navigator-analysis -- <variants.vcf> <tree.json>
+//! It parses the chrY calls of the VCF, places them on the FTDNA tree, and prints the terminal and
+//! the lineage. It follows the same path as `place_chip_panel` in the app, which is `score`, then
+//! `path_admissible`, then `deepen_terminal`. It uses no store and no network.
+//!
+//! ```text
+//! cargo run --release --example place_y_vcf -p navigator-analysis -- <variants.vcf> <tree.json>
+//! ```
 
 use std::collections::HashMap;
 use std::path::Path;

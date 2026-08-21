@@ -10,7 +10,7 @@ use crate::brief::{LineageBrief, SubjectBrief};
 /// guardrails have a single reviewed source. It carries the facts-only / no-new-claims / no-health /
 /// preserve-uncertainty rules — but **no output-format** rules (those differ: narration writes a
 /// story, Q&A answers a question). The explicit "no medical disclaimers" clause matters: a model
-/// that volunteers a "this isn't medical advice" hedge trips the post-generation [`mentions_health`]
+/// that volunteers a "this is not medical advice" hedge trips the post-generation [`mentions_health`]
 /// guard and gets its otherwise-fine answer replaced by the deflection.
 fn grounding_rules() -> String {
     "Stay grounded in the facts given in the user message. You may interpret, connect, and add \

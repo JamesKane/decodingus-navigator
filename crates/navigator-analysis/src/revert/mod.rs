@@ -1,39 +1,44 @@
-//! Revert an aligned BAM/CRAM back to the unaligned reads it was built from — stage A of the
-//! realignment pipeline (`documents/design/realignment-module.md`).
+//! Turn an aligned BAM or CRAM back into the unaligned reads that made it. This is stage A of the
+//! realignment pipeline. See `documents/design/realignment-module.md`.
 //!
-//! This is the GATK `RevertSam` + `SamToFastq` / `samtools collate | fastq` job, in Rust on
-//! noodles. It is deliberately **backend-agnostic**: nothing here knows which mapper the reads are
-//! headed for, so it is worth having even if the aligner decision changes underneath it.
+//! It is the job of GATK `RevertSam` plus `SamToFastq`, or of `samtools collate | fastq`, in Rust
+//! and on noodles. It does not know about any backend, and that is deliberate. Nothing here knows
+//! which mapper the reads go to, so it holds its value even if somebody changes the aligner under
+//! it.
 //!
 //! ## Why this is the hard part
 //!
-//! Recovering the original reads from a coordinate-sorted alignment is not a filter, it is a
-//! regrouping. Four things make it awkward:
+//! To recover the original reads from an alignment in coordinate order is not a filter. It is a
+//! regroup. Four things make it awkward:
 //!
-//! 1. **Mates are far apart.** In coordinate order a read and its mate can sit gigabases away, so
-//!    pairing requires grouping by name. A read-name→record hash map is not an option at WGS scale
-//!    (~10⁹ records), so [`collate`] does a disk-backed external merge sort instead: fill a memory
-//!    budget, sort, spill a run, then k-way merge the runs back. Memory stays flat and bounded
-//!    regardless of input size, which is the whole point.
-//! 2. **Aligners rewrite the read.** A reverse-strand alignment stores SEQ and QUAL
-//!    reverse-complemented relative to the sequencer's output, so both must be restored.
-//! 3. **Only primaries carry the full read.** Secondary and supplementary records are dropped;
-//!    supplementaries are typically hard-clipped, meaning sequence has already been discarded.
-//! 4. **Unmapped reads must survive.** They are not an edge case to tolerate — reads that failed to
-//!    map on GRCh38 are exactly the ones that may land in CHM13-resolved sequence, so they are the
-//!    realignment payoff and have to reach the FASTQ.
+//! 1. **A read and its mate are far apart.** In coordinate order they can sit gigabases from each
+//!    other, so the code can rebuild the pair only from a group by name. At WGS scale, which is
+//!    about 10⁹ records, a hash map from a read name to a record is not possible. So [`collate`]
+//!    does an external merge sort on disk. It fills a memory budget, sorts, spills a run, and
+//!    merges the runs back k at a time. The memory then stays flat at any input size.
+//! 2. **An aligner rewrites the read.** A reverse-strand alignment stores SEQ and QUAL as the
+//!    reverse complement of what the sequencer gave, so the code must restore both.
+//! 3. **Only a primary record carries the full read.** The code drops a secondary record and a
+//!    supplementary one. A supplementary record usually carries a hard clip, which means that the
+//!    aligner already threw sequence away.
+//! 4. **An unmapped read must survive.** It is not an edge case to accept. A read that did not map
+//!    on GRCh38 is exactly the read that may land in sequence that CHM13 resolves. Those reads are
+//!    the gain of the whole realignment, and they must reach the FASTQ.
 //!
 //! ## What comes out
 //!
-//! Paired FASTQ (`_1.fastq` / `_2.fastq`, kept in lockstep) plus a singletons file for anything
-//! that did not pair — an unpaired library, a mate whose partner was dropped, or a read whose
-//! flags disagree with themselves. Read names are written bare, without `/1` and `/2` suffixes,
-//! matching `samtools fastq`: the pairing is carried by file position, and suffixes confuse some
-//! downstream tools more than they help.
+//! Paired FASTQ, as `_1.fastq` and `_2.fastq`, and the two stay in step. A file of singletons sits
+//! beside them, for anything with no pair. That covers a library with no pairs, a mate whose
+//! partner the code dropped, and a read whose flags disagree with themselves.
 //!
-//! uBAM output (which would preserve `@RG` per-read rather than only in the header) is the other
-//! option the design records; FASTQ is the default because every aligner takes it. The writer is
-//! isolated in [`writer`] so a uBAM sibling can be added without disturbing collation.
+//! The read names go out bare, with no `/1` and `/2` at the end, as `samtools fastq` writes them.
+//! The position in the file says which two reads make a pair, and those suffixes confuse some
+//! later tools more than they help.
+//!
+//! The design records one other option: a uBAM output, which would keep the `@RG` at each read,
+//! and not in the header alone. FASTQ is the default, because every aligner takes it. [`writer`]
+//! holds the writer on its own, so a uBAM writer can go beside it, and the collation does not
+//! change.
 
 mod collate;
 mod transform;
@@ -51,17 +56,19 @@ use crate::reader;
 // not: it is the private reason-code that pairs with `revert_record`, which stays internal.
 pub use transform::{Mate, RevertedRead};
 
-/// How often the record loop asks whether it has been cancelled. Frequent enough that a click
-/// feels immediate, rare enough that the atomic load never shows up in a profile — the same
-/// reasoning as the other walkers (see [`crate::cancel`]).
+/// How often the record loop asks whether somebody cancelled it. It asks often enough that a click
+/// feels immediate, and rarely enough that the atomic load never shows in a profile. That is the
+/// same reasoning as in the other walkers. See [`crate::cancel`].
 const CANCEL_CHECK_INTERVAL: u64 = 4096;
 
 /// What to do with a **primary** record whose CIGAR contains a hard clip.
 ///
-/// Hard clipping means the aligner discarded sequence from the record, so the read cannot be fully
-/// recovered. Mainstream aligners hard-clip only supplementary records (which we drop anyway), but
-/// some pipelines emit hard-clipped primaries, and emitting those as if whole would silently feed
-/// a truncated read to the mapper.
+/// A hard clip means that the aligner threw sequence away from the record, so nothing can recover
+/// the whole read.
+///
+/// A mainstream aligner puts a hard clip on a supplementary record alone, and the code drops those
+/// in any case. But some pipelines give a primary record with a hard clip. To emit such a record
+/// as if it were whole would give the mapper a short read, and nobody would see it happen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HardClipPolicy {
     /// Drop the read and count it. The default: a missing read is visible in the stats, whereas a
@@ -73,10 +80,11 @@ pub enum HardClipPolicy {
     Emit,
 }
 
-/// Tuning for [`revert_alignment`].
+/// The controls of [`revert_alignment`].
 #[derive(Debug, Clone)]
 pub struct RevertParams {
-    /// Bytes of reverted reads held in memory before a sorted run is spilled to scratch.
+    /// How many bytes of reverted reads stay in memory before the code spills a sorted run to the
+    /// scratch space.
     pub sort_buffer_bytes: usize,
     /// Treatment of hard-clipped primary records.
     pub hard_clipped: HardClipPolicy,
@@ -85,11 +93,12 @@ pub struct RevertParams {
 }
 
 impl Default for RevertParams {
-    /// The collator is sized from the machine by the same rule as the coordinate sort — see
-    /// [`navigator_resource::spill_budget`], which also documents `NAVIGATOR_REVERT_SORT_MB`. The
-    /// constant this replaced was 256 MB, described as keeping the run count low for a WGS; at
-    /// ~340 bytes a reverted read that is a run every million reads, so a 30x WGS spilled several
-    /// hundred of them and the merge opened every one.
+    /// The size of the collator comes from the machine, by the same rule as the coordinate sort.
+    /// See [`navigator_resource::spill_budget`], which also documents `NAVIGATOR_REVERT_SORT_MB`.
+    ///
+    /// The constant before it was 256 MB, and its comment gave the reason: it kept the run count
+    /// low for a WGS. A reverted read is about 340 bytes, so 256 MB is one run in every million
+    /// reads. A 30x WGS then spilled some hundreds of runs, and the merge opened every one.
     fn default() -> Self {
         Self {
             sort_buffer_bytes: navigator_resource::spill_budget("NAVIGATOR_REVERT_SORT_MB") as usize,
@@ -99,29 +108,34 @@ impl Default for RevertParams {
     }
 }
 
-/// What the revert did, for the job log and for the honest reporting the design asks for.
+/// What the revert did. It goes into the job log, and into the honest report that the design asks
+/// for.
 ///
-/// Every count here exists because something was *dropped or changed*; a revert that silently
-/// loses reads is the failure mode this whole struct is here to make impossible.
+/// Every count here exists because the code *dropped or changed* something. A revert that loses
+/// reads where nobody sees it is the failure that this whole struct makes impossible.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RevertStats {
-    /// Records seen in the input, before any filtering.
+    /// The count of records in the input, before any filter.
     pub records_read: u64,
     /// Secondary alignments dropped (`0x100`).
     pub secondary_dropped: u64,
     /// Supplementary alignments dropped (`0x800`).
     pub supplementary_dropped: u64,
-    /// Primary records dropped or truncated because of hard clipping, per [`HardClipPolicy`].
+    /// The count of primary records that the code dropped or cut short because of a hard clip.
+    /// [`HardClipPolicy`] decides which.
     pub hard_clipped: u64,
-    /// Records dropped for having no sequence at all (`SEQ` = `*`) — nothing to revert.
+    /// The count of records that the code dropped because they hold no sequence at all, where
+    /// `SEQ` is `*`. There is nothing to revert.
     pub no_sequence_dropped: u64,
-    /// Records whose qualities were absent (`QUAL` = `*`) and were therefore **synthesized** at a
-    /// flat phred 40. The reads are kept because a read with no qualities is still mappable, but
-    /// the qualities that come out are invented and this count is how that stays visible.
+    /// The count of records that carried no qualities, where `QUAL` is `*`, and for which the code
+    /// **made** a flat phred 40. It keeps those reads, because a mapper can still map a read with
+    /// no qualities. But the code invents the qualities that come out, and this count is what
+    /// keeps that visible.
     pub qualities_synthesized: u64,
-    /// Records whose qualities came from the `OQ` tag rather than `QUAL`.
+    /// The count of records whose qualities came from the `OQ` tag, and not from `QUAL`.
     pub original_qualities_used: u64,
-    /// Reads that were unmapped in the input (`0x4`) — the realignment payoff; see the module docs.
+    /// The count of reads that had no mapping in the input, at flag `0x4`. Those are the gain of
+    /// the realignment. See the module documentation.
     pub unmapped_reads: u64,
     /// Reads written across all three output files.
     pub reads_emitted: u64,
@@ -144,9 +158,9 @@ pub struct RevertOutput {
 
 /// Revert `path` (BAM or CRAM) into paired FASTQ under `out_dir`.
 ///
-/// `reference` is required for CRAM and ignored for BAM, matching [`reader::open_seq`]. `out_dir`
-/// receives the three FASTQ files and is also used for the sort's spill files, which are removed
-/// before returning.
+/// A CRAM needs `reference`, and a BAM ignores it, as in [`reader::open_seq`]. The three FASTQ
+/// files go into `out_dir`. The spill files of the sort go there too, and the code removes those
+/// before it returns.
 pub fn revert_alignment(
     path: &Path,
     reference: Option<&Path>,
@@ -161,8 +175,9 @@ pub fn revert_alignment(
 
 /// The container-independent core of [`revert_alignment`], over any source of records.
 ///
-/// Split out so the pipeline can be tested on hand-built records without writing BAM fixtures —
-/// the file-format layer is [`reader`]'s job and is already covered there.
+/// It is separate so that a test can run the pipeline on records that somebody built by hand, and
+/// write no BAM fixture. The layer that reads a file format is the job of [`reader`], and the
+/// tests there already cover it.
 pub fn revert_records(
     records: impl Iterator<Item = Result<RecordBuf, AnalysisError>>,
     out_dir: &Path,
