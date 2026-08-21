@@ -1,10 +1,13 @@
 //! Dump the archaic **diagnostic** sites (position, derived base, lineage class) as TSV.
 //!
-//! Written to test a different observable for the Tier B HMM. The current model counts *all*
-//! private variants per window, and that signal is weak: measured on a real European, archaic
-//! tracts carry only 2.89x the background density while the background itself varies 5.3x between
-//! its 10th and 90th percentile. Restricting the observable to sites where the derived allele is
-//! actually known to be archaic should be far more specific.
+//! Somebody wrote this to test a different observable for the Tier B HMM.
+//!
+//! The current model counts *all* of the private variants in each window, and that signal is weak.
+//! A measurement on a real European showed it. An archaic tract carries only 2.89x the background
+//! density. And the background itself changes by 5.3x, between its 10th and 90th percentile.
+//!
+//! Take an observable that holds only the sites where the derived allele is archaic, and that
+//! nobody doubts. That observable must be far more specific.
 //!
 //! ```sh
 //! cargo run --release -p navigator-analysis --example archaic_classify_dump -- \

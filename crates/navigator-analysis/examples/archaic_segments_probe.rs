@@ -1,8 +1,12 @@
-//! Development harness: run the Tier B segment caller on cached diploid calls.
+//! A harness for development. It runs the Tier B segment caller on cached diploid calls.
 //!
-//! The threshold sweep this also carried has been removed — its output is recorded in the design
-//! doc (M3 calibration) and the winning values are the `ArchaicConfig` defaults.
-//!   archaic_segments_probe <calls.json> <outgroup.bin> <classify.bin> <callable.bin>
+//! This tool once also swept the thresholds, and that sweep is gone. Its output sits in the design
+//! document, under the M3 calibration, and the values that won are the defaults of
+//! `ArchaicConfig`.
+//!
+//! ```text
+//! archaic_segments_probe <calls.json> <outgroup.bin> <classify.bin> <callable.bin>
+//! ```
 use navigator_analysis::archaic::{ArchaicCallable, ArchaicClassify, ArchaicOutgroup};
 use navigator_analysis::archaic_segments::{call_archaic_segments, ArchaicConfig};
 use navigator_analysis::caller::SiteGenotype;

@@ -1,8 +1,9 @@
-//! Count records by SAM flag class in a BAM — primary, secondary, supplementary, unmapped.
+//! Count the records of a BAM by their class of SAM flag: primary, secondary, supplementary, and
+//! unmapped.
 //!
-//! A realigned alignment should hold roughly one primary per input read. When it holds several
-//! times that, the extra records are the mapper's alternative placements, and the census says so
-//! in a line instead of leaving a suspicious record count to be argued about.
+//! A realigned alignment must hold about one primary record for each input read. When it holds some
+//! times that count, the extra records are the alternative placements that the mapper chose. This
+//! census says so in one line. Without it, a record count that looks wrong leads to an argument.
 //!
 //! ```sh
 //! BAM=~/.decodingus/realigned/alignment-8.chm13v2.0.bam \

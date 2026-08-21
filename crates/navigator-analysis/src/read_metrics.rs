@@ -1,10 +1,14 @@
-//! Read-level metrics walker — Rust port of the Scala `UnifiedMetricsWalker`
-//! (replaces GATK `CollectAlignmentSummaryMetrics` + `CollectInsertSizeMetrics`,
-//! no R dependency). Single pass over the BAM collects alignment-summary counts,
-//! read-length and insert-size distributions, pair orientation, and mean MAPQ.
+//! The walker over the metrics at the read level. It is the Rust port of the Scala
+//! `UnifiedMetricsWalker`, and it replaces GATK `CollectAlignmentSummaryMetrics` and
+//! `CollectInsertSizeMetrics`. It needs no R.
 //!
-//! Parity target is the Scala walker. Primary metrics exclude secondary/supplementary
-//! records; insert size is taken from first-of-pair proper pairs only (no double count).
+//! One pass over the BAM collects four things. The counts of the alignment summary. The
+//! distributions of the read length and the insert size. The orientation of a pair. And the mean
+//! MAPQ.
+//!
+//! The parity target is the Scala walker. The primary metrics leave out a secondary record and a
+//! supplementary one. The insert size comes from a correct pair, and from its first read alone, so
+//! nothing counts twice.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -70,11 +74,13 @@ pub struct ReadMetrics {
 }
 
 impl ReadMetrics {
-    /// Exact total sequenced yield in base pairs — `Σ length × count` over the read-length
-    /// histogram. This is the DTC "Gbases" figure (`/ 1e9`) for the standardized test label. Falls
-    /// back to `total_reads × mean_read_length` when the histogram is empty (e.g. a flagstat sidecar
-    /// carries no distribution), which is exact only for fixed-length short reads. `None` when
-    /// neither is available.
+    /// The exact total yield of the sequencing run, in base pairs. It is `Σ length × count` over
+    /// the read-length histogram. Divided by 1e9, it is the "Gbases" figure that a DTC label
+    /// carries.
+    ///
+    /// It falls back to `total_reads × mean_read_length` when the histogram is empty, which
+    /// happens when a flagstat sidecar carries no distribution. That fallback is exact only for a
+    /// short read of fixed length. It is `None` when neither value is there.
     pub fn total_bases(&self) -> Option<i64> {
         if !self.read_length_histogram.is_empty() {
             let sum: u128 = self
@@ -116,9 +122,10 @@ impl DistAccum {
         self.count += 1;
     }
 
-    /// Fold another accumulator in (for the parallel per-contig merge). All fields are
-    /// commutative sums / set-min-max / histogram unions, so the merged distribution is
-    /// independent of how records were partitioned across contigs.
+    /// Fold another accumulator into this one, for the merge of the parallel walk over the
+    /// contigs. Every field is a sum that commutes, a minimum or maximum, or a union of two
+    /// histograms. So the merged distribution does not depend on how the code split the records
+    /// across the contigs.
     fn merge(&mut self, other: DistAccum) {
         for (value, count) in other.hist {
             *self.hist.entry(value).or_insert(0) += count;
@@ -167,7 +174,7 @@ fn median_from_hist(hist: &BTreeMap<u32, u64>, total: u64) -> f64 {
     last
 }
 
-/// Single pass over the BAM collecting read-level metrics.
+/// One pass over the BAM. It collects the metrics at the read level.
 pub fn collect_read_metrics(bam_path: &Path, reference: Option<&Path>) -> Result<ReadMetrics, AnalysisError> {
     let (header, mut reader) = reader::open_seq(bam_path, reference)?;
     let mut state = ReadMetricsState::default();
@@ -177,9 +184,12 @@ pub fn collect_read_metrics(bam_path: &Path, reference: Option<&Path>) -> Result
     Ok(state.finish())
 }
 
-/// Read-level metrics accumulator shared by the standalone walker and the fused
-/// [`crate::unified`] walker (one source of truth → byte-identical numbers). Feed every
-/// record via [`ReadMetricsState::accept`], then call [`ReadMetricsState::finish`].
+/// The accumulator of the metrics at the read level. The separate walker and the fused
+/// [`crate::unified`] walker share it. There is one source of truth, and the numbers of the two
+/// match to the last digit.
+///
+/// Give every record to [`ReadMetricsState::accept`], and then call
+/// [`ReadMetricsState::finish`].
 #[derive(Default)]
 pub(crate) struct ReadMetricsState {
     total_reads: u64,
@@ -198,9 +208,10 @@ pub(crate) struct ReadMetricsState {
 }
 
 impl ReadMetricsState {
-    /// Fold another state in (parallel per-contig + unmapped-sweep merge). Every field is a
-    /// commutative count / histogram union, so the result equals a single sequential pass
-    /// regardless of how records were split across contigs.
+    /// Fold another state into this one. The merge of the parallel walk over the contigs, and of
+    /// the sweep over the unmapped reads, both use it. Every field is a count that commutes, or a
+    /// union of two histograms. So the result equals that of one sequential pass, at any split of
+    /// the records across the contigs.
     pub(crate) fn merge(&mut self, other: ReadMetricsState) {
         self.total_reads += other.total_reads;
         self.pf_reads += other.pf_reads;
@@ -317,7 +328,8 @@ fn ratio(num: u64, den: u64) -> f64 {
     }
 }
 
-/// Pair orientation from a first-of-pair proper pair, mirroring the Scala logic.
+/// The orientation of a pair, from the first read of a correct pair. It follows the same logic as
+/// the Scala code.
 fn detect_orientation(record: &impl AlnRead) -> PairOrientation {
     let read_neg = record.flags().is_reverse_complemented();
     let mate_neg = record.flags().is_mate_reverse_complemented();

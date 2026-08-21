@@ -1,9 +1,14 @@
-//! Dump per-read detail at a site so we can see *why* a marginal pileup is ambiguous — the input to
-//! designing v2 active-region read selection. For each spanning read: query name, mate/pair flags,
-//! MAPQ, the base + base-quality it carries at the site, and its mismatch count vs the reference
-//! window (excluding the site itself).
+//! Write out the detail of each read at a site, so that a person can see *why* a marginal pileup is
+//! ambiguous. That is the input to the design of the v2 selection of reads in an active region.
 //!
-//!   cargo run --release --example site_reads -p navigator-analysis -- <bam/cram> <ref.fa> chrY <pos> [win=40]
+//! At each read that covers the site it gives six things. The query name. The flags of the mate
+//! and the pair. The MAPQ. The base at the site, and the quality of that base. And the count of
+//! mismatches against the reference window, which leaves the site itself out.
+//!
+//! ```text
+//! cargo run --release --example site_reads -p navigator-analysis -- \
+//!   <bam/cram> <ref.fa> chrY <pos> [win=40]
+//! ```
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -53,7 +58,8 @@ fn main() {
             .unwrap_or_default();
         let mapq = rec.mapping_quality().map_or(255, |m| m.get());
 
-        // Walk the CIGAR: capture the base at `pos` and count mismatches vs ref (excluding `pos`).
+        // Walk the CIGAR. Take the base at `pos`, and count the mismatches against the reference.
+        // That count leaves `pos` out.
         let mut ref_pos = start;
         let mut qoff = 0usize;
         let mut site_base = '.';

@@ -1,13 +1,16 @@
 //! End-to-end revert over real containers, against `paired.bam` / `paired.cram`.
 //!
-//! The unit tests in `src/revert/tests.rs` drive records directly; this closes the remaining gap —
-//! that the same pipeline works when the records come out of an actual BAM or CRAM decode.
+//! The unit tests in `src/revert/tests.rs` give the records directly. This test closes the gap
+//! that they leave: the same pipeline must work when the records come out of a real BAM or CRAM
+//! decode.
 //!
-//! `paired.bam` is a good fixture for this by accident of how it was built: two FR pairs at
-//! chrM:1/31 and chrM:5/25, coordinate-sorted, so the file order is pairA, pairB, pairB, pairA and
-//! neither template's mates are adjacent. That is the exact condition collation exists for. The
-//! `/2` records carry flag 147, which includes `0x10`, so the reverse-complement restore runs on
-//! real decoded records too.
+//! `paired.bam` suits this by accident of how somebody built it. It holds two FR pairs, at chrM:1
+//! and 31, and at chrM:5 and 25, in coordinate order. The file order is then pairA, pairB, pairB,
+//! pairA, and the two mates of a template never sit beside each other. That is the exact condition
+//! that the collation exists for.
+//!
+//! The `/2` records carry flag 147, and that flag holds `0x10`. So the restore of the reverse
+//! complement also runs on real decoded records.
 
 use std::path::{Path, PathBuf};
 
@@ -59,16 +62,18 @@ fn reverts_a_coordinate_sorted_bam_into_synchronized_pairs() {
     assert_eq!([r1[0].as_str(), r1[4].as_str()], ["@pairA", "@pairB"]);
     assert_eq!([r2[0].as_str(), r2[4].as_str()], ["@pairA", "@pairB"]);
 
-    // The fixture's reads are poly-A stored forward on /1; the /2 records are flagged reverse, so
-    // what was stored as poly-A comes back as poly-T once restored to sequencer orientation.
+    // The reads of the fixture are poly-A, and the /1 records store them forward. The /2 records
+    // carry the reverse flag. What the file holds as poly-A comes back as poly-T, once the code
+    // restores the orientation of the sequencer.
     assert_eq!(r1[1], "AAAAAAAAAA", "/1 is forward, passed through");
     assert_eq!(r2[1], "TTTTTTTTTT", "/2 is reverse-flagged, so it is complemented back");
 }
 
 #[test]
 fn cram_reverts_identically_to_bam() {
-    // Same reads, different container: the revert must not be able to tell. CRAM needs the
-    // reference to decode, which is the one path difference worth covering.
+    // The same reads, in a different container. The revert must not be able to see a difference. A
+    // CRAM needs the reference to decode, and that is the one difference in the path that this
+    // test must cover.
     let dir = fixtures();
     let from_bam = revert_alignment(
         &dir.join("paired.bam"),
@@ -92,8 +97,8 @@ fn cram_reverts_identically_to_bam() {
     assert_eq!(lines(&from_cram.read2), lines(&from_bam.read2));
 }
 
-/// The same input reverted through a one-byte sort budget must produce the same FASTQ — on real
-/// decoded records, not just synthetic ones.
+/// The same input, through a sort budget of one byte, must give the same FASTQ. This holds on real
+/// decoded records, and not on synthetic ones alone.
 #[test]
 fn spilling_does_not_change_the_result_on_a_real_bam() {
     let bam = fixtures().join("paired.bam");

@@ -1,6 +1,7 @@
-//! SV caller orchestration — port of the Scala `SvCaller`: evidence collection ->
-//! depth segmentation -> clustering -> result. Artifact/VCF writing (`SvVcfWriter`) is
-//! deferred, like the coverage walker's BED output.
+//! The orchestration of the SV caller. It is the port of the Scala `SvCaller`. It collects the
+//! evidence, segments the depth, puts the evidence into groups, and gives a result. The write of an
+//! artifact or a VCF, which `SvVcfWriter` does, waits for later work, as the BED output of the
+//! coverage walker does.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -11,8 +12,9 @@ use crate::error::AnalysisError;
 
 const MERGE_MAX_GAP: i64 = 50_000;
 
-/// Run the full SV pipeline on a BAM or CRAM. Requires >= 10x mean coverage (Scala threshold).
-/// `reference` is required for CRAM (ignored for BAM) — see [`walker::collect_evidence`].
+/// Run the whole SV pipeline on a BAM or a CRAM. It needs a mean coverage of 10x or more, which is
+/// the threshold that the Scala code used. A CRAM needs `reference`, and a BAM ignores it. See
+/// [`walker::collect_evidence`].
 #[allow(clippy::too_many_arguments)]
 pub fn call_structural_variants(
     bam_path: &Path,

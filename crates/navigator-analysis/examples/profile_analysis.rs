@@ -1,9 +1,15 @@
-//! Profile the per-step analysis cost on a real BAM/CRAM to find batch-analysis hotspots.
-//! Times the walkers the deep-analyze pipeline drives, whole-genome vs targeted-Y scoped, and the
-//! sequential vs the parallel coverage path — plus a chrY region-query genotyping pass (the
-//! haplogroup step). Read-only; nothing persisted.
+//! Profile the cost of each analysis step, on a real BAM or CRAM, to find where a batch analysis
+//! spends its time.
 //!
-//!   cargo run --release --example profile_analysis -p navigator-analysis -- <bam|cram> <ref.fa>
+//! It times the walkers that the deep-analyze pipeline drives, over the whole genome and over a
+//! targeted-Y scope. It times the sequential coverage path against the parallel one. And it times
+//! a genotype pass over chrY through a region query, which is the haplogroup step.
+//!
+//! It only reads. It stores nothing.
+//!
+//! ```text
+//! cargo run --release --example profile_analysis -p navigator-analysis -- <bam|cram> <ref.fa>
+//! ```
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
@@ -56,8 +62,9 @@ fn main() {
             .err()
     });
 
-    // chrY haplogroup genotyping pass: a region query over chrY tallying ~200k target sites
-    // (representative of the Y tree's chrY loci) — the deep-analyze Y step's read pattern.
+    // The genotype pass of the chrY haplogroup step. It is a region query over chrY, and it
+    // tallies about 200k target sites. That count stands in for the chrY loci of the Y tree. The
+    // pattern of the reads matches the Y step of the deep analysis.
     let hp = HaploidCallerParams::default();
     let targets: HashSet<i64> = (1..=200_000u32).map(|i| i as i64 * 300).collect();
     timed("chrY genotyping  call_bases_at (200k sites)", || {

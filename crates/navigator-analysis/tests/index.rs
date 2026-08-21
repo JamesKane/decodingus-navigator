@@ -1,5 +1,6 @@
-//! Building a coordinate index (`.bai`/`.crai`) for a fixture that has none, and confirming the
-//! result makes the file region-queryable and matches the fixture's checked-in index.
+//! Build a coordinate index, a `.bai` or a `.crai`, for a fixture that has none. Then confirm two
+//! things: a region query on that file now works, and the index matches the one that the repo holds
+//! beside the fixture.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,7 +20,8 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// Copy just the alignment (not its sibling index) into `dir` so `ensure_index` has to build one.
+/// Copy the alignment into `dir`, and not the index that sits beside it. `ensure_index` must then
+/// build one.
 fn copy_without_index(name: &str, dir: &Path) -> PathBuf {
     let dst = dir.join(name);
     fs::copy(fixtures().join(name), &dst).unwrap();

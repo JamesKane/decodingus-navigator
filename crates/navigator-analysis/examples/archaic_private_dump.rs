@@ -1,11 +1,12 @@
-//! Dump the **private** variant positions the Tier B HMM actually sees — the subject's derived
-//! variants after the African-outgroup strip — so the input to the model can be checked against an
-//! external truth set independently of the model.
+//! Write out the **private** variant positions that the Tier B HMM sees. Those are the derived
+//! variants of the subject, after the code removes the ones that the African outgroup also carries.
+//! Somebody can then check the input of the model against an external truth set, and that check
+//! does not depend on the model.
 //!
-//! The segment caller is a density model over exactly these positions. If they are not enriched
-//! inside known archaic tracts, no amount of HMM tuning can help, and the fault is upstream in the
-//! variant calls or the outgroup strip rather than in the model. That question is unanswerable from
-//! the caller's own output, which is why this exists.
+//! The segment caller is a density model over exactly these positions. If they show no enrichment
+//! inside a known archaic tract, then no change to the HMM can help. The fault would lie earlier,
+//! in the variant calls or in the removal of the outgroup sites, and not in the model. The own
+//! output of the caller can not answer that question, and that is why this tool exists.
 //!
 //! ```sh
 //! cargo run --release -p navigator-analysis --example archaic_private_dump -- \
@@ -27,14 +28,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let calls: Vec<SiteGenotype> = serde_json::from_str(&std::fs::read_to_string(&calls_path)?)?;
     let og = ArchaicOutgroup::from_bytes(&std::fs::read(&og_path)?).map_err(|e| e.to_string())?;
 
-    // Group by contig, mirroring what the caller does before it strips.
+    // Put them into groups by contig, as the caller does before it removes the outgroup sites.
     let mut by_contig: std::collections::BTreeMap<String, Vec<&SiteGenotype>> = Default::default();
     for c in &calls {
         by_contig.entry(c.contig.clone()).or_default().push(c);
     }
 
-    // Quality columns come out too: whether the background's excess variance is real biology or
-    // this caller's own error rate varying by region is not answerable without them.
+    // The quality columns come out too. Without them, nobody can answer one question. Is the
+    // excess variance of the background real biology, or is it the own error rate of this caller,
+    // which changes from region to region?
     println!("contig\tposition\tdosage\tgq\tdepth");
     for (contig, mut sites) in by_contig {
         sites.sort_by_key(|s| s.position);

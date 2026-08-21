@@ -1,11 +1,15 @@
-//! Real-BAM test-type inference check (ignored by default; needs a local indexed BAM).
+//! A check of the test-type inference on a real BAM. It carries `#[ignore]`, and it needs a local
+//! indexed BAM.
 //!
-//! Run against a specific BAM:
-//!   TESTTYPE_BAM=/path/to.bam [TESTTYPE_PLATFORM=ILLUMINA] [TESTTYPE_VENDOR=FamilyTreeDNA] \
-//!     cargo test -p navigator-analysis --test testtype_real -- --ignored --nocapture
+//! Run it against one BAM:
 //!
-//! It prints the BAI-derived coverage profile + the inferred test-type code so a real Big Y / Y
-//! Elite / mtFull BAM can be confirmed positively and a WGS BAM negatively.
+//! ```text
+//! TESTTYPE_BAM=/path/to.bam [TESTTYPE_PLATFORM=ILLUMINA] [TESTTYPE_VENDOR=FamilyTreeDNA] \
+//!   cargo test -p navigator-analysis --test testtype_real -- --ignored --nocapture
+//! ```
+//!
+//! It prints the coverage profile from the BAI, and the test-type code that it inferred. A real
+//! Big Y, Y Elite or mtFull BAM must come out with that type, and a WGS BAM must not.
 
 use navigator_analysis::testtype::{coverage_profile_from_bai, infer_test_type};
 
@@ -19,7 +23,8 @@ fn print_inferred_test_type() {
     let platform = std::env::var("TESTTYPE_PLATFORM").ok();
     let vendor = std::env::var("TESTTYPE_VENDOR").ok();
 
-    // Show what the header probe scrapes (platform + vendor hint) — env overrides for testing.
+    // Show what the header probe takes out: the platform, and the hint about the vendor. An
+    // environment variable can override each one, for a test.
     let probe = navigator_analysis::probe::probe_alignment(std::path::Path::new(&bam)).ok();
     let probe_platform = probe.as_ref().and_then(|p| p.platform.clone());
     let probe_vendor = probe.as_ref().and_then(|p| p.vendor_hint.clone());

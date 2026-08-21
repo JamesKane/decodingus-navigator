@@ -1,11 +1,17 @@
-//! End-to-end validation of the **standalone** coverage path (`collect_coverage_callable`, the
-//! sequential walker that now consumes lazy `bam::Record` via `records_lazy`) against the trusted
-//! per-contig **parallel** walker, on a real BAM. Both produce a `CoverageResult`; the invariant is
-//! exact equality (the same one the `unified_matches_standalone_walkers` unit test asserts on a
-//! fixture — this runs it on a whole WGS).
+//! An end-to-end check of the **separate** coverage path against the **parallel** walker over the
+//! contigs, which this project trusts, on a real BAM.
 //!
-//!   cargo build --release --example validate_coverage -p navigator-analysis
-//!   ./target/release/examples/validate_coverage <bam> <reference.fa>
+//! The separate path is `collect_coverage_callable`. That sequential walker now reads a lazy
+//! `bam::Record`, through `records_lazy`.
+//!
+//! Both give a `CoverageResult`, and the invariant is that the two are exactly equal. The
+//! `unified_matches_standalone_walkers` unit test asserts the same thing on a fixture. This tool
+//! runs it over a whole WGS.
+//!
+//! ```text
+//! cargo build --release --example validate_coverage -p navigator-analysis
+//! ./target/release/examples/validate_coverage <bam> <reference.fa>
+//! ```
 
 use std::path::Path;
 use std::time::Instant;
@@ -50,7 +56,8 @@ fn main() {
     eprintln!("\nstandalone coverage done in {standalone_dur:.1?}");
     summarize("standalone", &standalone);
 
-    // 2. The oracle: trusted per-contig parallel walker on the same file.
+    // 2. The oracle. It is the parallel walker over the contigs, which this project trusts, on
+    //    the same file.
     let t1 = Instant::now();
     let progress2 = |_done: usize, _total: usize| {};
     let unified = match unified::collect_unified_metrics_parallel_with_progress(
@@ -71,7 +78,7 @@ fn main() {
     eprintln!("\nparallel walker done in {parallel_dur:.1?}");
     summarize("parallel ", &unified.coverage);
 
-    // 3. The invariant: byte-for-byte identical coverage.
+    // 3. The invariant. The two coverage results must match to the last byte.
     eprintln!("\n=== comparison ===");
     if standalone == unified.coverage {
         eprintln!("PASS — standalone == parallel (field-for-field identical)");

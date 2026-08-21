@@ -1,7 +1,13 @@
-//! STR convention calibration: run the caller on a corpus of Big Y kits (BAM + FTDNA DYS CSV each)
-//! and tabulate, per marker, the offset (ftdna − caller) distribution across kits — to classify each
-//! marker reliable / convention-offset / variable-exclude and measure callability.
-//! Usage: cargo run --release -p navigator-analysis --example str_calibrate -- <kits_dir> <hipstr.bed.gz>
+//! The calibration of the STR convention. It runs the caller over a corpus of Big Y kits, where
+//! each kit holds a BAM and an FTDNA DYS CSV. At each marker it tabulates the distribution of the
+//! offset, which is `ftdna − caller`, across the kits.
+//!
+//! That distribution puts each marker into a class: reliable, an offset of the convention, or too
+//! variable to use. It also measures how often the caller can call each marker.
+//!
+//! ```text
+//! cargo run --release -p navigator-analysis --example str_calibrate -- <kits_dir> <hipstr.bed.gz>
+//! ```
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
@@ -9,8 +15,9 @@ use navigator_analysis::strcaller::{genotype_str_loci, StrCallerParams, StrConfi
 use navigator_analysis::strmarker::{to_ftdna, MarkerStatus};
 use navigator_analysis::strref::{load_hipstr_contig, StrLocus};
 
-/// Find (csv, alignment) under a kit folder: a `*_DYS_Results*.csv` + an alignment, preferring the
-/// CHM13-realigned `.cram` (chrYM) over the original `.bam`.
+/// Find the `(csv, alignment)` pair under the folder of one kit. That is a `*_DYS_Results*.csv`,
+/// and an alignment. It takes the `.cram` that somebody realigned to CHM13, which holds chrYM,
+/// before the original `.bam`.
 fn kit_pair(dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut csv = None;
     let mut cram = None;
@@ -47,7 +54,8 @@ fn walkdir(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Parse the wide FTDNA DYS CSV (row1 names, row2 values; quoted, leading spaces, "-" = no call).
+/// Parse the wide DYS CSV of FTDNA. Row 1 holds the names, and row 2 holds the values. The fields
+/// carry quotation marks and spaces in front, and a `-` means a no-call.
 fn parse_ftdna(csv: &Path) -> HashMap<String, String> {
     let text = std::fs::read_to_string(csv).unwrap_or_default();
     let mut lines = text.lines();
@@ -129,9 +137,11 @@ fn main() {
             .filter(|g| g.confidence != StrConfidence::Low && g.alleles.len() == 1)
             .collect();
 
-        // QC: end-user-provided data may have a swapped BAM↔CSV. Fingerprint the kit on the markers
-        // strmarker already calls Reliable (offset 0): if ≥10 are comparable but <70% match this
-        // kit's own CSV, the alignment and the CSV are likely different people — exclude it.
+        // A QC step. Data that an end user gives can hold a BAM and a CSV that belong to two
+        // different people. So fingerprint the kit on the markers that strmarker already calls
+        // Reliable, at an offset of 0. Take a kit where 10 or more of those are comparable, and
+        // where fewer than 70% match its own CSV. The alignment and the CSV of that kit probably
+        // come from two people, so leave it out.
         let (mut rel_ok, mut rel_tot) = (0, 0);
         for g in &single {
             let cm = to_ftdna(&g.name, g.alleles[0]);
@@ -166,7 +176,7 @@ fn main() {
     }
     eprintln!("calibrated on {n_kits} kits ({n_skipped_swap} skipped as likely swaps, {n_panic} CRAM-decode panics)");
 
-    // Per-marker classification.
+    // The class of each marker.
     println!("\n# marker  n  callable_kits  modal_offset  agreement%  class");
     let mut markers: Vec<&String> = offsets.keys().collect();
     markers.sort();

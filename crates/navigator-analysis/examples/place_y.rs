@@ -1,7 +1,11 @@
-//! One-off placement debug: genotype a BAM at every Y-tree position and dump the ranked
-//! placement + what `deepen_terminal` returns + the calls along a named lineage.
+//! A one-off debug of a placement. It genotypes a BAM at every position of the Y tree. It then
+//! writes out the ranked placement, what `deepen_terminal` returns, and the calls along a lineage
+//! that you name.
 //!
-//!   cargo run --release --example place_y -p navigator-analysis -- <bam> <ref.fa> <tree.json> [FOCUS_NODE]
+//! ```text
+//! cargo run --release --example place_y -p navigator-analysis -- \
+//!   <bam> <ref.fa> <tree.json> [FOCUS_NODE]
+//! ```
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -75,7 +79,8 @@ fn main() {
         println!("\nfirst admissible start = {sname}; deepen_terminal -> {tname}");
     }
 
-    // Walk root->focus and print the call state of each node's defining SNPs.
+    // Walk from the root to the focus node. At each node, print the call state of the SNPs that
+    // define it.
     let byname: std::collections::HashMap<&str, i64> = tree.nodes.values().map(|n| (n.name.as_str(), n.id)).collect();
     if let Some(&fid) = byname.get(focus.as_str()) {
         let mut parent = std::collections::HashMap::new();

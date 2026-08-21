@@ -1,11 +1,17 @@
-//! Haploid caller tests against the shared coverage fixture (tests/fixtures).
+//! Tests of the haploid caller, against the coverage fixture that the tests share, in
+//! tests/fixtures.
 //!
-//! The fixture's reads are all `A` over reference chrM = `ACGTACGT...` (N at 25):
-//!   pos 1-10   depth 4  MAPQ 60  -> pass filters, consensus A
-//!   pos 11-20  depth 2  MAPQ 60  -> below min_depth 4
-//!   pos 26-30  depth 5  MAPQ 0   -> dropped by min_mapping_quality 20
-//! With default params, de-novo calls land only at 1-10 where ref != A:
-//!   ref bases 1..10 = A C G T A C G T A C  ->  SNPs at {2,3,4,6,7,8,10}.
+//! Every read of that fixture is `A`, over the reference chrM, which is `ACGTACGT...` with an N at
+//! 25:
+//!
+//! ```text
+//! pos 1-10   depth 4  MAPQ 60  -> passes the filters, consensus A
+//! pos 11-20  depth 2  MAPQ 60  -> below the min_depth of 4
+//! pos 26-30  depth 5  MAPQ 0   -> the min_mapping_quality of 20 drops it
+//! ```
+//!
+//! With the default parameters, a de-novo call lands only at 1 to 10, where the reference base is
+//! not `A`. Those bases are A C G T A C G T A C, so the SNPs are at {2,3,4,6,7,8,10}.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -79,7 +85,7 @@ fn force_call_genotypes_known_sites() {
     )
     .expect("force-call should succeed");
 
-    // indel + off-contig are dropped; 5 SNP sites remain.
+    // The code drops the indel and the site off the contig. 5 SNP sites stay.
     assert_eq!(calls.len(), 5);
     let by_name: std::collections::HashMap<&str, &_> = calls.iter().map(|c| (c.name.as_str(), c)).collect();
 
@@ -142,7 +148,7 @@ fn private_set_subtracts_known_tree_positions() {
     )
     .unwrap();
 
-    // Pretend positions 2 and 3 are known tree sites.
+    // This test treats positions 2 and 3 as known tree sites.
     let known: HashSet<i64> = [2, 3].into_iter().collect();
     let private = subtract_known(&calls, &known);
     assert_eq!(

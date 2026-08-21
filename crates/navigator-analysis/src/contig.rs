@@ -1,13 +1,17 @@
-//! Contig-name classification shared across walkers. Mirrors the Scala regexes:
-//! autosomes `^(chr)?([1-9]|1[0-9]|2[0-2])$`, plus X / Y / M|MT.
+//! The class of a contig name, which every walker shares. It follows the regular expressions of
+//! the Scala code: an autosome matches `^(chr)?([1-9]|1[0-9]|2[0-2])$`, and X, Y and M or MT are
+//! the others.
 //!
-//! Prefix stripping itself lives in [`navigator_domain::contig`] (every crate needs it, including
-//! ones below this one) and is re-exported here so callers have a single import for contig work.
-//! Classification is case-insensitive on both the prefix and the name (`chrx`, `Chr7`, `mt`).
+//! The removal of the prefix lives in [`navigator_domain::contig`], because every crate needs it,
+//! and that includes crates below this one. This module exports it again, so that a caller has one
+//! import for all of its work on a contig.
+//!
+//! The class does not depend on the case, of the prefix or of the name. `chrx`, `Chr7` and `mt` all
+//! work.
 
 pub use navigator_domain::contig::{bare, bare_upper};
 
-/// Autosome 1-22 (no leading zeros).
+/// An autosome, from 1 to 22. The number carries no zero in front.
 pub fn is_autosome(name: &str) -> bool {
     let c = bare(name);
     c.parse::<u32>()
@@ -33,9 +37,12 @@ pub fn is_main_assembly(name: &str) -> bool {
     is_autosome(name) || is_chr_x(name) || is_chr_y(name) || is_chr_m(name)
 }
 
-/// **Haploid** contigs: chrY and chrM/MT carry a single allele, so the diploid (het `0/1` +
-/// hom-alt `1/1`) model does not apply — the haploid caller and Y/mt haplogroup placement own them.
-/// (chrX is haploid only in a male; that is left to the sex-aware refinement, not decided here.)
+/// The **haploid** contigs. chrY, and chrM or MT, each carry one allele. So the diploid model, with
+/// its het `0/1` and hom-alt `1/1`, does not apply to them. The haploid caller owns them, and
+/// so does the placement of a Y or mt haplogroup.
+///
+/// chrX is haploid in a male alone. The refinement that knows the sex decides that, and this
+/// function does not.
 pub fn is_haploid(name: &str) -> bool {
     is_chr_y(name) || is_chr_m(name)
 }

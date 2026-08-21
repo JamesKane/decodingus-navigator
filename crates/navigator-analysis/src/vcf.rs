@@ -1,6 +1,9 @@
-//! Minimal VCF 4.2 writer for diploid genotype calls (the de-novo diploid caller + known-site
-//! genotyping output). Emits one variant record per [`SiteGenotype`] with `FORMAT GT:AD:DP:GQ:PL`.
-//! Records are written in the order given (the caller returns ascending position per contig).
+//! A small writer of VCF 4.2, for diploid genotype calls. It serves the de-novo diploid caller, and
+//! the output of a genotype run at known sites.
+//!
+//! It emits one variant record for each [`SiteGenotype`], with `FORMAT GT:AD:DP:GQ:PL`. The records
+//! go out in the order that the caller gave them. That caller returns each contig in order of the
+//! position, from the lowest up.
 
 use crate::caller::SiteGenotype;
 
@@ -36,8 +39,9 @@ pub fn write_diploid_vcf(sample: &str, calls: &[SiteGenotype]) -> String {
         } else {
             c.pls.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
         };
-        // Multiallelic sites carry an explicit GT string + per-allele AD; biallelic sites derive
-        // both from `dosage` / `ref_depth,alt_depth`.
+        // A site with more than two alleles carries an explicit GT string, and an AD for each
+        // allele. A site with two alleles gets both from `dosage`, and from `ref_depth` and
+        // `alt_depth`.
         let gt = c.gt.clone().unwrap_or_else(|| genotype_field(c.dosage).to_string());
         let ad = match &c.allele_depths {
             Some(d) => d.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
