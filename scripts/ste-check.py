@@ -131,6 +131,10 @@ ING_OK = {
     "operating", "genotyping", "reasoning", "pacing", "sampling", "scaling", "streaming", "spilling", "phasing",
     "binning", "masking", "trimming", "clipping", "calling", "sorting", "merging",
     "reading", "writing", "counting", "timing", "build", "backing", "copying", "loading",
+    # Read-mapping Technical Names from documents/STE-dictionary.md.
+    "chaining", "pairing",
+    # Nouns that only end in the three letters of the rule. "sibling" is not a form of "to sibl".
+    "sibling", "siblings",
     # Surnames in a citation. "Busing et al. 1999" is the jackknife paper, not a verb.
     "busing", "balding",
     # GangSTR's published read-class names.

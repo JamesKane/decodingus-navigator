@@ -1,4 +1,4 @@
-//! Index batch size — the memory control for the whole module.
+//! Index batch size: the memory control for the whole module.
 //!
 //! minimap2 splits a reference into index *parts* of at most `batch_size` bases (the CLI's `-I`).
 //! One part is resident at a time, so this single number decides peak RAM. Measured on CHM13v2
@@ -11,31 +11,33 @@
 //! | 400 Mbase | 8.7 GiB | — |
 //! | 200 Mbase | 7.5 GiB | — |
 //!
-//! Wall time was flat across all of them, so bounding memory here is close to free. Building one
-//! monolithic index is the failure mode to avoid — it is what made an early estimate conclude the
-//! module needed ~19 GB and could not run on a normal desktop.
+//! Wall time was flat across all of them, so a limit on memory here is almost free. One
+//! monolithic index is the failure mode to avoid. It is what made an early estimate say the module
+//! needed ~19 GB, and could not run on a normal desktop.
 //!
-//! **Bigger is better, within budget.** A split index costs a little MAPQ fidelity: a read's
-//! second-best hit can fall in another part and go uncounted, so MAPQ comes out slightly *too
-//! high* at multi-mapping loci (measured at 7 of 5,045 records against a ~5-part split, with every
-//! locus identical). So this picks the largest batch that fits, never the smallest that works.
+//! **Bigger is better, inside the budget.** A split index costs a little MAPQ fidelity. A read's
+//! second-best hit can fall in another part, where the count misses it. So MAPQ comes out a little
+//! *too high* at a locus with more than one hit. The measurement was 7 of 5,045 records against a
+//! ~5-part split, and every locus was identical. So this code chooses the largest batch that fits,
+//! and never the smallest one that works.
 //!
-//! ## Sizing itself
+//! ## How the code chooses the size
 //!
-//! [`BatchSize::for_this_machine`] reads the machine's physical memory and picks from the table
-//! above. This is the path the app should use: the target user clicks "Realign" and gets a job
-//! sized to their hardware, rather than being asked for a number in bases that nothing in their
-//! experience equips them to choose. A wrong answer here is not a preference, it is either an
-//! out-of-memory failure or a needlessly split index.
+//! [`BatchSize::for_this_machine`] reads the machine's physical memory and chooses from the table
+//! above. This is the path the app must use. The target user clicks "Realign" and gets a job that
+//! fits their hardware. Nobody asks them for a number in bases, because nothing in their
+//! experience prepares them to choose one. A wrong answer here is not a preference. It is an
+//! out-of-memory failure, or an index with more parts than it needs.
 //!
-//! It sizes from **total** memory, not currently-available memory, which is deliberate. The `.mmi`
-//! is cached and reused for every later job against that build, so a machine that happens to be
-//! busy at the moment of the first click would otherwise bake a more-split index — and its
-//! permanent MAPQ cost — into the cache. Available memory is still reported by
-//! [`detect_memory`], because deciding whether to start *right now* is a different question from
-//! how to build the artifact, and belongs to the preflight.
+//! It reads **total** memory, and not the memory that is free at that moment. That is deliberate.
+//! The cache keeps the `.mmi`, and every later job against that build uses it again. A machine
+//! that is busy at the moment of the first click would otherwise put an index with more parts into
+//! the cache. That index carries a permanent MAPQ cost.
+//!
+//! [`detect_memory`] still reports the free memory. The question "can the job start *right now*"
+//! belongs to the preflight. That is a different question from "how do we build the artifact".
 
-/// Bases per index part.
+/// Bases in each index part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BatchSize(u64);
 
@@ -67,9 +69,9 @@ impl MachineMemory {
 
 /// Read the machine's memory.
 ///
-/// `None` if the platform will not say — sysinfo supports every desktop target Navigator ships to,
-/// but reporting nothing is preferable to reporting a fabricated number that would then silently
-/// size a multi-hour job.
+/// `None` if the platform will not say. sysinfo supports every desktop target that Navigator
+/// ships to. But it is better to report nothing than to report an invented number. Such a number
+/// would then set the size of a multi-hour job, with no warning.
 pub fn detect_memory() -> Option<MachineMemory> {
     let mut system = sysinfo::System::new();
     system.refresh_memory();
@@ -87,13 +89,13 @@ pub fn detect_memory() -> Option<MachineMemory> {
 /// fit a 16 GB machine with room for the OS and the rest of the app.
 const DEFAULT_BASES: u64 = GBASE;
 
-/// "Do not split" — 8 Gbase, which is also minimap2's own default `batch_size`. Any human
-/// reference fits in one part at this size, so it expresses the intent without a magic sentinel,
-/// and it still renders as a real number wherever the choice is reported.
+/// "Do not split": 8 Gbase, which is also minimap2's own default `batch_size`. Any human
+/// reference fits in one part at this size. So the value shows the intent, and it is not a special
+/// sentinel. It also renders as a real number everywhere the code reports the choice.
 const UNSPLIT: u64 = 8 * GBASE;
 
-/// `NAVIGATOR_ALIGN_BATCH_MBASE`, in megabases — the escape hatch for unusual hardware, and how
-/// tests pin the value without depending on the machine they run on.
+/// `NAVIGATOR_ALIGN_BATCH_MBASE`, in megabases. This is the override for unusual hardware. It is
+/// also how tests pin the value, so that they do not depend on the machine they run on.
 fn env_override() -> Option<u64> {
     std::env::var("NAVIGATOR_ALIGN_BATCH_MBASE")
         .ok()
@@ -101,8 +103,8 @@ fn env_override() -> Option<u64> {
         .map(|mbase| mbase.saturating_mul(1_000_000).max(1_000_000))
 }
 
-/// The conservative default: honours the override, otherwise assumes a 16 GB desktop. Prefer
-/// [`BatchSize::for_this_machine`], which actually looks.
+/// The conservative default: it obeys the override, and if there is none it assumes a 16 GB
+/// desktop. Prefer [`BatchSize::for_this_machine`], which reads the machine.
 impl Default for BatchSize {
     fn default() -> Self {
         Self(env_override().unwrap_or(DEFAULT_BASES).max(1_000_000))
@@ -115,11 +117,11 @@ impl BatchSize {
         Self(bases.max(1_000_000))
     }
 
-    /// The batch size for the machine this is running on — the button-click path.
+    /// The batch size for the machine this code runs on. This is the button-click path.
     ///
-    /// Precedence, highest first: the `NAVIGATOR_ALIGN_BATCH_MBASE` override, then detected
-    /// physical memory, then the 16 GB-desktop default. The override comes first so a user on
-    /// unusual hardware, or a test, can pin the value without having to defeat the detector.
+    /// Precedence, highest first: the `NAVIGATOR_ALIGN_BATCH_MBASE` override, then the physical
+    /// memory that the code found, then the 16 GB-desktop default. The override comes first, so
+    /// that a user on unusual hardware, or a test, can pin the value and not defeat the detector.
     pub fn for_this_machine() -> Self {
         if let Some(bases) = env_override() {
             return Self(bases);
@@ -132,8 +134,8 @@ impl BatchSize {
 
     /// Why [`BatchSize::for_this_machine`] chose what it did, for a log line or a UI tooltip.
     ///
-    /// A realignment is a multi-hour job whose memory profile the user can not see; when it is
-    /// sized automatically, the sizing has to be inspectable rather than a mystery.
+    /// A realignment is a multi-hour job, and the user can not see its memory profile. The code
+    /// chooses the size without help, so the user must be able to see how it chose.
     pub fn explain() -> String {
         if let Some(bases) = env_override() {
             return format!(
@@ -174,37 +176,40 @@ impl BatchSize {
     /// The largest batch that fits a machine with `ram_gib` of physical memory, from the measured
     /// table in the module docs.
     ///
-    /// The thresholds leave headroom deliberately: the numbers in that table are the mapper's peak
-    /// alone, and a realignment job is also holding a sort buffer, the revert's scratch, and a
-    /// desktop application. Below 8 GiB nothing here is comfortable, so the smallest step is
-    /// offered rather than refusing outright — the preflight decides whether to proceed, not this.
+    /// The thresholds leave headroom on purpose. The numbers in that table are the peak of the
+    /// mapper alone. A realignment job also holds a sort buffer, the scratch of the revert, and a
+    /// desktop application. Below 8 GiB no value here is comfortable, so this code gives the
+    /// smallest step and does not refuse. The preflight decides whether to go on, and this does
+    /// not.
     pub fn for_ram_gib(ram_gib: u64) -> Self {
         let bases = match ram_gib {
             0..=7 => 200_000_000,
             8..=15 => 400_000_000,
             16..=31 => GBASE,
-            // Above 32 GiB a single part is affordable, and a whole index costs no MAPQ fidelity
-            // at all — the one thing splitting gives up. `UNSPLIT` rather than a saturating
-            // sentinel: this number reaches a log line and a UI tooltip, and "9223372036854
-            // Mbase" is not something to show a user who was promised a button.
+            // Above 32 GiB the machine can hold one part, and a whole index costs no MAPQ
+            // fidelity at all. MAPQ fidelity is the one thing a split index gives up. Use
+            // `UNSPLIT`, and not a sentinel at the top of the number range. This number reaches a
+            // log line and a UI tooltip. "9223372036854 Mbase" is not a thing to show a user who
+            // clicked one button.
             _ => UNSPLIT,
         };
         Self(bases)
     }
 
-    /// Whether a reference of `total_bases` will be split into more than one part — i.e. whether
-    /// the cross-part merge and its MAPQ caveat come into play at all.
+    /// True when a reference of `total_bases` needs more than one part. That is also when the
+    /// cross-part merge and its MAPQ caveat apply at all.
     pub fn splits(self, total_bases: u64) -> bool {
         total_bases > self.0
     }
 
-    /// An **upper bound** on how many parts `total_bases` will produce, for sizing a progress bar.
+    /// An **upper bound** on how many parts `total_bases` makes. Use it to set the length of a
+    /// progress bar.
     ///
-    /// Deliberately not exact. A part accumulates whole sequences until the running total
-    /// *exceeds* the batch, so parts overshoot by up to one sequence and the real count comes in
-    /// at or below this — measured, a 3 Mbase reference at a 1 Mbase batch yields 2 parts where
-    /// this returns 3. A progress bar that finishes early is fine; one that runs past its own
-    /// maximum is not.
+    /// It is not exact, on purpose. A part collects whole sequences until the total *goes above*
+    /// the batch. So a part overshoots by as much as one sequence, and the real count is this
+    /// number or less. The measurement: a 3 Mbase reference at a 1 Mbase batch makes 2 parts,
+    /// where this returns 3. A progress bar that ends early is acceptable. One that goes past its
+    /// own maximum is not.
     pub fn part_estimate(self, total_bases: u64) -> usize {
         if self.0 == 0 {
             return 1;
@@ -217,8 +222,8 @@ impl BatchSize {
 mod tests {
     use super::*;
 
-    /// The sizing table's whole purpose: a 16 GB desktop must land on a batch that fits it, and a
-    /// small machine must land on a smaller one.
+    /// The whole purpose of the table: a 16 GB desktop must land on a batch that fits it. A small
+    /// machine must land on a smaller batch.
     #[test]
     fn ram_maps_to_the_largest_batch_that_fits() {
         assert_eq!(BatchSize::for_ram_gib(8).bases(), 400_000_000);
@@ -244,8 +249,8 @@ mod tests {
     /// CHM13 is 3.1 Gbase; the default must split it (that is the point) into a handful of parts.
     #[test]
     fn the_default_splits_a_human_genome_into_a_few_parts() {
-        // Reads the environment, so it takes ENV_LOCK too — the guard is only worth anything if
-        // the readers hold it as well as the writers.
+        // This reads the environment, so it takes ENV_LOCK too. The guard has no value unless
+        // the readers hold it and the writers hold it.
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let chm13 = 3_100_000_000u64;
         let default = BatchSize::default();
@@ -260,16 +265,16 @@ mod tests {
         assert_eq!(b.part_estimate(50_000_000), 1);
     }
 
-    /// A zero or absurdly small batch would produce an unbounded part count and thrash; the floor
-    /// keeps a bad caller from turning the mapper into a no-op.
+    /// A batch of zero, or a very small batch, would make a part count with no limit, and the
+    /// machine would thrash. The floor stops a bad caller who would make the mapper do nothing.
     #[test]
     fn the_batch_size_has_a_floor() {
         assert!(BatchSize::new(0).bases() >= 1_000_000);
     }
 
-    /// Detection has to work on whatever machine this runs on — that is the entire point of taking
-    /// the dependency. The assertions are about plausibility rather than a specific number, since
-    /// the test can not know the host.
+    /// Detection must work on any machine this runs on. That is the whole reason for the
+    /// dependency. The assertions are about a plausible range, and not about a specific number,
+    /// because the test can not know the host.
     #[test]
     fn the_machine_reports_its_own_memory() {
         let memory = detect_memory().expect("every desktop target sysinfo supports reports memory");
@@ -286,8 +291,8 @@ mod tests {
         );
     }
 
-    /// The button-click path must always yield a usable batch, whatever the host, and must land on
-    /// a value the sizing table actually produces rather than something improvised.
+    /// The button-click path must always give a batch that works, on any host. It must also land
+    /// on a value that the table makes, and not on an improvised one.
     #[test]
     fn sizing_for_this_machine_lands_on_a_table_value() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -300,11 +305,11 @@ mod tests {
         assert_eq!(chosen, from_table, "detection and the table must agree");
     }
 
-    /// The override is the escape hatch for hardware the table does not suit, so it has to beat
-    /// detection rather than merely fill in for it.
+    /// The override is for hardware that the table does not suit, so it must win over detection.
+    /// It must not only fill in when detection gives nothing.
     ///
-    /// Serialized with the other env-reading test: `set_var` is process-global, and Rust runs tests
-    /// in threads by default.
+    /// This test runs in sequence with the other test that reads the environment: `set_var` is
+    /// process-global, and Rust runs tests in threads by default.
     #[test]
     fn the_env_override_beats_detection() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -331,8 +336,8 @@ mod tests {
         assert!(detected.contains("RAM") || detected.contains("default"), "{detected}");
     }
 
-    /// This string reaches a log line and a UI tooltip, so no branch of the sizing table may render
-    /// as a raw sentinel — the large-RAM case used to come out as "9223372036854 Mbase".
+    /// This string reaches a log line and a UI tooltip. So no branch of the table may render as a
+    /// raw sentinel. The large-RAM case used to come out as "9223372036854 Mbase".
     #[test]
     fn every_table_choice_describes_itself_readably() {
         for gib in [4u64, 8, 16, 24, 32, 64, 128, 512] {

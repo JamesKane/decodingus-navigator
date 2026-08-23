@@ -1,30 +1,30 @@
-//! Alignment output — SAM, BAM, or CRAM, through noodles.
+//! Alignment output: SAM, BAM, or CRAM, through noodles.
 //!
 //! ## Why this sits between the mapper and the file
 //!
-//! `minimap2-pure-rs` formats records as SAM *text* and nothing else. Two problems follow. Every
-//! downstream stage in Navigator reads BAM/CRAM through noodles, so SAM text would have to be
-//! converted somewhere anyway; and the paired fields the mapper does not fill in were being
-//! patched into that text by column position, which is fragile in a way that fails silently if the
-//! formatter's layout ever shifts.
+//! `minimap2-pure-rs` writes records as SAM *text* and nothing else. Two problems come from that.
+//! First, every downstream stage in Navigator reads BAM or CRAM through noodles, so something must
+//! convert the SAM text anyway. Second, the code patched the paired fields that the mapper does
+//! not fill into that text by column position. That is fragile, and it fails with no warning if
+//! the layout of the formatter ever moves.
 //!
-//! So each record makes one hop through a type: the mapper's line is parsed into a
-//! [`RecordBuf`], the paired fields are set on the *typed* record, and noodles writes it. The
-//! parse costs something, but the mapper's own formatting already allocates a string per record,
-//! and both are noise next to alignment itself — mapping a WGS is hours, serializing it is
-//! minutes. What it buys is that `RNEXT` can no longer be written into the `TLEN` column.
+//! So each record goes through a type one time. The code parses the mapper's line into a
+//! [`RecordBuf`], sets the paired fields on the *typed* record, and lets noodles write it. The
+//! parse has a cost. But the mapper already allocates a string for each record when it makes the
+//! SAM text. Both costs are small next to alignment itself: a WGS takes hours to map, and minutes
+//! to write. The gain is that `RNEXT` can no longer go into the `TLEN` column.
 //!
-//! The alternative — building records from `AlignReg` directly and skipping SAM text — was
-//! rejected on purpose. It would mean reimplementing CIGAR emission, clipping, `SEQ` orientation,
-//! and every tag, which is the delicate part of the mapper's output and exactly the code most
-//! worth *not* rewriting.
+//! There is an alternative: build records from `AlignReg` directly, and do not make SAM text at
+//! all. This module refuses that on purpose. It would need a new implementation of CIGAR emission,
+//! clipping, `SEQ` orientation, and every tag. That is the delicate part of the mapper's output,
+//! and it is the code this module most wants to leave alone.
 //!
 //! ## Which format
 //!
-//! **BAM is the right choice for this stage.** The mapper emits reads in input order, and CRAM's
-//! compression assumes coordinate-sorted, reference-adjacent records — writing it here would be
-//! both slow and large. CRAM belongs after the sort in stage C. It is supported anyway because
-//! the cost is one enum arm and callers past the sort will want it.
+//! **BAM is the right choice for this stage.** The mapper emits reads in input order. CRAM
+//! compression expects records in coordinate order, and near to the reference. CRAM here would be
+//! both slow and large. CRAM belongs after the sort, in stage C. This module still has a CRAM arm,
+//! because the cost is one enum arm, and a caller after the sort will want it.
 
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -38,26 +38,26 @@ use crate::error::AlignError;
 
 /// Write buffer under the container encoders.
 ///
-/// BGZF hands down ~64 KB blocks, so `BufWriter`'s 8 KB default coalesced nothing at all: this
-/// stage's output is the largest file the pipeline produces and it was reaching the disk in
-/// block-sized dribs. Matches the post-processing writers.
+/// BGZF hands down ~64 KB blocks, so the 8 KB default of `BufWriter` combined nothing at all.
+/// This stage writes the largest file in the pipeline, and it went to the disk in pieces the size
+/// of one block. This matches the writers in post-processing.
 const WRITE_BUFFER: usize = 1 << 20;
 
 /// On-disk container for the mapper's output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputFormat {
-    /// Uncompressed SAM text. Useful for tests and eyeballing; wasteful for a real run.
+    /// Uncompressed SAM text. Useful for tests and for a look by a person. Wasteful for a real run.
     Sam,
     /// The default, and what stage C expects to sort.
     #[default]
     Bam,
-    /// Reference-compressed. Needs `reference`, and really wants coordinate-sorted input, so it
-    /// belongs after the sort rather than here.
+    /// Reference-compressed. Needs `reference`, and needs input in coordinate order, so it
+    /// belongs after the sort and not here.
     Cram,
 }
 
 impl OutputFormat {
-    /// Guess from the file extension, defaulting to BAM.
+    /// Guess from the file extension. The default is BAM.
     pub fn from_path(path: &Path) -> Self {
         match path.extension().and_then(|e| e.to_str()) {
             Some(e) if e.eq_ignore_ascii_case("sam") => OutputFormat::Sam,
@@ -73,16 +73,18 @@ pub struct AlignmentWriter {
     inner: Inner,
 }
 
-/// Every arm writes through a [`PacedFile`], and that is not incidental.
+/// Every arm writes through a [`PacedFile`], and that is not an accident.
 ///
-/// This stage produces the pipeline's largest file — ~60 GB of `mapped.bam` for a 30x WGS — as fast
-/// as sixteen cores can compress it, and left to itself that goes into the page cache and becomes
-/// the operating system's problem to write back. On macOS it became everyone's problem: a
-/// realignment dirtied 549 GB of file-backed memory, exceeded the sustained write-back limit by
-/// 1.4x, and WindowServer's watchdog took the login session down with the job. Pacing caps what can
-/// be outstanding; the accounting is what makes the stage visible to
-/// [`navigator_resource::ResourceWatch`] at all, which until now reported `0 MB/s` through the
-/// longest stage in the job because the only writer it has was unwrapped.
+/// This stage makes the largest file in the pipeline: about 60 GB of `mapped.bam` for a 30x WGS.
+/// It writes as fast as sixteen cores can compress it. With no control, all of that goes into the
+/// page cache, and the write-back becomes the problem of the operating system. On macOS it became
+/// the problem of everybody. One realignment made 549 GB of file-backed memory dirty. It went 1.4x
+/// above the sustained write-back limit, and the watchdog of WindowServer took the login session
+/// down with the job.
+///
+/// The pacing puts a limit on how many bytes can wait. The count is what makes the stage visible
+/// to [`navigator_resource::ResourceWatch`] at all. Until now that watch reported `0 MB/s` through
+/// the longest stage in the job, because nothing wrapped the one writer it has.
 enum Inner {
     Sam(sam::io::Writer<BufWriter<PacedFile>>),
     Bam(bam::io::Writer<bgzf::io::MultithreadedWriter<BufWriter<PacedFile>>>),
@@ -92,9 +94,9 @@ enum Inner {
 impl AlignmentWriter {
     /// Open `path` and write the header.
     ///
-    /// `header_text` is the mapper's `@HD`/`@SQ`/`@RG`/`@PG` block, parsed here so the typed
-    /// header can be handed to the encoders — BAM stores reference names as indices into it, so
-    /// this is not merely decorative.
+    /// `header_text` is the mapper's `@HD`/`@SQ`/`@RG`/`@PG` block. This function parses it, so
+    /// that the encoders get a typed header. BAM stores reference names as indices into that
+    /// header, so the parse is not only decoration.
     pub fn create(
         path: &Path,
         format: OutputFormat,
@@ -110,10 +112,11 @@ impl AlignmentWriter {
                 Inner::Sam(w)
             }
             OutputFormat::Bam => {
-                // Threaded BGZF, because this is where the mapping stage's wall clock went. A
-                // profile of the stage attributes ~60% of the serial phase to zlib deflate —
-                // `longest_match` alone is a third of it — while sixteen cores wait for the next
-                // batch. Block compression parallelizes; the byte stream is unchanged.
+                // Threaded BGZF, because this is where the wall clock of the mapping stage went.
+                // A profile of the stage gives ~60% of the serial phase to zlib deflate, and
+                // `longest_match` alone is a third of that. Sixteen cores wait for the next batch
+                // while this happens. Block compression runs in parallel, and the byte stream does
+                // not change.
                 let inner = bgzf::io::MultithreadedWriter::with_worker_count(bgzf_worker_count(), paced(path)?);
                 let mut w = bam::io::Writer::from(inner);
                 w.write_header(&header).map_err(|e| AlignError::io(path, e))?;
@@ -124,8 +127,9 @@ impl AlignmentWriter {
                     AlignError::Message("CRAM output needs the reference FASTA it will be compressed against".into())
                 })?;
                 let repository = fasta_repository(reference)?;
-                // `build_from_writer`, not `build_from_path`: the latter opens the file itself, and
-                // an encoder holding its own raw `File` is exactly the writer that goes uncounted.
+                // `build_from_writer`, not `build_from_path`. The second one opens the file
+                // itself, and an encoder that holds its own raw `File` is exactly the writer that
+                // no counter sees.
                 let mut w = cram::io::writer::Builder::default()
                     .set_reference_sequence_repository(repository)
                     .build_from_writer(paced(path)?);
@@ -143,8 +147,8 @@ impl AlignmentWriter {
 
     /// Parse one SAM line from the mapper and hand it to `edit` before writing.
     ///
-    /// `edit` is where paired fields get set. It sees a typed record, so it can not write a value
-    /// into the wrong column — which was the entire failure mode this module removes.
+    /// `edit` is where the code sets the paired fields. It sees a typed record, so it can not
+    /// write a value into the wrong column. That was the whole failure mode this module removes.
     pub fn write_line_with(
         &mut self,
         line: &str,
@@ -166,21 +170,21 @@ impl AlignmentWriter {
         .map_err(|e| AlignError::io(path, e))
     }
 
-    /// Flush and close. CRAM in particular must be finished explicitly — its final container is
-    /// only written on shutdown, so a dropped writer yields a truncated file.
+    /// Flush and close. CRAM above all needs an explicit finish. It writes its final container
+    /// only on shutdown, so a writer that drops leaves a truncated file.
     ///
-    /// Each arm then syncs, which matters more here than it looks. A resumed realignment decides
-    /// whether it can pick this file up by checking for the BGZF end-of-file block on the end of it
-    /// (`navigator_analysis::postprocess::bamio::is_complete_bam`), and a marker still sitting in
-    /// the page cache is a promise the disk has not made. Getting that wrong once already cost a
-    /// 59 GB intermediate: a truncated file that looked complete was resumed past and the real one
-    /// deleted.
+    /// Each arm then syncs, which matters more here than it looks. A realignment that resumes
+    /// looks for the BGZF end-of-file block at the end of this file
+    /// (`navigator_analysis::postprocess::bamio::is_complete_bam`). That is how it decides whether
+    /// it can use the file. A marker that is still in the page cache is a promise the disk has not
+    /// made. This was wrong one time, and it cost a 59 GB intermediate. A truncated file looked
+    /// complete, the resume went past it, and the code deleted the real one.
     pub fn finish(self, path: &Path) -> Result<(), AlignError> {
         match self.inner {
             Inner::Sam(mut w) => sync(w.get_mut(), path),
-            // BAM is BGZF, which ends with a specific empty block. Flushing alone leaves the file
-            // without it, and readers treat that as truncated. On the threaded writer that means
-            // draining the workers, which is what `finish` does.
+            // BAM is BGZF, which ends with a specific empty block. A flush alone leaves the file
+            // without it, and readers treat that as truncated. On the threaded writer the code
+            // must also empty the workers, which is what `finish` does.
             Inner::Bam(mut w) => {
                 let mut buffered = w.get_mut().finish().map_err(|e| AlignError::io(path, e))?;
                 sync(&mut buffered, path)
@@ -201,9 +205,9 @@ fn sync(buffered: &mut BufWriter<PacedFile>, path: &Path) -> Result<(), AlignErr
 
 /// Worker threads for BGZF block compression.
 ///
-/// Compression is the mapping stage's serial bottleneck, so this wants more workers than the
-/// read-side default: the consumer here is the mapper's pool, not a single parsing thread. Shares
-/// `NAVIGATOR_ALIGN_THREADS` with the mapper so one knob still controls the stage.
+/// Compression is what makes the mapping stage serial, so this wants more workers than the
+/// read-side default. The consumer here is the pool of the mapper, and not one thread that parses.
+/// This shares `NAVIGATOR_ALIGN_THREADS` with the mapper, so one control still sets the stage.
 fn bgzf_worker_count() -> std::num::NonZeroUsize {
     let n = std::env::var("NAVIGATOR_ALIGN_THREADS")
         .ok()
@@ -213,7 +217,7 @@ fn bgzf_worker_count() -> std::num::NonZeroUsize {
     std::num::NonZeroUsize::new(n.clamp(1, 8)).expect("clamped above zero")
 }
 
-/// Create `path` — parents included — behind a buffer and the write pacer.
+/// Create `path`, and its parent directories, behind a buffer and the write pacer.
 fn paced(path: &Path) -> Result<BufWriter<PacedFile>, AlignError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| AlignError::io(parent, e))?;
@@ -232,8 +236,8 @@ fn fasta_repository(reference: &Path) -> Result<fasta::Repository, AlignError> {
 }
 
 fn parse_header(text: &str) -> Result<sam::Header, AlignError> {
-    // The mapper hands back the block without a trailing newline; the parser wants line-terminated
-    // input, and an unterminated last line is silently dropped.
+    // The mapper hands back the block with no newline at the end. The parser needs each line to
+    // end with a newline, and it drops a last line that does not, with no warning.
     let mut owned = text.to_string();
     if !owned.ends_with('\n') {
         owned.push('\n');
@@ -246,17 +250,18 @@ fn parse_header(text: &str) -> Result<sam::Header, AlignError> {
 
 /// Parse one of the mapper's SAM lines into a typed record.
 ///
-/// Public to the crate so records can be built *off* the writing thread. Formatting an alignment
-/// to SAM text and parsing it back is per-record independent work, and at WGS scale it dominates
-/// the mapping stage — see the pipeline note on `pe::map_pairs_single_part`.
+/// This is public to the crate, so that the code can make records *off* the write thread. To make
+/// SAM text from an alignment, and to parse it back, is independent work for each record. At WGS
+/// scale it is the largest part of the mapping stage. See the pipeline note on
+/// `pe::map_pairs_single_part`.
 pub(crate) fn parse_record(line: &str, header: &sam::Header, path: &Path) -> Result<RecordBuf, AlignError> {
     let raw = sam::Record::try_from(line.as_bytes())
         .map_err(|e| AlignError::Message(format!("could not parse a SAM record: {e}")))?;
     RecordBuf::try_from_alignment_record(header, &raw).map_err(|e| AlignError::io(path, e))
 }
 
-/// Read every record from a SAM file. Test-facing: it lets a test assert on typed fields rather
-/// than on column positions, which is the same reason the writer exists.
+/// Read every record from a SAM file. This is for tests: it lets a test assert on typed fields,
+/// and not on column positions. That is the same reason the writer exists.
 pub fn read_all(path: &Path) -> Result<(sam::Header, Vec<RecordBuf>), AlignError> {
     let file = std::fs::File::open(path).map_err(|e| AlignError::io(path, e))?;
     let mut reader = sam::io::Reader::new(std::io::BufReader::new(file));
@@ -297,11 +302,12 @@ mod tests {
 
     /// The regression this crate's dependency on `navigator-resource` exists for.
     ///
-    /// The mapping stage writes the largest file in the pipeline, and for the whole of its first
-    /// WGS run it wrote that file through a bare `File` — so the resource watch, which reports what
-    /// the pipeline is doing to the machine, logged `0 MB/s` for hours while ~60 GB went to disk.
-    /// The counter is process-global precisely so that a writer in *this* crate lands in the same
-    /// total as the sort's, and the only way to keep that true is to assert it from here.
+    /// The mapping stage writes the largest file in the pipeline. For the whole of its first WGS
+    /// run it wrote that file through a bare `File`. So the resource watch, which reports what the
+    /// pipeline does to the machine, logged `0 MB/s` for hours while ~60 GB went to disk.
+    ///
+    /// The counter is process-global, so that a writer in *this* crate lands in the same total as
+    /// the writer of the sort. The only way to keep that true is to assert it from here.
     #[test]
     fn the_mappers_output_reaches_the_shared_byte_counter() {
         let dir = scratch("counted");
@@ -312,8 +318,8 @@ mod tests {
         writer.write_line_with(RECORD, &path, |_, _| {}).unwrap();
         writer.finish(&path).unwrap();
 
-        // Strictly greater, not an exact figure: the counter is shared with anything else running
-        // in this binary, so the claim under test is that these bytes were counted at all.
+        // Strictly greater, and not an exact number. Anything else in this binary shares the
+        // counter, so the claim under test is only that a counter saw these bytes.
         assert!(
             navigator_resource::bytes_written() > before,
             "the mapper's BAM output was not accounted for"

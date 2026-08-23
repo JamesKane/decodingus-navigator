@@ -1,9 +1,9 @@
-//! The minimap2 index (`.mmi`) cache, and building one part by part.
+//! The minimap2 index (`.mmi`) cache, and how to build one part by part.
 //!
-//! An index is specific to both the reference build *and* the preset — `sr`, `map-hifi`, and
-//! `map-ont` disagree on k-mer and window size, so an index built for one is wrong for another.
-//! The cache key is therefore `(build, preset)`, laid out alongside the reference cache the
-//! refgenome crate already owns:
+//! An index is specific to the reference build *and* to the preset. `sr`, `map-hifi` and
+//! `map-ont` disagree on k-mer size and window size, so an index for one preset is wrong for
+//! another. So the cache key is `(build, preset)`. The layout puts it next to the reference cache
+//! that the refgenome crate already owns:
 //!
 //! ```text
 //! <base>/minimap2_index/<build>/<preset>.mmi
@@ -11,14 +11,15 @@
 //!
 //! ## Part by part
 //!
-//! [`build_index`] streams: read one index part from the FASTA, write it, drop it, repeat. That is
-//! what keeps peak memory at the [`BatchSize`] rather than at the whole genome — building a single
-//! resident index for CHM13 costs ~19 GiB, and building it in 1 Gbase parts costs 11.7 GiB for the
-//! same output in the same wall time.
+//! [`build_index`] streams: read one index part from the FASTA, write it, drop it, and repeat.
+//! That line keeps peak memory at the [`BatchSize`], and not at the whole genome. One index for
+//! CHM13 that stays in memory costs about 19 GiB. The same index in parts of 1 Gbase costs
+//! 11.7 GiB, and gives the same output in the same wall time.
 //!
-//! The `.mmi` is written to a temporary path and renamed on success, so an interrupted build can
-//! never leave a half-written index that a later run would load as if it were whole. The file is
-//! 8.93 GB for CHM13 — large enough that "just rebuild it if it looks wrong" is not a strategy.
+//! The code writes the `.mmi` to a temporary path, and renames it on success. So a build that
+//! stops early can never leave a half-written index that a later run would load as a whole one.
+//! The file is 8.93 GB for CHM13. That is too large for "build it again if it looks wrong" to be
+//! a strategy.
 
 use std::path::{Path, PathBuf};
 
@@ -31,18 +32,20 @@ use crate::batch::BatchSize;
 use crate::error::AlignError;
 use crate::preset::Preset;
 
-/// Progress during a long index build: `(parts_done, bases_done)`. Parts arrive as they are
-/// written, so a caller can report "part 2 of ~4" against [`BatchSize::part_estimate`].
+/// Progress during a long index build: `(parts_done, bases_done)`. Each part arrives when the
+/// code writes it, so a caller can report "part 2 of ~4" against [`BatchSize::part_estimate`].
 pub type ProgressFn<'a> = &'a mut dyn FnMut(usize, u64);
 
 /// The cache root the aligner index lives under: `$NAVIGATOR_REFGENOME_DIR`, else `~/.decodingus`.
 ///
-/// Deliberately the same answer `navigator-refgenome::cache::base_dir` gives, reached the same way
-/// — through `navigator_domain::paths::decodingus_dir`, the one definition of the cache root — so
-/// `minimap2_index/` lands beside `references/` and `liftover/` rather than in a second location
-/// that only this crate knows about. This crate is a leaf and can not depend on `navigator-refgenome`
-/// (that would invert the layering), which is why the resolution is repeated rather than imported;
-/// the shared *definition* is what keeps the two the same.
+/// This gives the same answer as `navigator-refgenome::cache::base_dir`, and it reaches that
+/// answer the same way. Both go through `navigator_domain::paths::decodingus_dir`, which is the
+/// one definition of the cache root. So `minimap2_index/` lands beside `references/` and
+/// `liftover/`, and not in a second location that only this crate knows about.
+///
+/// This crate is a leaf, so it can not depend on `navigator-refgenome`. That dependency would
+/// invert the layers. So the code repeats the resolution, and does not import it. The shared
+/// *definition* is what keeps the two the same.
 pub fn cache_root() -> PathBuf {
     if let Some(dir) = std::env::var_os("NAVIGATOR_REFGENOME_DIR") {
         return PathBuf::from(dir);
@@ -52,8 +55,8 @@ pub fn cache_root() -> PathBuf {
 
 /// Where the cached index for `(build, preset)` lives under `base`.
 ///
-/// `base` is the refgenome cache root — [`cache_root`] resolves it, or a caller that already has
-/// one (the app, which resolves it once) passes it in. Tests point it anywhere.
+/// `base` is the refgenome cache root. [`cache_root`] resolves it. A caller that already has one
+/// (the app, which resolves it once) can pass it in. Tests point it anywhere.
 pub fn index_path(base: &Path, build: &str, preset: Preset) -> PathBuf {
     base.join("minimap2_index")
         .join(build)
@@ -62,8 +65,8 @@ pub fn index_path(base: &Path, build: &str, preset: Preset) -> PathBuf {
 
 /// Build the index for `reference` into the cache, unless it is already there.
 ///
-/// Returns the cached path. Idempotent: an existing index is returned untouched, which is what
-/// makes this safe to call at the top of every realignment job.
+/// Returns the cached path. This function is idempotent: it returns an index that already exists
+/// and does not touch it. That is what makes it safe to call at the top of every realignment job.
 pub fn ensure_index(
     base: &Path,
     build: &str,
@@ -80,11 +83,12 @@ pub fn ensure_index(
     Ok(path)
 }
 
-/// [`ensure_index`] against the real cache root, sizing the index for this machine.
+/// [`ensure_index`] against the real cache root, with an index size for this machine.
 ///
-/// This is the call a job should make: it resolves where the cache lives, picks a batch size from
-/// the machine's RAM, and returns a ready index — none of which the caller should have to know how
-/// to do. See [`BatchSize::for_this_machine`] for why the sizing is detected rather than asked.
+/// This is the call a job must make. It resolves where the cache lives, chooses a batch size from
+/// the machine's RAM, and returns an index that is ready. A caller does not have to know how to do
+/// any of that. See [`BatchSize::for_this_machine`] for why the code finds the size and does not
+/// ask for it.
 pub fn ensure_cached_index(
     build: &str,
     reference: &Path,
@@ -103,8 +107,8 @@ pub fn ensure_cached_index(
 
 /// Build a `.mmi` for `reference` at `out`, one part at a time.
 ///
-/// Exposed separately from [`ensure_index`] so a caller can build to an arbitrary location — the
-/// tests do, and so would a "rebuild this index" maintenance action.
+/// This is public and separate from [`ensure_index`], so that a caller can build to any location.
+/// The tests do that, and so would a "build this index again" maintenance action.
 pub fn build_index(
     reference: &Path,
     out: &Path,
@@ -131,14 +135,14 @@ pub fn build_index(
     )
     .map_err(|e| AlignError::io(reference, e))?;
 
-    // Write to a sibling temp path and rename at the end: a torn 8.93 GB index that looks complete
-    // is a far worse outcome than a build that has to be repeated.
+    // Write to a sibling temp path, and rename at the end. A torn 8.93 GB index that looks
+    // complete is a much worse result than a build that must run again.
     let tmp = out.with_extension("mmi.partial");
     let file = std::fs::File::create(&tmp).map_err(|e| AlignError::io(&tmp, e))?;
-    // Paced, like every other multi-GB write in the pipeline: an index build is a one-off, but it
-    // is nine gigabytes in one uninterrupted push, and it happens on the machine of a user who is
-    // still using it. It also puts those bytes in the counter the resource watch reports, so the
-    // stage stops looking idle in the log.
+    // The pipeline paces this write, like every other multi-GB write in it. An index build
+    // happens one time only. But it is nine gigabytes in one continuous push, and it happens on
+    // the machine of a user who still works on it. The pacing also puts those bytes in the counter
+    // that the resource watch reports, so the stage no longer looks idle in the log.
     let mut writer = std::io::BufWriter::with_capacity(1 << 20, navigator_resource::PacedFile::new(file));
 
     let mut parts = 0usize;
@@ -150,15 +154,15 @@ pub fn build_index(
         bases += part_bases(&part);
         parts += 1;
         write_part(&mut writer, &part, &tmp)?;
-        // `part` is dropped here — this is the line that bounds peak memory to one part.
+        // The code drops `part` here. This line is what limits peak memory to one part.
         progress(parts, bases);
     }
 
     use std::io::Write as _;
     writer.flush().map_err(|e| AlignError::io(&tmp, e))?;
-    // Sync before the rename. The rename is what publishes this as a complete index, and a cache
-    // entry whose contents are still only a page-cache promise is the torn-index case the temp path
-    // exists to prevent.
+    // Sync before the rename. The rename is what makes this a complete index in the cache. A
+    // cache entry whose contents are still only a page-cache promise is the torn-index case, and
+    // the temp path exists to stop it.
     writer.get_ref().sync().map_err(|e| AlignError::io(&tmp, e))?;
     drop(writer);
 
@@ -190,9 +194,9 @@ fn idx_opts(preset: Preset) -> Result<IdxOpt, AlignError> {
     Ok(io)
 }
 
-/// minimap2's API takes paths as `&str`. A non-UTF-8 path is a real possibility on both Unix and
-/// Windows, so it is refused with a clear message rather than lossily converted into a path that
-/// does not exist.
+/// minimap2's API takes paths as `&str`. A non-UTF-8 path is possible on both Unix and Windows.
+/// So this function refuses it with a clear message. It does not do a lossy conversion, which
+/// would make a path that does not exist.
 pub(crate) fn path_str(path: &Path) -> Result<String, AlignError> {
     path.to_str()
         .map(str::to_string)
@@ -217,7 +221,7 @@ mod tests {
         let mut text = String::new();
         for c in 0..contigs {
             text.push_str(&format!(">contig{c}\n"));
-            // Non-repetitive enough to produce minimizers rather than one degenerate bucket.
+            // Non-repetitive enough to make minimizers, and not one degenerate bucket.
             let seq: String = (0..len)
                 .map(|i| match (i * 7 + c * 13) % 4 {
                     0 => 'A',
@@ -272,14 +276,15 @@ mod tests {
         );
     }
 
-    /// The memory bound in action: a reference larger than the batch must yield several parts, and
-    /// the resulting `.mmi` must still be one loadable file with every base accounted for.
+    /// The memory limit in action: a reference larger than the batch must make more than one
+    /// part. The `.mmi` that comes out must still be one file that loads, with every base in it.
     ///
-    /// Sizing this fixture is fussier than it looks, and the shape is worth recording. A part
-    /// accumulates whole sequences until the total *exceeds* the batch, so parts overshoot by up
-    /// to one sequence and a reference only a little larger than the batch still comes out as one
-    /// part. The fixture must also clear [`BatchSize`]'s 1 Mbase floor, which exists because
-    /// smaller parts are pathological in production. 3 Mbase against a 1 Mbase batch clears both.
+    /// The size of this fixture is more difficult than it looks, and the shape is worth a record
+    /// here. A part collects whole sequences until the total *goes above* the batch. So a part
+    /// overshoots by as much as one sequence. A reference only a little larger than the batch
+    /// still comes out as one part. The fixture must also clear [`BatchSize`]'s 1 Mbase floor,
+    /// which exists because a smaller part is pathological in production. A fixture of 3 Mbase
+    /// against a 1 Mbase batch clears both limits.
     #[test]
     fn a_reference_larger_than_the_batch_splits_into_several_parts() {
         let dir = scratch("split");
@@ -305,8 +310,8 @@ mod tests {
         assert!(out.is_file());
     }
 
-    /// `ensure_index` is called at the top of every job, so a second call must not rebuild an
-    /// 8.93 GB artifact.
+    /// Every job calls `ensure_index` at its start, so a second call must not build an 8.93 GB
+    /// artifact again.
     #[test]
     fn ensure_index_is_idempotent() {
         let dir = scratch("ensure");
@@ -340,9 +345,10 @@ mod tests {
         assert_eq!(stamp, std::fs::metadata(&second).unwrap().modified().unwrap());
     }
 
-    /// The aligner index has to land beside the reference cache, not in a second place only this
-    /// crate knows about. `navigator-refgenome` resolves its root the same way — env override
-    /// first, then the shared `decodingus_dir` — and this pins that agreement.
+    /// The aligner index must land beside the reference cache, and not in a second place that
+    /// only this crate knows about. `navigator-refgenome` resolves its root the same way: the
+    /// environment override first, then the shared `decodingus_dir`. This test pins that
+    /// agreement.
     #[test]
     fn the_cache_root_follows_the_refgenome_override() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -367,8 +373,9 @@ mod tests {
     /// `set_var` mutates process-global state, so the tests that touch it must not overlap.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Feeding something that is not a reference must fail loudly rather than caching an empty
-    /// index that every later job would load and quietly map nothing against.
+    /// A file that is not a reference must fail with a loud message. It must not cache an empty
+    /// index. Every later job would load such an index, map nothing against it, and give no
+    /// warning.
     #[test]
     fn a_reference_with_no_sequences_is_an_error() {
         let dir = scratch("empty");

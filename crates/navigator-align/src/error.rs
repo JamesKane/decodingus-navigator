@@ -1,4 +1,4 @@
-//! Error type for the mapping layer (one `thiserror` enum per layer, as elsewhere).
+//! Error type for the mapping layer (one `thiserror` enum for each layer, as elsewhere).
 
 use std::path::PathBuf;
 
@@ -11,17 +11,17 @@ pub enum AlignError {
         source: std::io::Error,
     },
 
-    /// The read technology could not be resolved to a mapper preset. Deliberately an error and not
-    /// a guess: mapping long reads with a short-read preset (or the reverse) silently produces bad
-    /// alignments rather than failing, so an unknown technology has to stop the job and ask.
+    /// The read technology does not resolve to a mapper preset. This is an error and not a guess.
+    /// A short-read preset that maps long reads makes bad alignments, and so does the reverse. The
+    /// mapper gives no warning when it does this. An unknown technology must stop the job and ask.
     #[error("cannot choose a mapper preset for {what} — pass one explicitly")]
     UnknownTechnology { what: String },
 
     #[error("{0}")]
     Message(String),
 
-    /// The job stopped because cancellation was requested. A distinct variant so callers can tell
-    /// a user-requested stop from a failure — same contract as `AnalysisError::Cancelled`.
+    /// The user cancelled the job. This is a different variant, so that a caller can tell a stop
+    /// that the user asked for from a failure. The contract is the same as `AnalysisError::Cancelled`.
     #[error("cancelled")]
     Cancelled,
 }

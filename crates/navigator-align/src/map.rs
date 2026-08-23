@@ -1,14 +1,15 @@
-//! Map reads against a cached index — the pass that turns reverted reads back into an alignment.
+//! Map reads against a cached index. This is the pass that makes an alignment from reverted reads.
 //!
 //! ## The part-by-part problem
 //!
-//! [`crate::index`] deliberately builds the index in parts so no single one has to fit in memory.
-//! That buys the memory bound but creates an obligation here: a read must be mapped against
-//! *every* part, and the per-part results merged, or it will be placed against whichever fraction
-//! of the genome happened to be resident. Worse, MAPQ is a statement about how much better the
-//! best hit is than the second best — a claim that is only meaningful genome-wide. Merging is
-//! therefore not an optimization, it is what makes a split index produce the same answer as a
-//! whole one.
+//! [`crate::index`] builds the index in parts on purpose, so that no one part has to fit in
+//! memory. That gives the memory limit, but it also makes an obligation here. The mapper must map
+//! a read against *every* part, and the merge must join the results from each part. If it does
+//! not, the read lands against whatever fraction of the genome was in memory.
+//!
+//! MAPQ is worse. It says how much better the best hit is than the second best. That claim
+//! is true only over the whole genome. So the merge is not an optimization. It is what makes a
+//! split index give the same answer as a whole one.
 //!
 //! So:
 //!
@@ -18,26 +19,28 @@
 //! part 2 ──map all reads──> part-2 hits ─┘
 //! ```
 //!
-//! Each pass holds one part; the per-part hits go to scratch rather than memory. The reads are
-//! streamed once per part, which is the same trade minimap2's own `--split-prefix` makes.
+//! Each pass holds one part, and the hits for that part go to scratch and not to memory. The code
+//! reads the reads one time for each part. That is the same trade that minimap2's own
+//! `--split-prefix` makes.
 //!
-//! The merge itself — re-ranking across parts and recomputing MAPQ — is
-//! `minimap2::index::split::merge_split_query_records`, reused rather than reimplemented. That is
-//! the subtlest arithmetic in the pipeline and the place an independent implementation would most
-//! likely be quietly wrong.
+//! The merge itself is `minimap2::index::split::merge_split_query_records`. It ranks the hits
+//! again over all parts, and calculates MAPQ again. This module uses that function, and does not
+//! write its own. That code is the most delicate arithmetic in the pipeline. A separate
+//! implementation would most probably be wrong there, and give no sign of it.
 //!
 //! ## Why not the upstream file-level entry points
 //!
-//! `minimap2-pure-rs` ships `map_file_sam_split` and friends, which look like exactly this. They
-//! can not be used: they write to **stdout** (unusable from a desktop app) and they take
-//! `parts: &[MmIdx]`, holding every part resident — giving up the entire memory bound this design
-//! exists to buy. What is reused is the per-part record format and the merge; the loop is ours.
+//! `minimap2-pure-rs` ships `map_file_sam_split` and the functions like it, which look exactly
+//! like this. This module can not use them. They write to **stdout**, which a desktop app can not
+//! use, and they take `parts: &[MmIdx]`, which keeps every part in memory. That gives up the whole
+//! memory limit this design exists for. This module uses the record format for each part, and the
+//! merge. The loop is its own.
 //!
 //! ## Scope
 //!
-//! Single-end, which is what the long-read presets need. Paired-end — `sr`, and so most vendor
-//! WGS — lives in [`crate::pe`], which reuses the part-by-part machinery here and adds fragment
-//! mapping, pairing, and the mate-facing SAM fields.
+//! Single-end, which is what the long-read presets need. Paired-end lives in [`crate::pe`], which
+//! is `sr` and so most vendor WGS. That module uses the part-by-part code here, and adds fragment
+//! mapping, pairing, and the SAM fields for the mate.
 
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -55,11 +58,12 @@ use crate::index::path_str;
 use crate::output::{AlignmentWriter, OutputFormat};
 use crate::preset::Preset;
 
-/// How often the read loop asks whether it has been cancelled — same reasoning as the analysis
-/// walkers: often enough that a click feels immediate, rarely enough to stay off the profile.
+/// How often the read loop asks whether the user cancelled. The reason is the same as for the
+/// analysis walkers: often enough that a click feels immediate, and rarely enough to stay off the
+/// profile.
 const CANCEL_CHECK_INTERVAL: u64 = 4096;
 
-/// Tuning for [`map_reads`].
+/// Options for [`map_reads`].
 #[derive(Debug, Clone)]
 pub struct MapParams {
     pub preset: Preset,
@@ -67,7 +71,7 @@ pub struct MapParams {
     pub threads: usize,
     /// An `@RG` line to stamp into the header and onto each record, if the source had one.
     pub read_group: Option<String>,
-    /// Output container. BAM by default — see [`crate::output`] for why not CRAM here.
+    /// Output container. BAM by default. See [`crate::output`] for why CRAM is not the default.
     pub format: OutputFormat,
     /// The reference FASTA, required only for CRAM output.
     pub reference: Option<std::path::PathBuf>,
@@ -105,27 +109,27 @@ pub struct MapStats {
     pub queries: u64,
     /// Reads with at least one alignment.
     pub mapped: u64,
-    /// Reads with none — written as unmapped SAM records, never dropped.
+    /// Reads with none. The writer gives them an unmapped SAM record, and never drops them.
     pub unmapped: u64,
     /// Index parts the reference was split into. More than one means the merge path ran.
     pub parts: usize,
 }
 
-/// Cancellation, as a callback rather than a shared token type.
+/// Cancellation, as a callback and not as a shared token type.
 ///
-/// This crate is a leaf — it deliberately does not depend on `navigator-analysis`, so it can not
-/// take that crate's `CancelToken` without inverting the layering. A closure lets the caller wire
-/// whatever cancellation it already has, and costs this crate no dependency.
+/// This crate is a leaf. It does not depend on `navigator-analysis`, and that is deliberate, so it
+/// can not take that crate's `CancelToken`. That would invert the layers. A closure lets the
+/// caller connect whatever cancellation it already has, and it costs this crate no dependency.
 pub type CancelFn<'a> = &'a dyn Fn() -> bool;
 
-/// Progress: `(reads_done, parts_done, parts_total)`. `parts_total` is only known once the index
-/// has been walked, so it is zero during the first pass.
+/// Progress: `(reads_done, parts_done, parts_total)`. The code knows `parts_total` only after it
+/// walks the index, so the value is zero during the first pass.
 pub type ProgressFn<'a> = &'a mut dyn FnMut(u64, usize, usize);
 
 /// Map `reads` against the index at `index_path`, writing SAM to `out`.
 ///
-/// `scratch` holds the per-part intermediates when the index is split; it is cleaned up before
-/// returning, on success or failure.
+/// `scratch` holds the intermediates for each part when the index is split. This function removes
+/// it before it returns, on success and on failure.
 pub fn map_reads(
     index_path: &Path,
     reads: &Path,
@@ -143,20 +147,21 @@ pub fn map_reads(
     let (_idx_opt, mut map_opt) = minimap2::prelude::preset(params.preset.as_str())
         .map_err(|e| AlignError::Message(format!("preset {}: {e}", params.preset.as_str())))?;
 
-    // What `-ax <preset>` sets, and both flags are load-bearing rather than cosmetic.
+    // What `-ax <preset>` sets. Both flags do real work, and neither is cosmetic.
     //
-    // `CIGAR` is what runs base-level alignment. Without it a mapping stops at chaining, so records
-    // carry coordinates but no CIGAR — and, less obviously, `map_query` skips the block that
-    // assigns primary/secondary status, leaving every region with `sam_pri` unset so that *every*
-    // record is emitted flagged supplementary (0x800). The split path hid this, because the merge
-    // re-runs that ranking unconditionally; only the whole-index fast path was affected.
+    // `CIGAR` is what runs base-level alignment. Without it a mapping stops at chaining, so a
+    // record carries coordinates but no CIGAR. Less obviously, `map_query` then skips the block
+    // that assigns primary status and secondary status. Every region keeps `sam_pri` unset, so
+    // *every* record comes out with the supplementary flag (0x800). The split path hid this,
+    // because the merge always ranks the hits again. Only the whole-index fast path had the
+    // fault.
     map_opt.flag |= MapFlags::OUT_SAM | MapFlags::CIGAR;
 
     let mut reader = open_index(index_path, params.preset)?;
 
-    // Read the first part, then ask whether that was all of it. Knowing this up front matters: on
-    // a machine large enough to hold a whole index the split machinery is pure overhead, and the
-    // reads would be streamed twice for nothing.
+    // Read the first part, then ask whether that was all of it. The answer matters at this
+    // point. On a machine large enough to hold a whole index, the split code is only overhead.
+    // The code would then read the reads two times for nothing.
     let Some(first) = reader.read_next().map_err(|e| AlignError::io(index_path, e))? else {
         return Err(AlignError::Message(format!(
             "{} contains no index parts",
@@ -182,8 +187,8 @@ pub fn map_reads(
     )
 }
 
-/// Open the cached `.mmi`. `is_idx = true` — this is a prebuilt index, not a FASTA to sketch, so
-/// the sketching parameters are read back from the file rather than supplied.
+/// Open the cached `.mmi`. `is_idx = true`, because this is an index that already exists, and not
+/// a FASTA to sketch. So the sketch parameters come back from the file, and no caller gives them.
 pub(crate) fn open_index(index_path: &Path, preset: Preset) -> Result<IdxReader, AlignError> {
     let (idx_opt, _) = minimap2::prelude::preset(preset.as_str())
         .map_err(|e| AlignError::Message(format!("preset {}: {e}", preset.as_str())))?;
@@ -254,12 +259,12 @@ fn map_single_part(
     Ok(stats)
 }
 
-/// Map a batch across the pool, **preserving input order**.
+/// Map a batch across the pool, and **keep the input order**.
 ///
-/// Order is not cosmetic. The split path joins each part's hits to a read by position in the file,
-/// so a reordered batch would silently attach one read's hits to another — the kind of corruption
-/// that produces plausible alignments at wrong loci. `par_iter().collect()` preserves order, which
-/// is why results are collected rather than written as they finish.
+/// Order is not cosmetic. The split path joins the hits of each part to a read by position in the
+/// file. A batch in a different order would attach the hits of one read to another read, with no
+/// warning. That corruption gives plausible alignments at wrong loci. `par_iter().collect()` keeps
+/// the order, and that is why this collects the results instead of a write as each one ends.
 fn map_batch(
     pool: &rayon::ThreadPool,
     index: &MmIdx,
@@ -277,8 +282,8 @@ fn map_batch(
 
 /// The mapping options a preset implies, with the flags SAM output requires.
 ///
-/// `CIGAR` is load-bearing: without it `map_query` stops at chaining, emitting records with no
-/// CIGAR *and* skipping the step that assigns primary/secondary status.
+/// `CIGAR` does real work here. Without it `map_query` stops at chaining. It then emits records
+/// with no CIGAR, *and* it skips the step that assigns primary status and secondary status.
 pub(crate) fn prepared_map_opt(preset: Preset) -> Result<MapOpt, AlignError> {
     let (_idx, mut opt) = minimap2::prelude::preset(preset.as_str())
         .map_err(|e| AlignError::Message(format!("preset {}: {e}", preset.as_str())))?;
@@ -291,8 +296,8 @@ pub(crate) fn path_str_of(path: &Path) -> Result<String, AlignError> {
     crate::index::path_str(path)
 }
 
-/// Mapping is the pipeline's dominant cost and is per-read independent, so it gets a pool sized to
-/// the machine (or to `NAVIGATOR_ALIGN_THREADS`).
+/// Mapping is the largest cost in the pipeline, and the work for each read is independent. So it
+/// gets a pool that fits the machine, or that `NAVIGATOR_ALIGN_THREADS` sets.
 pub(crate) fn thread_pool(params: &MapParams) -> Result<rayon::ThreadPool, AlignError> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(params.thread_count())
@@ -302,7 +307,7 @@ pub(crate) fn thread_pool(params: &MapParams) -> Result<rayon::ThreadPool, Align
 
 // ---- the split path -------------------------------------------------------
 
-/// Per-part pass, then a merge pass. `first` has already been read from `reader`.
+/// One pass for each part, then a merge pass. The caller already read `first` from `reader`.
 #[allow(clippy::too_many_arguments)]
 fn map_split(
     first: MmIdx,
@@ -317,16 +322,17 @@ fn map_split(
     progress: ProgressFn<'_>,
 ) -> Result<MapStats, AlignError> {
     let prefix = path_str(&scratch.join("part"))?;
-    // Every intermediate is removed before returning, whatever happens — these are per-read hit
-    // blocks for a whole WGS and would otherwise be left behind at genome scale.
+    // This removes every intermediate before it returns, whatever happens. These are hit blocks
+    // for each read of a whole WGS, and they would otherwise stay on disk at genome scale.
     let cleanup = ScratchGuard {
         prefix: prefix.clone(),
         parts: 0,
     };
     let mut cleanup = cleanup;
 
-    // Header-only accumulation of every part's sequences. This is the one thing that must span all
-    // parts, and it is safe to: names and lengths for a few hundred contigs, not index data.
+    // A header-only collection of the sequences of every part. This is the one thing that must
+    // cover all parts, and that is safe. It holds names and lengths for a few hundred contigs,
+    // and no index data.
     let mut merged_header = header_only(&first);
     let mut part_opts = vec![part_opt(map_opt, &first)];
     let mut rid_shifts = vec![0u32];
@@ -335,15 +341,15 @@ fn map_split(
     let mut part = first;
     let mut parts = 0usize;
     loop {
-        // Every part sees the same reads, so this is the same number each pass — reported for
-        // progress, not accumulated.
+        // Every part sees the same reads, so this is the same number in each pass. It goes to
+        // progress, and nothing adds it up.
         let queries_seen = write_part_hits(&prefix, parts, &part, &part_opts[parts], reads, &pool, cancel)?;
         parts += 1;
         cleanup.parts = parts;
         progress(queries_seen, parts, 0);
 
-        // Drop this part before pulling the next: this is the line that keeps peak memory at one
-        // part rather than the whole index.
+        // Drop this part before the next one arrives. This is the line that keeps peak memory at
+        // one part, and not at the whole index.
         drop(part);
 
         let Some(next) = reader.read_next().map_err(|e| AlignError::io(index_path, e))? else {
@@ -370,9 +376,9 @@ fn map_split(
     Ok(stats)
 }
 
-/// One pass over the reads against one part, appending each read's hits to that part's scratch
-/// file. Read order is the join key for the merge, so the file is positional: record *n* here is
-/// read *n* of the input, in every part.
+/// One pass over the reads against one part. It adds the hits of each read to the scratch file of
+/// that part. Read order is the join key for the merge, so the file is positional. Record *n*
+/// here holds the hits of read *n* of the input, in every part.
 fn write_part_hits(
     prefix: &str,
     part_index: usize,
@@ -400,7 +406,7 @@ fn write_part_hits(
             return Err(AlignError::Cancelled);
         }
 
-        // Order-preserving, and it must be: this file is joined to the reads positionally.
+        // This keeps the order, and it must: the merge joins this file to the reads by position.
         for result in map_batch(pool, part, opt, &batch) {
             let block = split::SplitQueryRecord {
                 n_reg: result.regs.len() as i32,
@@ -416,7 +422,7 @@ fn write_part_hits(
     Ok(seen)
 }
 
-/// Read one hit block per part per read, merge them, and emit SAM.
+/// Read one hit block for each part and each read, merge them, and emit SAM.
 #[allow(clippy::too_many_arguments)]
 fn merge_parts(
     prefix: &str,
@@ -439,7 +445,7 @@ fn merge_parts(
         let path = split::split_tmp_path(prefix, part);
         let file = std::fs::File::open(&path).map_err(|e| AlignError::io(&path, e))?;
         let mut r = BufReader::with_capacity(1 << 20, file);
-        // Step past the header this part's writer stamped, leaving the reader on record 0.
+        // Step past the header that the writer of this part wrote. The reader is then on record 0.
         split::read_split_header(&mut r).map_err(|e| AlignError::io(&path, e))?;
         part_readers.push((path, r));
     }
@@ -488,8 +494,8 @@ fn merge_parts(
 
 /// Write one read's SAM records: the primary (or an unmapped record) plus any supplementaries.
 ///
-/// An unmapped read gets a record rather than silence. Realignment exists partly to find reads the
-/// old reference could not place, so which reads failed *here* is information, not noise.
+/// An unmapped read gets a record, and not silence. Realignment exists in part to find reads that
+/// the old reference could not place. So which reads failed *here* is information, and not noise.
 #[allow(clippy::too_many_arguments)]
 fn emit(
     writer: &mut AlignmentWriter,
@@ -545,8 +551,9 @@ pub(crate) fn open_output(out: &Path, index: &MmIdx, params: &MapParams) -> Resu
 }
 
 pub(crate) fn part_opt(base: &MapOpt, part: &MmIdx) -> MapOpt {
-    // Per-part thresholds: `mapopt_update` derives occurrence cutoffs from the index's own
-    // statistics, so a part must be scored against its own, not the whole reference's.
+    // Thresholds for each part: `mapopt_update` derives occurrence cutoffs from the statistics of
+    // the index itself. So a part must score against its own statistics, and not against those of
+    // the whole reference.
     let mut opt = base.clone();
     mapopt_update(&mut opt, part);
     opt
@@ -554,9 +561,9 @@ pub(crate) fn part_opt(base: &MapOpt, part: &MmIdx) -> MapOpt {
 
 /// A metadata-only copy of an index part: sequence names and lengths, no minimizers.
 ///
-/// SAM needs `RNAME` and `@SQ` for every contig across every part, and after the merge a region's
-/// `rid` indexes that concatenation. Carrying names and lengths for a few hundred contigs costs
-/// nothing; carrying the parts themselves would undo the whole design.
+/// SAM needs `RNAME` and `@SQ` for every contig in every part, and after the merge the `rid` of a
+/// region indexes that concatenation. Names and lengths for a few hundred contigs cost nothing to
+/// keep. To keep the parts themselves would undo the whole design.
 pub(crate) fn header_only(part: &MmIdx) -> MmIdx {
     let mut header = MmIdx::new(part.w, part.k, part.bucket_bits, IdxFlags::empty());
     append_header(&mut header, part);
@@ -583,7 +590,7 @@ fn check_cancel(seen: u64, cancel: CancelFn<'_>) -> Result<(), AlignError> {
     Ok(())
 }
 
-/// Removes the per-part scratch on the way out, including on an error or a cancel.
+/// Removes the scratch of each part on the way out, and also on an error or a cancel.
 pub(crate) struct ScratchGuard {
     prefix: String,
     pub(crate) parts: usize,

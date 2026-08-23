@@ -1,9 +1,9 @@
 //! Tests for paired-end mapping.
 //!
-//! Two things get the most attention because they are what this module adds over the single-end
-//! path and what nothing else checks: the paired SAM fields (flags, `RNEXT`/`PNEXT`, `TLEN`), and
-//! that pairing survives a split index — pairing decided per part would rest on a fraction of the
-//! genome.
+//! Two things get the most attention. They are what this module adds to the single-end path, and
+//! nothing else checks them. The first is the paired SAM fields: flags, `RNEXT`/`PNEXT` and
+//! `TLEN`. The second is that pairing survives a split index. Pairing that the code decides for
+//! each part would use only a fraction of the genome.
 
 use std::path::{Path, PathBuf};
 
@@ -150,7 +150,8 @@ fn records(sam: &Path) -> Vec<Rec> {
         .collect()
 }
 
-/// Primary records only — supplementary/secondary ones repeat a template and would double-count.
+/// Primary records only. A supplementary record or a secondary record repeats a template, and it
+/// would double-count.
 fn primaries(sam: &Path) -> Vec<Rec> {
     records(sam).into_iter().filter(|r| r.flag & 0x900 == 0).collect()
 }
@@ -226,8 +227,8 @@ fn proper_pairs_get_paired_flags_mate_fields_and_opposing_tlen() {
     assert!(proper >= 35, "expected most FR pairs to be proper, got {proper}");
 }
 
-/// An FR pair is one forward and one reverse read; if both came out on the same strand the
-/// orientation handling is wrong and `proper_frag` would be meaningless.
+/// An FR pair is one forward read and one reverse read. If both are on the same strand, the code
+/// that controls orientation is wrong, and `proper_frag` then has no value.
 #[test]
 fn the_two_ends_map_to_opposite_strands() {
     let dir = scratch("strand");
@@ -248,8 +249,8 @@ fn the_two_ends_map_to_opposite_strands() {
     assert!(opposite >= 35, "expected FR orientation on most pairs, got {opposite}");
 }
 
-/// A read whose mate did not map still has to say so, and both records must stay at the same
-/// locus so a coordinate sort keeps the template together.
+/// A read whose mate did not map must still say so. Both records must stay at the same locus, so
+/// that a coordinate sort keeps the template together.
 #[test]
 fn an_unmappable_mate_is_flagged_and_placed_with_its_partner() {
     let dir = scratch("halfmapped");
@@ -302,12 +303,13 @@ fn mate_suffixes_are_stripped_so_both_ends_share_a_qname() {
     assert_eq!(strip_mate_suffix("read/1"), "read");
     assert_eq!(strip_mate_suffix("read/2"), "read");
     assert_eq!(strip_mate_suffix("read"), "read");
-    // Not a mate suffix — a name that merely ends in a digit, or in /3.
+    // Not a mate suffix. This is a name that only ends in a digit, or in /3.
     assert_eq!(strip_mate_suffix("read1"), "read1");
     assert_eq!(strip_mate_suffix("read/3"), "read/3");
 }
 
-/// TLEN is signed by which end is leftmost, and zero when neither is.
+/// The sign of TLEN comes from which end is leftmost. TLEN is zero when neither end is
+/// leftmost.
 #[test]
 fn tlen_is_signed_by_position_and_zero_on_a_tie() {
     let reg = |rs: i32, re: i32| AlignReg {
@@ -322,9 +324,9 @@ fn tlen_is_signed_by_position_and_zero_on_a_tie() {
 
 // ---- the split index ------------------------------------------------------
 
-/// The same claim the single-end path makes, for pairs: splitting the index is a memory decision,
-/// not an accuracy one. Pairing in particular must be re-derived after the merge — done per part
-/// it would rest on whichever fraction of the genome was resident.
+/// The same claim that the single-end path makes, but for pairs: a split index is a memory
+/// decision, and not an accuracy decision. The code must do the pairing again after the merge.
+/// Pairing for one part alone would use only the fraction of the genome that was in memory.
 #[test]
 fn a_split_index_pairs_reads_exactly_as_a_whole_index_does() {
     let dir = scratch("equivalence");
@@ -372,8 +374,8 @@ fn a_split_index_pairs_reads_exactly_as_a_whole_index_does() {
     }
 }
 
-/// R1/R2 that have lost their order would pair every later read with the wrong mate — a
-/// corruption that produces confident, wrong alignments. It must refuse rather than truncate.
+/// R1 and R2 that have lost their order would pair every later read with the wrong mate. That
+/// corruption gives confident, wrong alignments. The reader must refuse, and must not truncate.
 #[test]
 fn mismatched_read_counts_are_refused() {
     let dir = scratch("lockstep");
@@ -448,17 +450,17 @@ fn cancellation_stops_paired_mapping() {
     assert!(matches!(err, AlignError::Cancelled));
 }
 
-/// **Regression.** Every fixture above uses fixed-length reads, and that is exactly why they all
-/// passed while a real WGS failed 74 minutes into a run.
+/// **Regression.** Every fixture above uses fixed-length reads. That is why they all passed, and
+/// why a real WGS failed 74 minutes into a run.
 ///
-/// The paired reader batches by *bases*. If the two files are read independently with the same
-/// base budget, files whose reads differ in length return different record counts — and real data
-/// always has a tail of shorter reads from adapter and quality trimming. On WGS229 that surfaced
-/// as 332,653 against 332,722 in one batch, tripping the lockstep guard on files that were
-/// perfectly in step.
+/// The paired reader makes its batches by *bases*. Read the two files on their own with the same
+/// base budget, and two files whose reads differ in length give different record counts. Real
+/// data always has a tail of shorter reads, which adapter trimming and quality trimming make. On
+/// WGS229 that showed as 332,653 against 332,722 in one batch. The lockstep guard then fired on
+/// two files that were exactly in step.
 ///
-/// So this fixture deliberately gives R1 and R2 *different* length distributions, and asserts
-/// every pair still comes back matched.
+/// So this fixture gives R1 and R2 *different* length distributions on purpose. It asserts that
+/// every pair still comes back with its mate.
 #[test]
 fn pairs_stay_in_step_when_reads_have_different_lengths() {
     let dir = scratch("varlen");
@@ -470,7 +472,8 @@ fn pairs_stay_in_step_when_reads_have_different_lengths() {
     let (mut t1, mut t2) = (Vec::new(), Vec::new());
     for i in 0..400usize {
         let start = 1000 + i * 200;
-        // R1 keeps full length; R2 is trimmed by a varying amount, as a trimmer would leave it.
+        // R1 keeps its full length. Each R2 read loses a different number of bases, as a
+        // trimmer leaves them.
         let len1 = 150;
         let len2 = 150 - (i % 37);
         let r1 = &bases[start..start + len1];
@@ -515,8 +518,8 @@ fn pairs_stay_in_step_when_reads_have_different_lengths() {
     }
 }
 
-/// The guard still has to fire when the files really are mismatched, which is the case it exists
-/// for — one file ending before the other.
+/// The guard must still fire when the two files do not match. That is the case it exists for:
+/// one file stops before the other.
 #[test]
 fn a_truncated_mate_file_is_still_refused() {
     let dir = scratch("truncated");
@@ -577,10 +580,10 @@ fn a_truncated_mate_file_is_still_refused() {
 
 /// Secondary alignments must not reach the output under the `sr` preset.
 ///
-/// The preset sets `NO_PRINT_2ND`, and minimap2 honours it in the pipeline Navigator does not go
-/// through — so the rule has to be applied where the records are actually built. It was not, and a
-/// targeted-Y sample came out 86.6% secondary records: 404 million of them against 62 million
-/// primaries, none carrying SEQ.
+/// The preset sets `NO_PRINT_2ND`. minimap2 obeys that flag in a pipeline that Navigator does not
+/// use. So this module must apply the rule where it builds the records. It did not, and a
+/// targeted-Y sample came out with 86.6% secondary records. That was 404 million of them against
+/// 62 million primaries, and not one carried SEQ.
 #[test]
 fn secondary_regions_are_not_emitted_but_supplementary_ones_are() {
     use minimap2::types::AlignReg;
@@ -591,7 +594,7 @@ fn secondary_regions_are_not_emitted_but_supplementary_ones_are() {
         "the sr preset is what makes this rule apply"
     );
 
-    // `parent == id` is a primary chain — the representative, or a supplementary part of a split
+    // `parent == id` is a primary chain: the representative, or a supplementary part of a split
     // read. `parent != id` is another place the read could have gone.
     let primary = AlignReg {
         id: 7,

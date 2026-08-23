@@ -51,7 +51,14 @@ dispersion · drift · emission · likelihood · loading · posterior · prior �
 
 ### File and data formats
 
-BAM · BED · CRAM · FASTA · gVCF · index · JSON · masterVar · sidecar · TSV · VCF
+BAM · BED · CRAM · FASTA · gVCF · index · JSON · masterVar · SAM · sidecar · TSV · VCF
+
+### Read mapping
+
+`navigator-align` maps reads with a pure-Rust minimap2. These are the nouns of that method and of
+the SAM record it writes.
+
+CIGAR · mapper · mate · minimizer · part · preset · template
 
 ### Application concepts
 
@@ -76,6 +83,9 @@ indexing · logging · polling · signing · setting · heading · listing · or
 tracking · caching · processing · operating system · pacing · sampling · scaling · streaming ·
 spilling · phasing · binning · masking · trimming · clipping · calling · sorting · merging ·
 reasoning model · streaming · copying · loading
+
+Read mapping adds two more. `chaining` is the middle step of minimap2's published seed-chain-align
+method, and `pairing` is the step that makes two mapped ends into one template: chaining · pairing
 
 GangSTR names its read classes `enclosing`, `spanning` and `flanking`. Those are the published
 names of the method, so they are Technical Names here: enclosing · spanning · flanking
@@ -141,8 +151,8 @@ Do not use a contraction. Write `do not`, not `don't`.
 
 ## How to convert a file
 
-This is the method that converted `navigator-resource` and 31 of the 33 files of `navigator-app`.
-Follow it, and a file needs about three passes.
+This is the method that converted eight of the ten crates. Follow it, and a file needs about three
+passes.
 
 ### The two tools
 
@@ -262,12 +272,8 @@ and deletion counts are equal, and every other difference must have a reason you
 
 ### Where the work stands
 
-Converted to zero: `navigator-resource`, `navigator-store/src/sig_cache.rs`, and 31 of the 33 files
-of `navigator-app`.
+Converted to zero: `navigator-align`, `navigator-analysis`, `navigator-app`, `navigator-panelbuild`,
+`navigator-refgenome`, `navigator-resource`, `navigator-store`, and `navigator-sync`.
 
-Remaining in `navigator-app`: `src/lib.rs` (the type documentation at the top is converted, the
-`impl App` body is not) and `src/haplogroup.rs`.
-
-Not started: `navigator-analysis`, `navigator-ui`, `navigator-domain`, `navigator-align`,
-`navigator-panelbuild`, `navigator-store` beyond `sig_cache`, `navigator-refgenome`,
-`navigator-sync`. Run `python3 scripts/ste-check.py` for the current count.
+Not started: `navigator-ui` and `navigator-domain`. Run `python3 scripts/ste-check.py` for the
+current count.

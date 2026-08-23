@@ -1,17 +1,19 @@
 //! Which mapper preset a sample's reads need.
 //!
-//! minimap2's presets are not interchangeable tunings of one algorithm — `sr` and `map-ont` differ
-//! in k-mer size, chaining, and gap costs by more than an order of magnitude in effect. Mapping
-//! long reads under `sr` does not fail loudly; it produces plausible-looking, wrong alignments. So
-//! the inference here refuses rather than guesses, which is the behaviour the design asks for
-//! ("refuse (or warn loudly) on mixed/unknown technology rather than guessing").
+//! minimap2's presets are not different settings of one algorithm. `sr` and `map-ont` differ in
+//! k-mer size, chaining, and gap costs. The effect of that difference is more than an order of
+//! magnitude. A long read that maps under `sr` does not fail with a loud message. It gives wrong
+//! alignments that look correct.
+//!
+//! So the inference here refuses, and it does not guess. The design asks for this behaviour: on a
+//! mixed or an unknown technology, refuse or give a loud warning.
 
 use crate::error::AlignError;
 
-/// A minimap2 preset, restricted to the ones this module maps reads under.
+/// A minimap2 preset, limited to the ones this module maps reads under.
 ///
-/// The assembly and splice presets exist upstream but have no meaning for realigning a
-/// resequenced human sample, so they are deliberately not modelled.
+/// The assembly and splice presets exist upstream, but they have no use when the module realigns
+/// a resequenced human sample. This type does not model them, and that is deliberate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Preset {
     /// Illumina / short-read WGS and WES.
@@ -32,9 +34,9 @@ impl Preset {
         }
     }
 
-    /// Whether reads under this preset come in pairs. Only short-read data is mapped as pairs;
-    /// long-read presets are single-end, and this is also what decides duplicate marking later
-    /// (stage C marks duplicates for short reads only).
+    /// True when reads under this preset come in pairs. The mapper pairs short-read data only.
+    /// Long-read presets are single-end. This flag also decides which reads get duplicate marks
+    /// later: stage C marks duplicates for short reads only.
     pub fn is_paired(self) -> bool {
         matches!(self, Preset::ShortRead)
     }
@@ -54,12 +56,13 @@ impl Preset {
     /// Choose a preset from what the workspace already inferred about the run.
     ///
     /// `test_type` is `SequenceRun.test_type` (`WGS`, `WGS_HIFI`, `WGS_NANOPORE`, `WES`,
-    /// `BIG_Y_700`, …) and `platform` is `SequenceRun.platform_name` (from `@RG PL`). The test type
-    /// is consulted first because `testtype.rs` has already combined platform and read-length
-    /// evidence to produce it; the platform is only a fallback for runs that never got one.
+    /// `BIG_Y_700`, …) and `platform` is `SequenceRun.platform_name` (from `@RG PL`). This function
+    /// reads the test type first, because `testtype.rs` already combined the platform evidence and
+    /// the read-length evidence to make it. The platform is only a fallback for a run that never
+    /// got a test type.
     ///
-    /// Targeted panels (Big Y and friends) map under the chemistry that produced them, which for
-    /// every such product Navigator ingests is short-read.
+    /// A targeted panel (Big Y and the products like it) maps under the chemistry that made it.
+    /// For every such product that Navigator imports, that chemistry is short-read.
     pub fn infer(test_type: Option<&str>, platform: Option<&str>) -> Result<Self, AlignError> {
         if let Some(t) = test_type {
             let t = t.trim().to_ascii_uppercase();
@@ -77,12 +80,12 @@ impl Preset {
             }
         }
 
-        // No test type recorded — fall back to the raw platform string.
+        // The run has no test type, so fall back to the raw platform string.
         let p = platform.unwrap_or_default().to_ascii_uppercase();
         if p.contains("PACBIO") {
-            // PacBio without a test type is ambiguous between CLR and HiFi. HiFi is what every
-            // consumer PacBio product Navigator sees actually is, but the guess is worth flagging
-            // rather than burying, so callers can surface it.
+            // PacBio without a test type is ambiguous between CLR and HiFi. Every consumer PacBio
+            // product that Navigator sees is HiFi, so the code chooses HiFi. It is still a guess,
+            // and the return value says so, so that a caller can show it to the user.
             return Ok(Preset::MapHifi);
         }
         if p.contains("NANOPORE") || p == "ONT" || p.contains("OXFORD") {
@@ -119,8 +122,8 @@ mod tests {
         }
     }
 
-    /// The test type is the workspace's own considered inference, so it beats the raw platform
-    /// string — a HiFi run still reports `PACBIO` as its platform.
+    /// The test type is the workspace's own considered inference, so it wins over the raw platform
+    /// string. A HiFi run still reports `PACBIO` as its platform.
     #[test]
     fn test_type_wins_over_platform() {
         assert_eq!(
@@ -137,7 +140,8 @@ mod tests {
     }
 
     /// The property that matters: an unrecognized technology must stop the job. Mapping under the
-    /// wrong preset yields wrong alignments quietly, which is worse than not running.
+    /// wrong preset gives wrong alignments and no warning, which is worse than a job that does not
+    /// run.
     #[test]
     fn an_unknown_technology_is_an_error_not_a_guess() {
         assert!(matches!(
