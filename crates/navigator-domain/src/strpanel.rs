@@ -1,12 +1,15 @@
-//! Y-STR panel taxonomy + classification — a port of the Scala `str-panels.conf` +
-//! `StrPanelService`. Static data: the FTDNA tiers (Y-12 ⊂ Y-25 ⊂ Y-37 ⊂ Y-67 ⊂ Y-111) and the
-//! YSEQ panels (Alpha/Beta/Delta/Gamma + the exclusive/Kittler detection sets), used to classify a
-//! profile into its highest reached tier, group markers into tiers for the FTDNA-style report, and
-//! detect the provider from exclusive markers.
+//! Y-STR panel taxonomy and classification: a port of the Scala `str-panels.conf` and
+//! `StrPanelService`.
 //!
-//! FTDNA Big-Y bonus tiers (Y-500/Y-700, ~700 markers) are intentionally **not** enumerated here;
-//! markers outside the defined tiers land in the [`EXTENDED`] group in [`assign_markers_to_panels`]
-//! and still count toward the total. Full Y-500/700 enumeration is a follow-up.
+//! Static data. It holds the FTDNA tiers (Y-12 ⊂ Y-25 ⊂ Y-37 ⊂ Y-67 ⊂ Y-111) and the YSEQ panels
+//! (Alpha, Beta, Delta, Gamma, and the exclusive and Kittler detection sets). Three jobs use it.
+//! They classify a profile into its highest reached tier, group markers into tiers for the
+//! FTDNA-style report, and detect the provider from exclusive markers.
+//!
+//! This does **not** list the FTDNA Big-Y bonus tiers (Y-500/Y-700, ~700 markers), and that is
+//! deliberate. A marker outside the tiers here lands in the [`EXTENDED`] group in
+//! [`assign_markers_to_panels`], and still counts toward the total. A full list of Y-500 and Y-700
+//! is a follow-up.
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,7 +17,8 @@ use crate::strprofile::StrMarker;
 
 /// One panel tier: the markers **new** to this tier (FTDNA panels are cumulative, so each lists only
 /// its additions). `marketing_count` is the vendor-advertised size; `actual_count` is the distinct
-/// marker-key count (smaller, because multi-value markers like DYS464 count as several values).
+/// marker-key count (smaller, because a multi-value marker like DYS464 counts as more than one
+/// value).
 pub struct StrPanelDef {
     pub id: &'static str,
     pub name: &'static str,
@@ -284,7 +288,8 @@ static PANELS: &[StrPanelDef] = &[
         order: 4,
         markers: YSEQ_GAMMA,
     },
-    // Detection-only panels (order >= 100): used for grouping/assignment, excluded from tier badges.
+    // Detection-only panels (order >= 100). They group and assign markers, but no tier badge uses
+    // them.
     StrPanelDef {
         id: "YSEQ_EXCLUSIVE",
         name: "YSEQ-Exclusive",
@@ -368,7 +373,7 @@ pub fn detect_provider(markers: &HashSet<String>) -> Option<&'static str> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PanelClassification {
-    /// Highest tier reached, e.g. "Y-37" — `None` if no tier threshold was met.
+    /// Highest tier reached, for example "Y-37". `None` if the profile met no tier threshold.
     pub panel_name: Option<String>,
     pub provider: &'static str,
     pub marker_count: usize,
@@ -376,8 +381,8 @@ pub struct PanelClassification {
 }
 
 /// Classify a profile into its highest reached tier for `provider` (auto-detected if `None`).
-/// Mirrors `StrPanelService`: cumulative providers require ≥90% of a tier's `actual_count` markers;
-/// non-cumulative providers take the highest-order tier with ≥80% overlap.
+/// Mirrors `StrPanelService`. A cumulative provider needs ≥90% of the `actual_count` markers of a
+/// tier. A provider that is not cumulative takes the highest-order tier with ≥80% overlap.
 pub fn classify_panel(markers: &HashSet<String>, provider: Option<&str>) -> PanelClassification {
     let prov = provider
         .map(canonical_provider)
@@ -425,9 +430,9 @@ pub fn classify_panel(markers: &HashSet<String>, provider: Option<&str>) -> Pane
     }
 }
 
-/// Per-tier "reached" flags for the summary badges: `(tier name, filled)` where a tier is filled
-/// when the profile's distinct-marker count meets its threshold. Detection-only panels (order ≥100)
-/// are excluded.
+/// A "reached" flag for each tier, for the summary badges: `(tier name, filled)`. A tier is full
+/// when the distinct-marker count of the profile meets its threshold. This drops detection-only
+/// panels (order ≥100).
 pub fn tier_badges(provider: &str, marker_count: usize) -> Vec<(String, bool)> {
     let prov = canonical_provider(provider);
     let mut tiers: Vec<&StrPanelDef> = PANELS.iter().filter(|p| p.provider == prov && p.order < 100).collect();
@@ -438,16 +443,16 @@ pub fn tier_badges(provider: &str, marker_count: usize) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// Group a profile's markers into tiers (FTDNA-style report layout): each marker is assigned to the
-/// first tier (by order) that lists it; leftovers go to [`EXTENDED`]. Returns `(tier name, markers)`
-/// ordered by tier, then the Extended group last (each non-empty). Marker order within a tier
-/// follows the profile's order.
+/// Group the markers of a profile into tiers (FTDNA-style report layout). Each marker goes to the
+/// first tier (by order) that lists it, and the rest go to [`EXTENDED`]. Returns
+/// `(tier name, markers)` in tier order, with the Extended group last, and each group not empty.
+/// Marker order inside a tier follows the order of the profile.
 pub fn assign_markers_to_panels<'a>(markers: &'a [StrMarker], provider: &str) -> Vec<(String, Vec<&'a StrMarker>)> {
     let prov = canonical_provider(provider);
     let mut tiers: Vec<&StrPanelDef> = PANELS.iter().filter(|p| p.provider == prov).collect();
     tiers.sort_by_key(|p| p.order);
 
-    // marker -> owning tier name (first/lowest-order tier listing it).
+    // marker -> the name of the tier that owns it (the first tier by order that lists it).
     let mut owner: HashMap<String, &'static str> = HashMap::new();
     for p in &tiers {
         for m in p.markers {
@@ -519,7 +524,7 @@ mod tests {
 
     #[test]
     fn detects_yseq_from_exclusive_marker() {
-        // A set containing a YSEQ-exclusive marker auto-detects provider YSEQ.
+        // A set that holds a YSEQ-exclusive marker auto-detects provider YSEQ.
         let mut names = FTDNA_Y12.to_vec();
         names.push("DYS728"); // YSEQ exclusive
         let set = normalized_set(&marks(&names));

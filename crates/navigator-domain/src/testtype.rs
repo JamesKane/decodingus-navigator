@@ -1,4 +1,4 @@
-//! The DNA-test catalog — the kinds of test a subject can have (a `SequenceRun.test_type`
+//! The DNA-test catalog: the kinds of test a subject can have (a `SequenceRun.test_type`
 //! holds one of these codes). Ported from the Scala `test_types.conf` defaults: code,
 //! display name, and the genomic region the test targets (which downstream gates Y/mt/
 //! autosomal analysis). Static here; can move to a config file later as the Scala app does.
@@ -92,8 +92,9 @@ pub const CATALOG: &[TestType] = &[
         display_name: "YSEQ Y Prime",
         target: YChromosome,
     },
-    // Targeted tests recognized by coverage shape when the vendor can't be pinned down (see
-    // `navigator-analysis::testtype::infer_test_type`) — honest generics, not a guessed product.
+    // Targeted tests that coverage shape recognizes, when nothing can name the vendor (see
+    // `navigator-analysis::testtype::infer_test_type`). These are honest generics, and not a
+    // guessed product.
     TestType {
         code: "TARGETED_Y",
         display_name: "Targeted Y (vendor unknown)",
@@ -176,12 +177,15 @@ pub fn by_code(code: &str) -> Option<&'static TestType> {
     CATALOG.iter().find(|t| t.code == code)
 }
 
-/// Classify a stored `test_type` into its [`TargetType`] — tolerant of values that are not a
-/// canonical [`by_code`] code. A bulk import or a `--test-type` override may store a human label
-/// like `"Big Y"` rather than `BIG_Y_500`/`BIG_Y_700`; without recognizing it the targeted-Y
-/// scoping is lost and coverage walks the whole genome (slow on a targeted multi-reference CRAM).
-/// Matches, in order: exact code, exact display name, then a small set of well-known vendor labels.
-/// Returns `None` when nothing matches (caller treats that as whole-genome/unknown).
+/// Classify a stored `test_type` into its [`TargetType`]. It accepts values that are not a
+/// canonical [`by_code`] code. A bulk import, or a `--test-type` override, can store a human label
+/// like `"Big Y"` and not `BIG_Y_500` or `BIG_Y_700`. If this function does not recognize that
+/// label, the targeted-Y scope is lost, and coverage walks the whole genome. That is slow on a
+/// targeted multi-reference CRAM.
+///
+/// Matches, in order: exact code, exact display name, then a small set of well-known vendor
+/// labels. Returns `None` when nothing matches, and the caller treats that as whole-genome or
+/// unknown.
 pub fn target_of(test_type: &str) -> Option<TargetType> {
     if let Some(t) = by_code(test_type) {
         return Some(t.target);
@@ -218,7 +222,7 @@ pub fn target_of(test_type: &str) -> Option<TargetType> {
     }
 }
 
-/// The display name for a code, falling back to the code itself if unknown.
+/// The display name for a code. If the code is unknown, this returns the code itself.
 pub fn display_name(code: &str) -> &str {
     by_code(code).map(|t| t.display_name).unwrap_or(code)
 }

@@ -1,15 +1,16 @@
-//! FTDNA Big Y CSV variant reports — the "lesser access" substitute for the BAM/CRAM/VCF, for
-//! project admins whose access tier exposes only the browser CSV exports. Two report flavors,
+//! FTDNA Big Y CSV variant reports: the "lesser access" substitute for the BAM, CRAM or VCF. It is
+//! for a project admin whose access tier gives only the browser CSV exports. Two report flavors,
 //! both **GRCh38 chrY** derived-allele calls:
 //!
 //!   Named Variants:   `SNP_Name,Position,On_Haplotree,Ancestral,Derived`
 //!   Private Variants: `Position,Ancestral,Derived`
 //!
-//! Each row is a position where the sample carries the **Derived** allele (a positive call), so we
-//! emit a SNP [`VariantCall`] with `reference = ancestral`, `alternate = derived`, `genotype = "1"`
-//! (derived), and `rs_id` = the SNP name when present. SNP-only (single-base ACGT); other rows are
-//! skipped. The calls land in GRCh38 space, which is FTDNA's native Y-tree build — so Y placement
-//! matches positions directly, no liftover.
+//! Each row is a position where the sample carries the **Derived** allele, which is a positive
+//! call. So this module emits a SNP [`VariantCall`] with `reference = ancestral`,
+//! `alternate = derived`, `genotype = "1"` (derived), and `rs_id` = the SNP name when present.
+//! It reads SNP rows only (single-base ACGT), and drops the others. The calls land in GRCh38
+//! space, which is FTDNA's native Y-tree build. So Y placement matches positions directly, with
+//! no liftover.
 
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +34,8 @@ impl FtdnaReport {
     }
 }
 
-/// chrY contig label for the emitted calls — matches the FTDNA GRCh38 Y-tree's contig.
+/// chrY contig label for the calls this module emits. It matches the contig of the FTDNA GRCh38
+/// Y-tree.
 const CONTIG: &str = "chrY";
 
 /// Split a CSV line into trimmed, unquoted cells.
@@ -66,9 +68,9 @@ pub fn looks_like_ftdna_variant_csv(text: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Parse an FTDNA Big Y Named/Private Variants CSV into chrY derived-allele SNP calls, returning
-/// the report flavor alongside. Errors if the header is not a recognized FTDNA report or no SNP
-/// rows parse.
+/// Parse an FTDNA Big Y Named or Private Variants CSV into chrY derived-allele SNP calls. Also
+/// returns the report flavor. Errors if the header is not a recognized FTDNA report, or if no SNP
+/// row parses.
 pub fn parse(text: &str) -> Result<(FtdnaReport, Vec<VariantCall>), String> {
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
     let header = lines.next().ok_or("empty FTDNA variant CSV")?;
@@ -138,7 +140,7 @@ mod tests {
 
     #[test]
     fn skips_non_snp_rows_and_rejects_foreign_headers() {
-        // An indel row is dropped; the SNP row survives.
+        // The parser drops an indel row. The SNP row survives.
         let csv = "SNP_Name,Position,On_Haplotree,Ancestral,Derived\n\
                    ins1,100,No,A,AT\n\
                    M1,200,Yes,C,T\n";

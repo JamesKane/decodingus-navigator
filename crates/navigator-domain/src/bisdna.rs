@@ -1,13 +1,15 @@
-//! BISDNA chromo2 Y-chromosome raw-data parsing. The export is a tab-delimited table —
-//! `SNPID`, an Illumina TOP-strand `genotype`, and a `result` verdict (positive/negative/
-//! no_call/back-mutated) — preceded by a multi-line prose preamble. Crucially it carries
-//! **no positions or alleles**: a SNP name plus a derived/ancestral verdict. Turning those
-//! into placeable variant calls needs an external name→locus dictionary (see the design
-//! `documents/design/bisdna-import.md`); this module is only the faithful, IO-free file parse.
+//! The parse of BISDNA chromo2 Y-chromosome raw data. The export is a tab-delimited table with
+//! three columns: `SNPID`, an Illumina TOP-strand `genotype`, and a `result` verdict (positive,
+//! negative, no_call, back-mutated). A multi-line prose preamble comes before it.
 //!
-//! Strand note: the genotype is on the Illumina TOP strand, which need not match the
-//! reference + strand, so it is kept verbatim and is *not* the source of truth for
-//! derived/ancestral — the `result` column is (see [`Verdict`]).
+//! Above all, the export carries **no positions and no alleles**. It gives a SNP name plus a
+//! derived or ancestral verdict. To make placeable variant calls from those needs an external
+//! name→locus dictionary (see the design `documents/design/bisdna-import.md`). This module is only
+//! the faithful, IO-free file parse.
+//!
+//! Strand note: the genotype is on the Illumina TOP strand, which does not have to match the +
+//! strand of the reference. So this module keeps it verbatim, and it is *not* the source of truth
+//! for derived or ancestral. The `result` column is that source (see [`Verdict`]).
 
 use std::collections::HashMap;
 
@@ -24,11 +26,11 @@ pub enum Verdict {
     Positive,
     /// Ancestral allele carried.
     Negative,
-    /// Undetermined — the genotype is `00` and BISDNA could not call the marker.
+    /// Undetermined: the genotype is `00`, and BISDNA could not call the marker.
     NoCall,
-    /// The lineage is derived but the base reads ancestral (a documented back-mutation, e.g.
-    /// S163). The placement layer flags and excludes these — a position→base call can't
-    /// represent "derived lineage showing the ancestral base".
+    /// The lineage is derived, but the base reads ancestral (a documented back-mutation, for
+    /// example S163). The placement layer flags these and excludes them. A position→base call can
+    /// not say "a derived lineage that shows the ancestral base".
     BackMutated,
 }
 
@@ -42,7 +44,7 @@ pub struct BisdnaCall {
     pub verdict: Verdict,
 }
 
-/// Trim whitespace and one layer of surrounding double-quotes from a cell.
+/// Trim whitespace and one layer of double-quotes from around a cell.
 fn clean_cell(s: &str) -> &str {
     s.trim().trim_matches('"').trim()
 }
@@ -71,16 +73,16 @@ fn is_header(cols: &[&str]) -> bool {
         && clean_cell(cols[2]).eq_ignore_ascii_case("result")
 }
 
-/// Parse a BISDNA chromo2 export into calls. Skips the prose preamble by seeking the
-/// `SNPID<TAB>genotype<TAB>result` header, then reads each tab-delimited data row
-/// (`name`, `genotype`, `result`). Blank lines and rows with an unrecognized verdict are
-/// skipped; every recognized row is kept verbatim (including `NoCall`/`BackMutated` — the
-/// importer, not the parser, decides what to drop). Errors only if the header is missing or
-/// no data rows follow it.
+/// Parse a BISDNA chromo2 export into calls. It steps over the prose preamble to the
+/// `SNPID<TAB>genotype<TAB>result` header, then reads each tab-delimited data row (`name`,
+/// `genotype`, `result`). It drops a blank line, and a row with a verdict it does not recognize.
+/// It keeps every row it does recognize, verbatim, and that includes `NoCall` and `BackMutated`.
+/// The importer decides what to drop, and not the parser. Errors only if the header is absent, or
+/// if no data row follows it.
 pub fn parse(text: &str) -> Result<Vec<BisdnaCall>, String> {
     let mut lines = text.lines();
 
-    // Seek the header, skipping the multi-line prose preamble.
+    // Find the header, and step over the multi-line prose preamble.
     let header_found = lines.by_ref().any(|line| {
         let cols: Vec<&str> = line.split('\t').collect();
         is_header(&cols)
@@ -119,8 +121,9 @@ pub fn parse(text: &str) -> Result<Vec<BisdnaCall>, String> {
     Ok(calls)
 }
 
-/// Does `genotype` carry `allele` (or its complement)? QC only — a miss on both strands flags
-/// a likely dictionary/name mismatch, but the verdict (not the genotype) decides the call.
+/// Does `genotype` carry `allele`, or its complement? QC only. A miss on both strands flags a
+/// probable mismatch of the dictionary and the name, but the verdict decides the call, and not the
+/// genotype.
 fn genotype_supports(genotype: &str, allele: &str) -> bool {
     let Some(want) = allele.bytes().next().map(|b| b.to_ascii_uppercase()) else {
         return true;
@@ -132,18 +135,18 @@ fn genotype_supports(genotype: &str, allele: &str) -> bool {
         .any(|b| b == want || b == comp)
 }
 
-/// The result of resolving BISDNA calls against the Y-SNP dictionary on a given build: the
-/// emitted variant calls (positives only) plus a per-category tally.
+/// What comes back when BISDNA calls resolve against the Y-SNP dictionary on one build. It holds
+/// the variant calls it emits (positives only), plus a tally for each category.
 // Not `Eq`: a call now carries `CallEvidence`, whose QUAL is an `f64`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResolveOutcome {
     /// Positive (derived) calls resolved to a locus, as carried `VariantCall`s.
     pub calls: Vec<VariantCall>,
-    /// Negative (ancestral) markers — not variants, so not emitted.
+    /// Negative (ancestral) markers. They are not variants, so this does not emit them.
     pub ancestral: usize,
     /// `no_call` markers.
     pub no_call: usize,
-    /// Back-mutated markers — flagged, excluded from placement.
+    /// Back-mutated markers. This flags them, and placement leaves them out.
     pub back_mutated: usize,
     /// Positive markers whose name the dictionary could not place on this build.
     pub unresolved: usize,
@@ -153,12 +156,12 @@ pub struct ResolveOutcome {
     pub strand_mismatches: usize,
 }
 
-/// Resolve parsed BISDNA `calls` to carried Y-SNP variant calls on `build`, using `dict` for
-/// name→locus. Only **positive** (derived) markers are emitted (`reference` = ancestral,
-/// `alternate` = derived, genotype `"1"`); a negative is not a variant, and the variant-level
-/// reconciler weights every stored call as a carried allele. Negative/no_call/back-mutated and
-/// dictionary-unresolved markers are tallied, not emitted. `unresolved_cap` bounds the sample
-/// of unresolved names kept. Pure — no IO.
+/// Resolve parsed BISDNA `calls` to carried Y-SNP variant calls on `build`, with `dict` for
+/// name→locus. This emits only **positive** (derived) markers, as `reference` = ancestral,
+/// `alternate` = derived, genotype `"1"`. A negative is not a variant, and the variant-level
+/// reconciler weights every stored call as a carried allele. It tallies a negative, a no_call, a
+/// back-mutated marker, and a marker the dictionary does not resolve, but it emits none of them.
+/// `unresolved_cap` limits how many unresolved names it keeps. Pure, with no IO.
 pub fn resolve_calls(
     calls: &[BisdnaCall],
     dict: &YsnpDictionary,
@@ -199,12 +202,14 @@ pub fn resolve_calls(
     out
 }
 
-/// Build the position→base map for **haplogroup placement** from BISDNA calls resolved on
-/// `build`. Unlike [`resolve_calls`] (which emits only carried variants, for storage and the
-/// allele-weighted reconciler), this includes **negatives** too: a negative is genuine
-/// ancestral evidence that prunes over-deep branches in the Kulczynski scorer. Positive →
-/// derived base, negative → ancestral base; `no_call`/back-mutated/dictionary-unresolved
-/// markers are omitted (no confident base). Bases are uppercased; on duplicate positions the
+/// Build the position→base map for **haplogroup placement** from BISDNA calls that resolved on
+/// `build`. [`resolve_calls`] emits only carried variants, for storage and the allele-weighted
+/// reconciler. This map holds the **negatives** too, because a negative is genuine ancestral
+/// evidence, and it prunes over-deep branches in the Kulczynski scorer.
+///
+/// A positive gives the derived base, and a negative gives the ancestral base. This leaves out a
+/// `no_call`, a back-mutated marker, and a marker the dictionary does not resolve, because none of
+/// those has a confident base. It puts the bases into upper case, and on a duplicate position the
 /// last call wins. The result feeds `haplo::score` directly (`HashMap<position, base>`).
 pub fn placement_calls(calls: &[BisdnaCall], dict: &YsnpDictionary, build: &str) -> HashMap<i64, char> {
     let mut map = HashMap::new();
@@ -361,7 +366,7 @@ S163\ths1\tchrY\t15000000\t+\tA\tC
 
     #[test]
     fn missing_build_makes_positives_unresolved() {
-        // Dict only has hs1 coords; asking for GRCh38 resolves nothing.
+        // Dict only has hs1 coords, so a request for GRCh38 resolves nothing.
         let out = resolve_calls(&parse(SAMPLE).unwrap(), &dict(), "GRCh38", 10);
         assert!(out.calls.is_empty());
         assert_eq!(out.unresolved, 3); // the three positives

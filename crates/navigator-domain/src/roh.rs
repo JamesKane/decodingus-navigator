@@ -1,19 +1,21 @@
 //! Runs-of-homozygosity domain types.
 //!
-//! The pattern read is a *classification*, not a rendering: it is computed once by
-//! `navigator_analysis::roh` (which re-exports this enum) and then consumed by both the Advanced ROH
-//! chart and the Simple-mode brief. It lives here, below the analysis engine, so the brief builder
-//! in [`crate::brief`] can switch on the canonical verdict instead of re-deriving its own.
+//! The pattern read is a *classification*, and not a way to draw it. `navigator_analysis::roh`
+//! computes it one time, and re-exports this enum. Both the Advanced ROH chart and the Simple-mode
+//! brief then read it. It lives here, below the analysis engine. The brief builder in
+//! [`crate::brief`] can then switch on the canonical verdict, and does not derive its own.
 
-/// Coarse pattern read from the ROH length distribution. Heuristic — for narration, not diagnosis.
+/// Coarse pattern read from the ROH length distribution. It is a heuristic, for narration and not
+/// for diagnosis.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RohPattern {
-    /// Little total ROH — outbred.
+    /// Little total ROH: outbred.
     Outbred,
-    /// ROH mass dominated by short segments — background relatedness / endogamous population.
+    /// Short segments hold most of the ROH mass: background relatedness, or an endogamous
+    /// population.
     Endogamy,
-    /// ROH mass dominated by long segments — recent consanguinity in the pedigree.
+    /// Long segments hold most of the ROH mass: recent consanguinity in the pedigree.
     RecentConsanguinity,
-    /// Substantial ROH across all classes.
+    /// Large ROH across all classes.
     Mixed,
 }

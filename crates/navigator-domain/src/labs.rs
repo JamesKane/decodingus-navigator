@@ -1,9 +1,9 @@
-//! Catalog of known labs, sequencing centers, and genotyping vendors — a Rust port of the Scala
-//! `LabsConfig`/`labs.conf`. Provides display names, ≤6-char abbreviations, categories, and
-//! capabilities for the Data Sources UI (lab chips + the sequence-run lab dropdown), and
-//! case-insensitive lookup by id / display name / alias for matching an inferred facility.
+//! Catalog of known labs, sequencing centers, and genotyping vendors. This is a Rust port of the
+//! Scala `LabsConfig`/`labs.conf`. It gives display names, ≤6-char abbreviations, categories, and
+//! capabilities for the Data Sources UI (lab chips and the sequence-run lab dropdown). It also
+//! gives case-insensitive lookup by id, display name, or alias, to match an inferred facility.
 //!
-//! Static data (no config file): the set is small and stable; adding a lab is a code change.
+//! Static data (no config file): the set is small and stable, and a new lab is a code change.
 
 /// A lab / sequencing center / vendor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub mod category {
 
 /// The full catalog (25 labs), ported from `labs.conf`.
 pub const CATALOG: &[Lab] = &[
-    // Commercial DNA testing labs
+    // Commercial DNA test labs
     Lab {
         id: "familytreedna",
         display_name: "FamilyTreeDNA",
@@ -299,8 +299,8 @@ pub fn display_name(identifier: &str) -> String {
         .unwrap_or_else(|| identifier.to_string())
 }
 
-/// Display names offered in the sequence-run lab dropdown: testing labs + sequencing platforms +
-/// academic institutions (not consumer-array vendors), sorted.
+/// Display names offered in the sequence-run lab dropdown: test labs, sequencing platforms, and
+/// academic institutions, but not consumer-array vendors. Sorted.
 pub fn sequence_run_lab_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = CATALOG
         .iter()

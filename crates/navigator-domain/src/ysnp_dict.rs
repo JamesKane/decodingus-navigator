@@ -1,14 +1,14 @@
-//! The Y-SNP name → locus dictionary that gives a BISDNA (or any name-only Y panel) export
-//! its missing coordinates. A SNP name like `CTS10003` resolves to a position plus its
-//! ancestral/derived alleles — **per reference build**, so the codebase stays build-agnostic:
-//! `coordinates` is keyed by build label (`"GRCh38"`, `"GRCh37"`, `"hs1"`, …), exactly the
-//! convention the DecodingUs Y-tree uses. The importer is handed the build it is placing
-//! against and reads that coordinate; nothing here is CHM13-specific.
+//! The Y-SNP name → locus dictionary that gives a BISDNA export, or any name-only Y panel, its
+//! missing coordinates. A SNP name like `CTS10003` resolves to a position, plus its ancestral and
+//! derived alleles, **for each reference build**. The codebase then stays build-agnostic. The
+//! build label is the key of `coordinates` (`"GRCh38"`, `"GRCh37"`, `"hs1"`, …), which is exactly
+//! the convention the DecodingUs Y-tree uses. The caller gives the importer the build it places
+//! against, and the importer reads that coordinate. Nothing here is specific to CHM13.
 //!
-//! The bulk data is a generated asset (built from YBrowse + liftover by
-//! `scripts/ysnp-dictionary/`); a small checked-in chromo2 panel manifest uses the same
-//! format. This module is pure over already-loaded text — [`YsnpDictionary::from_text`] — with
-//! a thin [`YsnpDictionary::load`] IO boundary that reads the asset files. See
+//! The bulk data is a generated asset, which `scripts/ysnp-dictionary/` builds from YBrowse and a
+//! liftover. A small checked-in chromo2 panel manifest uses the same format. This module is pure
+//! over text that is already in memory ([`YsnpDictionary::from_text`]), with a thin
+//! [`YsnpDictionary::load`] IO boundary that reads the asset files. See
 //! `documents/design/bisdna-import.md`.
 
 use std::collections::HashMap;
@@ -16,9 +16,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// One SNP's locus on a specific reference build. Alleles are on that build's + strand, so a
-/// strand-flipping liftover stores its own (complemented) alleles — they are per-coordinate,
-/// not per-SNP.
+/// The locus of one SNP on a specific reference build. The alleles are on the + strand of that
+/// build, so a liftover that flips the strand stores its own complemented alleles. The alleles
+/// belong to a coordinate, and not to a SNP.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Coord {
     pub chrom: String,
@@ -45,8 +45,8 @@ pub struct ResolvedSnp<'a> {
     pub coord: &'a Coord,
 }
 
-/// The loaded dictionary: canonical entries plus an alias → canonical index. Lookups are
-/// case-insensitive on the SNP name (build keys are matched verbatim).
+/// The loaded dictionary: canonical entries, plus an alias → canonical index. A lookup ignores
+/// the case of the SNP name, and matches a build key verbatim.
 #[derive(Debug, Clone, Default)]
 pub struct YsnpDictionary {
     /// lowercased canonical name → entry.
@@ -67,7 +67,7 @@ pub fn asset_dir() -> PathBuf {
     crate::paths::decodingus_dir().join("ysnp")
 }
 
-/// Split a TSV line into trimmed cells, ignoring a trailing empty cell from a final tab.
+/// Split a TSV line into trimmed cells, and drop an empty last cell that a final tab makes.
 fn cells(line: &str) -> Vec<&str> {
     line.split('\t').map(str::trim).collect()
 }
@@ -79,13 +79,16 @@ fn is_skippable(line: &str) -> bool {
 }
 
 impl YsnpDictionary {
-    /// Build from the two asset texts (no IO). `dictionary` rows are
-    /// `name<TAB>build<TAB>chrom<TAB>position<TAB>strand<TAB>ancestral<TAB>derived`; `aliases`
-    /// (optional, may be empty) rows are `alias<TAB>canonical`. A leading header row whose
-    /// first cell is `name`/`alias` is ignored; `#` comments and blanks are skipped. Rows with
-    /// an unparseable position are dropped. The first coordinate seen for a (name, build) wins
-    /// — later duplicates are ignored (deterministic over a sorted asset). Errors only if no
-    /// usable entries result.
+    /// Build from the two asset texts (no IO).
+    ///
+    /// A `dictionary` row is
+    /// `name<TAB>build<TAB>chrom<TAB>position<TAB>strand<TAB>ancestral<TAB>derived`. An `aliases`
+    /// row is `alias<TAB>canonical`, and that file is optional and can be empty.
+    ///
+    /// This drops a first header row whose first cell is `name` or `alias`. It also drops a `#`
+    /// comment, a blank line, and a row whose position does not parse. For one (name, build), the
+    /// first coordinate wins, and later duplicates go. That is deterministic over a sorted asset.
+    /// Errors only if no usable entry comes out.
     pub fn from_text(dictionary: &str, aliases: &str) -> Result<Self, String> {
         let mut by_name: HashMap<String, SnpEntry> = HashMap::new();
         for line in dictionary.lines() {
@@ -148,15 +151,16 @@ impl YsnpDictionary {
         })
     }
 
-    /// Candidate dictionary filenames in `load` preference order: the full ~200 MB / ~2M-name
-    /// catalog first, then the small per-chip panel only as a fallback. The chromo2 chip panel is a
-    /// stale ~14k-name subset that would shadow current names present in the full catalog, so the
-    /// catalog wins whenever it is installed (it is the one downloaded on first use).
+    /// Candidate dictionary filenames, in the preference order of `load`. The full ~200 MB catalog
+    /// of ~2M names comes first, then the small panel of one chip as a fallback. The chromo2 chip
+    /// panel is a stale subset of ~14k names, and it would hide current names that the full
+    /// catalog holds. So the catalog wins whenever the machine has it, and it is the one the app
+    /// downloads on first use.
     pub const ASSET_FILENAMES: &'static [&'static str] = &["dictionary.tsv", "chromo2-panel.tsv"];
 
     /// Read the asset from `dir`: the first of [`Self::ASSET_FILENAMES`] that exists, plus an
-    /// optional sibling `aliases.tsv`. Prefers the full catalog for the widest, current name
-    /// coverage; the chromo2 panel is only used when the catalog is not present.
+    /// optional sibling `aliases.tsv`. It prefers the full catalog, for the widest and most
+    /// current name coverage. It uses the chromo2 panel only when the catalog is absent.
     pub fn load(dir: &Path) -> Result<Self, String> {
         let dict_path = Self::ASSET_FILENAMES
             .iter()
@@ -189,12 +193,15 @@ impl YsnpDictionary {
         })
     }
 
-    /// Build a reverse index `position → canonical name` for one reference `build` (the inverse of
-    /// [`resolve`](Self::resolve)). Lets a caller annotate a position-only call (a novel/private Y
-    /// variant) with the catalogued Y-SNP name at that site, if one exists. The first name seen at a
-    /// position wins (deterministic over a sorted asset); positions absent on `build` are omitted.
-    /// All entries are chrY in practice, so the key is position alone — a caller resolving the
-    /// correct build avoids the (vanishingly unlikely) cross-build integer collision.
+    /// Build a reverse index `position → canonical name` for one reference `build`. This is the
+    /// inverse of [`resolve`](Self::resolve). A position-only call is a novel or private Y
+    /// variant. This index lets a caller add the catalogued Y-SNP name at that site, when such a
+    /// name exists.
+    ///
+    /// At one position the first name wins, which is deterministic over a sorted asset. This
+    /// leaves out a position that `build` does not have. In practice every entry is chrY, so the
+    /// key is the position alone. A caller that resolves the correct build avoids the cross-build
+    /// integer collision, which is in any case very improbable.
     pub fn position_index(&self, build: &str) -> HashMap<i64, &str> {
         let mut idx = HashMap::new();
         for entry in self.by_name.values() {
@@ -295,7 +302,7 @@ M269\tCTS10003
     #[test]
     fn alias_resolves_to_canonical() {
         let d = dict();
-        // PF6517 is an alias of M269; resolve via the alias.
+        // PF6517 is an alias of M269, so resolve through the alias.
         let r = d.resolve("PF6517", "GRCh38").unwrap();
         assert_eq!(r.canonical, "M269");
         assert_eq!(r.coord.position, 22739367);
@@ -304,7 +311,8 @@ M269\tCTS10003
     #[test]
     fn alias_to_unknown_canonical_is_ignored() {
         let d = dict();
-        // S163 -> NoSuchSnp (not a real entry): the alias is dropped, so S163 is unresolvable.
+        // S163 -> NoSuchSnp (not a real entry). The code drops the alias, so S163 does not
+        // resolve.
         assert!(d.resolve("S163", "GRCh38").is_none());
     }
 

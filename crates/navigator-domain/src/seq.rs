@@ -1,6 +1,6 @@
-//! Tiny shared sequence helpers used across the desktop crates (navigator-domain, -analysis, -app
-//! all depend on navigator-domain, so this is their common home — no extra dependencies). Keep it to
-//! pure, allocation-free base math.
+//! Tiny shared sequence helpers for the desktop crates. The `navigator-domain`,
+//! `navigator-analysis` and `navigator-app` crates all depend on `navigator-domain`, so this is
+//! their common home, and it adds no dependency. Keep it to pure, allocation-free base math.
 
 /// Watson–Crick complement of a single base (`char`); non-ACGT (incl. lowercase non-matches and `N`)
 /// passes through unchanged. Used for strand reconciliation against a reference/tree.
@@ -14,7 +14,7 @@ pub fn complement_base(b: char) -> char {
     }
 }
 
-/// Byte (`u8`) variant of [`complement_base`] for callers working on raw allele bytes.
+/// Byte (`u8`) variant of [`complement_base`], for a caller that works on raw allele bytes.
 pub fn complement_base_u8(b: u8) -> u8 {
     match b.to_ascii_uppercase() {
         b'A' => b'T',

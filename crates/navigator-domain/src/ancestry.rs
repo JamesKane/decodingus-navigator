@@ -1,11 +1,11 @@
-//! Ancestry estimation result types — a sample's population-proportion estimate plus the
-//! reference population catalog. Pure types; the estimator lives in `navigator-analysis`
-//! (which builds these), persistence in `navigator-store`/the app.
+//! Ancestry estimation result types: the population-proportion estimate of a sample, plus the
+//! reference population catalog. Pure types. The estimator lives in `navigator-analysis`, which
+//! builds these, and persistence is in `navigator-store` and the app.
 //!
-//! Phase 1 works at **super-population** granularity (AFR/AMR/EAS/EUR/SAS), the resolution
-//! the 1000G-on-CHM13 INFO allele counts give us directly. The fine-grained 26/33-population
-//! catalog (and PCA coordinates) is deferred to phase 2 — the `pca_coordinates` field is
-//! already carried so the result shape does not change when PCA lands.
+//! Phase 1 works at **super-population** granularity (AFR/AMR/EAS/EUR/SAS). That is the resolution
+//! the 1000G-on-CHM13 INFO allele counts give us directly. Phase 2 holds the fine-grained
+//! 26/33-population catalog, and the PCA coordinates. The `pca_coordinates` field is already here,
+//! so the result shape does not change when PCA lands.
 
 use serde::{Deserialize, Serialize};
 
@@ -62,16 +62,17 @@ const FINE_POPULATIONS: [(&str, &str, &str); 35] = [
     ("CHS", "Southern Han Chinese", "EAS"),
     ("CDX", "Dai Chinese", "EAS"),
     ("KHV", "Kinh (Vietnam)", "EAS"),
-    // European — 1000G reference set (CEU is the sole NW/continental proxy)…
+    // European: the 1000G reference set (CEU is the only NW or continental proxy)…
     ("CEU", "NW European (Utah)", "EUR"),
     ("TSI", "Tuscan (Italy)", "EUR"),
     ("FIN", "Finnish", "EUR"),
     ("GBR", "British", "EUR"),
     ("IBS", "Iberian (Spain)", "EUR"),
-    // …plus present-day AADR reference groups that fill continental West/Central/South/East
-    // Europe, which 1000G lacks. Without these a continental European's ancestry has no home and
-    // smears into CEU + spurious Iberian/Tuscan. (German/Dutch/Swiss remain unavailable in any
-    // public academic panel — French/Orcadian are the nearest continental-NW anchors.)
+    // …plus present-day AADR reference groups that fill continental West, Central, South and
+    // East Europe, which 1000G lacks. Without these, the ancestry of a continental European has no
+    // home and smears into CEU plus a spurious Iberian or Tuscan component. (German, Dutch and
+    // Swiss groups are in no public academic panel. French and Orcadian are the nearest
+    // continental-NW anchors.)
     ("FRN", "French", "EUR"),
     ("ORC", "Orcadian", "EUR"),
     ("SRD", "Sardinian", "EUR"),
@@ -91,9 +92,9 @@ const FINE_POPULATIONS: [(&str, &str, &str); 35] = [
 ];
 
 /// Ancient reference components for the PCA-projection GMM model: `(code, name, hex color)`.
-/// These are the labels of the ancient `PcaLoadings` asset (built by `navigator-panelbuild`
-/// from labelled ancient reference genomes); each is its own continental-equivalent group, so
-/// it rolls up to itself in the super-population summary.
+/// These are the labels of the ancient `PcaLoadings` asset, which `navigator-panelbuild` builds
+/// from labelled ancient reference genomes. Each is its own continental-equivalent group, so it
+/// rolls up to itself in the super-population summary.
 const ANCIENT_POPULATIONS: [(&str, &str, &str); 3] = [
     ("Steppe", "Steppe pastoralist", "#4e79a7"),
     ("EEF", "Early European Farmer", "#f28e2b"),
@@ -101,10 +102,11 @@ const ANCIENT_POPULATIONS: [(&str, &str, &str); 3] = [
 ];
 
 /// HGDP reference populations (Bergström 2020), `(code, display-name, super-population)`. These
-/// enrich the copying-LAI **haplotype** reference (`ancestry_haps`) with sub-continental depth 1000G
-/// lacks (French/Sardinian/Basque/…); they are NOT part of the modern admixture EM's fine set
-/// ([`fine_population_codes`]), so they live in their own table consulted by [`population_super`] /
-/// [`population_name`] / [`population_color`]. Super-population = the standard HGDP 7-region grouping.
+/// add sub-continental depth to the copying-LAI **haplotype** reference (`ancestry_haps`), which
+/// 1000G lacks: French, Sardinian, Basque and others. They are NOT part of the fine set of the
+/// modern admixture EM ([`fine_population_codes`]). So they live in their own table, which
+/// [`population_super`], [`population_name`] and [`population_color`] read. The super-population
+/// is the standard HGDP 7-region division.
 const HGDP_POPULATIONS: [(&str, &str, &str); 62] = [
     // Europe
     ("Adygei", "Adygei", "EUR"),
@@ -178,10 +180,11 @@ const HGDP_POPULATIONS: [(&str, &str, &str); 62] = [
     ("Yoruba", "Yoruba (HGDP)", "AFR"),
 ];
 
-/// The curated **modern** fine-population codes (1000G fine pops + SGDP-backed continents) — the
-/// reference subset a fine admixture EM runs over. Excludes ancient components (which are handled by
-/// the distance/PCA estimators, not the modern EM). The fine-frequency asset may carry more
-/// populations; the estimator restricts to this set to stay well-conditioned.
+/// The curated **modern** fine-population codes (1000G fine pops and SGDP-backed continents).
+/// This is the reference subset a fine admixture EM runs over. It leaves out the ancient
+/// components, which the distance and PCA estimators control, and not the modern EM. The
+/// fine-frequency asset can carry more populations, but the estimator limits itself to this set,
+/// to stay well-conditioned.
 pub fn fine_population_codes() -> Vec<&'static str> {
     FINE_POPULATIONS.iter().map(|(c, _, _)| *c).collect()
 }
@@ -207,7 +210,8 @@ pub fn population_super(code: &str) -> Option<&'static str> {
 
 const SUPER_CODES: [&str; 8] = ["AFR", "AMR", "EAS", "SAS", "EUR", "MEA", "CAS", "OCE"];
 
-/// Display name for a fine or super population code, falling back to the code itself.
+/// Display name for a fine or super population code. If there is none, this returns the code
+/// itself.
 pub fn population_name(code: &str) -> String {
     if let Some((_, name, _)) = ANCIENT_POPULATIONS.iter().find(|(c, _, _)| *c == code) {
         return name.to_string();
@@ -240,8 +244,8 @@ pub fn population_color(code: &str) -> String {
 }
 
 /// Approximate `(longitude, latitude)` of a population's homeland, for the geographic map.
-/// Representative points (degrees); fine populations are placed in-country, super-only groups
-/// (MEA/CAS/OCE) at a regional centroid.
+/// These are representative points in degrees. A fine population sits in its country, and a
+/// super-only group (MEA/CAS/OCE) sits at a regional centroid.
 pub fn population_lonlat(code: &str) -> Option<(f32, f32)> {
     let p = match code {
         // African
@@ -295,14 +299,14 @@ pub fn population_lonlat(code: &str) -> Option<(f32, f32)> {
     Some(p)
 }
 
-/// A contiguous stretch of one chromosome assigned to a single ancestry — a segment of the
-/// per-chromosome "DNA painting" (local ancestry). `start`/`end` are 1-based inclusive bp.
+/// A contiguous stretch of one chromosome with a single ancestry. It is a segment of the "DNA
+/// painting" (local ancestry) of that chromosome. `start` and `end` are 1-based inclusive bp.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AncestrySegment {
     pub contig: String,
     pub start: i64,
     pub end: i64,
-    /// Super-population code (AFR/EUR/…) the segment is painted with.
+    /// Super-population code (AFR/EUR/…) that the painting gives this segment.
     pub population_code: String,
     /// Mean posterior support for the assignment over the segment (0–1).
     pub posterior: f64,
@@ -311,17 +315,17 @@ pub struct AncestrySegment {
     /// Older single-track paintings decode to copy 0.
     #[serde(default)]
     pub copy: u8,
-    /// Fine (sub-continental) population resolved within this super-population segment by the
-    /// two-tier fine-resolution step (e.g. "GBR" within "EUR"). `None` when the fine call is too
-    /// uncertain, or for older paintings (decodes to `None`) — fall back to `population_code`.
+    /// Fine (sub-continental) population that the two-tier fine-resolution step found inside this
+    /// super-population segment (for example "GBR" inside "EUR"). `None` when the fine call is too
+    /// uncertain, and for an older painting, which decodes to `None`. Then use `population_code`.
     #[serde(default)]
     pub fine_population_code: Option<String>,
 }
 
-/// A chromosome painting: the per-side ancestry segments plus a human label for each of the two
-/// sides. When the painting is phased and a parent was found in the workspace, the sides are
-/// anchored to that parent (labels like "Mother"/"Father"); otherwise they are the neutral
-/// "Side A"/"Side B". `side_labels[i]` labels the side whose segments carry `copy == i`.
+/// A chromosome painting: the ancestry segments of each side, plus a human label for each of the
+/// two sides. When the painting has phase and the workspace holds a parent, the labels anchor to
+/// that parent, with names like "Mother" and "Father". If not, they are the neutral "Side A" and
+/// "Side B". `side_labels[i]` labels the side whose segments carry `copy == i`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PaintingResult {
     pub segments: Vec<AncestrySegment>,
@@ -367,9 +371,9 @@ pub struct PopulationComponent {
     pub rank: usize,
 }
 
-/// A super-population (continental) summary. With the phase-1 super-population panel this is
-/// 1:1 with the components; it stays distinct so the fine-grained phase-2 panel can roll its
-/// constituent populations up here without changing the result shape.
+/// A super-population (continental) summary. With the phase-1 super-population panel this is 1:1
+/// with the components. It stays distinct, so that the fine-grained phase-2 panel can roll its
+/// constituent populations up here, and the result shape does not change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuperPopulationSummary {
     pub super_population: String,
@@ -380,9 +384,10 @@ pub struct SuperPopulationSummary {
 /// A sample's ancestry estimate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AncestryResult {
-    /// The estimator that produced this result: `"AF_LIKELIHOOD"` | `"ADMIXTURE"` |
-    /// `"PCA_PROJECTION_GMM"`. Carried verbatim into the published record's `analysisMethod`
-    /// (and the per-(alignment, method) store key) so the method is captured, never inferred.
+    /// The estimator that made this result: `"AF_LIKELIHOOD"` | `"ADMIXTURE"` |
+    /// `"PCA_PROJECTION_GMM"`. It goes verbatim into the `analysisMethod` of the published record,
+    /// and into the store key of (alignment, method). So the method is a record, and never an
+    /// inference.
     pub method: String,
     /// "aims" | "genome-wide".
     pub panel_type: String,
@@ -396,8 +401,9 @@ pub struct AncestryResult {
     pub super_population_summary: Vec<SuperPopulationSummary>,
     /// Overall confidence (0–1) from data completeness.
     pub confidence_level: f64,
-    /// Fit residual for distance-minimizing models (nMonte/G25): the Euclidean distance between
-    /// the sample and its fitted mixture in PC space. Lower is better; `None` for non-fit methods.
+    /// Fit residual for a model that minimizes distance (nMonte/G25): the Euclidean distance
+    /// between the sample and its fitted mixture in PC space. Lower is better. `None` for a method
+    /// that does not fit.
     pub fit_distance: Option<f64>,
     pub pipeline_version: String,
     pub reference_version: String,

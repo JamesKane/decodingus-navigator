@@ -1,14 +1,16 @@
-//! Plain-language **subject brief** model + the reference-content pack that supplies its narrative.
+//! The plain-language **subject brief** model, and the reference-content pack that gives it its
+//! narrative.
 //!
-//! This module is pure (no I/O): it owns the render-ready [`SubjectBrief`] tree, the [`BriefPack`]
-//! reference-content schema, and the deterministic templating that turns structured analysis signals
-//! (ages, depths, confidences) into casual-reader sentences. Composition — pulling the signals and
-//! loading/enriching the pack — lives in `navigator-app::brief`; rendering lives in `navigator-ui`.
+//! This module is pure, with no I/O. It owns three things: the [`SubjectBrief`] tree, which is
+//! ready to draw, the [`BriefPack`] reference-content schema, and the deterministic templates.
+//! Those templates turn structured analysis signals (ages, depths, confidences) into sentences for
+//! a casual reader. Composition lives in `navigator-app::brief`: it collects the signals, and it
+//! loads the pack and adds to it. The UI draws the result, in `navigator-ui`.
 //!
-//! The narrative content (haplogroup origins, ages, stories, test descriptions) is *not* derivable
-//! from the analysis; it comes from the [`BriefPack`], shipped as a bundled seed and refreshed from a
-//! CDN asset. Lookups fall back up the lineage path so a compact pack still tells a useful story for
-//! a rare terminal haplogroup (see [`BriefPack::lineage_lookup`]).
+//! The narrative content (haplogroup origins, ages, stories, test descriptions) does *not* come
+//! from the analysis. It comes from the [`BriefPack`], which ships as a bundled seed, and which a
+//! CDN asset refreshes. A lookup falls back up the lineage path, so a compact pack still tells a
+//! useful story for a rare terminal haplogroup (see [`BriefPack::lineage_lookup`]).
 
 use crate::ancestry::SuperPopulationSummary;
 use crate::i18n::{tr, tr_fmt, Lang};
@@ -21,11 +23,11 @@ use std::collections::HashMap;
 // Reference pack (narrative content)
 // ---------------------------------------------------------------------------------------------
 
-/// One haplogroup's narrative content: when it formed, where it is associated with, and a short
-/// curated story. Every field is optional so a sparse pack still contributes what it has.
+/// The narrative content of one haplogroup: when it formed, which places it goes with, and a short
+/// curated story. Every field is optional, so a sparse pack still gives what it has.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct HaploEntry {
-    /// Years before present the haplogroup is estimated to have formed.
+    /// Years before present when the haplogroup formed, as an estimate.
     #[serde(default)]
     pub formed_ybp: Option<i32>,
     /// Broad geographic / cultural association ("the Pontic-Caspian steppe and early Europe").
@@ -44,7 +46,7 @@ pub struct HaploEntry {
 pub struct TestEntry {
     /// What the test tells you ("reads your whole genome, so it covers every lineage and ancestry").
     pub what: String,
-    /// Honest limitation, when there is one ("covers only the Y chromosome — no ancestry or
+    /// Honest limitation, when there is one ("covers only the Y chromosome: no ancestry, and no
     /// maternal line").
     #[serde(default)]
     pub limits: Option<String>,
@@ -62,8 +64,8 @@ pub struct PopEntry {
     pub blurb: Option<String>,
 }
 
-/// The bundled/downloaded reference pack. Maps are keyed by haplogroup name / test-type code /
-/// population code.
+/// The reference pack, from the bundle or from a download. The key of a map is a haplogroup name,
+/// a test-type code, or a population code.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct BriefPack {
     pub version: String,
@@ -110,9 +112,10 @@ impl BriefPack {
         self.test_types.get(code)
     }
 
-    /// Look up `terminal` in `map`; if absent, walk the **root→tip** `lineage` and return the entry
-    /// for the haplogroup *closest to the tip* that the pack covers. Returns the matched name (which
-    /// may be an ancestor of `terminal`) and its entry, or `None` if nothing on the lineage is known.
+    /// Look up `terminal` in `map`. If it is not there, walk the **root→tip** `lineage` and return
+    /// the entry for the haplogroup *closest to the tip* that the pack covers. Returns the name it
+    /// matched, which can be an ancestor of `terminal`, and its entry. `None` if the pack covers
+    /// nothing on the lineage.
     fn lineage_lookup<'a>(
         map: &'a HashMap<String, HaploEntry>,
         terminal: &str,
@@ -152,7 +155,7 @@ pub enum PackStatus {
     Cached,
     /// The bundled seed only (offline / CDN unavailable).
     Bundled,
-    /// No pack at all (even the seed failed to parse) — briefs degrade to structured facts.
+    /// No pack at all (even the seed failed to parse). A brief then degrades to structured facts.
     Unavailable,
 }
 
@@ -212,7 +215,7 @@ pub struct AncientComponent {
 /// The ancestry-composition section.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AncestryBrief {
-    /// One-line framing, e.g. "Predominantly European".
+    /// A one-line summary, for example "Predominantly European".
     pub summary_phrase: String,
     /// Continental breakdown (carried whole so the UI can reuse the existing donut).
     pub super_populations: Vec<SuperPopulationSummary>,
@@ -222,13 +225,13 @@ pub struct AncestryBrief {
     pub ancient_pops: Vec<AncientComponent>,
     /// Optional plain-language note about the mix (from the reference pack).
     pub interpretation: Option<String>,
-    /// How the estimate was made, e.g. "estimated from 412,000 genome-wide markers".
+    /// What made the estimate, for example "estimated from 412,000 genome-wide markers".
     pub method_note: String,
 }
 
-/// The runs-of-homozygosity (relatedness / endogamy) section — present only once ROH has been
-/// computed for the subject. F_ROH is the share of the genome in long homozygous runs, which reflects
-/// how much recent shared ancestry there is between a person's two parental lines.
+/// The runs-of-homozygosity section (relatedness and endogamy). It is here only after ROH runs for
+/// the subject. F_ROH is the share of the genome in long homozygous runs. That share shows how much
+/// recent shared ancestry the two parental lines of a person have.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RohBrief {
     /// Inbreeding coefficient F_ROH (0.0–1.0), the physical share of autosomes in runs of homozygosity.
@@ -244,7 +247,7 @@ pub struct RohBrief {
     pub longest_mb: f64,
 }
 
-/// The "your test & quality" section — always present.
+/// The "your test & quality" section. It is always there.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TestBrief {
     pub test_name: String,
@@ -258,11 +261,13 @@ pub struct TestBrief {
 /// An offer to rebuild one alignment against CHM13, for a reader who should not have to know what
 /// a reference build is.
 ///
-/// It is deliberately narrow. Realignment costs hours and hundreds of GB, and it buys exactly one
-/// thing: Y-chromosome discovery on a reference whose Y is complete. So the offer is only made when
-/// there is a paternal line to improve *and* an alignment on an older reference that has not already
-/// been realigned. Everyone else — a subject with no Y, a chip-only subject, one already on CHM13 —
-/// is never shown it, because for them the answer would not change.
+/// It is narrow on purpose. Realignment costs hours and hundreds of GB, and it gives exactly one
+/// thing: Y-chromosome discovery on a reference whose Y is complete.
+///
+/// So the offer appears only when two things hold. There must be a paternal line to improve, and an
+/// alignment on an older reference that no realignment has touched. Everybody else never sees it: a
+/// subject with no Y, a chip-only subject, and a subject already on CHM13. For them the answer
+/// would not change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RealignOffer {
     /// The alignment that would be rebuilt.
@@ -271,28 +276,30 @@ pub struct RealignOffer {
     pub current_build: String,
 }
 
-/// A casual-reader brief for one subject. Sections are `Option` — each degrades to absent when its
-/// data is missing (Y-only test → no maternal line; no haplogroup placed yet → no lineage section).
+/// A brief for one subject, for a casual reader. Each section is an `Option`, and it becomes
+/// absent when its data is missing. A Y-only test gives no maternal line, and a subject with no
+/// haplogroup placed yet gives no lineage section.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubjectBrief {
     pub headline: Headline,
     pub paternal: Option<LineageBrief>,
     pub maternal: Option<LineageBrief>,
     pub ancestry: Option<AncestryBrief>,
-    /// Relatedness / endogamy read from runs of homozygosity. Absent until ROH is computed.
+    /// Relatedness and endogamy, read from runs of homozygosity. Absent until ROH runs.
     #[serde(default)]
     pub roh: Option<RohBrief>,
-    /// Archaic (Neanderthal) marker count. Absent until the archaic count is computed.
+    /// Archaic (Neanderthal) marker count. Absent until that count runs.
     #[serde(default)]
     pub archaic: Option<ArchaicBrief>,
     pub test: TestBrief,
-    /// True when the subject has a sequencing alignment that has not been analyzed yet (data present,
-    /// no coverage computed) — the signal for the Simple-mode one-click "Analyze" prompt. False for
-    /// an already-analyzed subject or one with no alignment (chip/VCF-only, nothing to analyze).
+    /// True when the subject has a sequencing alignment that no analysis has touched: the data is
+    /// there, and no coverage exists. This is the signal for the one-click "Analyze" prompt in
+    /// Simple mode. False for a subject that an analysis already covered, and for a subject with no
+    /// alignment (chip or VCF only, with nothing to analyze).
     #[serde(default)]
     pub needs_analysis: bool,
-    /// An alignment worth realigning to CHM13, when doing so would actually tell the reader
-    /// something new. Absent whenever it would not — see [`RealignOffer`].
+    /// An alignment that is worth a realignment to CHM13, when that would tell the reader
+    /// something new. Absent whenever it would not. See [`RealignOffer`].
     #[serde(default)]
     pub realign_offer: Option<RealignOffer>,
     /// Global uncertainty notes.
@@ -300,12 +307,12 @@ pub struct SubjectBrief {
     /// Loaded pack version (for display), if any.
     pub pack_version: Option<String>,
     pub pack_status: PackStatus,
-    /// True when live AppView/DecodingUs content (haplogroup ages/provenance) was folded in.
+    /// True when live AppView or DecodingUs content (haplogroup ages, provenance) went into this.
     pub enriched: bool,
 }
 
 // ---------------------------------------------------------------------------------------------
-// Templating (deterministic, unit-tested)
+// Templates (deterministic, with unit tests)
 // ---------------------------------------------------------------------------------------------
 
 /// Group an integer with thousands separators ("4000" → "4,000"). Small helper to keep the phrase
@@ -343,7 +350,7 @@ fn round_age(ybp: i32) -> i64 {
     ((y + step / 2) / step) * step
 }
 
-/// "formed roughly 4,200 years ago" — `None` when the age is unknown.
+/// "formed roughly 4,200 years ago". `None` when the age is unknown.
 pub fn age_phrase(lang: Lang, formed_ybp: Option<i32>) -> Option<String> {
     let ybp = formed_ybp?;
     if ybp <= 0 {
@@ -352,7 +359,7 @@ pub fn age_phrase(lang: Lang, formed_ybp: Option<i32>) -> Option<String> {
     Some(tr_fmt(lang, "brief.agePhrase", &[&group_thousands(round_age(ybp))]))
 }
 
-/// "associated with the Pontic-Caspian steppe and early Europe" — `None` when unknown.
+/// "associated with the Pontic-Caspian steppe and early Europe". `None` when unknown.
 pub fn origin_phrase(lang: Lang, origin: Option<&str>) -> Option<String> {
     let o = origin?.trim();
     if o.is_empty() {
@@ -381,8 +388,8 @@ pub fn confidence_phrase(lang: Lang, confidence: f64, run_count: usize, conflict
     tr_fmt(lang, key, &[sources])
 }
 
-/// Sequencing-depth quality, gated by what the test targets. Returns the phrase and an ok flag
-/// (drives a ✓/⚠ chip). A targeted test (Y/mt) is judged on its own target depth, which is much
+/// Sequencing-depth quality, gated by what the test targets. Returns the phrase and an ok flag,
+/// which drives a ✓/⚠ chip. A targeted test (Y or mt) uses its own target depth. That depth is much
 /// higher than a WGS average, so the WGS thresholds do not apply.
 pub fn quality_phrase(lang: Lang, mean_coverage: f64, target: TargetType) -> (String, bool) {
     let (label_key, ok) = match target {
@@ -416,8 +423,8 @@ pub fn quality_phrase(lang: Lang, mean_coverage: f64, target: TargetType) -> (St
     )
 }
 
-/// One-line framing of an ancestry mix from the continental breakdown. Sorts a copy by share so the
-/// caller needn't pre-sort. Empty input → a neutral phrase.
+/// A one-line summary of an ancestry mix, from the continental breakdown. It sorts a copy by
+/// share, so a caller does not have to sort first. Empty input → a neutral phrase.
 pub fn ancestry_summary(lang: Lang, super_pops: &[SuperPopulationSummary]) -> String {
     let mut sorted: Vec<&SuperPopulationSummary> = super_pops.iter().collect();
     sorted.sort_by(|a, b| b.percentage.total_cmp(&a.percentage));
@@ -442,21 +449,24 @@ pub fn ancestry_summary(lang: Lang, super_pops: &[SuperPopulationSummary]) -> St
     }
 }
 
-/// Put the plain-language wording on the runs-of-homozygosity verdict the analysis engine already
-/// reached. `pattern` is `navigator_analysis::roh`'s own [`RohPattern`] — the classification is *not*
-/// re-derived here, so the Simple brief and the Advanced ROH chart can never disagree about whether
-/// a subject reads as outbred, endogamous, or recently consanguineous. Framed strictly as *shared
-/// ancestry between the parents' lines* — a genealogical read, never a clinical one.
+/// Put the plain-language words on the runs-of-homozygosity verdict that the analysis engine
+/// already reached. `pattern` is the [`RohPattern`] of `navigator_analysis::roh` itself. This does
+/// *not* derive the classification again. So the Simple brief and the Advanced ROH chart can never
+/// disagree about whether a subject reads as outbred, endogamous, or recently consanguineous. The
+/// words are strictly about *shared ancestry between the lines of the parents*. That is a
+/// genealogical read, and never a clinical one.
+///
 /// The casual-mode read of the archaic (Neanderthal) marker count.
 ///
-/// Deliberately mirrors how the Advanced card frames it: a **count over what the subject's test
-/// actually covered**, never a "percent Neanderthal", and no Denisovan figure — outside Oceania that
-/// signal sits at the noise floor and reporting it would be inventing a finding (design §7).
+/// This says it the same way as the Advanced card, on purpose. It gives a **count over what the
+/// test of the subject covered**, never a "percent Neanderthal", and no Denisovan figure. Outside
+/// Oceania that signal sits at the noise floor, and to report it would invent a result (design
+/// §7).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ArchaicBrief {
     /// Archaic-derived allele copies carried.
     pub total_copies: u32,
-    /// Copies assayed — twice the number of marker sites the subject's data covered.
+    /// Copies assayed: two times the number of marker sites the data of the subject covered.
     pub possible_copies: u32,
     /// Marker sites covered, and how many exist in the panel.
     pub called_sites: usize,
@@ -472,9 +482,9 @@ pub struct ArchaicBrief {
 
 /// Build the casual archaic read.
 ///
-/// The pattern comes from the **percentile** where one is available, because a raw count means
-/// nothing on its own — it scales with how many sites the test covered. With no percentile the
-/// label stays neutral ("Neanderthal markers found") rather than implying a comparison that was not
+/// The pattern comes from the **percentile** when one is available. A raw count says nothing on
+/// its own, because it scales with how many sites the test covered. With no percentile, the label
+/// stays neutral ("Neanderthal markers found"), and does not suggest a comparison that nobody
 /// made.
 pub fn archaic_brief(
     lang: Lang,
@@ -557,8 +567,8 @@ pub fn ancestry_method_note(lang: Lang, snps_with_genotype: usize, panel_type: &
     )
 }
 
-/// Quality phrasing for a genotyping array (chip) test, which has no sequencing depth — judged on
-/// the number of markers genotyped.
+/// Quality words for a genotyping array (chip) test, which has no sequencing depth. The judgement
+/// is on how many markers the test genotyped.
 pub fn chip_quality_phrase(lang: Lang, markers: usize) -> (String, bool) {
     let count = group_thousands(markers as i64);
     if markers >= 100_000 {
@@ -610,8 +620,9 @@ mod tests {
 
     #[test]
     fn roh_brief_reads_the_pattern() {
-        // The wording follows the analysis engine's verdict; it is not re-derived from the numbers.
-        // Trace-endogamy / outbred (James: F_ROH ~0.008): outbred phrasing, no scary numbers cited.
+        // The words follow the verdict of the analysis engine, and nothing derives them again
+        // from the numbers. Trace-endogamy or outbred (James: F_ROH ~0.008) gives outbred words,
+        // and cites no number that would alarm the reader.
         let outbred = roh_brief(Lang::En, RohPattern::Outbred, 0.008, 6, 22.7, 7.1);
         assert_eq!(outbred.pattern, "Outbred");
         assert!(outbred.summary_phrase.contains("outbred"));
@@ -623,7 +634,7 @@ mod tests {
         let recent = roh_brief(Lang::En, RohPattern::RecentConsanguinity, 0.08, 12, 220.0, 40.0);
         assert_eq!(recent.pattern, "Recent shared ancestry");
         assert!(recent.summary_phrase.contains("few generations"));
-        // Both classes present — previously mislabelled as "recent" purely because one run was ≥15 Mb.
+        // Both classes are here. This used to read as "recent" only because one run was ≥15 Mb.
         let mixed = roh_brief(Lang::En, RohPattern::Mixed, 0.05, 30, 150.0, 18.0);
         assert_eq!(mixed.pattern, "Mixed shared ancestry");
         // No runs at all always reads as outbred, whatever the classifier says of an empty set.
@@ -682,7 +693,7 @@ mod tests {
         ];
         let (matched, _) = pack.y_lookup("R-FGC29071", &lineage).unwrap();
         assert_eq!(matched, "R-M269");
-        // Nothing on the lineage is covered.
+        // The pack covers nothing on the lineage.
         assert!(pack.y_lookup("Q-M3", &["Q".into(), "Q-M242".into()]).is_none());
     }
 
@@ -704,7 +715,7 @@ mod tests {
             ancestry_summary(Lang::En, &[sp("European", 92.0)]),
             "Predominantly European"
         );
-        // Unsorted input is sorted by share.
+        // The function sorts input by share.
         assert_eq!(
             ancestry_summary(Lang::En, &[sp("African", 30.0), sp("European", 70.0)]),
             "Mostly European, with some African"
@@ -732,12 +743,12 @@ mod tests {
         );
     }
 
-    /// The point of routing this prose through the catalog: a reader in another language gets it in
-    /// their own. Before, every one of these sentences was a hardcoded English literal below the UI
-    /// layer, so the Simple-mode brief was permanently English no matter the chosen locale.
+    /// Why this prose goes through the catalog: a reader of another language gets it in their own.
+    /// Before, every one of these sentences was a hardcoded English literal below the UI layer. The
+    /// Simple-mode brief was then permanently English, whatever locale the user chose.
     #[test]
     fn brief_prose_is_localized_not_hardcoded() {
-        // Sentences differ by language, and the Spanish is real text rather than a key fallback.
+        // Sentences differ by language, and the Spanish is real text, and not a key fallback.
         for (en, es) in [
             (
                 age_phrase(Lang::En, Some(4237)).unwrap(),
@@ -764,12 +775,12 @@ mod tests {
             assert!(!es.starts_with("brief."), "rendered a raw key instead of text: {es}");
         }
 
-        // The numbers survive interpolation in both languages — a template that dropped `{0}` would
-        // quietly lose the figure the sentence is about.
+        // The numbers survive interpolation in both languages. A template that dropped `{0}`
+        // would lose the figure the sentence is about, and give no message.
         assert!(age_phrase(Lang::Es, Some(4237)).unwrap().contains("4,200"));
         let es_roh = roh_brief(Lang::Es, RohPattern::Endogamy, 0.035, 40, 90.0, 8.0);
         assert!(es_roh.summary_phrase.contains("90") && es_roh.summary_phrase.contains("40"));
-        // And no `{n}` placeholder is left unsubstituted.
+        // And no `{n}` placeholder stays without a substitution.
         for text in [
             age_phrase(Lang::Es, Some(4237)).unwrap(),
             es_roh.summary_phrase,

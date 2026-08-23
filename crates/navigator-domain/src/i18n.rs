@@ -1,18 +1,20 @@
-//! Lightweight i18n: Play-style `key=value` catalogs embedded at compile time, mirroring the
-//! AppView's (`decodingus/rust` du-web) approach so both Rust front-ends share one catalog format.
-//! Dependency-free (no fluent).
+//! Lightweight i18n: Play-style `key=value` catalogs that the build embeds at compile time. This
+//! is the same approach as the AppView (`decodingus/rust` du-web), so both Rust front-ends share
+//! one catalog format. No dependency (no fluent).
 //!
-//! This lives in `navigator-domain`, the bottom of the crate stack, because user-facing text is not
-//! produced only by the UI. The Simple-mode Subject Brief ([`crate::brief`]) writes whole sentences
-//! about someone's results, and those same sentences are also consumed by the HTML report export
-//! (`navigator-app`) and the local-LLM prompt — none of which can reach a catalog that only the UI
-//! crate owns. Keeping the catalog here is what lets every layer that writes for a person localize;
-//! `navigator-ui` re-exports it, so `self.tr(...)` in the UI is unchanged.
+//! This lives in `navigator-domain`, the bottom of the crate stack, because the UI is not the only
+//! source of text for a person to read. The Simple-mode Subject Brief ([`crate::brief`]) writes
+//! whole sentences about the results of a person. The HTML report export (`navigator-app`) and the
+//! local-LLM prompt also read those same sentences. None of them can reach a catalog that only the
+//! UI crate owns.
 //!
-//! Lookup falls back from the active language → English → the key itself, so a partial
-//! translation degrades to English rather than showing raw keys. Catalog values are
-//! `&'static str`, so `tr()` returns `&'static str` and never borrows app state — convenient
-//! inside egui closures.
+//! So the catalog is here, and every layer that writes for a person can localize. `navigator-ui`
+//! re-exports it, so `self.tr(...)` in the UI does not change.
+//!
+//! A lookup falls back from the active language → English → the key itself. A partial translation
+//! then degrades to English, and does not put raw keys on the screen. Catalog values are
+//! `&'static str`, so `tr()` returns `&'static str` and never borrows app state, which is
+//! convenient inside an egui closure.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -50,7 +52,7 @@ impl Lang {
         }
     }
 
-    /// All languages, for rendering the switcher.
+    /// All languages, to draw the switcher.
     pub fn all() -> &'static [Lang] {
         &[Lang::En, Lang::Es]
     }
@@ -62,7 +64,7 @@ fn lang_file() -> std::path::PathBuf {
     crate::paths::decodingus_dir().join("navigator-lang")
 }
 
-/// The previously chosen UI language, if one was saved.
+/// The UI language chosen earlier, if the app saved one.
 pub fn load_lang() -> Option<Lang> {
     std::fs::read_to_string(lang_file())
         .ok()
@@ -102,12 +104,12 @@ fn catalog(lang: Lang) -> &'static HashMap<&'static str, &'static str> {
     }
 }
 
-/// Translate `key` and substitute positional arguments: `{0}` is replaced by `args[0]`, and so on.
+/// Translate `key` and substitute positional arguments: `args[0]` replaces `{0}`, and so on.
 ///
-/// Positional rather than named because word order differs between languages — a translator has to
-/// be able to move `{0}` after `{1}` without the code caring. An index with no argument is left in
-/// place rather than blanked, so a miscounted template is visible instead of silently dropping a
-/// number from a sentence about someone's results.
+/// The arguments are positional, and not named, because word order differs between languages. A
+/// translator must be able to move `{0}` after `{1}`, and the code must not care. An index with no
+/// argument stays in place, and nothing blanks it. A template with a wrong count is then visible,
+/// and it does not drop a number from a sentence about the results of a person.
 pub fn tr_fmt(lang: Lang, key: &'static str, args: &[&str]) -> String {
     let mut out = tr(lang, key).to_string();
     for (i, a) in args.iter().enumerate() {
@@ -118,16 +120,16 @@ pub fn tr_fmt(lang: Lang, key: &'static str, args: &[&str]) -> String {
 
 /// Every `(key, translation)` pair for `lang`.
 ///
-/// Exists for checks that must see *every* string the app can display rather than the ones a test
-/// happens to name — the UI's glyph-coverage test being the case in point: a character with no
-/// glyph renders as an empty box, which no other test and no compiler can see.
+/// This exists for a check that must see *every* string the app can display, and not only the ones
+/// a test names. The glyph-coverage test of the UI is the example. A character with no glyph draws
+/// as an empty box, which no other test and no compiler can see.
 pub fn entries(lang: Lang) -> Vec<(&'static str, &'static str)> {
     let mut v: Vec<_> = catalog(lang).iter().map(|(k, val)| (*k, *val)).collect();
     v.sort_unstable();
     v
 }
 
-/// Translate `key` for `lang`, falling back to English then the key itself.
+/// Translate `key` for `lang`. The fallback is English, then the key itself.
 pub fn tr(lang: Lang, key: &'static str) -> &'static str {
     if let Some(v) = catalog(lang).get(key).copied() {
         return v;
@@ -148,15 +150,15 @@ mod tests {
     fn translates_and_falls_back() {
         assert_eq!(tr(Lang::En, "nav.subjects"), "Subjects");
         assert_eq!(tr(Lang::Es, "nav.subjects"), "Sujetos");
-        // Missing in Es → English fallback (assuming this key is not translated).
+        // Missing in Es → English fallback (if this key has no translation).
         assert_eq!(tr(Lang::Es, "status.label"), tr(Lang::Es, "status.label"));
         // Unknown key → the key itself.
         assert_eq!(tr(Lang::En, "totally.unknown.key"), "totally.unknown.key");
     }
 
-    /// The diagnosis modal exists to be read and pasted by someone filing a bug report, so a
-    /// missing key there renders a raw `diagnosis.title` into the exact artifact that is supposed
-    /// to be legible. `tr` falls back to the key itself, which fails silently — assert instead.
+    /// A person who reports a bug reads the diagnosis modal and pastes it. So a key that is
+    /// missing there draws a raw `diagnosis.title` into the exact artifact that must be legible.
+    /// `tr` falls back to the key itself, and gives no message, so assert here instead.
     #[test]
     fn diagnosis_strings_are_translated_in_every_language() {
         for key in [
@@ -177,9 +179,10 @@ mod tests {
         }
     }
 
-    /// The Subject Brief's sentences are the reason this catalog lives in `navigator-domain`. An
-    /// English-only `brief.*` key would silently reinstate exactly the defect that move fixed — the
-    /// reader gets English prose regardless of locale — and `tr`'s fallback makes that invisible.
+    /// The sentences of the Subject Brief are the reason this catalog lives in `navigator-domain`.
+    /// A `brief.*` key in English only would bring back exactly the defect that move fixed, and it
+    /// would give no message. The reader would get English prose whatever the locale, and the
+    /// fallback of `tr` makes that invisible.
     #[test]
     fn brief_prose_is_translated_in_every_language() {
         let en = catalog(Lang::En);
@@ -199,8 +202,9 @@ mod tests {
         }
     }
 
-    /// A template and its translations must take the same arguments: a `{1}` that only exists in one
-    /// language either drops a number from a sentence or leaves a literal `{1}` in the text.
+    /// A template and its translations must take the same arguments. A `{1}` that exists in one
+    /// language only either drops a number from a sentence, or leaves a literal `{1}` in the
+    /// text.
     #[test]
     fn placeholders_match_across_languages() {
         let en = catalog(Lang::En);

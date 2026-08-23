@@ -1,17 +1,20 @@
-//! Pure prompt construction + grounding for the local-LLM narration (see
-//! `documents/design/local-llm-integration.md`). No I/O — given a [`SubjectBrief`], produce the exact
-//! `system`/`user` message text we send, so the guardrails are reviewable and unit-tested (the same
-//! discipline as the deterministic brief templating). The model is a **rewriter, not a source of
-//! facts**: it only restates the already-curated, already-rounded strings in the fact sheet.
+//! Pure prompt construction and grounding for the local-LLM narration (see
+//! `documents/design/local-llm-integration.md`). No I/O. From a [`SubjectBrief`] it makes the exact
+//! `system` and `user` message text we send. A person can then review the guardrails, and a unit
+//! test can hold them. This is the same discipline as the deterministic brief template. The model
+//! is a **rewriter, not a source of facts**: it only restates the already-curated, already-rounded
+//! strings in the fact sheet.
 
 use crate::brief::{LineageBrief, SubjectBrief};
 
-/// The shared grounding + safety core used by *both* the narration and Q&A system prompts, so the
-/// guardrails have a single reviewed source. It carries the facts-only / no-new-claims / no-health /
-/// preserve-uncertainty rules — but **no output-format** rules (those differ: narration writes a
-/// story, Q&A answers a question). The explicit "no medical disclaimers" clause matters: a model
-/// that volunteers a "this is not medical advice" hedge trips the post-generation [`mentions_health`]
-/// guard and gets its otherwise-fine answer replaced by the deflection.
+/// The shared grounding and safety core. *Both* the narration prompt and the Q&A system prompt use
+/// it, so that the guardrails have one reviewed source. It carries the rules for facts only, no
+/// new claims, no health, and keep the uncertainty. It carries **no output-format** rules, because
+/// those differ: narration writes a story, and Q&A answers a question.
+///
+/// The explicit "no medical disclaimers" clause matters. A model that adds a "this is not medical
+/// advice" hedge trips the [`mentions_health`] guard after generation. The deflection then replaces
+/// an answer that was otherwise good.
 fn grounding_rules() -> String {
     "Stay grounded in the facts given in the user message. You may interpret, connect, and add \
      general context that follows directly from those facts, but do NOT introduce specific new \
@@ -23,9 +26,9 @@ fn grounding_rules() -> String {
         .to_string()
 }
 
-/// The system prompt for brief narration (M1): the shared grounding rules plus the narration-specific
-/// "warm connected story" formatting. Returned as an owned `String` so callers (and tests) see the
-/// literal text we send.
+/// The system prompt for brief narration (M1): the shared grounding rules, plus the "warm
+/// connected story" format that only the narration uses. Returns an owned `String`, so that a
+/// caller, and a test, sees the literal text we send.
 pub fn narrate_system_prompt() -> String {
     format!(
         "You are a genetic-genealogy guide writing a warm, insightful summary for a curious \
@@ -45,10 +48,11 @@ pub fn narrate_system_prompt() -> String {
     )
 }
 
-/// The system prompt for the "ask my results" chat (M2/M4): the same grounding rules, but instructed
-/// to **answer the specific question** concisely rather than retell the whole genetic story (sharing
-/// the narration formatting made the chat ignore questions and emit a brief). Out-of-scope medical
-/// questions get the fixed ancestry-only deflection.
+/// The system prompt for the "ask my results" chat (M2/M4). It has the same grounding rules. But
+/// it tells the model to **answer the specific question** in few words, and not to tell the whole
+/// genetic story again. When the chat shared the narration format, it ignored questions and
+/// emitted a brief. A medical question that is out of scope gets the fixed ancestry-only
+/// deflection.
 pub fn answer_system_prompt() -> String {
     format!(
         "You are a genetic-genealogy guide answering a specific question for a curious non-expert, \
@@ -63,9 +67,10 @@ pub fn answer_system_prompt() -> String {
     )
 }
 
-/// The system prompt for a per-tab "Explain this" narration (M5): the shared grounding rules, focused
-/// on explaining a *single* signal (`signal_label`, e.g. "Y-STR markers") in plain language. Like the
-/// Q&A prompt it carries no narration story-arc formatting — it explains just this one aspect.
+/// The system prompt for an "Explain this" narration on one tab (M5). It has the shared grounding
+/// rules, and it points the model at a *single* signal (`signal_label`, for example "Y-STR
+/// markers") in plain language. Like the Q&A prompt, it carries no story-arc format. It explains
+/// only this one aspect.
 pub fn narrate_signal_system_prompt(signal_label: &str) -> String {
     format!(
         "You are a genetic-genealogy guide helping a curious non-expert understand one part of their \
@@ -97,8 +102,9 @@ fn lineage_lines(out: &mut String, label: &str, lb: &LineageBrief) {
     out.push_str(&format!("- confidence: {}\n", lb.confidence_phrase));
 }
 
-/// The user-message fact sheet built from the brief — only already-curated strings from the
-/// deterministic pipeline. A missing section is simply absent (so the model can't restate it).
+/// The user-message fact sheet that comes from the brief. It holds only already-curated strings
+/// from the deterministic pipeline. A section that is missing is absent, so the model can not
+/// restate it.
 pub fn narrate_fact_sheet(b: &SubjectBrief) -> String {
     let mut s = String::from("FACTS:\n");
     s.push_str(&format!("Name: {}\n", b.headline.name));
@@ -120,8 +126,9 @@ pub fn narrate_fact_sheet(b: &SubjectBrief) -> String {
                 sp.super_population, sp.percentage
             ));
         }
-        // Fine/modern populations (present-day reference groups the person most resembles). Without
-        // these the story leans entirely on the ancient components — this is the recent-ancestry layer.
+        // Fine and modern populations (present-day reference groups the person most resembles).
+        // Without these the story rests on the ancient components alone. This is the
+        // recent-ancestry layer.
         for (name, pct) in a.fine_pops.iter().filter(|(_, pct)| *pct >= 0.5) {
             s.push_str(&format!("- closest modern population: {name} ({pct:.1}%)\n"));
         }
@@ -138,7 +145,8 @@ pub fn narrate_fact_sheet(b: &SubjectBrief) -> String {
     }
 
     if let Some(r) = &b.roh {
-        // Shared ancestry between the parents' lines (genealogical relatedness) — NOT a health signal.
+        // Shared ancestry between the lines of the parents (genealogical relatedness). This is
+        // NOT a health signal.
         s.push_str("\nShared ancestry (runs of homozygosity):\n");
         s.push_str(&format!("- pattern: {}\n", r.pattern));
         s.push_str(&format!(
@@ -162,8 +170,8 @@ pub fn narrate_fact_sheet(b: &SubjectBrief) -> String {
     s
 }
 
-/// The fixed reply for a health/medical question (the M2 scope guard) — keeps the assistant in the
-/// ancestry/lineage lane instead of attempting a clinical answer.
+/// The fixed reply for a health or medical question (the M2 scope guard). It keeps the assistant
+/// on ancestry and lineage, and stops it from a clinical answer.
 pub fn health_deflection() -> &'static str {
     "I can only help with ancestry and lineage — Navigator doesn't provide health, medical, or \
      clinical interpretation. Ask me about your paternal or maternal line, your ancestry, or your test."
@@ -275,7 +283,7 @@ mod tests {
         assert!(s.contains("tentative placement"), "confidence must survive");
         assert!(s.contains("Predominantly European"));
         assert!(s.contains("Western Hunter-Gatherer"));
-        // Modern/fine populations must reach the model too — not only the ancient sources.
+        // Modern and fine populations must reach the model too, and not only the ancient sources.
         assert!(
             s.contains("closest modern population: British (55.0%)"),
             "fine pops missing: {s}"

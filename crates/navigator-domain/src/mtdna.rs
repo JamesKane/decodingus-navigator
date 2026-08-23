@@ -1,4 +1,4 @@
-//! Vendor mtDNA FASTA sequences (Scala's `DataType.MtdnaFasta`) — a full mitochondrial
+//! Vendor mtDNA FASTA sequences (Scala's `DataType.MtdnaFasta`): a full mitochondrial
 //! sequence (~16,569 bp, aligned to rCRS) imported from a `.fa`/`.fasta` export. Unlike a
 //! chip, an mtDNA sequence is tiny, so we keep the sequence itself; calling variants vs
 //! rCRS for haplogroup analysis is a later step. [`parse_fasta`] is a pure validator.
@@ -6,7 +6,7 @@
 use du_domain::ids::SampleGuid;
 use serde::{Deserialize, Serialize};
 
-/// Plausible mtDNA length window (rCRS is 16,569 bp); guards against importing the wrong file.
+/// Plausible mtDNA length window (rCRS is 16,569 bp). It guards against an import of the wrong file.
 const MIN_LEN: usize = 16_000;
 const MAX_LEN: usize = 17_000;
 
@@ -15,7 +15,7 @@ const MAX_LEN: usize = 17_000;
 pub struct MtdnaSequence {
     pub id: i64,
     pub biosample_guid: SampleGuid,
-    /// The FASTA header line (without the leading `>`), if any.
+    /// The FASTA header line (without the `>` at the start), if any.
     pub defline: Option<String>,
     /// The full sequence, uppercased (A/C/G/T/N).
     pub sequence: String,
@@ -30,7 +30,7 @@ impl MtdnaSequence {
     }
 }
 
-/// Fields for creating an mtDNA sequence (the store assigns the id).
+/// Fields to make an mtDNA sequence (the store assigns the id).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewMtdnaSequence {
     pub biosample_guid: SampleGuid,
@@ -48,9 +48,9 @@ pub struct ParsedMtdna {
     pub n_count: i64,
 }
 
-/// Parse and validate a single-record mtDNA FASTA: must start with a `>` header; the
-/// concatenated sequence must be ~16,569 bp (16,000–17,000) and contain only A/C/G/T/N.
-/// Only the first record is read. Returns the sequence + `N` count.
+/// Parse and check a single-record mtDNA FASTA. It must start with a `>` header. The joined
+/// sequence must be ~16,569 bp (16,000–17,000), and must contain only A/C/G/T/N. This reads only
+/// the first record. Returns the sequence and the `N` count.
 pub fn parse_fasta(text: &str) -> Result<ParsedMtdna, String> {
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
 

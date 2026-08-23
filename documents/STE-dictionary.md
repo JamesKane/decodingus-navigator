@@ -47,7 +47,8 @@ adverb that means *earlier*. `prior to` stays forbidden, and the checker still r
 *version drift* and *drift out of step*. A Technical Name wins over the idiom list, so write
 those two meanings a different way.
 
-dispersion · drift · emission · likelihood · loading · posterior · prior · state
+clustering · dispersion · drift · emission · inbreeding · likelihood · loading · posterior ·
+prior · state
 
 ### File and data formats
 
@@ -67,7 +68,7 @@ query · realignment · record · row · schema · store · table · workspace �
 
 ### Local LLM
 
-chat completion · context · fact sheet · model · model server · narration · prompt ·
+chat completion · context · fact sheet · grounding · model · model server · narration · prompt ·
 reasoning model · token
 
 ### Federation
@@ -86,6 +87,10 @@ reasoning model · streaming · copying · loading
 
 Read mapping adds two more. `chaining` is the middle step of minimap2's published seed-chain-align
 method, and `pairing` is the step that makes two mapped ends into one template: chaining · pairing
+
+Three more come from the sections above. `clustering` is the statistical method, `inbreeding` is
+the population-genetics term that names the F coefficient, and `grounding` is the LLM term for the
+facts that hold a model to the data: clustering · grounding · inbreeding
 
 GangSTR names its read classes `enclosing`, `spanning` and `flanking`. Those are the published
 names of the method, so they are Technical Names here: enclosing · spanning · flanking

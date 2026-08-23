@@ -1,8 +1,9 @@
-//! Genotyping-array (chip) profiles — the QC summary of a vendor raw-data export
+//! Genotyping-array (chip) profiles: the QC summary of a vendor raw-data export
 //! (23andMe, AncestryDNA, MyHeritage, …), a pragmatic port of the Scala `ChipProfile`.
-//! We do not keep every genotype (a chip is ~600–700k markers); we keep the call/no-call/
-//! het summary and per-region counts that drive quality and downstream eligibility.
-//! [`summarize`] is a pure pass over the file text (no IO) that also guesses the vendor.
+//! We do not keep every genotype, because a chip is ~600–700k markers. We keep the call,
+//! no-call and het summary, and the counts for each region that drive quality and downstream
+//! eligibility. [`summarize`] is a pure pass over the file text (no IO) that also guesses the
+//! vendor.
 
 use du_domain::ids::SampleGuid;
 use serde::{Deserialize, Serialize};
@@ -31,12 +32,12 @@ pub struct ChipProfile {
     pub chip_version: Option<String>,
     pub summary: ChipSummary,
     pub source_file_name: Option<String>,
-    /// Absolute path of the imported raw-data file, for re-reading the autosomal genotypes on
-    /// demand (ancestry). `None` for older rows imported before this was tracked.
+    /// Absolute path of the imported raw-data file, to read the autosomal genotypes again on
+    /// demand (ancestry). `None` for an older row that an import made before this field existed.
     pub source_path: Option<String>,
 }
 
-/// Fields for creating a chip profile (the store assigns the id).
+/// Fields to make a chip profile (the store assigns the id).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewChipProfile {
     pub biosample_guid: SampleGuid,
@@ -57,8 +58,8 @@ enum Zygosity {
     Het,
 }
 
-/// Classify a genotype token (e.g. "AA", "AG", "--", "00", "DI"). Non-A/C/G/T characters
-/// are ignored, so any all-symbol token (no-call, indel) classifies as a no-call.
+/// Classify a genotype token (for example "AA", "AG", "--", "00", "DI"). This drops any character
+/// that is not A, C, G or T, so a token of symbols only (no-call, indel) classifies as a no-call.
 fn classify(genotype: &str) -> Zygosity {
     let bases: Vec<u8> = genotype
         .trim()
@@ -92,7 +93,7 @@ fn region(chrom: &str) -> Region {
     }
 }
 
-/// Is this row a header (`rsid …`) rather than data?
+/// Is this row a header (`rsid …`) and not data?
 fn is_header(first_field: &str) -> bool {
     let f = first_field.trim().trim_matches('"').to_ascii_lowercase();
     f == "rsid" || f == "rs_id" || f == "snp" || f == "#rsid"
@@ -211,9 +212,9 @@ pub enum ChipDna {
     Mt,
 }
 
-/// A single haploid Y or mtDNA genotype pulled from a chip export — the raw observed allele on
-/// the vendor's reference build, for on-import haplogroup placement. (Consumer arrays report
-/// Y/MT as a single haploid base; we keep only unambiguous single-base calls.)
+/// A single haploid Y or mtDNA genotype from a chip export. It is the raw observed allele on the
+/// reference build of the vendor, for haplogroup placement at import. (A consumer array reports Y
+/// and MT as one haploid base, and we keep only single-base calls that are not ambiguous.)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChipHaploCall {
     pub dna: ChipDna,
@@ -223,9 +224,9 @@ pub struct ChipHaploCall {
     pub base: char,
 }
 
-/// The single haploid base of a genotype token, or `None` if it is a no-call, an indel
-/// (`I`/`D`), or heterozygous (two different bases — on a true haploid Y/MT that is
-/// contamination, so we drop it rather than guess).
+/// The single haploid base of a genotype token. `None` if it is a no-call, an indel (`I`/`D`), or
+/// heterozygous, which is two different bases. On a true haploid Y or MT, two bases are
+/// contamination, so we drop the token and do not guess.
 fn haploid_base(genotype: &str) -> Option<char> {
     let mut bases = genotype
         .bytes()
@@ -237,7 +238,7 @@ fn haploid_base(genotype: &str) -> Option<char> {
 
 /// Extract the Y and mtDNA haploid calls from a vendor raw-data export, for on-import
 /// haplogroup placement. Skips autosomal/X rows, no-calls, indels, and heterozygous calls.
-/// Positions are on the vendor build (consumer arrays are GRCh37 — see [`detect_build`]).
+/// Positions are on the vendor build (a consumer array is GRCh37, see [`detect_build`]).
 /// Pairs with [`summarize`]: same row layouts (tab/comma, optional `#` header, then
 /// `rsid,chrom,pos,genotype` or `rsid,chrom,pos,allele1,allele2`).
 pub fn haplo_calls(text: &str) -> Vec<ChipHaploCall> {
@@ -274,8 +275,9 @@ pub fn haplo_calls(text: &str) -> Vec<ChipHaploCall> {
     out
 }
 
-/// A single autosomal diploid genotype from a chip export — the two observed alleles at a SNP, on
-/// the vendor build (GRCh37). Fed (after liftover to the panel build) into the ancestry estimators.
+/// A single autosomal diploid genotype from a chip export: the two observed alleles at a SNP, on
+/// the vendor build (GRCh37). It goes to the ancestry estimators after a liftover to the panel
+/// build.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChipAutosomalCall {
     /// Chromosome, normalized to `chr1`..`chr22`.
@@ -285,8 +287,8 @@ pub struct ChipAutosomalCall {
     pub a2: char,
 }
 
-/// The two A/C/G/T bases of a diploid genotype token (`"AG"`, or two allele columns joined), or
-/// `None` for a no-call / indel / not-exactly-two-bases token.
+/// The two A/C/G/T bases of a diploid genotype token (`"AG"`, or two allele columns joined).
+/// `None` for a token that is a no-call, an indel, or not exactly two bases.
 fn diploid_bases(genotype: &str) -> Option<(char, char)> {
     let bases: Vec<char> = genotype
         .bytes()
@@ -299,7 +301,8 @@ fn diploid_bases(genotype: &str) -> Option<(char, char)> {
 
 /// Extract the **autosomal** diploid SNP calls from a vendor raw-data export, for ancestry. Keeps
 /// only chr1–22, called, biallelic-SNP rows (drops Y/MT/X, no-calls, indels). Same row layouts as
-/// [`summarize`]/[`haplo_calls`]. Positions are on the vendor build (GRCh37 — see [`detect_build`]).
+/// [`summarize`] and [`haplo_calls`]. Positions are on the vendor build (GRCh37, see
+/// [`detect_build`]).
 pub fn autosomal_calls(text: &str) -> Vec<ChipAutosomalCall> {
     let mut out = Vec::new();
     for raw in text.lines() {
@@ -315,7 +318,8 @@ pub fn autosomal_calls(text: &str) -> Vec<ChipAutosomalCall> {
         if !matches!(region(cols[1]), Region::Autosomal) {
             continue;
         }
-        // Normalize the chromosome to chrN (1..22) — matches the CHM13 panel + liftover contig naming.
+        // Normalize the chromosome to chrN (1..22). This matches the contig names of the CHM13
+        // panel and the liftover.
         let core = crate::contig::bare(cols[1].trim().trim_matches('"')).to_ascii_lowercase();
         let Ok(position) = cols[2].parse::<i64>() else { continue };
         let genotype = if cols.len() >= 5 {
@@ -336,9 +340,9 @@ pub fn autosomal_calls(text: &str) -> Vec<ChipAutosomalCall> {
     out
 }
 
-/// The reference build a vendor export is reported on. Consumer arrays (23andMe v4/v5,
-/// AncestryDNA v1/v2) are GRCh37, so that is the default; a header naming build 38 / GRCh38 /
-/// hg38 overrides it. Scans only the comment header.
+/// The reference build that a vendor export uses. Consumer arrays (23andMe v4/v5, AncestryDNA
+/// v1/v2) are GRCh37, so that is the default. A header that names build 38, GRCh38 or hg38
+/// overrides it. This scans only the comment header.
 pub fn detect_build(text: &str) -> String {
     for raw in text.lines() {
         let line = raw.trim();

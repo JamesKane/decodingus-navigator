@@ -1,12 +1,14 @@
-//! Y-STR autoclustering with SNP-branch propagation (FTDNA project-import follow-on).
+//! Automatic Y-STR clustering with SNP-branch propagation (FTDNA project-import follow-on).
 //!
-//! Given a project's members — each with a Y-STR haplotype and, for the SNP-placed ones, a branch
-//! label — group them into clusters by Y-STR genetic distance, then **propagate** each cluster's
-//! SNP branch onto its STR-only members as a *suggested* placement. Effectively: "this STR-only
-//! haplotype most likely sits on SNP branch X."
+//! Each member of a project has a Y-STR haplotype, and a member that SNP placement reached also
+//! has a branch label. This module groups the members into clusters by Y-STR genetic distance. It
+//! then **propagates** the SNP branch of each cluster onto the STR-only members of that cluster,
+//! as a *suggested* placement. In effect: "this STR-only haplotype most probably sits on SNP
+//! branch X."
 //!
-//! Pure marker math, no IO. Genetic distance is order-independent for multi-copy markers and
-//! normalized per 100 comparable markers so mixed panel sizes (Y-12 … Y-700) compare fairly.
+//! Pure marker math, no IO. Genetic distance is independent of order for a multi-copy marker. The
+//! code normalizes it to 100 comparable markers, so that mixed panel sizes (Y-12 … Y-700) compare
+//! well.
 
 use std::collections::HashMap;
 
@@ -26,12 +28,12 @@ pub struct ClusterMember {
     pub markers: Vec<StrMarker>,
 }
 
-/// Tuning for [`cluster_ystr`].
+/// Options for [`cluster_ystr`].
 #[derive(Debug, Clone)]
 pub struct ClusterOpts {
     /// Minimum shared markers for two members to be comparable.
     pub min_markers: i64,
-    /// Max normalized genetic distance (mutations per 100 markers) to link two members.
+    /// Max normalized genetic distance (mutations in 100 markers) to link two members.
     pub link_gd_per_100: f32,
 }
 
@@ -49,11 +51,13 @@ impl Default for ClusterOpts {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BranchSuggestion {
     pub branch: String,
-    /// Genetic distance (differing markers) to the nearest placed member.
+    /// Genetic distance (the count of markers that are not the same) to the nearest placed
+    /// member.
     pub gd: i64,
     /// Markers compared with that nearest placed member.
     pub compared: i64,
-    /// 0..1 — higher = closer match + more agreement among the cluster's placed members.
+    /// 0..1. A higher value is a closer match, and more agreement among the placed members of the
+    /// cluster.
     pub confidence: f32,
 }
 
@@ -266,7 +270,8 @@ fn build_cluster(members: &[ClusterMember], maps: &[HashMap<String, String>], id
                 })
                 .min_by(|a, b| a.1.cmp(&b.1).then(b.2.cmp(&a.2)));
             let suggestion = nearest.map(|(branch, gd, comp)| {
-                // Confidence: closeness (GD 0 → 1.0, decaying) × branch agreement in the cluster.
+                // Confidence: closeness (GD 0 → 1.0, then it decreases) × branch agreement in
+                // the cluster.
                 let closeness = (1.0 - gd as f32 / 12.0).clamp(0.0, 1.0);
                 let agreement = if total_placed > 0 {
                     branch_counts.get(branch).copied().unwrap_or(0) as f32 / total_placed as f32
@@ -370,7 +375,7 @@ mod tests {
             ("DYS442", "12"),
             ("DYS438", "12"),
         ];
-        // Bump the value of the first `tweak` markers by appending '9' to force a difference.
+        // Add '9' to the value of the first `tweak` markers, to force a difference.
         let mutated = ["99", "98", "97", "96", "95", "94", "93", "92", "91", "90", "89", "88"];
         base.iter()
             .enumerate()
