@@ -1,8 +1,21 @@
 # Edge Client Implementation Status
 
+> **STALE — do not trust the numbers below (header added 2026-08-23).** This is a **Scala-era**
+> document, last updated 2025-12-08, more than six months before the Rust cutover (`0dee32c`,
+> 2026-06-19). Every percentage and every file path in it refers to code that no longer exists.
+>
+> Atmosphere lexicon alignment **completed** (phases A–D) during the rewrite, and the federation
+> surface has moved well past what this file describes: `sync_outbox` with idempotent putRecord at
+> TID and PULL reconcile, signed IBD attestations over an X3DH/AES-GCM exchange channel, feed posts,
+> peer DMs, and recruitment invitations are all built and merged.
+>
+> For the current picture use [`BACKLOG.md`](BACKLOG.md) (the "Social layer — deferred slices" and
+> "AppView-side" sections) and the per-topic agent memory. Kept only for the historical record of
+> what the Scala edge client had reached.
+
 Navigator Desktop implementation status against the Atmosphere Lexicon specification.
 
-**Overall Completion: ~55%**
+**Overall Completion: ~55%** *(as of 2025-12-08, Scala codebase — see the warning above)*
 
 Last updated: 2025-12-08
 

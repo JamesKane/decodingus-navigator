@@ -1,9 +1,10 @@
 # Project Y block tree — design
 
-**Status:** **All three phases shipped** (branch `feat/project-block-tree`, 15 commits, not pushed) —
-the aggregate + collapse (1), the `ProjectTab::Tree` canvas (2), and private-variant blocks +
-candidate branches + export (3), plus four things phase 3 turned out to need: the
-`private-y --project` batch, a **VCF-backed private-Y engine** for subjects with no alignment, a
+**Status:** **All three phases shipped and MERGED** — squashed to `main` as `4cb9eca` (PR #45,
+2026-08-06), first released in **`v0.1.0-alpha.16`**; the branch was `feat/project-block-tree`.
+The three phases are the aggregate + collapse (1), the `ProjectTab::Tree` canvas (2), and
+private-variant blocks + candidate branches + export (3), plus four things phase 3 turned out to
+need: the `private-y --project` batch, a **VCF-backed private-Y engine** for subjects with no alignment, a
 **candidate review surface**, and an artefact-filter stack calibrated against R1b-CTS4466Plus.
 Live state there: 248/255 placed members carry private-Y (was 1 workspace-wide), **7 candidate
 branches** surviving the filters. Suite 797 passed. The canvas was then **redrawn to Alex

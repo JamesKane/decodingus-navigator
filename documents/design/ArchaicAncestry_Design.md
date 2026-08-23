@@ -1,15 +1,24 @@
 # Archaic Ancestry Report (Neanderthal / Denisovan) — Design
 
-**Status:** **Tier A SHIPPED** (`v0.1.0-alpha.14`). **Tier B GATED OFF** (`ARCHAIC_SEGMENTS_ENABLED
-= false`) after per-individual validation showed the segment caller carries no per-person signal, and
-diagnosed as **built on the wrong observable** — §3's choice of a method designed for people who do
-*not* have archaic reference genomes, which we do. It shipped enabled in alpha.14 and was withdrawn
-in the next release. Drafted 2026-07-23; plan added 2026-07-26; all three §9 questions resolved.
+**Status (corrected 2026-08-23):** **Tier A SHIPPED** (`v0.1.0-alpha.14`). **Tier B is REBUILT and
+ON again** — `ARCHAIC_SEGMENTS_ENABLED = true`, first released in **`v0.1.0-alpha.15`**. Drafted
+2026-07-23; plan added 2026-07-26; all three §9 questions resolved.
 
-> **Read *Tier B validation* and *Why it failed* (both at the end of §10) before anything else in
-> this document about Tier B.** §3's method choice, §5's Tier B pipeline and M3's calibration are all
-> superseded by that diagnosis. *Deviations from the plan* also qualifies §7's expected percentage
-> and M3's feature-gate rule. Tier A (§5 Tier A, M1, M2) stands unaffected.
+Tier B has a three-step history, and the body of this document records only the first two:
+
+1. It shipped enabled in alpha.14 on the strength of one aggregate number.
+2. It was **withdrawn** (`#40`) when per-individual validation showed the segment caller carries no
+   per-person signal, and the failure was diagnosed as the **wrong observable** — §3 chose a method
+   designed for people who do *not* have archaic reference genomes, and we have all four (`#41`).
+3. It was **rebuilt against the right observable and turned back on** (`#42`, `906b9ee`). The new
+   caller matches the archaic genomes directly instead of counting private-variant density. See
+   [§11](#11-tier-b-v2--the-rebuild-that-turned-it-back-on-2026-08-01) below.
+
+> **Read *Tier B validation* (§10), *Why it failed* (§10) and then §11, in that order, before
+> anything else in this document about Tier B.** §3's method choice, §5's Tier B pipeline and M3's
+> calibration are all superseded — first by the diagnosis, then by the §11 rebuild. *Deviations from
+> the plan* also qualifies §7's expected percentage and M3's feature-gate rule. Tier A (§5 Tier A,
+> M1, M2) stands unaffected throughout.
 **Goal:** Reconstruct a 23andMe-style Neanderthal report — and go beyond it with a Denisovan
 estimate and a true whole-genome introgression map — from public archaic reference genomes and
 recent methods, using the app's existing ancestry/panel/HMM machinery.
@@ -1156,3 +1165,79 @@ The examples these numbers came from, all under `crates/navigator-analysis/examp
 `archaic_private_dump` (the HMM's actual input, with quality columns), `archaic_outgroup_density`
 (the rate-map proxy), `archaic_classify_dump` (diagnostic sites), `archaic_callable_dump` (what the
 caller can see at all), and `cram_query_probe` (the CRAM defect found on the way here).
+
+---
+
+## 11. Tier B v2 — the rebuild that turned it back on (2026-08-01)
+
+**Section added 2026-08-23.** PR #42 (`906b9ee`) carried both the *Why it failed* diagnosis above
+**and** a full rebuild of Tier B, but it touched no design document — it landed 909 lines of
+`crates/navigator-analysis/src/archaic_match.rs`, ten validation scripts under
+`scripts/archaic-validation/`, and the flag flip, with the record written into the module
+doc-comment instead. This section is the pointer that was missing for three weeks. **The
+authoritative, complete record is the module doc-comment at the top of `archaic_match.rs`** — every
+table below is copied from it, and it holds more.
+
+### What changed
+
+`archaic_segments` (Skov 2018 / hmmix) removes the variants Africans also carry and looks for a
+region dense in what stays. That method exists for a person who does **not** have archaic reference
+genomes. We have all four, and Tier A already ships 2,031,406 sites where the archaics carry a
+derived allele.
+
+`archaic_match` asks the other question: does this stretch **match** an archaic genome? It is a
+two-state HMM whose observation is one bit at each diagnostic site — the subject carries the archaic
+allele, or does not — with Bernoulli emissions and transitions that scale with recombination. **It
+indexes over sites, not over base pairs**, so the uneven density of the diagnostic sites cancels and
+the rate map that the density model needed disappears from the problem.
+
+The evidence per tract is what decides this, and the two observables differ 30-fold at the same ~3x
+contrast:
+
+| observable | evidence in a 36 kb tract | sensitivity at 5 % false positives |
+|---|---|---|
+| private-variant density (v1) | ~1 variant | 14.3 % |
+| archaic-allele matching (v2) | ~30 sites | 95.1 % |
+
+### The result, on held-out individuals
+
+60 Europeans on chr21+22, split by fixed seed into 30 train / 30 test. Every figure is from the half
+the fit never saw:
+
+| | density caller (v1) | v2 uncalibrated | v2 calibrated |
+|---|---|---|---|
+| base-level F1 | n/a | 27.9 % | **34.5 %** |
+| precision | 1.5 % | 20.2 % | **34.9 %** |
+| extent ratio ours/theirs | 1.45 | 2.23 | **0.98** |
+| extent `r` over individuals | −0.018 (p = 0.94) | +0.520 | **+0.710 (p < 0.0001)** |
+
+Genome-wide on three Europeans — the configuration that ships — sensitivity is 40–43 % and precision
+about 46 %, both *better* than the two-chromosome figures, and all three sit above the entire
+random-placement null. A concordance filter over the called segments takes precision from **54 % to
+90 %**, and validates on a genome held out of it: kept segments score 74.9 % Denisova concordance
+against 21.5 % for dropped ones.
+
+### The limit that shipped with it, and why the report is worded as it is
+
+Parameters frozen at the European fit, run on 30 East Asians: 30/30 above their own null, identical
+31.6 % sensitivity, *better* 41.9 % precision. **Detection transfers.** The reported extent does
+not. Truth puts East Asian archaic extent at 1.217x Europe; this caller reports 0.937x — the wrong
+order.
+
+The cause is not tunable. Our four sequenced archaic genomes under-represent the archaic diversity
+of East Asia: East Asian tracts match them at 83.4 % against 89.2 % for European tracts, and
+Denisova is the best match for 32.2 % of East Asian tracts against 11.2 % of European ones. Recovery
+is then 46 % of European truth against 38 % of East Asian. Fixing it needs archaic genomes nearer to
+the populations that introgressed into East Asia, and those do not exist.
+
+So Tier B ships as a **within-population** measure (`b39db0b`), and the UI states that limit rather
+than implying a universal percentage. **You must not use it to compare people of different
+ancestries.** The Tier A rule is unchanged and separate: Tier A reports a **count**, never a percent.
+
+### Known stale prose in the module
+
+`archaic_match.rs` was written across 13 commits, and several passages in its doc-comment still say
+the module "stays gated" or that a finding is "not enough to turn the module on". Those were true
+when written and were overtaken by `b39db0b` (ship as within-population) and `9fca4c1` (genome-wide
+validation passes). The flag is the truth: `ARCHAIC_SEGMENTS_ENABLED = true` in
+`navigator-app/src/lib.rs`, whose comment is current.

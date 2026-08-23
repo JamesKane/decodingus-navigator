@@ -1,7 +1,16 @@
 # Internationalization (i18n) Guidelines
 
+> **Partly stale — Scala-era document (header added 2026-08-23).** Written December 2024, before
+> the Rust cutover (`0dee32c`, 2026-06-19). The **architecture and the guidelines still hold**; the
+> code examples and file paths do not.
+>
+> As built in Rust: lookup is `self.tr("key")`, catalogues are plain text at
+> `crates/navigator-domain/locales/{en,es}.txt`, and a parity test (`every_es_key_exists_in_en`)
+> gates them. en and es are at key parity. The known tail is that transient `self.status` strings
+> and `format!` dynamics are still English — see [`BACKLOG.md`](BACKLOG.md), "Cross-cutting".
+
 **Date:** December 2024
-**Status:** Draft Specification
+**Status:** Adopted — implemented in Rust; see the note above for what changed
 **Related:** UI_Redesign_Proposal.md
 
 ---
