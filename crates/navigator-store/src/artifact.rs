@@ -154,6 +154,12 @@ pub async fn list_kinds(pool: &SqlitePool, alignment_id: i64) -> Result<Vec<Stri
 /// Every artifact of every id in `alignment_ids`, in one query. The caller indexes the result by
 /// `(alignment_id, kind)` itself. This replaces a `get` for each (alignment, kind) pair, which gave
 /// a project report one round trip for each cell. An empty `alignment_ids` runs no query.
+///
+/// **No caller uses this today, and a new caller almost certainly wants
+/// [`list_for_alignments_of_kind`].** This query selects the payload of *every* artifact, and some
+/// payloads run to megabytes. The project report used this form and pulled gigabytes of
+/// `tree-genotype` JSON to read five small kinds. Use this one only when the caller genuinely wants
+/// each kind that an alignment holds, and does not know the kinds in advance.
 pub async fn list_for_alignments(
     pool: &SqlitePool,
     alignment_ids: &[i64],
