@@ -1,8 +1,9 @@
-//! The UI's view of the shared i18n catalog, which lives in `navigator-domain` so that the layers
-//! below the UI — the Subject Brief's prose, the HTML report export — can localize too. See
-//! [`navigator_domain::i18n`]. Re-exported rather than wrapped so `crate::i18n::tr` and
-//! `NavigatorApp::tr` keep working unchanged.
+//! The view the UI has of the shared i18n catalog. That catalog lives in `navigator-domain`, so
+//! that the layers below the UI can localize too. Those layers are the prose of the Subject Brief,
+//! and the HTML report export. See [`navigator_domain::i18n`]. This re-exports the catalog, and does not wrap
+//! it, so that `crate::i18n::tr` and `NavigatorApp::tr` do not change.
 
-// `tr_fmt` (positional interpolation) is not re-exported: no UI string needs arguments yet,
-// and an unused re-export is dead code in a binary crate. Add it here when one does.
+// This does not re-export `tr_fmt` (positional interpolation). No UI string needs arguments yet,
+// and a re-export that nothing uses is code with no purpose in a binary crate. Add it here when a
+// string does need arguments.
 pub use navigator_domain::i18n::{load_lang, save_lang, tr, Lang};

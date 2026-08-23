@@ -3,13 +3,17 @@
 use super::*;
 
 impl NavigatorApp {
-    /// Y-STR profiles for the selected subject + an import form (CSV/TSV marker table).
-    /// Donor-level Y-STR consensus across all of the subject's panels (Phase 2 rollup): the modal
-    /// value per marker, with cross-panel disagreements flagged.
-    /// Y-STR report (FTDNA/YSEQ style): summary header (provider toggle, tier badges, conflict
-    /// count) + a By-Panel / All-Markers / Consensus view, rendered from the already-loaded
-    /// `str_profiles`.
-    /// Y-STR called from sequence (HipSTR caller → FTDNA convention) vs the imported vendor profile.
+    /// Y-STR profiles for the selected subject, and an import form for a CSV or TSV marker table.
+    ///
+    /// Donor-level Y-STR consensus over all the panels of the subject (Phase 2 rollup): the modal
+    /// value of each marker, with a flag where the panels disagree.
+    ///
+    /// Y-STR report in the FTDNA or YSEQ style. It has a summary header with a provider toggle,
+    /// tier badges and a conflict count. Below that comes a By-Panel, All-Markers or Consensus
+    /// view. It draws from the `str_profiles` that are already in memory.
+    ///
+    /// Y-STR that the code called from sequence (the HipSTR caller → the FTDNA convention), against
+    /// the vendor profile that an import gave.
     pub(crate) fn ystr_sequence_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         ui.horizontal(|ui| {
             let have = matches!(&self.str_concordance, Some((g, _, _)) if *g == guid);
@@ -65,8 +69,9 @@ impl NavigatorApp {
             .small(),
         );
         ui.add_space(4.0);
-        // No inner ScrollArea — the tab is already one vertical scroll; nesting clips + captures the
-        // wheel (see str_by_panel_view). Flow the (filtered) grid into the page; the filter narrows it.
+        // No inner ScrollArea. The tab is already one vertical scroll, and a nested one clips the
+        // content and takes the wheel (see str_by_panel_view). Let the filtered grid flow into the
+        // page, because the filter makes it narrow.
         egui::Grid::new(("ystr_seq_grid", guid))
             .num_columns(4)
             .striped(true)
@@ -189,7 +194,7 @@ impl NavigatorApp {
         ui.add_space(4.0);
         ui.label(egui::RichText::new(format!("{} matches", matches.len())).weak().small());
         ui.add_space(4.0);
-        // No inner ScrollArea — the tab is already one vertical scroll (see str_by_panel_view).
+        // No inner ScrollArea. The tab is already one vertical scroll (see str_by_panel_view).
         egui::Grid::new(("ymatch_grid", guid))
             .num_columns(7)
             .striped(true)
@@ -254,8 +259,8 @@ impl NavigatorApp {
         let comparison = strprofile::compare_profiles(&self.str_profiles);
         let multi_provider = comparison.providers.len() > 1;
 
-        // Working copies (written back after rendering) so row clicks can mutate selection while
-        // `self.str_profiles` is borrowed immutably.
+        // Local copies, which the code writes back after it draws, so that a row click can change
+        // the selection while `self.str_profiles` has an immutable borrow.
         let mut sel_provider = self.str_provider.clone().unwrap_or_else(|| {
             self.str_profiles
                 .iter()
@@ -340,7 +345,8 @@ impl NavigatorApp {
         self.str_provider = Some(sel_provider);
         self.str_marker_filter = filter;
 
-        // Per-tab AI explanation of the Y-STR panels (M5) — additive, below the structured report.
+        // An AI explanation of the Y-STR panels on this tab (M5). It is additive, and it sits
+        // below the structured report.
         if let Some(guid) = self.selected_sample {
             ui.add_space(8.0);
             self.ai_explain(ui, guid, SignalKind::YStr);
@@ -389,10 +395,11 @@ impl NavigatorApp {
             });
     }
 
-    /// Donor-level ancestry headline (Phase 3): the best estimate across the subject's sources,
-    /// with which source + method it came from.
-    /// The donor's projected (PC1, PC2). Only ADMIXTURE carries PCA coordinates now — the deep
-    /// (ancient) breakdown is a frequency model and has no position in PC space.
+    /// The donor-level ancestry summary (Phase 3): the best estimate over the sources of the
+    /// subject, with the source and the method it came from.
+    ///
+    /// The projected (PC1, PC2) of the donor. Only ADMIXTURE carries PCA coordinates now. The deep
+    /// (ancient) breakdown is a frequency model, and it has no position in PC space.
     fn sample_pca(&self) -> Option<(f64, f64)> {
         [self.donor_ancestry.as_ref().map(|(_, r)| r)]
             .into_iter()
@@ -403,10 +410,11 @@ impl NavigatorApp {
             })
     }
 
-    /// PCA scatter: the donor's PC1×PC2 against the reference population centroids. The donor's
-    /// coordinate is always projected in the CHM13 consensus PCA frame, so the reference centroids are
-    /// loaded from that same asset (once, guarded) — not the selected source's build, which would mix
-    /// frames (or miss the asset entirely) and collapse the plot onto the lone donor point.
+    /// PCA scatter: the PC1×PC2 of the donor against the reference population centroids. The
+    /// projection of the donor coordinate is always in the CHM13 consensus PCA frame. So the
+    /// reference centroids come from that same asset, one time, behind a guard. They do not come
+    /// from the build of the selected source. That would mix frames, or miss the asset completely,
+    /// and it would collapse the plot onto the one donor point.
     pub(crate) fn pca_scatter_section(&mut self, ui: &mut egui::Ui) {
         let key = navigator_app::CONSENSUS_SOURCE_ID;
         let loaded = matches!(&self.pca_reference, Some((a, _)) if *a == key);
@@ -461,10 +469,11 @@ impl NavigatorApp {
         });
     }
 
-    /// The build/refresh control shared by the Y/mt/autosomal consensus cards: a button that
-    /// reads "Refresh" once a profile exists (else `build_label_key`), an inline spinner while
-    /// `loading`, and a weak cost hint. On click it sets `status` and dispatches `command`;
-    /// returns whether it was clicked so the caller can set its own loading flag.
+    /// The build and refresh control that the Y, mt and autosomal consensus cards share. It is a
+    /// button that reads "Refresh" after a profile exists, and `build_label_key` before that. It
+    /// has an inline spinner while `loading`, and a weak cost hint. A click sets `status` and
+    /// dispatches `command`. It returns true after a click, so that the caller can set its own
+    /// loading flag.
     #[allow(clippy::too_many_arguments)]
     fn profile_build_control(
         &mut self,
@@ -496,10 +505,12 @@ impl NavigatorApp {
         clicked
     }
 
-    /// Multi-source Y-variant profile: per-SNP concordance across the subject's Y sources, with
-    /// status (confirmed/novel/conflict/single) and per-source provenance.
+    /// The multi-source Y-variant profile: concordance at each SNP over the Y sources of the
+    /// subject. Each SNP carries a status (confirmed, novel, conflict, or single), and the
+    /// provenance of each source.
     pub(crate) fn y_variant_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        // Build/refresh control first (it mutates self / dispatches), before borrowing the profile.
+        // The build and refresh control first, because it changes self and dispatches. Do it
+        // before the borrow of the profile.
         if self.profile_build_control(
             ui,
             self.y_profile.is_some(),
@@ -512,8 +523,8 @@ impl NavigatorApp {
             self.y_profile_loading = true;
         }
 
-        // Read-only source-audit (per-source provenance + per-conflict evidence) — opens a modal
-        // over the cached profile; no re-genotyping.
+        // A read-only source audit: the provenance of each source, and the evidence for each
+        // conflict. It opens a modal over the cached profile, and nothing genotypes again.
         if self.y_profile.is_some() && ui.small_button(self.tr("audit.open")).clicked() {
             self.audit_y_profile = true;
         }
@@ -542,9 +553,10 @@ impl NavigatorApp {
         self.y_profile_query = query;
     }
 
-    /// Multi-source mtDNA consensus profile: per-mutation concordance across the subject's mt
-    /// sources (alignments' chrM placement, imported mtDNA sequences, the chip mt panel). Mirrors
-    /// the Y-variant card over the same generic consensus engine.
+    /// The multi-source mtDNA consensus profile: concordance at each mutation over the mt sources
+    /// of the subject. Those sources are the chrM placement of the alignments, the imported mtDNA
+    /// sequences, and the chip mt panel. It mirrors the Y-variant card, over the same generic
+    /// consensus engine.
     pub(crate) fn mt_variant_profile_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if self.profile_build_control(
             ui,
@@ -566,7 +578,8 @@ impl NavigatorApp {
         };
         let mut filter = self.mt_profile_filter;
         let mut query = std::mem::take(&mut self.mt_profile_query);
-        // mtDNA mutations are already named (rCRS notation) — no Y-SNP catalogue annotation.
+        // The mtDNA mutations already have names, in rCRS notation, so there is no annotation
+        // from the Y-SNP catalogue.
         draw_consensus_profile(
             ui,
             profile,
@@ -583,11 +596,14 @@ impl NavigatorApp {
         self.mt_profile_query = query;
     }
 
-    /// Multi-source autosomal (diploid 0/1/2) consensus over the canonical IBD-panel sites. Build/
-    /// Refresh recomputes (panel-genotypes every WGS + chip source); the cached snapshot loads instantly.
-    /// Autosomal-consensus **Summary** sub-tab: the build/refresh control plus a one-line digest
-    /// (site count + overall confidence) once the profile exists. The heavy per-site table lives on
-    /// the Profile sub-tab ([`autosomal_profile_table`]).
+    /// The multi-source autosomal consensus (diploid 0/1/2) over the canonical IBD-panel sites.
+    /// Build and Refresh compute it again, and genotype every WGS and chip source at the panel. The
+    /// cached snapshot loads at once.
+    ///
+    /// The **Summary** sub-tab of the autosomal consensus. It has the build and refresh control,
+    /// plus a one-line digest with the site count and the overall confidence, after a profile
+    /// exists. The heavy table of each site lives on the Profile sub-tab
+    /// ([`autosomal_profile_table`]).
     pub(crate) fn autosomal_summary_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if self.profile_build_control(
             ui,
@@ -616,8 +632,8 @@ impl NavigatorApp {
         ui.label(egui::RichText::new(self.tr("hint.autoProfileTable")).weak().small());
     }
 
-    /// Autosomal-consensus **Profile** sub-tab: the full per-site reconciled table. Renders nothing
-    /// until the profile has been built from the Summary sub-tab.
+    /// The **Profile** sub-tab of the autosomal consensus: the full reconciled table, one row for
+    /// each site. It draws nothing until a build from the Summary sub-tab makes the profile.
     pub(crate) fn autosomal_profile_table(&mut self, ui: &mut egui::Ui) {
         let Some(profile) = &self.auto_profile else {
             ui.label(egui::RichText::new(self.tr("hint.autoProfileBuild")).weak());
@@ -637,10 +653,11 @@ impl NavigatorApp {
         self.auto_profile_query = query;
     }
 
-    /// A per-tab "Explain this" affordance (M5): a small button that asks the local model to explain
-    /// just one signal (`kind`) for the selected subject in plain language, plus the streamed/finalized
-    /// explanation rendered below it. Additive — the structured facts in the tab always remain, and
-    /// it is a no-op when the AI assistant is off. Only one explanation runs at a time (one worker).
+    /// An "Explain this" control on one tab (M5). It is a small button that asks the local model to
+    /// explain one signal (`kind`) for the selected subject, in plain language. Below it comes the
+    /// explanation, first as a stream and then as the final text. It is additive: the structured
+    /// facts in the tab always stay, and it does nothing when the AI assistant is off. Only one
+    /// explanation runs at a time, because there is one worker.
     pub(crate) fn ai_explain(&mut self, ui: &mut egui::Ui, guid: SampleGuid, kind: SignalKind) {
         if !self.ai_enabled {
             return;
@@ -666,7 +683,7 @@ impl NavigatorApp {
             }
         });
 
-        // Prefer the live stream while generating; fall back to the finalized explanation.
+        // Prefer the live stream while the model writes. Fall back to the final explanation.
         let live = self
             .signal_stream
             .as_ref()
@@ -699,9 +716,10 @@ impl NavigatorApp {
         }
     }
 
-    /// "Ask about your results" chat (M2): a subject-scoped Q&A grounded in the brief. Sign-in is not
-    /// required (it is local), but the AI assistant must be enabled. Answers are AI-generated from the
-    /// results, so a persistent banner says to verify against the data.
+    /// The "Ask about your results" chat (M2): a Q&A for one subject, grounded in the brief. The
+    /// user does not have to sign in, because it is local, but the AI assistant must be on. An AI
+    /// makes the answers from the results, so a permanent banner says to check them against the
+    /// data.
     pub(crate) fn simple_chat_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if !self.ai_enabled {
             return;
@@ -808,14 +826,16 @@ impl NavigatorApp {
                     .small(),
             );
         }
-        // The lineage trail, upgraded in place to the call-coloured descent path when the variant
-        // profile is built (else the plain root→tip names). egui's default font renders no arrow
-        // glyph, so the fallback uses a middle dot; the path reads root→tip left-to-right.
+        // The lineage trail. It becomes the call-coloured descent path in place when the variant
+        // profile exists, and it is the plain root→tip names before that. The default font of egui
+        // has no arrow glyph, so the fallback uses a middle dot. The path reads root→tip from left
+        // to right.
         self.brief_descent_trail(ui, guid, lb);
     }
 
-    /// Consensus dashboard (Overview): the subject's source-of-truth at a glance — consensus Y/mt
-    /// haplogroups, top ancestry, the autosomal concordance one-liner, and a source inventory.
+    /// The consensus dashboard (Overview): the source of truth for the subject, in one view. It has
+    /// the consensus Y and mt haplogroups, the top ancestry, the one-line autosomal concordance,
+    /// and an inventory of the sources.
     pub(crate) fn overview_dashboard(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         let none = self.tr("hint.noConsensusYet");
         card(ui, self.tr("card.consensusSummary"), |ui| {
@@ -904,10 +924,11 @@ impl NavigatorApp {
     }
 
     /// Genealogy for the open subject: vendor ids (kit numbers), FTDNA member labels, and the MDKA
-    /// per lineage — all editable here (add/remove kits, edit/add/remove MDKA). PII: shown locally
-    /// only, never federated. Rendered once the subject's genealogy has loaded (even when empty, so
-    /// the Add affordances are reachable). Edits are collected in locals and dispatched after the
-    /// render closure (which borrows `self.tr` immutably).
+    /// of each lineage. The user can edit all of it here: add and remove a kit, and edit, add or
+    /// remove an MDKA. It is PII, so it appears locally only, and never goes to federation. It
+    /// draws after the genealogy of the subject loads, and it draws when that is empty too, so that
+    /// the Add controls stay reachable. The edits collect in locals, and they dispatch after the
+    /// draw closure, which borrows `self.tr` immutably.
     fn genealogy_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         // Clone the loaded bundle for this subject so the closure does not hold a borrow of `self`.
         let Some(data) = self
@@ -952,7 +973,8 @@ impl NavigatorApp {
 
         ui.add_space(10.0);
         card(ui, self.tr("card.genealogy"), |ui| {
-            // Vendor identifiers (kit numbers, etc.) — each removable; add a new one.
+            // Vendor identifiers (kit numbers, and others). The user can remove each one, and
+            // add a new one.
             ui.horizontal(|ui| {
                 ui.strong(self.tr("geneal.ids"));
                 if ui.small_button(self.tr("geneal.addKit")).clicked() {
@@ -971,7 +993,8 @@ impl NavigatorApp {
                     }
                 });
             }
-            // FTDNA member labels (reported haplogroups + access/consent) — read-only (imported).
+            // FTDNA member labels: the reported haplogroups, and the access and consent flags.
+            // Nobody can edit them here, because an import made them.
             if let Some(m) = &data.member {
                 if let Some(y) = &m.y_haplogroup_ftdna {
                     ui.horizontal(|ui| {
@@ -997,7 +1020,8 @@ impl NavigatorApp {
                     }
                 });
             }
-            // MDKA — paternal (Y) then maternal (Mt): edit/remove when present, add when absent.
+            // MDKA: paternal (Y) first, then maternal (Mt). Edit or remove one that is there, and
+            // add one that is not.
             for (lineage, label_key, add_key) in [
                 ("Y", "geneal.paternal", "geneal.addPaternal"),
                 ("Mt", "geneal.maternal", "geneal.addMaternal"),
@@ -1060,9 +1084,10 @@ impl NavigatorApp {
         }
     }
 
-    /// The per-sequencing-result hub: the source lists (runs/alignments/chips/STR/mtDNA) plus, for the
-    /// selected source, the inherently-per-result views (coverage, sex/metrics/SV, ideogram,
-    /// heteroplasmy, chrM de-novo) and that source's own Y/mt haplogroup placement.
+    /// The hub for each sequencing result. It holds the source lists (runs, alignments, chips, STR
+    /// and mtDNA). For the selected source it also holds the views that belong to one result alone:
+    /// coverage, sex, metrics, SV, the ideogram, heteroplasmy, and chrM de-novo. It also holds the
+    /// Y and mt haplogroup placement of that source.
     pub(crate) fn sources_tab(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         self.data_sources_tab(ui, guid);
         ui.add_space(10.0);
@@ -1113,8 +1138,8 @@ impl NavigatorApp {
         }
     }
 
-    /// Donor-level private-Y union (Phase 3): off-backbone calls pooled + deduped across the
-    /// subject's Y-bearing sources.
+    /// The donor-level private-Y union (Phase 3): the off-backbone calls, pooled and deduped over
+    /// every source of the subject that carries Y.
     pub(crate) fn donor_private_y_section(&mut self, ui: &mut egui::Ui) {
         if self.donor_private_y.is_none() {
             ui.label(
@@ -1136,7 +1161,8 @@ impl NavigatorApp {
                 b.terminal
             ));
         }
-        // Per-tab AI explanation of the private-Y picture (M5) — additive, alongside the table below.
+        // An AI explanation of the private-Y picture on this tab (M5). It is additive, and it sits
+        // beside the table below.
         if let Some(guid) = self.selected_sample {
             self.ai_explain(ui, guid, SignalKind::PrivateY);
         }
@@ -1154,9 +1180,10 @@ impl NavigatorApp {
         let bucket = self.donor_private_y.as_ref().unwrap();
         let names = &self.y_snp_names; // catalogued Y-SNP name at a novel call's site, if any
 
-        // Filter to matching variants (position, off-path name, "novel", or the catalogued name); the
-        // table is bounded to a fixed-height scroll pane (a WGS bucket runs to thousands of rows). A
-        // hard cap keeps a pathological bucket from flooding even the pane.
+        // Filter to the variants that match: a position, an off-path name, "novel", or the
+        // catalogued name. The table sits inside a scroll pane of fixed height, because a WGS
+        // bucket runs to thousands of rows. A hard cap stops a pathological bucket from a flood of
+        // even that pane.
         const CAP: usize = 1000;
         let matched: Vec<_> = bucket
             .variants
@@ -1195,8 +1222,9 @@ impl NavigatorApp {
                             ui.label(format!("{}>{}", v.reference, v.alternate));
                             ui.label(v.depth.to_string());
                             match &v.class {
-                                // A "novel" call that lands on a catalogued Y-SNP: surface that name (it is not
-                                // on the placed lineage, but it is a known site, not a brand-new variant).
+                                // A "novel" call that lands on a catalogued Y-SNP. Show that name.
+                                // The call is not on the placed lineage, but the catalogue holds
+                                // the site, and it is not a new variant.
                                 PrivateClass::Novel => match names.get(&v.position) {
                                     Some(name) => ui
                                         .colored_label(teal, format!("novel · {name}"))
@@ -1250,8 +1278,8 @@ impl NavigatorApp {
 
         ui.add_space(6.0);
         ui.collapsing(self.tr("str.import"), |ui| {
-            // Bind labels first — `self.tr()` (immutable) can't share the statement with the
-            // `&mut self.forms.*` below (the i18n borrow gotcha).
+            // Bind the labels first. `self.tr()` is immutable, and it can not share the statement
+            // with the `&mut self.forms.*` below. This is the i18n borrow trap.
             let (panel_lbl, provider_lbl, source_lbl) =
                 (self.tr("form.panel"), self.tr("form.provider"), self.tr("form.source"));
             combo(
@@ -1503,14 +1531,15 @@ impl NavigatorApp {
         });
     }
 
-    /// mtDNA FASTA sequences for the selected subject + an import form. Per sequence: place the
-    /// haplogroup, or show its rCRS-relative mutation list (derived against the bundled rCRS).
+    /// mtDNA FASTA sequences for the selected subject, and an import form. For each sequence it can
+    /// place the haplogroup, or show the mutation list against rCRS, which it derives against the
+    /// bundled rCRS.
     pub(crate) fn mtdna_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if self.mtdna_sequences.is_empty() {
             ui.label(egui::RichText::new("No mtDNA sequences yet.").weak());
         }
 
-        // Bind before the &self loop borrow — used inside the per-row closures.
+        // Bind before the `&self` loop borrow, because the closure of each row uses it.
         let assign_lbl = self.tr("common.assignHaplogroup");
         let mutations_lbl = self.tr("btn.showMtMutations");
         let delete_lbl = self.tr("common.delete");
@@ -1587,10 +1616,11 @@ impl NavigatorApp {
         });
     }
 
-    /// When an import is blocked on uncached reference builds, prompt to download them (with
-    /// a progress bar); on completion the import auto-retries (see the `ReferenceReady` event).
-    /// Also surfaces an in-flight coordinate-index build (`.bai`/`.crai`) so the user sees why a
-    /// freshly imported file is busy before its first analysis.
+    /// When an import waits on reference builds that are not in the cache, prompt to download them,
+    /// with a progress bar. When that ends, the import tries again on its own (see the
+    /// `ReferenceReady` event). This also shows a coordinate-index build (`.bai`/`.crai`) in
+    /// progress. The user then sees why a file that just came in is busy before its first
+    /// analysis.
     pub(crate) fn reference_prompt(&mut self, ui: &mut egui::Ui) {
         if self.reference_needs.is_empty() && self.reference_progress.is_none() && self.index_progress.is_none() {
             return;
@@ -1630,9 +1660,9 @@ impl NavigatorApp {
                 }
             }
             if let Some((build, received, total)) = self.reference_progress.clone() {
-                // The bar alone reads as an unexplained multi-GB download, so name it and say why
-                // it is happening — the pull is usually kicked off automatically by an import, not
-                // by anything the user clicked.
+                // The bar alone reads as a multi-GB download with no explanation. So name it, and
+                // say why it runs. An import usually starts the download on its own, and not
+                // anything the user clicked.
                 ui.label(egui::RichText::new(self.tr("refdl.progressTitle")).strong());
                 ui.add_space(2.0);
                 ui.label(egui::RichText::new(self.tr("refdl.why")).weak().small());
@@ -1656,23 +1686,24 @@ impl NavigatorApp {
         });
     }
 
-    /// Realign a whole project, as a card rather than a dialog for the same reason the per-alignment
-    /// one is: this runs for *days*, and nothing that long should own the screen.
+    /// Realign a whole project. It is a card, and not a dialog, for the same reason as the card of
+    /// one alignment. This runs for *days*, and nothing that long must own the screen.
     ///
-    /// The card leads with how many alignments it would actually touch. A batch measured in days
-    /// deserves a real number before it starts, not after — and the count excludes everything that
-    /// would be skipped anyway, so it is the honest figure rather than an upper bound.
+    /// The card starts with how many alignments it would touch. A batch that takes days deserves a
+    /// real number before it starts, and not after. The count leaves out everything the job would
+    /// step over anyway, so it is the honest figure, and not an upper limit.
     pub(crate) fn project_realign_section(&mut self, ui: &mut egui::Ui) {
         let Some(project_id) = self.selected_project else {
             return;
         };
         let target = navigator_app::DEFAULT_TARGET_BUILD;
 
-        // Asked of the app, once per project, rather than filtered here. This used to count
-        // `all_alignments` — the whole workspace — and label the result "in this project": a
-        // project whose alignments were every one already on the target build was still offered 35
-        // of them. The rule also lives in exactly one place now (`realignable_in_project`), so the
-        // number shown and the batch the button starts can not disagree.
+        // This asks the app, one time for each project, and it does not filter here. It used to
+        // count `all_alignments`, which is the whole workspace, and label the result "in this
+        // project". A project whose alignments were every one already on the target build still
+        // got an offer of 35 of them. The rule now lives in exactly one place
+        // (`realignable_in_project`), so the number on the screen and the batch the button starts
+        // can not disagree.
         if self.project_realignable_asked != Some(project_id) {
             self.project_realignable_asked = Some(project_id);
             self.project_realignable = None;
@@ -1689,7 +1720,7 @@ impl NavigatorApp {
             });
             return;
         };
-        // Only the count is read below, so take that rather than cloning the Vec every frame.
+        // Only the count matters below, so take that, and do not clone the Vec on every frame.
         let eligible_count = eligible.len();
 
         if eligible_count == 0 {
@@ -1734,7 +1765,7 @@ impl NavigatorApp {
             }
         });
 
-        // While a batch runs, the same per-stage detail the single-alignment card shows.
+        // While a batch runs, the same detail of each stage that the single-alignment card shows.
         if let Some(state) = self.realign.as_ref().filter(|r| r.finished.is_none()) {
             ui.add_space(6.0);
             ui.label(format!(
@@ -1799,8 +1830,8 @@ impl NavigatorApp {
         let mut assign_y: Option<i64> = None;
         let mut open_sample: Option<SampleGuid> = None;
 
-        // Column widths, mirroring the old Grid order. The trailing "actions" column (index 14)
-        // is neither sortable nor filterable.
+        // Column widths, in the same order as the old Grid. The "actions" column at the end
+        // (index 14) takes no sort and no filter.
         const REPORT_COLS: [(&str, f32); 15] = [
             ("report.sample", 150.0),
             ("report.alns", 48.0),
@@ -1821,7 +1852,8 @@ impl NavigatorApp {
         const ACTIONS_COL: usize = 14;
         let labels: [&str; 15] = REPORT_COLS.map(|(k, _)| self.tr(k));
 
-        // 15 `String`s per member plus a natural sort — cached, since this fn runs every frame.
+        // 15 `String` values for each member, plus a natural sort. A cache holds them, because
+        // this function runs on every frame.
         self.refresh_report_rows(ACTIONS_COL);
         let order = &self.report_rows.order;
         let shown = order.len();
@@ -1863,12 +1895,13 @@ impl NavigatorApp {
                 row.col(|ui| {
                     ui.label(r.alignment_count.to_string());
                 });
-                // Mean coverage, with a "lite" badge when it is a partial sidecar estimate that a
-                // deep walk (the per-row coverage button) would upgrade.
+                // Mean coverage, with a "lite" badge when it is a partial sidecar estimate. A deep
+                // walk, from the coverage button on that row, would replace it with a better one.
                 row.col(|ui| {
                     if let Some(err) = &r.decode_error {
-                        // The last walk failed (corrupt/undecodable file) — show it instead of a
-                        // silent "—" so the sample reads as failed, not merely un-analyzed.
+                        // The last walk failed, because the file is corrupt or the decoder can not
+                        // read it. Show that, and not a plain dash, so that the sample reads as a
+                        // failure, and not as one that no analysis covered.
                         ui.add(egui::Label::new(
                             egui::RichText::new(failed_label).small().color(egui::Color32::from_rgb(200, 80, 80)),
                         ))
@@ -1947,16 +1980,19 @@ impl NavigatorApp {
         }
     }
 
-    /// The FTDNA-style "Y-DNA Results Overview" for the open project: members grouped by terminal Y
-    /// haplogroup, each subgroup prefixed by MIN/MAX/MODE rows, and member cells coloured when they
-    /// differ from the subgroup's modal value (blue below, red above, purple multi-copy). Only
-    /// markers reported by at least one member are shown, in canonical FTDNA column order.
+    /// The FTDNA-style "Y-DNA Results Overview" for the open project. It groups members by their
+    /// terminal Y haplogroup, and puts MIN, MAX and MODE rows before each subgroup. A member cell
+    /// takes a colour when it differs from the modal value of the subgroup. Blue is below, red is
+    /// above, and purple is a multi-copy marker. It shows only the markers that at least one
+    /// member
+    /// reports, in the canonical FTDNA column order.
     pub(crate) fn project_ystr_section(&mut self, ui: &mut egui::Ui) {
         use egui_extras::{Column, TableBuilder};
         use navigator_app::{StrChartCell, StrRowKind};
         use navigator_domain::strchart::Deviation;
 
-        // Header labels (pulled before borrowing the chart, so closures do not re-borrow `self.tr`).
+        // Header labels. Take them before the borrow of the chart, so that no closure borrows
+        // `self.tr` again.
         let (h_name, h_kit, h_hap, h_test) = (
             self.tr("ystr.col.name").to_string(),
             self.tr("ystr.col.kit").to_string(),
@@ -2226,8 +2262,9 @@ impl NavigatorApp {
         };
         let mut pick = None;
 
-        // The parent (samples_section) owns the scroll area — no nested one here (that is the widget-ID
-        // clash and double-scrollbar). Render clusters directly.
+        // The parent (samples_section) owns the scroll area, so there is no nested one here. A
+        // nested one gives the widget-ID clash and the double scrollbar. Draw the clusters
+        // directly.
         for cluster in &clustering.clusters {
             // A cluster shows if its branch matches the filter (→ all members) or any member matches.
             let branch_hit = !filter.is_empty()
@@ -2255,7 +2292,8 @@ impl NavigatorApp {
                 cluster.suggested_count(),
                 self.tr("cluster.suggested"),
             );
-            // Auto-open when filtering (so matches are visible) or for small clusters.
+            // Open it without help when a filter is active, so that the matches are visible, and
+            // for a small cluster.
             let open = !filter.is_empty() || cluster.members.len() <= 30;
             egui::CollapsingHeader::new(egui::RichText::new(header).strong())
                 .default_open(open)
@@ -2313,8 +2351,8 @@ impl NavigatorApp {
         }
     }
 
-    /// The Data Sources tab: sequencing runs (cards with expandable alignments), chip/array,
-    /// and STR profiles — each in a rounded card.
+    /// The Data Sources tab: sequencing runs, as cards whose alignments expand, then chip or array
+    /// data, then STR profiles. Each one sits in a rounded card.
     fn data_sources_tab(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         ui.add_space(4.0);
         card(ui, self.tr("card.sequencingRuns"), |ui| self.runs_card(ui, guid));
@@ -2338,8 +2376,9 @@ impl NavigatorApp {
         });
     }
 
-    /// The sequencing-runs body: one card per run (provider chip, title, read meta, Y/mt
-    /// badges); the selected run expands to its alignment rows + the add-alignment form.
+    /// The body of the sequencing runs: one card for each run. A card has a provider chip, a
+    /// title, the read meta, and the Y and mt badges. The selected run expands to its alignment
+    /// rows, and the add-alignment form.
     fn runs_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if self.runs.is_empty() {
             ui.label(egui::RichText::new("No sequencing runs yet.").weak());
@@ -2381,7 +2420,8 @@ impl NavigatorApp {
                         ACCENT.gamma_multiply(0.3),
                         ACCENT,
                     );
-                    // Lab chip (FGC/FTDNA/YSEQ/Dante/Nebula…) when the sequencing facility is known.
+                    // A lab chip (FGC/FTDNA/YSEQ/Dante/Nebula…) when the record names the
+                    // sequencing facility.
                     if let Some(lab) = r.sequencing_facility.as_deref().filter(|s| !s.is_empty()) {
                         let abbr = navigator_domain::labs::abbreviation(lab, 6);
                         chip(
@@ -2407,8 +2447,9 @@ impl NavigatorApp {
                             r.instrument_model.as_deref().unwrap_or("—")
                         );
                         ui.label(egui::RichText::new(title).strong());
-                        // Standardized, vendor-neutral test label (WGS150 45Gbases / HiFi 90Gbases /
-                        // BigY-700) when this is a yield/product test — the cohort-comparable label.
+                        // The standardized, vendor-neutral test label (WGS150 45Gbases, HiFi
+                        // 90Gbases, BigY-700) when this is a yield or product test. It is the label
+                        // that compares across a cohort.
                         if let Some(std) = r.standardized_label() {
                             ui.label(egui::RichText::new(std).monospace().small().color(ACCENT));
                         }
@@ -2418,8 +2459,9 @@ impl NavigatorApp {
                             (Some(i), None) => format!("   Instr: {i}"),
                             _ => String::new(),
                         };
-                        // Library-level metrics: total reads + read/insert length (reads *aligned*
-                        // is a per-alignment stat, shown on the alignment row, not here).
+                        // Metrics at library level: the total reads, and the read length and
+                        // insert length. Reads *aligned* is a statistic of one alignment, and the
+                        // alignment row shows it, not this one.
                         let read_len = r
                             .mean_read_length
                             .map(|v| format!("{v:.0} bp"))
@@ -2478,9 +2520,9 @@ impl NavigatorApp {
                 (edit_btn, del_btn, merge_btn)
             });
             let (edit_btn, del_btn, merge_btn) = inner.inner;
-            // Row selection is sensed on the whole frame, which can swallow the inner buttons'
-            // clicks; treat a button as hit when it was clicked OR the row swallowed the click
-            // while the pointer was over it.
+            // The whole frame senses a row selection, and that can take the clicks of the buttons
+            // inside it. So count a button as hit when the user clicked it, OR when the row took
+            // the click while the pointer was over that button.
             let row_clicked = inner.response.interact(egui::Sense::click()).clicked();
             if button_hit(&edit_btn, row_clicked) {
                 want_edit_run = Some(EditRun {
@@ -2526,10 +2568,10 @@ impl NavigatorApp {
                                 let mut del_btn: Option<egui::Response> = None;
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(&a.reference_build).color(ACCENT).strong());
-                                    // A realigned alignment sits next to the one it came from, on the
-                                    // same run, often with the same aligner — so without a mark the two
-                                    // rows are indistinguishable and the user can not tell which is the
-                                    // vendor's file.
+                                    // A realigned alignment sits next to the one it came from, on
+                                    // the same run, and often with the same aligner. Without a
+                                    // mark, the two rows look the same, and the user can not tell
+                                    // which one is the file of the vendor.
                                     if let Some(source) = a.derived_from_alignment_id {
                                         chip(ui, "realigned", ui.visuals().selection.bg_fill, egui::Color32::WHITE)
                                             .on_hover_text(format!("Produced by Navigator from alignment #{source}"));
@@ -2648,8 +2690,9 @@ impl NavigatorApp {
         });
     }
 
-    /// The "Add alignment" form for a run. Picking a BAM/CRAM probes its header to auto-fill the
-    /// reference build + aligner; the reference FASTA is never asked for (resolved from the build).
+    /// The "Add alignment" form for a run. When the user picks a BAM or CRAM, a probe of its header
+    /// fills in the reference build and the aligner. It never asks for the reference FASTA, because
+    /// that comes from the build.
     fn add_alignment_form(&mut self, ui: &mut egui::Ui, run_id: i64) {
         ui.collapsing(self.tr("aln.add"), |ui| {
             ui.horizontal(|ui| {
@@ -2722,10 +2765,10 @@ impl NavigatorApp {
         })
     }
 
-    /// Lazily resolve catalogued Y-SNP names for the two Y-SNP tables' position-only / novel calls.
-    /// Gathers every variant position from the Y consensus profile + the private-Y union and asks the
-    /// worker for `position → name` once per subject (re-armed when either source reloads). No-op until
-    /// at least one source is present.
+    /// Lazily resolve catalogued Y-SNP names for the position-only and novel calls of the two Y-SNP
+    /// tables. It collects every variant position from the Y consensus profile and the private-Y
+    /// union. Then it asks the worker for `position → name`, one time for each subject, and it arms
+    /// again when either source loads again. It does nothing until at least one source is there.
     pub(crate) fn ensure_y_snp_names(&mut self, guid: SampleGuid) {
         if self.y_snp_names_requested {
             return;
@@ -2763,7 +2806,8 @@ impl NavigatorApp {
             return;
         }
 
-        // chrY length + PAR shading from the selected alignment's genome regions (lazily fetched).
+        // The chrY length, and the shade behind each PAR, from the genome regions of the selected
+        // alignment. The code reads those lazily.
         let (mut length, mut regions): (i64, Vec<TrackRegion>) = (62_460_029, Vec::new()); // CHM13 chrY fallback
         if let Some(id) = self.selected_alignment {
             if let Some(build) = self
@@ -2808,7 +2852,7 @@ impl NavigatorApp {
                 }
             }
         }
-        // Guard against build-mismatched positions overrunning the bar.
+        // Guard against a position from a different build that would go past the end of the bar.
         length = length.max(marks.iter().map(|m| m.position).max().unwrap_or(0) + 1);
         draw_variant_track(ui, "chrY", length, &regions, &marks);
     }

@@ -5,8 +5,8 @@ use super::*;
 impl NavigatorApp {
     pub(crate) fn drain_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
-            // Any event may replace data the per-frame view caches derive from, so invalidate them
-            // all. See `NavigatorApp::data_epoch` for why this is deliberately over-broad.
+            // Any event may replace data that the view caches derive from, so invalidate them all.
+            // See `NavigatorApp::data_epoch` for why this is over-broad on purpose.
             self.data_epoch = self.data_epoch.wrapping_add(1);
             match event {
                 Event::Noop => {}
@@ -34,7 +34,8 @@ impl NavigatorApp {
                     if !summary.missing_index.is_empty() {
                         msg.push_str(&format!("; {} sample(s) missing an index", summary.missing_index.len()));
                     }
-                    // Per-sample failures that were skipped so the rest could import (recoverable).
+                    // Failures on one sample that the import stepped over, so that the rest could
+                    // come in (recoverable).
                     if !summary.sample_errors.is_empty() {
                         msg.push_str(&format!(
                             "; {} sample(s) skipped on error: {}",
@@ -46,7 +47,7 @@ impl NavigatorApp {
                     if !summary.reference_notes.is_empty() {
                         msg.push_str(&format!(". References: {}", summary.reference_notes.join("; ")));
                     }
-                    // Fast path: what the pipeline sidecars filled without walking the CRAM.
+                    // Fast path: what the pipeline sidecars filled with no walk of the CRAM.
                     let fp = &summary.fast_path;
                     if fp.samples_with_sidecars > 0 {
                         msg.push_str(&format!(
@@ -132,10 +133,11 @@ impl NavigatorApp {
                     self.reference_needs = builds;
                 }
                 Event::ReferenceProgress { build, received, total } => {
-                    // Mirror the download into the always-visible status bar. The progress bar is only
-                    // drawn in a couple of views (and none in Simple mode), so without this a slow
-                    // multi-GB reference pull — kicked off in the background after import — looks like
-                    // the app is stuck. The status line is the one surface visible in every view.
+                    // Mirror the download into the status bar, which is always visible. Only two
+                    // views draw the progress bar, and no view in Simple mode does. Without this, a
+                    // slow multi-GB reference download, which starts in the background after an
+                    // import, looks like an app that has stopped. The status line is the one
+                    // surface that every view shows.
                     let recv_mb = received / 1_000_000;
                     self.status = match total {
                         Some(t) if t > 0 => format!(
@@ -174,7 +176,8 @@ impl NavigatorApp {
                     self.update_info = Some(*info);
                 }
                 Event::UpToDate => {
-                    // Quietly current — no nagging. (A failed check surfaces via Event::Error.)
+                    // Current, with no message and no repeat prompt. (A failed check comes back
+                    // through Event::Error.)
                 }
                 Event::Samples { project_id, samples } => {
                     if self.selected_project == Some(project_id) {
@@ -217,7 +220,8 @@ impl NavigatorApp {
                 Event::BranchReportLoaded { guid, dna, result } => {
                     self.branch_loading.retain(|(g, d)| !(*g == guid && *d == dna));
                     if self.selected_sample == Some(guid) {
-                        // Replace any prior report for this (guid, dna) — a new node was queried.
+                        // Replace any earlier report for this (guid, dna), because a query named
+                        // a new node.
                         self.branch_reports.retain(|(g, d, _)| !(*g == guid && *d == dna));
                         match result {
                             Ok(report) => self.branch_reports.push((guid, dna, report)),
@@ -262,8 +266,8 @@ impl NavigatorApp {
                             Ok(answer) => answer,
                             Err(msg) => format!("{} {msg}", self.tr("brief.aiUnavailable")),
                         };
-                        // Set the authoritative answer on the pending assistant turn (pre-pushed on
-                        // send); fall back to appending one if it is missing.
+                        // Set the authoritative answer on the assistant turn that waits, which the
+                        // send pushed first. If that turn is missing, add one at the end instead.
                         match self.chat_history.last_mut().filter(|t| !t.from_user) {
                             Some(turn) => turn.text = text,
                             None => self.chat_history.push(ChatTurn { from_user: false, text }),
@@ -314,10 +318,10 @@ impl NavigatorApp {
                     );
                     if self.selected_project == Some(project_id) {
                         let _ = self.tx.send(Command::LoadProjectReport(project_id));
-                        // Haplogroups may have been assigned — regroup the STR chart.
+                        // Something may have assigned haplogroups, so group the STR chart again.
                         self.reload_project_str();
                     }
-                    // Coverage was (re)computed — refresh the subjects-list Status column.
+                    // Coverage just ran, so refresh the Status column of the subjects list.
                     let _ = self.tx.send(Command::LoadSubjectStatus);
                 }
                 Event::MaintenanceSurvey(v) => {
@@ -337,7 +341,7 @@ impl NavigatorApp {
                     self.status = format!("{}: {}", chore.key(), outcome.summary);
                     self.chore_last = Some((chore, outcome));
                     self.chore_running = None;
-                    // The survey it was based on is now stale by construction.
+                    // The survey behind it is now stale, by construction.
                     self.maintenance = None;
                 }
                 Event::DeepAnalyzeProgress {
@@ -362,12 +366,13 @@ impl NavigatorApp {
                     self.status = format!("Importing: {done}/{total} ({pct}%) — {sample}…");
                 }
                 Event::AllBiosamples(v) => {
-                    // Drop a dangling selection: after deleting the last subject the async list reload
-                    // lands here empty, but `selected_sample` may still point at the deleted (or any
-                    // now-removed) subject. Left set, the per-frame auto-select and brief-load keep
-                    // re-fetching a brief that errors — never clearing `subject_brief_loading` — so the
-                    // Simple view spins on "Building your brief…" forever. Clear it so the empty-state
-                    // (or a valid re-selection) renders instead.
+                    // Drop a selection that hangs. After a delete of the last subject, the async
+                    // list reload lands here empty, but `selected_sample` can still point at the
+                    // subject that went. If it stays set, the auto-select and the brief load on
+                    // each frame ask again for a brief that errors, and nothing ever clears
+                    // `subject_brief_loading`. The Simple view then spins on `Building your brief…`
+                    // for ever. Clear it, so that the empty state, or a valid new selection, draws
+                    // instead.
                     if let Some(sel) = self.selected_sample {
                         if !v.iter().any(|b| b.guid == sel) {
                             self.selected_sample = None;
@@ -376,8 +381,9 @@ impl NavigatorApp {
                         }
                     }
                     self.all_biosamples = v;
-                    // One-time: restore the previously-focused subject now that the list is available.
-                    // `.take()` so it applies once; a stale GUID (deleted subject) simply no-ops.
+                    // One time only: restore the subject that had focus before, now that the list
+                    // is here. `.take()` makes it apply one time, and a stale GUID, from a subject
+                    // that went, does nothing.
                     if self.selected_sample.is_none() {
                         if let Some(guid_str) = self.pending_restore_subject.take() {
                             if let Some(guid) = self
@@ -443,8 +449,8 @@ impl NavigatorApp {
                     if self.selected_sample == Some(guid) {
                         let _ = self.tx.send(Command::LoadStrProfiles(guid));
                     }
-                    // A member's STR data changed — refresh the project chart (best-effort; the
-                    // builder only includes members of the open project).
+                    // The STR data of a member changed, so refresh the project chart. It is
+                    // best-effort, and the builder takes only members of the open project.
                     self.reload_project_str();
                     self.status = "STR profile imported".into();
                 }
@@ -470,8 +476,9 @@ impl NavigatorApp {
                 Event::ChipProfilesChanged(guid) => {
                     if self.selected_sample == Some(guid) {
                         let _ = self.tx.send(Command::LoadChipProfiles(guid));
-                        // A chip import also places Y (and, for 23andMe, mtDNA) haplogroups —
-                        // refresh the consensus so they appear without a manual reload.
+                        // A chip import also places Y haplogroups, and mtDNA haplogroups for
+                        // 23andMe. Refresh the consensus, so that they appear with no manual
+                        // reload.
                         let _ = self.tx.send(Command::LoadConsensus(guid));
                     }
                     let _ = self.tx.send(Command::LoadHaploSummary); // subjects-list Y/mt columns
@@ -517,8 +524,8 @@ impl NavigatorApp {
                     if let Some(guid) = self.selected_sample {
                         let _ = self.tx.send(Command::LoadConsensus(guid));
                     }
-                    // A per-row "Assign Y" from the project report just recorded a call —
-                    // refresh the report so its Y column fills in.
+                    // An "Assign Y" on one row of the project report just recorded a call. Refresh
+                    // the report, so that its Y column fills in.
                     if let Some(pid) = self.selected_project {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
                     }
@@ -548,7 +555,8 @@ impl NavigatorApp {
                         Some(top) => format!("Y haplogroup (panel): {} (score {:.3})", top.name, top.score),
                         None => "No Y haplogroup match from the panel".into(),
                     };
-                    // The call was recorded — refresh the donor consensus so the Y-DNA card fills in.
+                    // The store has the call, so refresh the donor consensus and the Y-DNA card
+                    // fills in.
                     let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
                 }
                 Event::MtHaplogroup {
@@ -610,7 +618,8 @@ impl NavigatorApp {
                     if self.selected_sample == Some(biosample_guid) {
                         self.consensus_y = y;
                         self.consensus_mt = mt;
-                        // Consensus drives the Simple-mode brief — (re)build it now (no-op in Advanced).
+                        // The consensus drives the Simple-mode brief, so build it now. It does
+                        // nothing in Advanced.
                         self.reload_subject_brief();
                     }
                 }
@@ -641,7 +650,7 @@ impl NavigatorApp {
                             dna_type,
                         });
                     }
-                    // An assigned haplogroup changed — regroup the project STR chart.
+                    // An assigned haplogroup changed, so group the project STR chart again.
                     if matches!(dna_type, DnaType::Y) {
                         self.reload_project_str();
                     }
@@ -650,7 +659,7 @@ impl NavigatorApp {
                     self.status = format!("Private Y: {} novel, {} off-path", bucket.novel(), bucket.off_path());
                     self.private_y = Some((alignment_id, bucket));
                     self.finding_private_y = false;
-                    // A fresh (self-masked) bucket was just cached — refresh the donor union.
+                    // The cache just took a fresh (self-masked) bucket, so refresh the donor union.
                     if let Some(guid) = self.selected_sample {
                         let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
                     }
@@ -720,10 +729,11 @@ impl NavigatorApp {
                         }
                     );
                     self.batch_import = Some(summary);
-                    // The import may have added an alignment — refresh the analysis-status map so the
-                    // Subjects Status column and the Simple-mode "Analyze" prompt (`Pending` = has data,
-                    // not analyzed) pick it up. Without this, adding data to an existing subject leaves
-                    // both stale, so the analyze prompt never appears.
+                    // The import may have added an alignment. Refresh the analysis-status map, so
+                    // that the Subjects Status column and the Simple-mode "Analyze" prompt take it
+                    // up. In that prompt, `Pending` means the subject has data that no analysis
+                    // covered. Without this, new data on an existing subject leaves both stale, and
+                    // the analyze prompt never appears.
                     let _ = self.tx.send(Command::LoadSubjectStatus);
                     if self.selected_sample == Some(biosample_guid) {
                         let _ = self.tx.send(Command::LoadRuns(biosample_guid));
@@ -731,8 +741,9 @@ impl NavigatorApp {
                         let _ = self.tx.send(Command::LoadVariantSets(biosample_guid));
                         let _ = self.tx.send(Command::LoadChipProfiles(biosample_guid));
                         let _ = self.tx.send(Command::LoadMtdna(biosample_guid));
-                        // Rebuild the brief so the "Your test" card + not-analyzed state reflect the
-                        // new file (Simple mode was showing the stale empty-subject brief).
+                        // Build the brief again, so that the "Your test" card and the
+                        // not-analyzed state show the new file. Simple mode used to show the stale
+                        // brief of an empty subject.
                         self.reload_subject_brief();
                     }
                 }
@@ -742,8 +753,9 @@ impl NavigatorApp {
                 } => {
                     self.status = format!("Created subject and imported {} file(s)", summary.imported.len());
                     self.batch_import = Some(summary);
-                    // Refresh the list so the new subject appears, then select it — `select_sample`
-                    // loads its runs/profiles and (in Simple mode) triggers the brief build.
+                    // Refresh the list so that the new subject appears, then select it.
+                    // `select_sample` loads its runs and profiles, and in Simple mode it starts the
+                    // brief build.
                     let _ = self.tx.send(Command::LoadAllBiosamples);
                     let _ = self.tx.send(Command::LoadOverview);
                     self.forms.show_add_subject = false;
@@ -778,7 +790,8 @@ impl NavigatorApp {
                 Event::DonorAncestry { alignment_id, result } => {
                     self.estimating_donor_ancestry = false;
                     self.donor_ancestry = Some((alignment_id, result));
-                    // A fresh consensus estimate persisted the detailed methods too — refresh them.
+                    // A fresh consensus estimate persisted the detailed methods too, so refresh
+                    // them.
                     if let Some(g) = self.selected_sample {
                         let _ = self.tx.send(Command::LoadConsensusAncestryDetail { biosample_guid: g });
                     }
@@ -828,7 +841,8 @@ impl NavigatorApp {
                         // A rebuild re-places the genome consensus (consensus_label); refresh the
                         // Overview's cached Y/mt consensus so it does not lag until the next reload.
                         let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
-                        // The descent report is drawn from this profile — drop its cache so it rebuilds.
+                        // The descent report comes from this profile, so drop its cache and it
+                        // builds again.
                         self.descent_reports
                             .retain(|(g, d, _)| !(*g == biosample_guid && *d == DnaType::Y));
                     }
@@ -848,7 +862,8 @@ impl NavigatorApp {
                         self.mt_profile = profile;
                         // A rebuild re-places the mt genome consensus; refresh the Overview's cache.
                         let _ = self.tx.send(Command::LoadConsensus(biosample_guid));
-                        // The descent report is drawn from this profile — drop its cache so it rebuilds.
+                        // The descent report comes from this profile, so drop its cache and it
+                        // builds again.
                         self.descent_reports
                             .retain(|(g, d, _)| !(*g == biosample_guid && *d == DnaType::Mt));
                     }
@@ -871,13 +886,14 @@ impl NavigatorApp {
                 } => {
                     if self.selected_run == Some(sequence_run_id) {
                         self.alignments = alignments;
-                        // Load cached coverage for every alignment so each Data Sources row shows
-                        // coverage/callable without first being selected.
+                        // Load cached coverage for every alignment, so that each Data Sources row
+                        // shows coverage and callable before anybody selects it.
                         let ids: Vec<i64> = self.alignments.iter().map(|a| a.id).collect();
                         if !ids.is_empty() {
                             let _ = self.tx.send(Command::LoadCoverageBulk(ids));
                         }
-                        // Apply a queued subject-default alignment once its run's list is loaded.
+                        // Apply a queued subject-default alignment after the list of its run
+                        // loads.
                         if let Some(pid) = self.pending_alignment {
                             if self.alignments.iter().any(|a| a.id == pid) {
                                 self.pending_alignment = None;
@@ -926,7 +942,7 @@ impl NavigatorApp {
                         self.coverage = result.clone();
                         self.coverage_hist_contig = None; // reset histogram selection to whole-genome
                     }
-                    // Keep the per-row map current after a (re)compute.
+                    // Keep the map of each row current after a compute.
                     match result {
                         Some(c) => {
                             self.coverage_by_aln.insert(alignment_id, c);
@@ -946,8 +962,9 @@ impl NavigatorApp {
                         self.sex = result;
                     }
                     self.running_sex = false;
-                    // Sex inference may have written the sex back to the biosample — reload the
-                    // subjects list so the table + header reflect it instead of "Unknown".
+                    // Sex inference may have written the sex back to the biosample. Load the
+                    // subjects list again, so that the table and the header show it, and not
+                    // "Unknown".
                     let _ = self.tx.send(Command::LoadAllBiosamples);
                     if let Some(pid) = self.selected_project {
                         let _ = self.tx.send(Command::LoadProjectReport(pid));
@@ -1034,8 +1051,9 @@ impl NavigatorApp {
                         (None, true) => super::RealignFinished::Cancelled,
                         (None, false) => super::RealignFinished::Failed(summary.clone()),
                     };
-                    // step/total are zero rather than carried over: every consumer matches on
-                    // `finished` first and none of them reads progress from a finished card.
+                    // step and total are zero, and nothing carries them over. Every consumer
+                    // matches on `finished` first, and none of them reads progress from a card that
+                    // finished.
                     self.realign = Some(super::RealignState {
                         alignment_id,
                         biosample_guid,
@@ -1045,8 +1063,8 @@ impl NavigatorApp {
                         detail: String::new(),
                         finished: Some(finished),
                     });
-                    // A new alignment row exists; the run's list has to learn about it or the
-                    // realigned alignment is invisible until the user navigates away and back.
+                    // A new alignment row exists. The list of the run has to learn about it, or the
+                    // realigned alignment stays invisible until the user goes away and comes back.
                     if new_alignment_id.is_some() {
                         if let Some(run_id) = self
                             .alignments
@@ -1088,17 +1106,18 @@ impl NavigatorApp {
                     } else {
                         "Full analysis complete.".into()
                     };
-                    // The subject's coverage just changed — refresh the Status column.
+                    // The coverage of the subject just changed, so refresh the Status column.
                     let _ = self.tx.send(Command::LoadSubjectStatus);
-                    // In Simple mode, rebuild the brief so the just-computed lineages/ancestry replace
-                    // the "not analyzed yet" prompt (no-op in Advanced / when nothing is selected).
+                    // In Simple mode, build the brief again, so that the lineages and ancestry that
+                    // just ran replace the "not analyzed yet" prompt. It does nothing in Advanced,
+                    // and nothing when there is no selection.
                     self.reload_subject_brief();
                 }
                 Event::AllAlignments(a) => {
                     self.all_alignments = a;
-                    // The workspace's alignments just changed — an import finished, a realignment
-                    // registered its output — so any project count is stale. Clearing the "already
-                    // asked" marker makes the card re-ask on its next frame.
+                    // The alignments of the workspace just changed: an import ended, or a
+                    // realignment registered its output. So any project count is stale. A clear of
+                    // the "already asked" marker makes the card ask again on its next frame.
                     self.project_realignable_asked = None;
                 }
                 // Discarded unless it is still the project on screen: the query is async and the
@@ -1147,7 +1166,7 @@ impl NavigatorApp {
                         if agreed { " · agreed" } else { " · NOT agreed" }
                     );
                     let _ = self.tx.send(Command::LoadIbdExchanges { biosample_guid });
-                    // The conversation is now complete — pick the result up in the ledger too.
+                    // The conversation is now complete, so take the result into the ledger too.
                     let _ = self.tx.send(Command::RefreshMatching);
                 }
                 Event::IbdExchanges { biosample_guid, rows } => {
@@ -1179,7 +1198,8 @@ impl NavigatorApp {
                     self.publishing = false;
                 }
                 Event::Queued { kind } => {
-                    // The publish is durably queued; it sends now if online, else on reconnect.
+                    // The publish sits in a durable queue. It sends now if the app is online, and
+                    // on the next connection if it is not.
                     self.status = format!("Queued {kind} for publish");
                     self.publishing = false;
                 }
@@ -1204,8 +1224,9 @@ impl NavigatorApp {
                     self.pca_reference = Some((alignment_id, points));
                 }
                 Event::SourceFilesVerified { missing } => {
-                    // Do not clobber a live import's progress status with this workspace-wide sweep
-                    // (the sweep and the import are unrelated; overwriting made imports look stalled).
+                    // Do not let this sweep over the whole workspace write over the progress status
+                    // of a live import. The sweep and the import have no relation, and a write over
+                    // it made an import look stopped.
                     if !self.importing {
                         self.status = if missing == 0 {
                             "All source files present".into()
@@ -1301,8 +1322,8 @@ impl NavigatorApp {
                 }
                 Event::Error(e) => {
                     self.status = format!("Error: {e}");
-                    // This failure carries no file-level cause; drop any report from a previous
-                    // one so the status bar can't offer a "Details" that describes the wrong error.
+                    // This failure carries no cause at file level. Drop any report from an earlier
+                    // one, so that the status bar can not offer a "Details" for the wrong error.
                     self.diagnosis = None;
                     self.show_diagnosis = false;
                     self.clear_in_flight();
@@ -1314,9 +1335,9 @@ impl NavigatorApp {
                 Event::Diagnosed { message, report } => {
                     self.status = format!("Error: {message}");
                     self.diagnosis = Some(report);
-                    // Open it unprompted: the whole point is that the one-line message is the part
-                    // that is not actionable, so making the user go find the detail would reproduce
-                    // the original problem.
+                    // Open it with no prompt. The whole point is that the one-line message is the
+                    // part the user can not act on. To make the user go and find the detail would
+                    // give back the original problem.
                     self.show_diagnosis = true;
                     self.clear_in_flight();
                 }
@@ -1340,9 +1361,9 @@ impl NavigatorApp {
         self.reload_project_str();
     }
 
-    /// (Re)build the Y-STR overview chart for the open project off the UI thread. Called on project
-    /// select and whenever a member's STR data or assigned haplogroup changes (so the grouping stays
-    /// in sync). No-op when no project is open.
+    /// Build the Y-STR overview chart for the open project, off the UI thread. A project select
+    /// calls it, and so does any change to the STR data of a member, or to an assigned haplogroup.
+    /// The groups then stay in step. It does nothing when no project is open.
     pub(crate) fn reload_project_str(&mut self) {
         if let Some(id) = self.selected_project {
             self.project_str_loading = true;
@@ -1350,9 +1371,10 @@ impl NavigatorApp {
         }
     }
 
-    /// (Re)build the Simple-mode Subject Brief off the UI thread. Only meaningful in Simple mode;
-    /// called on subject select and whenever the subject's haplogroups/coverage change. No-op when
-    /// no subject is selected. Cheap (cache reads + pack lookups).
+    /// Build the Simple-mode Subject Brief, off the UI thread. It matters only in Simple mode. A
+    /// subject select calls it, and so does any change to the haplogroups or the coverage of the
+    /// subject. It does nothing when there is no selection. The cost is low: cache reads and pack
+    /// lookups.
     pub(crate) fn reload_subject_brief(&mut self) {
         if self.ui_mode != UiMode::Simple {
             return;
@@ -1363,8 +1385,9 @@ impl NavigatorApp {
         }
     }
 
-    /// Open a subject from a project's report row: select it, switch to the Subjects view, and
-    /// remember the project so the detail header's "back to project" button can return there.
+    /// Open a subject from a report row of a project. It selects the subject, switches to the
+    /// Subjects view, and remembers the project. The "back to project" button in the detail header
+    /// can then return there.
     pub(crate) fn open_sample_from_project(&mut self, guid: SampleGuid) {
         let pid = self.selected_project;
         self.select_sample(guid); // clears return_to_project
@@ -1374,14 +1397,14 @@ impl NavigatorApp {
 
     pub(crate) fn select_sample(&mut self, guid: SampleGuid) {
         self.selected_sample = Some(guid);
-        // A plain selection is not "from a project" — the project opener re-sets this after.
+        // A plain selection is not "from a project". The project opener sets this again after.
         self.return_to_project = None;
         self.y_sub = YSub::default();
         self.y_snp_sub = YSnpSub::default();
         self.mt_sub = MtSub::default();
         self.auto_sub = AutoSub::default();
-        // Simple mode opens on the landing synopsis for the newly-selected person, never on the
-        // panel the previous person happened to be left on.
+        // Simple mode opens on the first synopsis for the person the user just selected. It never
+        // opens on the panel where the user left the previous person.
         self.simple_panel = SimplePanel::default();
         self.y_snp_names.clear();
         self.y_snp_names_requested = false;
@@ -1389,8 +1412,8 @@ impl NavigatorApp {
         self.donor_ancestry = None;
         self.fine_ancestry = None;
         self.ancient_ancestry = None;
-        // pca_reference is the global CHM13 centroid cloud (subject-independent) — keep it loaded
-        // across subject switches rather than re-fetching the asset each time.
+        // pca_reference is the global CHM13 centroid cloud, and it does not depend on the subject.
+        // Keep it in memory across subject switches, and do not read the asset again each time.
         self.estimating_donor_ancestry = false;
         self.painting = None;
         self.painting_running = false;
@@ -1466,9 +1489,9 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::LoadVariantSets(guid));
         let _ = self.tx.send(Command::LoadChipProfiles(guid));
         let _ = self.tx.send(Command::LoadMtdna(guid));
-        // Subject-centric: auto-select the subject's default alignment so the analysis tabs work
-        // without navigating Data Sources, and load the donor-level aggregates (best ancestry +
-        // private-Y union across all sources).
+        // Subject-centric. Select the default alignment of the subject without help, so that the
+        // analysis tabs work with no visit to Data Sources. Also load the donor-level aggregates:
+        // the best ancestry, and the private-Y union over all sources.
         let _ = self.tx.send(Command::DefaultAlignment { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorAncestry { biosample_guid: guid });
         let _ = self
@@ -1476,18 +1499,20 @@ impl NavigatorApp {
             .send(Command::LoadConsensusAncestryDetail { biosample_guid: guid });
         // A cached chromosome painting (current for the consensus signature) shows without a click.
         let _ = self.tx.send(Command::LoadPainting { biosample_guid: guid });
-        // Likewise a cached ROH result loads without recomputing.
+        // A cached ROH result also loads, and nothing computes it again.
         let _ = self.tx.send(Command::LoadRoh { biosample_guid: guid });
         // ...and a cached archaic marker count.
         let _ = self.tx.send(Command::LoadArchaic { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadArchaicSegments { biosample_guid: guid });
         let _ = self.tx.send(Command::LoadDonorPrivateY { biosample_guid: guid });
-        // The Y-variant profile is *built* on explicit request (re-genotypes each alignment), but a
-        // previously-built snapshot loads cheaply — fetch it so the Y-DNA tab shows it immediately.
+        // The Y-variant profile *builds* only on an explicit request, because it genotypes each
+        // alignment again. But a snapshot that already exists loads at low cost, so read it, and
+        // the Y-DNA tab shows it at once.
         let _ = self.tx.send(Command::LoadYProfile { biosample_guid: guid });
-        // Likewise the mtDNA consensus profile (cheap cached snapshot for the mtDNA tab).
+        // The mtDNA consensus profile too: a cached snapshot of low cost, for the mtDNA tab.
         let _ = self.tx.send(Command::LoadMtProfile { biosample_guid: guid });
-        // The subject's persisted federated IBD exchange results (cheap; shown in the IBD tab).
+        // The persisted federated IBD exchange results of the subject. The cost is low, and the
+        // IBD tab shows them.
         let _ = self.tx.send(Command::LoadIbdExchanges { biosample_guid: guid });
         // And the autosomal (diploid) consensus snapshot for the Autosomal tab.
         let _ = self.tx.send(Command::LoadAutosomalProfile { biosample_guid: guid });
@@ -1507,7 +1532,8 @@ impl NavigatorApp {
     pub(crate) fn select_alignment(&mut self, id: i64) {
         self.selected_alignment = Some(id);
         self.coverage = None;
-        // Ideogram regions are fetched lazily when its tab opens; reset for the new alignment.
+        // The code reads the ideogram regions lazily when that tab opens. Reset them for the new
+        // alignment.
         self.genome_regions = None;
         self.loading_regions = false;
         self.regions_attempted = None;
@@ -1551,9 +1577,9 @@ impl NavigatorApp {
         self.coverage = None;
     }
 
-    /// Drop every in-flight spinner after a failure. A command failure is reported by whichever
-    /// worker arm was running, but the UI has no way to tell which flag that arm owned, so all of
-    /// them clear — a stuck spinner outlives the error message that explains it.
+    /// Drop every spinner in progress after a failure. Whichever worker arm was active reports a
+    /// command failure, but the UI has no way to tell which flag that arm owned. So all of them
+    /// clear. A spinner that sticks outlives the error message that explains it.
     fn clear_in_flight(&mut self) {
         self.cancelling = false;
         self.running = false;

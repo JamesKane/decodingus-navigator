@@ -3,7 +3,7 @@
 use super::*;
 
 impl NavigatorApp {
-    /// Kick off the full-analysis pipeline for an alignment and show the modal immediately.
+    /// Start the full-analysis pipeline for an alignment, and show the modal at once.
     pub(crate) fn start_full_analysis(&mut self, alignment_id: i64) {
         self.analysis = Some(AnalysisModal {
             step: 1,
@@ -17,9 +17,10 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::RunFullAnalysis { alignment_id });
     }
 
-    /// Kick off the full-analysis pipeline for a subject (its representative alignment is resolved on
-    /// the worker) and show the modal immediately. The Simple "My DNA" view uses this so a casual
-    /// user can analyze without hunting for an alignment id in the Advanced sources table.
+    /// Start the full-analysis pipeline for a subject, and show the modal at once. The worker
+    /// resolves the representative alignment of that subject. The Simple "My DNA" view uses this.
+    /// A casual user can then analyze with no search for an alignment id in the Advanced sources
+    /// table.
     pub(crate) fn start_analysis_for_subject(&mut self, guid: SampleGuid) {
         self.analysis = Some(AnalysisModal {
             step: 1,
@@ -33,27 +34,28 @@ impl NavigatorApp {
         let _ = self.tx.send(Command::AnalyzeSubject { biosample_guid: guid });
     }
 
-    /// Translate a catalog key for the active language. Returns `&'static str` (catalogs are
-    /// embedded), so it never borrows `self` — convenient inside egui closures.
+    /// Translate a catalog key for the active language. It returns `&'static str`, because the
+    /// build embeds the catalogs, so it never borrows `self`. That is convenient inside an egui
+    /// closure.
     pub(crate) fn tr(&self, key: &'static str) -> &'static str {
         crate::i18n::tr(self.lang, key)
     }
 
-    /// Whether the loaded alignment has a BAM/CRAM path on record — the gate on every control that
-    /// would have to walk reads. An alignment we can't find is treated as having no file, so a
-    /// stale id disables the button rather than launching a walk that would fail.
+    /// True when the loaded alignment has a BAM or CRAM path on record. It is the gate on every
+    /// control that would have to walk reads. An alignment we can not find counts as one with no
+    /// file. So a stale id disables the button, and does not start a walk that would fail.
     pub(crate) fn alignment_has_bam(&self, alignment_id: i64) -> bool {
         self.alignments
             .iter()
             .any(|a| a.id == alignment_id && a.bam_path.is_some())
     }
 
-    /// The cancel control shown beside a running analysis: it disables itself once clicked.
+    /// The cancel control beside an analysis in progress. It disables itself after a click.
     ///
-    /// The disable matters — cancellation is cooperative and does not take effect until the walk
-    /// reaches its next check, so a live button invited repeat clicks and made a working cancel
-    /// look ignored. Every place that can start a walk needs the same behaviour, so it lives here
-    /// rather than being re-derived per tab.
+    /// The disable matters. Cancellation is cooperative, and it takes effect only when the walk
+    /// reaches its next check. A live button invited repeat clicks, and made a cancel that worked
+    /// look ignored. Every place that can start a walk needs the same behaviour, so it lives here,
+    /// and no tab derives it again.
     pub(crate) fn cancel_button(&mut self, ui: &mut egui::Ui) {
         let requested = self.cancelling;
         let label = if requested {
@@ -68,8 +70,8 @@ impl NavigatorApp {
         }
     }
 
-    /// A destructive-action button (filled [`DANGER`], white label) — the visual promise that this
-    /// one is not like the others. Returns whether it was clicked.
+    /// A button for a destructive action (filled [`DANGER`], white label). It is the visual promise
+    /// that this one is not like the others. Returns true after a click.
     pub(crate) fn danger_button(&self, ui: &mut egui::Ui, key: &'static str) -> bool {
         ui.add(egui::Button::new(egui::RichText::new(self.tr(key)).color(egui::Color32::WHITE)).fill(DANGER))
             .clicked()
@@ -84,17 +86,17 @@ impl NavigatorApp {
             .find(|b| b.guid == guid)
     }
 
-    /// The display name for `guid` — its donor identifier, falling back to the bare guid. Used
-    /// wherever the UI has to name a subject it is about to act on (the confirm modals).
+    /// The display name for `guid`: its donor identifier, or the bare guid when there is none. The
+    /// UI uses it wherever it must name a subject it is about to act on (the confirm modals).
     pub(crate) fn subject_label(&self, guid: SampleGuid) -> String {
         self.find_subject(guid)
             .map(|b| b.donor_identifier.clone())
             .unwrap_or_else(|| guid.0.to_string())
     }
 
-    /// Set the interface mode (Simple ⇄ Advanced), pin it (so the first-run heuristic stops
-    /// overriding), persist the choice, and keep the nav consistent (Simple hides
-    /// Projects/Community). Chosen from Settings → Appearance.
+    /// Set the interface mode (Simple ⇄ Advanced), pin it so that the first-run heuristic no longer
+    /// overrides it, and persist the choice. It also keeps the nav consistent, because Simple hides
+    /// Projects and Community. The user chooses it from Settings → Appearance.
     pub(crate) fn set_ui_mode(&mut self, mode: UiMode) {
         if self.ui_mode == mode && self.ui_mode_pinned {
             return;
@@ -107,8 +109,9 @@ impl NavigatorApp {
         self.normalize_for_mode();
     }
 
-    /// Switch from Simple to Advanced (the "See the data →" bridge), pinning + persisting the choice.
-    /// The selected subject and its Overview carry over; the app-bar toggle flips back.
+    /// Switch from Simple to Advanced (the "See the data →" bridge). It pins the choice and
+    /// persists it. The selected subject and its Overview carry over, and the app-bar toggle goes
+    /// back.
     pub(crate) fn enter_advanced_mode(&mut self) {
         if self.ui_mode != UiMode::Advanced {
             self.ui_mode = UiMode::Advanced;
@@ -119,9 +122,10 @@ impl NavigatorApp {
         }
     }
 
-    /// First-run default: until the user pins a mode, derive it from the workspace — a casual user
-    /// (no projects, at most one subject) gets Simple; anyone with projects or multiple subjects
-    /// gets Advanced. Re-evaluated as subjects/projects load; a no-op once pinned.
+    /// The first-run default. Until the user pins a mode, this derives it from the workspace. A
+    /// casual user, with no projects and at most one subject, gets Simple. Anybody with projects,
+    /// or with more than one subject, starts in Advanced. It runs again as subjects and projects load,
+    /// and it does nothing after the user pins a mode.
     pub(crate) fn apply_ui_mode_heuristic(&mut self) {
         if self.ui_mode_pinned {
             return;
@@ -141,9 +145,9 @@ impl NavigatorApp {
         }
     }
 
-    /// In Simple mode, the casual user has (usually) one subject — select it automatically so the
-    /// brief/overview appears without a list interaction. Fires once per load (guarded by the
-    /// existing selection).
+    /// In Simple mode the casual user usually has one subject. Select it without help, so that the
+    /// brief and the overview appear with no interaction with a list. It fires one time on each
+    /// load, and the existing selection guards it.
     pub(crate) fn auto_select_single_subject(&mut self) {
         if self.ui_mode == UiMode::Simple && self.selected_sample.is_none() && self.all_biosamples.len() == 1 {
             let guid = self.all_biosamples[0].guid;
@@ -151,14 +155,16 @@ impl NavigatorApp {
         }
     }
 
-    /// Open the Settings dialog on a given sub-tab, seeding the form from the persisted settings and
-    /// asking the worker for the reference-genome rows. Shared by the app bar's ⚙ button and any
-    /// in-app shortcut that deep-links into a specific tab (e.g. the first-run References prompt).
+    /// Open the Settings dialog on a given sub-tab. It fills the form from the persisted settings,
+    /// and it asks the worker for the reference-genome rows. The ⚙ button of the app bar shares it
+    /// with any in-app shortcut that deep-links into a specific tab, for example the first-run
+    /// References prompt.
     pub(crate) fn open_settings(&mut self, ctx: &egui::Context, tab: SettingsTab) {
         self.settings_form = SettingsForm::from_settings();
-        // Seed the scale slider from the *applied* zoom, not the (often unpersisted) setting: the
-        // HiDPI auto-probe applies a zoom it never persists, so from_settings would otherwise snap
-        // the slider — and thus the live scale — back to 1.0 the instant Settings opens.
+        // Fill the scale slider from the zoom that *applies*, and not from the setting, which
+        // often has no persisted value. The HiDPI auto-probe applies a zoom it never persists. So
+        // from_settings would otherwise snap the slider back to 1.0 the moment Settings opens, and
+        // the live scale with it.
         self.settings_form.ui_scale = ctx.zoom_factor();
         self.settings_tab = tab;
         self.show_settings = true;
@@ -211,8 +217,9 @@ impl NavigatorApp {
                 let tabs: &[(Nav, &str, &str)] = match self.ui_mode {
                     UiMode::Simple => &[
                         (Nav::Dashboard, "📊", "nav.dashboard"),
-                        // Not 🧬 (U+1F9EC): absent from egui's Proportional family, renders as tofu.
-                        // 👤 pairs with Advanced's 👥 — one person here, the workspace roster there.
+                        // Not 🧬 (U+1F9EC). The Proportional family of egui does not have it, and
+                        // it draws as tofu. The 👤 pairs with the 👥 of Advanced: one person
+                        // here, and the workspace roster there.
                         (Nav::Subjects, "👤", "nav.myDna"),
                     ],
                     UiMode::Advanced => &[
@@ -246,8 +253,8 @@ impl NavigatorApp {
                 if ui.button(self.tr("account.signOut")).clicked() {
                     let _ = self.tx.send(Command::Logout);
                 }
-                // A local did:key identity self-certifies (no PDS) — show a "local" chip; a real PDS
-                // account shows online/offline.
+                // A local did:key identity certifies itself, with no PDS, so show a "local" chip.
+                // A real PDS account shows online or offline.
                 if did.starts_with("did:key:") {
                     ui.colored_label(egui::Color32::from_rgb(150, 160, 220), self.tr("account.localIdentity"));
                 } else if self.online {
@@ -280,9 +287,9 @@ impl NavigatorApp {
                         .desired_width(180.0),
                 );
                 ui.label(self.tr("account.pds"));
-                // Self-certifying did:key identity — a dev/local-stack affordance (federation only, no
-                // PDS repo). Compiled out of distributed (release) builds; opt in for a release dev
-                // build with `--features dev-identity`.
+                // A did:key identity that certifies itself. It is a control for a dev or local
+                // stack: federation only, with no PDS repo. The build leaves it out of a release
+                // that users get. Opt in for a release dev build with `--features dev-identity`.
                 if cfg!(any(debug_assertions, feature = "dev-identity"))
                     && ui
                         .add_enabled(!self.logging_in, egui::Button::new(self.tr("account.useLocal")))
@@ -296,17 +303,17 @@ impl NavigatorApp {
 
     /// The left panel, routed by the active nav tab. Hidden on the Dashboard.
     ///
-    /// Each variant gets its **own** panel id. egui persists a side panel's width per id, and a
-    /// stored width overrides `default_width` — so while these all shared the id `"left"`, whichever
-    /// panel was shown last dictated the width of every other. In practice that meant the Advanced
-    /// subjects table (a wide multi-column grid) handed its 680px to Simple mode's list of names,
-    /// which needs a quarter of that and was taking half the window.
+    /// Each variant gets its **own** panel id. egui persists the width of a side panel against its
+    /// id, and a stored width wins over `default_width`. While these all shared the id `"left"`,
+    /// the panel that appeared last set the width of every other one. In practice the Advanced
+    /// subjects table, a wide multi-column grid, handed its 680px to the list of names in Simple
+    /// mode. That list needs a quarter of it, and it took half the window.
     pub(crate) fn left_panel(&mut self, ctx: &egui::Context) {
         match self.nav {
             // Dashboard, Matching and Community are full-width (no side panel).
             Nav::Dashboard | Nav::Matching | Nav::Community => {}
             Nav::Projects if self.projects_collapsed => {
-                // Collapsed: a thin strip with just an expand button, handing the detail panel
+                // Collapsed: a thin strip with only an expand button. The detail panel then gets
                 // the full width for the wide Y-STR chart.
                 egui::SidePanel::left("left_projects_collapsed")
                     .resizable(false)
@@ -325,10 +332,11 @@ impl NavigatorApp {
                     .min_width(240.0)
                     .show(ctx, |ui| self.projects_side(ui));
             }
-            // Simple mode: a single-subject experience. With one subject (the common case) the
-            // side panel is hidden entirely — the brief/overview fills the window; with several,
-            // a minimal "who am I looking at" selector. It holds nothing but names, so it is capped:
-            // every pixel it takes comes out of the brief, which is the thing the user came to read.
+            // Simple mode: an experience for one subject. With one subject, which is the common
+            // case, the side panel goes away completely, and the brief and overview fill the
+            // window. With more than one, it is a small "which person is this" selector. It holds
+            // names and nothing else, so it has a cap. Every pixel it takes comes out of the brief,
+            // and the brief is what the user came to read.
             Nav::Subjects if self.ui_mode == UiMode::Simple => {
                 if self.all_biosamples.len() > 1 {
                     egui::SidePanel::left("left_subjects_simple")
@@ -340,8 +348,8 @@ impl NavigatorApp {
                 }
             }
             Nav::Subjects if self.subjects_collapsed => {
-                // Collapsed: a thin strip with just an expand button, handing the detail panel
-                // the full width for charts/tables.
+                // Collapsed: a thin strip with only an expand button. The detail panel then gets
+                // the full width for charts and tables.
                 egui::SidePanel::left("left_subjects_collapsed")
                     .resizable(false)
                     .exact_width(34.0)
@@ -422,8 +430,8 @@ impl NavigatorApp {
         }
         self.reference_prompt(ui);
 
-        // FTDNA project import — imports into the selected project, or creates one named from the
-        // exports if none is selected.
+        // FTDNA project import. It imports into the selected project. If the user selected
+        // nothing, it makes a project, and takes the name from the exports.
         ui.add_space(8.0);
         ui.label(self.tr("ftdna.importHint"));
         let hover = if self.selected_project.is_some() {
@@ -440,12 +448,13 @@ impl NavigatorApp {
                 self.start_ftdna_import(paths);
             }
         }
-        // Panels (import sites VCF) moved to Settings (⚙) → they are a workspace-wide asset, not a
-        // per-project action.
+        // Panels (import sites VCF) moved to Settings (⚙). They are an asset for the whole
+        // workspace, and not an action on one project.
     }
 
-    /// Classify the picked files by header sniff, route each to its FTDNA parser slot, and dispatch a
-    /// dry-run plan against the open project. Unrecognized files are ignored (noted in the status).
+    /// Classify the picked files by a header sniff, send each to its FTDNA parser slot, and
+    /// dispatch a dry-run plan against the open project. This drops a file it does not recognize,
+    /// and the status notes it.
     fn start_ftdna_import(&mut self, paths: Vec<PathBuf>) {
         use navigator_domain::ftdna::{classify, FtdnaFileKind};
         let (mut member, mut paternal, mut maternal, mut ystr) = (None, None, None, None);
@@ -463,10 +472,11 @@ impl NavigatorApp {
             self.status = self.tr("ftdna.noneRecognized").to_string();
             return;
         }
-        // FTDNA prefixes each export file with its own project name — target THAT project, not
-        // whatever happens to be selected. (Importing one project's files while another was open
-        // used to misfile the kits into the open project, with no easy way to separate them after.)
-        // Reuse an existing project of the same name; otherwise the plan/commit creates it.
+        // FTDNA puts its own project name at the front of each export file. Target THAT project,
+        // and not whatever the user selected. An import of the files of one project, while another
+        // was open, used to put the kits into the open project. There was no easy way to separate
+        // them afterward. Reuse an existing project of the same name, or let the plan and the
+        // commit make it.
         let derived_name = [&member, &paternal, &maternal, &ystr]
             .into_iter()
             .flatten()
@@ -492,9 +502,10 @@ impl NavigatorApp {
         });
     }
 
-    /// Simple-mode subject selector: a "who am I looking at" list with a free-text filter and a
-    /// scrollable, row-virtualized body (a research surface can hold thousands of subjects), plus the
-    /// Add-New affordance. Only shown when more than one subject exists.
+    /// The subject selector of Simple mode: a "which person is this" list. It has a free-text
+    /// filter, and a body that scrolls with virtualized rows, because a research surface can hold
+    /// thousands of subjects. It also has the Add-New control. It appears only when there is more
+    /// than one subject.
     fn simple_subjects_side(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.heading(self.tr("nav.myDna"));
@@ -585,11 +596,12 @@ impl NavigatorApp {
         self.subjects_table(ui);
     }
 
-    /// All biosamples, independent of any project (the project link is optional). Selecting
-    /// one drives the runs → alignments → analysis flow in the central panel; adding one
-    /// tags it to the open project if there is one, else leaves it project-less.
-    /// The subjects table: columns ID / Name / Y-DNA / mtDNA / Sex / Center / Status, with the
-    /// selected row highlighted. Clicking a row selects the subject.
+    /// All biosamples, independent of any project, because the project link is optional. A select
+    /// of one drives the runs → alignments → analysis flow in the central panel. An add of one tags
+    /// it to the open project when there is one, and leaves it with no project when there is not.
+    ///
+    /// The subjects table: the columns ID, Name, Y-DNA, mtDNA, Sex, Center and Status, with the
+    /// selected row highlighted. A click on a row selects that subject.
     fn subjects_table(&mut self, ui: &mut egui::Ui) {
         use egui_extras::{Column, TableBuilder};
 
@@ -598,8 +610,9 @@ impl NavigatorApp {
             return;
         }
 
-        // The display rows are derived (6 `String` clones per subject, then a natural sort), so they
-        // are cached and rebuilt only when their inputs change — this fn runs every frame.
+        // The display rows come from a derivation: 6 `String` clones for each subject, then a
+        // natural sort. So a cache holds them, and they build again only when their inputs change.
+        // This function runs on every frame.
         self.refresh_subject_rows();
         let rows = &self.subject_rows.rows;
 
@@ -627,7 +640,7 @@ impl NavigatorApp {
                 row.set_selected(Some(r.guid) == selected);
                 for (ci, cell) in r.cells.iter().enumerate() {
                     row.col(|ui| {
-                        // The "Status" column is rendered as a muted accent badge.
+                        // The "Status" column draws as a muted accent badge.
                         if ci == 5 && cell != "-" {
                             chip(
                                 ui,

@@ -3,12 +3,13 @@
 use super::*;
 
 impl NavigatorApp {
-    /// The "Full Analysis" progress modal: a dimmed backdrop + centered card with the current
-    /// step, a progress bar + percent, and a Cancel button. Shown while `self.analysis` is set.
+    /// The "Full Analysis" progress modal. It has a dimmed backdrop, and a centered card with the
+    /// current step, a progress bar with a percent, and a Cancel button. It appears while
+    /// `self.analysis` has a value.
     pub(crate) fn analysis_modal(&mut self, ctx: &egui::Context) {
         let Some(p) = self.analysis.clone() else { return };
-        // Deferred so only `self.tr` (immutable) is used inside the closure, matching the other
-        // modals here.
+        // Deferred, so that the closure touches only `self.tr`, which is immutable. This matches
+        // the other modals here.
         let mut cancel_clicked = false;
         // Dim everything behind the dialog.
 
@@ -28,7 +29,8 @@ impl NavigatorApp {
             ui.label(format!("Step {}/{}: {} — {}", p.step, p.total, p.label, p.detail));
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                // `animate` shimmers the bar so a long step reads as working, not stalled.
+                // `animate` shimmers the bar, so that a long step reads as active, and not
+                // stopped.
                 ui.add(
                     egui::ProgressBar::new(p.fraction)
                         .desired_width(360.0)
@@ -45,9 +47,9 @@ impl NavigatorApp {
             );
             ui.add_space(12.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Disabled once requested: cancellation is cooperative, so the run keeps going
-                // until the walk reaches its next check. Leaving the button live invited repeat
-                // clicks and made a working cancel look ignored.
+                // It disables after a request. Cancellation is cooperative, so the run continues
+                // until the walk reaches its next check. A button that stayed live invited repeat
+                // clicks, and made a cancel that worked look ignored.
                 let requested = self.cancelling;
                 let label = if requested {
                     self.tr("analysis.cancelling")
@@ -71,8 +73,9 @@ impl NavigatorApp {
         }
     }
 
-    /// The Edit-subject modal: editable fields over a dimmed backdrop. Save sends an
-    /// `UpdateBiosample` command; the resulting `BiosamplesChanged` event refreshes the lists.
+    /// The Edit-subject modal: fields the user can edit, over a dimmed backdrop. Save sends an
+    /// `UpdateBiosample` command, and the `BiosamplesChanged` event that follows refreshes the
+    /// lists.
     pub(crate) fn edit_subject_modal(&mut self, ctx: &egui::Context) {
         let Some(mut edit) = self.edit_subject.clone() else {
             return;
@@ -143,9 +146,10 @@ impl NavigatorApp {
         }
     }
 
-    /// Add a vendor-id (kit) association to the open subject. Source is a well-known vendor or free
-    /// text; the kit id is required. The app layer enforces `(source, id)` uniqueness and reports a
-    /// conflict via `Event::Error`. Deferred dispatch (only `self.tr` is touched inside the closure).
+    /// Add a vendor-id (kit) association to the open subject. The source is a well-known vendor, or
+    /// free text, and the kit id is mandatory. The app layer holds `(source, id)` unique, and
+    /// reports a conflict through `Event::Error`. Deferred dispatch: the closure touches only
+    /// `self.tr`.
     pub(crate) fn add_kit_modal(&mut self, ctx: &egui::Context) {
         use navigator_domain::identity::IdSource;
         let Some(mut edit) = self.edit_kit.clone() else { return };
@@ -211,11 +215,11 @@ impl NavigatorApp {
 
     /// Simple mode's confirmation before a realignment starts.
     ///
-    /// The Advanced card starts the same job from one button, and that is right for the reader who
-    /// went looking for it among alignment internals. This reader arrived from a page about their
-    /// ancestors, so the cost is restated as its own decision: how long, how much disk, that the
-    /// original survives untouched, and that it can be stopped. Everything here is a fact the job
-    /// will otherwise deliver as a surprise four hours from now.
+    /// The Advanced card starts the same job from one button. That is right for the reader who
+    /// went to look for it among alignment internals. This reader came from a page about their
+    /// ancestors. So the cost gets its own decision: how long, how much disk, that the original
+    /// stays untouched, and that the user can stop it. Everything here is a fact that the job would
+    /// otherwise deliver as a surprise four hours from now.
     pub(crate) fn simple_realign_confirm_modal(&mut self, ctx: &egui::Context) {
         let Some(offer) = self.simple_realign_confirm.clone() else {
             return;
@@ -277,8 +281,9 @@ impl NavigatorApp {
         }
     }
 
-    /// Edit (or add) the open subject's MDKA for one lineage. Years/coords are free-text and parsed
-    /// on save — a blank or unparseable field clears that column. Deferred dispatch.
+    /// Edit or add the MDKA of the open subject, for one lineage. Years and coordinates are free
+    /// text, and a save parses them. A field that is blank, or that does not parse, clears that
+    /// column. Deferred dispatch.
     pub(crate) fn edit_mdka_modal(&mut self, ctx: &egui::Context) {
         let Some(mut edit) = self.edit_mdka.clone() else { return };
 
@@ -346,7 +351,8 @@ impl NavigatorApp {
             field(ui, self.tr("mdka.notes"), &mut edit.notes, "notes (optional)");
             ui.add_space(10.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // At least one field must be filled — an all-blank MDKA is meaningless.
+                // At least one field must have a value. An MDKA that is blank in every field has
+                // no use.
                 let ready = [
                     &edit.ancestor_name,
                     &edit.birth_year,
@@ -396,13 +402,13 @@ impl NavigatorApp {
         }
     }
 
-    /// The diagnosis modal: why the last alignment command actually failed, file by file.
+    /// The diagnosis modal: why the last alignment command failed, file by file.
     ///
-    /// Shown when a command fails *and* the preflight found a concrete cause, because the one-line
-    /// status-bar message is exactly the part that is not actionable — the reader helpers report
-    /// whichever path the failing call was handed, which is routinely not the file at fault. The
-    /// report is selectable and copyable so it can go straight into a bug report; that is the
-    /// primary job of this modal, not a convenience.
+    /// It appears when a command fails *and* the preflight found a concrete cause. The one-line
+    /// status-bar message is exactly the part the user can not act on. The reader helpers report
+    /// whatever path the call that failed received, and that is routinely not the file at fault.
+    /// The user can select the report and copy it, so that it goes straight into a bug report. That
+    /// is the primary job of this modal, and not a convenience.
     pub(crate) fn diagnosis_modal(&mut self, ctx: &egui::Context) {
         if !self.show_diagnosis {
             return;
@@ -412,16 +418,16 @@ impl NavigatorApp {
             return;
         };
 
-        // Deferred so only `self.tr` (immutable) is used inside the closure, matching the other
-        // modals here.
+        // Deferred, so that the closure touches only `self.tr`, which is immutable. This matches
+        // the other modals here.
         let (mut close, mut copy) = (false, false);
         modal_frame(ctx, "diagnosis_modal", 640.0, |ui| {
             ui.label(egui::RichText::new(self.tr("diagnosis.title")).strong().size(16.0));
             ui.label(egui::RichText::new(self.tr("diagnosis.subtitle")).weak());
             ui.separator();
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                // A read-only multiline edit rather than a label: it wraps, scrolls, and lets the
-                // user select a single line without dragging across the whole modal.
+                // A read-only multiline edit, and not a label. It wraps, it scrolls, and it lets
+                // the user select one line with no drag across the whole modal.
                 let mut text = report.as_str();
                 ui.add(
                     egui::TextEdit::multiline(&mut text)
@@ -445,9 +451,9 @@ impl NavigatorApp {
         });
 
         if copy {
-            // Write through egui *and* the system clipboard. egui's own copy is what an
-            // in-app paste sees; arboard is what survives to the browser tab where the bug report
-            // is being written, which is the only destination that matters here.
+            // Write through egui *and* the system clipboard. The copy of egui is what a paste
+            // inside the app sees. The arboard copy is what survives to the browser tab where the
+            // user writes the bug report. That is the only destination that matters here.
             ctx.output_mut(|o| o.copied_text = report.clone());
             self.status = match arboard::Clipboard::new().and_then(|mut c| c.set_text(report)) {
                 Ok(()) => self.tr("diagnosis.copied").to_string(),
@@ -459,12 +465,16 @@ impl NavigatorApp {
         }
     }
 
-    /// The Settings / Preferences modal, split into sub-tabs by locality of concern: General
-    /// (theme/scale/language/mode), Connection (AppView URL, Y-tree provider, tree-cache TTL),
-    /// Ancestry (chromosome-painter calibration), AI assistant (local LLM), References (local
-    /// FASTA + auto-download per build), Tools (VCF liftover), and a read-only Advanced tab.
-    /// Self-mutation/dispatch is deferred until after the closure so only `self.tr` (immutable)
-    /// is used inside it.
+    /// The Settings / Preferences modal, split into sub-tabs by what each one covers. General has
+    /// the theme, the scale, the language and the mode. Connection has the AppView URL, the Y-tree
+    /// provider and the tree-cache TTL. Ancestry has the chromosome-painter calibration. AI
+    /// assistant has the local LLM. References has the local FASTA, and the auto-download for each
+    /// build.
+    ///
+    /// Tools has the VCF liftover, and there is a read-only Advanced tab.
+    ///
+    /// Every change to `self`, and every dispatch, waits until after the closure, so that the
+    /// closure touches only `self.tr`, which is immutable.
     pub(crate) fn settings_modal(&mut self, ctx: &egui::Context) {
         if !self.show_settings {
             return;
@@ -477,14 +487,16 @@ impl NavigatorApp {
         let mut ui_mode = self.ui_mode;
         let mut settings_tab = self.settings_tab;
         let (mut close, mut save) = (false, false);
-        // Deferred actions (dispatched after the closure, since only `self.tr` is used inside it).
+        // Deferred actions. They dispatch after the closure, because the closure touches only
+        // `self.tr`.
         let mut verify_build: Option<String> = None;
         let mut lift_request = false;
         let mut test_llm: Option<String> = None;
         let mut refresh_trees = false;
-        // While the scale slider is being dragged, Do not live-apply the zoom (see the live-apply
-        // block below): changing the zoom factor rescales the slider's own rail mid-drag, so the
-        // cursor maps to a runaway value that collapses to a bound. Apply only once the drag ends.
+        // While the user drags the scale slider, do not apply the zoom live (see the live-apply
+        // block below). A change to the zoom factor rescales the rail of the slider in mid-drag.
+        // The cursor then maps to a value that runs away and collapses to a bound. Apply only after
+        // the drag ends.
         let mut scale_dragging = false;
 
         modal_frame(ctx, "settings_modal", 580.0, |ui| {
@@ -689,7 +701,7 @@ impl NavigatorApp {
                                     ui.label(egui::RichText::new(msg).weak().small());
                                 }
                             });
-                            // Model picker — populated by a successful Test connection.
+                            // Model picker. A Test connection that succeeds fills it.
                             ui.horizontal(|ui| {
                                 ui.label(self.tr("settings.ai.model"));
                                 let current = if form.llm_model.is_empty() {
@@ -715,7 +727,7 @@ impl NavigatorApp {
                                 ui.add(egui::TextEdit::singleline(&mut form.llm_max_tokens).desired_width(80.0));
                                 ui.label(egui::RichText::new(self.tr("settings.ai.maxTokensHint")).weak().small());
                             });
-                            // Privacy line — turns to a warning for a non-loopback URL.
+                            // Privacy line. It becomes a warning for a URL that is not loopback.
                             if navigator_app::llm::is_loopback_url(&form.llm_base_url) {
                                 ui.label(egui::RichText::new(self.tr("settings.ai.local")).weak().small());
                             } else {
@@ -875,9 +887,10 @@ impl NavigatorApp {
             self.dark_mode = theme_dark;
             apply_theme(ctx, self.dark_mode);
         }
-        // Apply the zoom only when the slider is not mid-drag (typed/committed/button changes still
-        // apply immediately). Applying during a drag would rescale the rail and make the value run
-        // away to a bound — the reported "only 0.8 or 2.5" symptom.
+        // Apply the zoom only when the slider is not in mid-drag. A typed value, a committed
+        // value, and a button change all still apply at once. To apply during a drag would rescale
+        // the rail, and make the value run away to a bound. That is the "only 0.8 or 2.5" symptom
+        // somebody reported.
         if !scale_dragging && (ctx.zoom_factor() - form.ui_scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(form.ui_scale.clamp(0.5, 3.0));
         }
@@ -891,8 +904,8 @@ impl NavigatorApp {
 
         if save {
             let appview = form.appview_url.trim().to_string();
-            // The fields this dialog does not own are carried over from disk; read once rather than
-            // re-reading and re-parsing settings.json for each of them.
+            // The fields this dialog does not own come over from disk. Read them one time, and do
+            // not read and parse settings.json again for each one.
             let kept = AppSettings::load();
             let settings = AppSettings {
                 y_tree_provider: Some(form.y_tree_provider.clone()),
@@ -906,7 +919,7 @@ impl NavigatorApp {
                 }),
                 prompt_before_download: Some(form.prompt_before_download),
                 ui_scale: Some(form.ui_scale),
-                // Interface mode is toggled from the app bar, not this dialog — preserve it.
+                // The app bar toggles the interface mode, and this dialog does not, so keep it.
                 ui_mode: kept.ui_mode,
                 llm_enabled: Some(form.llm_enabled),
                 llm_base_url: {
@@ -918,13 +931,14 @@ impl NavigatorApp {
                     (!m.is_empty()).then_some(m)
                 },
                 llm_max_tokens: form.llm_max_tokens.trim().parse::<u32>().ok().filter(|n| *n > 0),
-                // Update-check preferences are managed from the update dialog, not this one — preserve.
+                // The update dialog controls the update-check preferences, and this one does not,
+                // so keep them.
                 check_for_updates: kept.check_for_updates,
                 skip_update_version: kept.skip_update_version,
-                // The window size is remembered automatically as the window is resized — preserve it.
+                // The app remembers the window size as the user resizes the window, so keep it.
                 window_size: kept.window_size,
-                // Navigation state (view / focused subject / detail tab) is remembered as the user
-                // navigates — preserve it across a settings save.
+                // The app remembers the navigation state as the user moves around: the view, the
+                // focused subject, and the detail tab. Keep it across a settings save.
                 last_nav: kept.last_nav,
                 last_subject: kept.last_subject,
                 last_detail_tab: kept.last_detail_tab,
@@ -943,9 +957,9 @@ impl NavigatorApp {
             }
             // Reflect the AI toggle immediately (gates the "Polish with AI" affordance).
             self.ai_enabled = form.llm_enabled;
-            // One bulk command → one atomic load-modify-save of reference_sources.json. Sending a
-            // separate command per row raced the file into corruption (issue #26), because every
-            // worker command is spawned concurrently.
+            // One bulk command → one atomic load, change and save of reference_sources.json. A
+            // separate command for each row raced the file into corruption (issue #26), because
+            // every worker command starts at the same time as the others.
             let overrides: Vec<navigator_app::ReferenceOverrideInput> = form
                 .references
                 .iter()
@@ -961,7 +975,7 @@ impl NavigatorApp {
             let _ = self.tx.send(Command::SetReferenceOverrides(overrides));
         }
 
-        // Deferred dispatch (only `self.tr` was used inside the closure).
+        // Deferred dispatch, because the closure touched only `self.tr`.
         if let Some(build) = verify_build {
             self.status = format!("Verifying {build}…");
             let _ = self.tx.send(Command::VerifyReference { build });
@@ -993,8 +1007,8 @@ impl NavigatorApp {
         }
     }
 
-    /// The Delete-subject confirmation modal. Confirm sends a `DeleteBiosample` command; the app
-    /// layer refuses (surfaced via the status bar) when the subject still has dependent data.
+    /// The Delete-subject confirmation modal. Confirm sends a `DeleteBiosample` command. The app
+    /// layer refuses, and the status bar shows that, when the subject still has dependent data.
     pub(crate) fn delete_subject_modal(&mut self, ctx: &egui::Context) {
         let Some(guid) = self.confirm_delete else { return };
         let name = self.subject_label(guid);
@@ -1026,9 +1040,10 @@ impl NavigatorApp {
         }
     }
 
-    /// The Clear-data confirmation modal. Confirm sends a `ClearBiosampleData` command, which resets
-    /// the subject's analysis (runs, alignments, haplogroups, ancestry, profiles…) while keeping the
-    /// subject itself — the recovery tool for a botched import.
+    /// The Clear-data confirmation modal. Confirm sends a `ClearBiosampleData` command, which
+    /// resets the analysis of the subject: runs, alignments, haplogroups, ancestry, profiles, and
+    /// the rest. The subject itself stays. This is the recovery tool for an import that went
+    /// wrong.
     pub(crate) fn clear_subject_modal(&mut self, ctx: &egui::Context) {
         let Some(guid) = self.confirm_clear else { return };
         let name = self.subject_label(guid);
@@ -1057,8 +1072,9 @@ impl NavigatorApp {
         }
     }
 
-    /// Confirm resetting only the subject's haplogroup placement (stale-lineage cleanup) — keeps
-    /// coverage/ancestry/imported data; the placement re-derives on the next full analysis / re-import.
+    /// Confirm a reset of the haplogroup placement of the subject, and nothing else. It is the
+    /// cleanup for a stale lineage. Coverage, ancestry and imported data stay. The placement comes
+    /// back on the next full analysis, or the next import.
     pub(crate) fn reset_haplo_modal(&mut self, ctx: &egui::Context) {
         let Some(guid) = self.confirm_reset_haplo else { return };
         let name = self.subject_label(guid);
@@ -1095,9 +1111,9 @@ impl NavigatorApp {
         }
     }
 
-    /// Notify the user that a newer installer is available (set by the startup `CheckForUpdate`).
-    /// Purely informational — offers to open the download in a browser, skip this version, or
-    /// dismiss. The app never auto-updates.
+    /// Tell the user that a newer installer exists. The startup `CheckForUpdate` sets it. It is
+    /// only information: it offers to open the download in a browser, to skip this version, or to
+    /// dismiss. The app never updates itself.
     pub(crate) fn update_modal(&mut self, ctx: &egui::Context) {
         let Some(info) = self.update_info.clone() else {
             return;
@@ -1127,7 +1143,8 @@ impl NavigatorApp {
                 ui.add_space(8.0);
                 ui.label(egui::RichText::new(self.tr("update.notes")).weak().small());
                 egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                    // Release notes are Markdown; show as plain, wrapped text (no Markdown renderer here).
+                    // The release notes use Markdown. Show them as plain, wrapped text, because
+                    // there is no Markdown renderer here.
                     ui.label(info.notes.trim());
                 });
             }
@@ -1167,8 +1184,8 @@ impl NavigatorApp {
         }
     }
 
-    /// Summary modal after a batch Add Data / drag-and-drop: per-file detected type + any skipped
-    /// files with the reason. Dismissed with Close.
+    /// The summary modal after a batch Add Data, or a drag-and-drop. It shows the detected type of
+    /// each file, and any file it dropped, with the reason. Close dismisses it.
     pub(crate) fn batch_import_modal(&mut self, ctx: &egui::Context) {
         let Some(summary) = self.batch_import.clone() else {
             return;
@@ -1218,8 +1235,9 @@ impl NavigatorApp {
         }
     }
 
-    /// Confirmation modal for deleting a data-source row (run/alignment/profile). Confirm sends
-    /// the variant's worker command; the resulting change event refreshes the affected list.
+    /// The confirmation modal for a delete of a data-source row: a run, an alignment, or a profile.
+    /// Confirm sends the worker command of that variant, and the change event that follows
+    /// refreshes the list it affects.
     pub(crate) fn data_delete_modal(&mut self, ctx: &egui::Context) {
         let Some(target) = self.confirm_data_delete.clone() else {
             return;
@@ -1249,8 +1267,9 @@ impl NavigatorApp {
         }
     }
 
-    /// Destructive merge-sequence-runs modal: the `secondary` run's alignments are reparented onto a
-    /// chosen `primary` run and the now-empty secondary is deleted. Mirrors the data-delete confirm.
+    /// The destructive merge-sequence-runs modal. The alignments of the `secondary` run move to a
+    /// chosen `primary` run, and then the empty secondary goes. It mirrors the data-delete
+    /// confirm.
     pub(crate) fn merge_runs_modal(&mut self, ctx: &egui::Context) {
         let Some(mut m) = self.merge_runs.clone() else { return };
 
@@ -1335,10 +1354,11 @@ impl NavigatorApp {
         }
     }
 
-    /// Read-only Y-profile **source audit**: a per-source provenance table (label · type · method
-    /// tier weight · variants contributed) and a per-conflict evidence list (each conflicting variant
-    /// with every source's call), so the user can see what drove — or disagreed with — each consensus
-    /// call. Pure over the cached `y_profile`; no schema change, no re-genotyping.
+    /// A read-only Y-profile **source audit**. It has a provenance table for each source: label ·
+    /// type · method tier weight · variants it gave. It also has an evidence list for each
+    /// conflict: the variant, with the call of every source. The user can then see what drove each
+    /// consensus call, and what disagreed with it. It is pure over the cached `y_profile`: no
+    /// schema change, and no second genotyping.
     pub(crate) fn y_profile_audit_modal(&mut self, ctx: &egui::Context) {
         if !self.audit_y_profile {
             return;
@@ -1361,7 +1381,7 @@ impl NavigatorApp {
             }
             ui.separator();
             egui::ScrollArea::vertical().max_height(440.0).show(ui, |ui| {
-                // --- Per-source provenance ---
+                // --- Provenance of each source ---
                 ui.label(egui::RichText::new(self.tr("audit.sources")).strong());
                 egui::Grid::new("yaudit_sources")
                     .striped(true)
@@ -1433,8 +1453,9 @@ impl NavigatorApp {
         }
     }
 
-    /// The Add-to-Project picker: a dropdown of projects (plus "no project"). Save sends
-    /// `AssignBiosampleProject`; the resulting `BiosamplesChanged` event refreshes the lists.
+    /// The Add-to-Project picker: a dropdown of projects, plus "no project". Save sends
+    /// `AssignBiosampleProject`, and the `BiosamplesChanged` event that follows refreshes the
+    /// lists.
     pub(crate) fn assign_project_modal(&mut self, ctx: &egui::Context) {
         let Some((guid, mut chosen)) = self.assign_project else {
             return;
@@ -1548,8 +1569,8 @@ impl NavigatorApp {
         }
     }
 
-    /// The Delete-project confirmation modal. Confirm sends `DeleteProject`; the app layer
-    /// refuses (surfaced via the status bar) while subjects still belong to the project.
+    /// The Delete-project confirmation modal. Confirm sends `DeleteProject`. The app layer refuses,
+    /// and the status bar shows that, while subjects still belong to the project.
     pub(crate) fn delete_project_modal(&mut self, ctx: &egui::Context) {
         let Some((id, name)) = self.confirm_delete_project.clone() else {
             return;
@@ -1632,9 +1653,9 @@ impl NavigatorApp {
                     .desired_width(f32::INFINITY),
             );
             ui.add_space(4.0);
-            // Lab / sequencing facility — a dropdown from the labs catalog ("(none)" clears
-            // it). Resolved automatically from the instrument id once the AppView lookup
-            // ships (roadmap D8); set manually here meanwhile.
+            // Lab, or sequencing facility: a dropdown from the labs catalog, where "(none)" clears
+            // it. It will come from the instrument id when the AppView lookup ships (roadmap D8).
+            // Until then a person sets it here.
             ui.label(self.tr("editRun.lab"));
             let lab_text = if edit.sequencing_facility.is_empty() {
                 "(none)".to_string()
@@ -1680,8 +1701,8 @@ impl NavigatorApp {
         }
     }
 
-    /// The Edit-alignment modal: reference build / aligner / variant caller. File paths are
-    /// managed by import/probe. Save sends `UpdateAlignment`.
+    /// The Edit-alignment modal: the reference build, the aligner, and the variant caller. The
+    /// import and the probe control the file paths. Save sends `UpdateAlignment`.
     pub(crate) fn edit_alignment_modal(&mut self, ctx: &egui::Context) {
         let Some(mut edit) = self.edit_alignment.clone() else {
             return;
@@ -1740,9 +1761,10 @@ impl NavigatorApp {
         }
     }
 
-    /// FTDNA import review: a dry-run plan grouped into Needs-confirmation (per-row Merge/New/Skip),
-    /// Auto-merged, and New subjects, with a Commit. Deferred dispatch — only `self.tr` is used inside
-    /// the closure; resolution edits + the commit are applied after.
+    /// The FTDNA import review: a dry-run plan in three groups, with a Commit. The groups are
+    /// Needs-confirmation, where each row takes Merge, New or Skip, then Auto-merged, then New
+    /// subjects. Deferred dispatch: the closure touches only `self.tr`, and the resolution edits
+    /// and the commit apply after it.
     pub(crate) fn ftdna_review_modal(&mut self, ctx: &egui::Context) {
         let Some(plan) = self.ftdna_plan.clone() else { return };
         let (n_new, n_merge, n_confirm) = plan.counts();
@@ -1776,7 +1798,8 @@ impl NavigatorApp {
                 s.scanned_subjects,
             ))
             .small();
-            // Red when no roster was recognized (likely the Member_Information file was not selected).
+            // Red when nothing recognized a roster. The user probably did not select the
+            // Member_Information file.
             if s.roster == 0 {
                 ui.label(roster_txt.color(egui::Color32::from_rgb(210, 120, 70)));
                 ui.label(
@@ -1789,7 +1812,7 @@ impl NavigatorApp {
             }
             ui.separator();
             egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
-                // Needs confirmation — the only group with per-row actions.
+                // Needs confirmation: the only group where each row has actions.
                 if n_confirm > 0 {
                     ui.label(egui::RichText::new(self.tr("ftdna.needsConfirm")).strong());
                     for row in plan.rows.iter() {
@@ -1805,8 +1828,9 @@ impl NavigatorApp {
                                         .small(),
                                 );
                             }
-                            // Mutually-exclusive choice per kit: merge into a candidate, new, or skip.
-                            // Radio buttons (not selectable labels) so the active choice is obvious.
+                            // One choice for each kit, and the choices exclude each other: merge
+                            // into a candidate, new, or skip. Radio buttons, and not selectable
+                            // labels, so that the reader sees the active choice at once.
                             let cur = resolutions.get(&row.kit_number);
                             for c in candidates {
                                 let sel = matches!(cur, Some(FtdnaResolution::Merge(g)) if *g == c.guid);
@@ -1839,7 +1863,7 @@ impl NavigatorApp {
                     }
                 }
 
-                // Auto-merged (exact kit#) — informational.
+                // Auto-merged (exact kit#). Information only.
                 if n_merge > 0 {
                     ui.add_space(4.0);
                     ui.collapsing(format!("{} ({n_merge})", self.tr("ftdna.autoMerged")), |ui| {
@@ -1851,7 +1875,7 @@ impl NavigatorApp {
                     });
                 }
 
-                // New subjects — informational (orphans flagged).
+                // New subjects. Information only, and it flags an orphan.
                 ui.add_space(4.0);
                 ui.collapsing(format!("{} ({n_new})", self.tr("ftdna.new")), |ui| {
                     for row in plan.rows.iter() {
@@ -1894,10 +1918,10 @@ impl NavigatorApp {
 impl NavigatorApp {
     /// The consent decision for an inbound matching request.
     ///
-    /// A modal rather than an Accept button in a table row, because consenting does two things the
-    /// row can not say: it reveals our DID to the counterpart, and it puts our IBD-panel dosages on
-    /// the encrypted channel. Neither is undoable. The three headings below are the whole point of
-    /// the dialog — what we send, what they learn, and what never leaves the device.
+    /// A modal, and not an Accept button in a table row, because consent does two things the row
+    /// can not say. It reveals our DID to the counterpart, and it puts our IBD-panel dosages on the
+    /// encrypted channel. Nobody can undo either one. The three headings below are the whole point
+    /// of the dialog: what we send, what they learn, and what never leaves the device.
     pub(crate) fn consent_modal(&mut self, ctx: &egui::Context) {
         let Some(entry) = self.consent_prompt.clone() else {
             return;
@@ -1967,11 +1991,11 @@ impl NavigatorApp {
 
     /// Review a candidate branch: the shared position(s) and every carrier's read evidence.
     ///
-    /// A candidate is inferred, not published, and "1 SNP shared by three men" can not be judged from
-    /// the canvas. What decides it is the evidence behind each call — depth, and how cleanly the
-    /// derived allele dominates on a chromosome carrying one copy. A middling fraction or a thin
-    /// depth is the signature of the mapping artefacts this view is most at risk of presenting as
-    /// discoveries, so they are shown plainly and flagged.
+    /// A candidate is an inference, and nothing published it. Nobody can judge "1 SNP shared by
+    /// three men" from the canvas. The evidence behind each call decides it: the depth, and how
+    /// cleanly the derived allele dominates on a chromosome with one copy. This view is most at
+    /// risk when it shows a mapping artefact as a discovery. A fraction in the middle, or a thin
+    /// depth, is the signature of that. So it shows both plainly, and flags them.
     pub(crate) fn blocktree_review_modal(&mut self, ctx: &egui::Context) {
         let Some(node_id) = self.blocktree_review else { return };
         let Some(block) = self
@@ -2031,7 +2055,8 @@ impl NavigatorApp {
                             ui.label(egui::RichText::new(format!("{}>{}", e.reference, e.alternate)).small());
                             ui.label(egui::RichText::new(e.depth.to_string()).small());
                             ui.label(egui::RichText::new(e.alt_depth.to_string()).small());
-                            // The determinism signal: on haploid chrY a real call is essentially 1.0.
+                            // The determinism signal: on haploid chrY a real call is 1.0, or very
+                            // near it.
                             let af = egui::RichText::new(format!("{:.2}", e.allele_fraction)).small();
                             ui.label(if e.allele_fraction >= 0.95 {
                                 af

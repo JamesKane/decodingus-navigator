@@ -1,10 +1,10 @@
-//! Headless command-line interface for the Navigator workbench. The same binary launches
-//! the egui GUI when run with no subcommand; with a subcommand it opens the *same* workspace
-//! database and runs scripted ingestion or read-only probes, then exits.
+//! Headless command-line interface for the Navigator workbench. The same binary starts the egui
+//! GUI when it runs with no subcommand. With a subcommand it opens the *same* workspace database,
+//! runs scripted ingestion or read-only probes, and then exits.
 //!
-//! This makes the workbench scriptable: bulk-load an assortment of files into a subject via
-//! the unified auto-detect importer (`app.add_data`), then query the resulting rows for
-//! verification (`subjects` / `show` / `projects`, with `--json` for machine consumption).
+//! This makes the workbench scriptable. Bulk-load a mixed set of files into a subject through the
+//! unified auto-detect importer (`app.add_data`). Then query the rows that come out, to check them:
+//! `subjects`, `show` or `projects`, with `--json` for a machine to read.
 //!
 //!   navigator ingest --subject "James Kane" --project mine /Volumes/nas/Genomics/mine/*
 //!   navigator show --subject "James Kane" --json
@@ -18,11 +18,11 @@ use navigator_domain::workspace::NewProject;
 
 /// The exit status a failed CLI step ends its command with.
 ///
-/// Each `navigator <subcommand>` runs as a function returning the process exit code, so `?` is not
-/// available and every fallible step needs its error turned into a code. Two kinds of error reach
-/// that point and they differ only in whether the message has been printed yet: the helpers in this
-/// module print their own and hand back the code, while [`App`] returns an `AppError` nobody has
-/// shown the user. This is the seam between them, so [`cli_try!`] needs only one arm.
+/// Each `navigator <subcommand>` is a function that returns the process exit code. So `?` is not
+/// available, and every step that can fail needs its error turned into a code. Two kinds of error
+/// reach that point, and they differ only in whether anything printed the message yet. The helpers
+/// in this module print their own and hand back the code. [`App`] returns an `AppError` that nobody
+/// showed the user. This is the seam between them, so [`cli_try!`] needs only one arm.
 trait ExitCode {
     fn exit_code(self) -> i32;
 }
@@ -42,9 +42,9 @@ impl ExitCode for navigator_app::AppError {
 
 /// Unwrap a CLI step, or end the command with the exit status its failure implies.
 ///
-/// This is `?` for a function returning `i32` instead of `Result`. It replaced ~50 hand-written
-/// four-line `match` blocks, which between them were most of what stood in the way of reading a
-/// command as the short sequence of steps it actually is.
+/// This is `?` for a function that returns `i32` instead of `Result`. It replaced ~50 hand-written
+/// four-line `match` blocks. Together those were most of what stood in the way of a command that
+/// reads as the short sequence of steps it is.
 macro_rules! cli_try {
     ($e:expr) => {
         match $e {
@@ -67,7 +67,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Ingest files/directories into a subject via auto-detection (BAM/CRAM, VCF, chip, STR, mtDNA FASTA).
+    /// Ingest files and directories into a subject, with auto-detection (BAM, CRAM, VCF, chip, STR,
+    /// mtDNA FASTA).
     Ingest(IngestArgs),
     /// List every subject with its data-source counts.
     Subjects(ProbeArgs),
@@ -75,46 +76,55 @@ pub enum Command {
     Show(ShowArgs),
     /// Diagnostic: trace the genome-consensus Y placement for one subject (candidates + lineage tally).
     DebugPlace(ShowArgs),
-    /// Diagnostic: dump the Y descent SNP-by-SNP — state + observed base vs the tree's per-build polarity.
+    /// Diagnostic: dump the Y descent one SNP at a time. It gives the state and the observed base,
+    /// against the polarity of the tree on each build.
     DebugDescent(ShowArgs),
     /// Diagnostic: dump the raw read pileup (ref + A/C/G/T) behind each lineage call for one alignment.
     DebugCalls(DebugCallsArgs),
-    /// Diagnostic: the filtered private-Y bucket for an alignment — DISPLAY vs PUBLISH counts.
+    /// Diagnostic: the filtered private-Y bucket for an alignment, with the DISPLAY and PUBLISH
+    /// counts.
     PrivateY(PrivateYArgs),
     /// Publish the ancestral origins (MDKA surname / place / dates) of subjects this workspace may
     /// publish for. Dry-run unless `--apply`.
     PublishOrigins(PublishOriginsArgs),
-    /// Diagnostic: deep (ancient) ancestry fitted over each view of a subject — the pooled
-    /// consensus, each source alone, and thinned site sets. The stability gate: a 30x WGS and a
-    /// consumer chip must agree, or the estimate is tracking the assay, not the donor.
+    /// Diagnostic: deep (ancient) ancestry fitted over each view of a subject. Those views are the
+    /// pooled consensus, each source alone, and thinned site sets. This is the stability gate: a
+    /// 30x WGS and a consumer chip must agree, or the estimate follows the assay, and not the
+    /// donor.
     DebugAncient(ShowArgs),
-    /// Deep (ancient) ancestry via qpAdm: fit WHG/EEF/Steppe (Patterson-2022 config) over the
-    /// subject's pooled autosomal consensus (all WGS — any reference — plus chips). Requires the
-    /// consensus to be built first (see the Autosomal tab / `ingest`), then persists. See
+    /// Deep (ancient) ancestry through qpAdm: fit WHG, EEF and Steppe (the Patterson-2022 config)
+    /// over the pooled autosomal consensus of the subject. That consensus covers all WGS, on any
+    /// reference, plus the chips. The consensus must exist first (see the Autosomal tab, or
+    /// `ingest`), and this then persists the result. See
     /// `navigator_app::App::estimate_deep_ancestry`.
     DeepAncestry(ShowArgs),
-    /// Archaic (Neanderthal / Denisovan) Tier-A marker count from the subject's pooled autosomal
-    /// consensus. Reports copies carried of copies assayed — a count over the sites the subject's
-    /// data actually covered, not a "% Neanderthal". Requires the consensus to be built first.
-    /// See `navigator_app::App::estimate_archaic_from_consensus`.
+    /// Archaic (Neanderthal, Denisovan) Tier-A marker count, from the pooled autosomal consensus of
+    /// the subject. It reports the copies carried over the copies assayed. That is a count over the
+    /// sites the data of the subject covered, and never a "% Neanderthal". The consensus must exist
+    /// first. See `navigator_app::App::estimate_archaic_from_consensus`.
     Archaic(ArchaicArgs),
-    /// Tier B: call archaic SEGMENTS from the subject's cached genome-wide de-novo diploid calls.
-    /// Run `call` first — this reads the cache rather than starting a whole-genome pass.
+    /// Tier B: call archaic SEGMENTS from the cached genome-wide de-novo diploid calls of the
+    /// subject. Run `call` first, because this reads the cache, and does not start a whole-genome
+    /// pass.
     ArchaicSegments(ShowArgs),
-    /// Panel batch-process mode (progressive-consensus): genotype the subject's CHM13 alignment(s) at
-    /// the full-1240k panel, caching the dosages and refreshing the autosomal consensus so ancestry is
-    /// ready without a later lazy build. Heavy (a whole-genome decode per alignment).
+    /// Panel batch-process mode (progressive consensus). It genotypes the CHM13 alignments of the
+    /// subject at the full 1240k panel, caches the dosages, and refreshes the autosomal consensus.
+    /// Ancestry is then ready with no later lazy build. It is heavy: one whole-genome decode for
+    /// each alignment.
     GenotypePanel(ShowArgs),
-    /// Per-marker branch report: the sample's genotype at every defining marker of a Y/mtDNA tree
-    /// node's descendant subtree (observed base + derived/ancestral status + evidence). For
-    /// spot-checking placement and exchanging observations. Table by default; `--tsv` / `--json`.
+    /// A branch report for each marker. It gives the genotype of the sample at every marker that
+    /// defines a node in the descendant subtree of a Y or mtDNA tree node. Each row has the
+    /// observed base, the derived or ancestral status, and the evidence. Use it to spot-check a
+    /// placement, and to exchange observations. It gives a table by default, and `--tsv` or
+    /// `--json` on request.
     BranchReport(BranchReportArgs),
-    /// Diagnostic: explain why an alignment can not be read. Probes the BAM/CRAM, its coordinate
-    /// index, the reference FASTA and that FASTA's `.fai` **separately**, so a failure names the
-    /// file actually at fault instead of whichever path the failing call happened to be handed —
-    /// and reports the raw errno, which on macOS is the only thing distinguishing a privacy (TCC)
-    /// denial from a Unix permission denial. Prints a report meant for pasting into a bug report.
-    /// Use `--file` to check a file that was never imported. Exits non-zero if a check failed.
+    /// Diagnostic: explain why nothing can read an alignment. It probes the BAM or CRAM, its
+    /// coordinate index, the reference FASTA, and the `.fai` of that FASTA, each one **on its own**.
+    /// A failure then names the file at fault, and not whatever path the call that failed received.
+    /// It also reports the raw errno, which on macOS is the only thing that separates a privacy
+    /// (TCC) denial from a Unix permission denial. It prints a report to paste into a bug report,
+    /// and `--file` checks a file that no import brought in. It exits non-zero when a check
+    /// failed.
     Doctor(DoctorArgs),
     /// List projects with their subject counts.
     Projects(ProbeArgs),
@@ -122,82 +132,91 @@ pub enum Command {
     Call(CallArgs),
     /// Lift a VCF from one reference build to another (chain-based; the GATK LiftoverVcf replacement).
     LiftVcf(LiftVcfArgs),
-    /// Run the per-alignment analysis steps with per-step wall-clock timing (the GUI Full Analysis
-    /// path), to profile where time goes. Mutates the workspace (caches results).
+    /// Run the analysis steps of each alignment, with the wall-clock time of each step. This is the
+    /// Full Analysis path of the GUI, and it profiles where the time goes. It changes the workspace,
+    /// because it caches the results.
     Analyze(AnalyzeArgs),
-    /// Rebuild the genome-consensus Y and mtDNA signatures (variant profile + descent) for subjects,
-    /// e.g. to re-place existing profiles on the current tree provider. Reuses cached genotypes, so it
-    /// is cheap for already-analyzed subjects. By default only subjects that already have a Y or mt
-    /// profile are rebuilt (`--all` rebuilds every subject).
+    /// Build the genome-consensus Y and mtDNA signatures again (the variant profile and the
+    /// descent) for a set of subjects. Use it to place existing profiles again on the current tree
+    /// provider. It reuses cached genotypes, so it costs little for a subject an analysis already
+    /// covered. By default it takes only subjects that already have a Y or mt profile, and `--all`
+    /// takes every subject.
     RebuildSignatures(RebuildArgs),
-    /// Re-run the sidecar fast path (external GATK4 Y/mt GVCFs) for subjects whose source directory
-    /// still carries them — restoring external calls that a pre-provenance build's internal walk had
-    /// overwritten. Cheap (reads the small GVCFs, never the CRAM); external calls land on their own
-    /// `:ext` keys and, with "prefer external caller" on, win the consensus. The operational fix for
-    /// a workspace (e.g. PRJEB37976) imported before external-caller precedence existed.
+    /// Run the sidecar fast path again (external GATK4 Y and mt GVCFs) for a subject whose source
+    /// directory still carries them. It restores the external calls that the internal walk of a
+    /// build from before provenance had written over. The cost is low: it reads the small GVCFs,
+    /// and never the CRAM. An external call lands on its own `:ext` key, and with "prefer external
+    /// caller" on, it wins the consensus. This is the operational fix for a workspace, for example
+    /// PRJEB37976, that an import brought in before external-caller precedence existed.
     ReingestExternal(ReingestArgs),
-    /// "Compare callers": for each of a subject's alignments, show the trusted external (imported
-    /// GVCF) Y/mtDNA terminal beside Navigator's own internal-caller terminal — **forcing** the
-    /// internal walk regardless of the "prefer external caller" setting. Surfaces GATK-vs-Navigator
-    /// divergence (e.g. ancient-DNA damage). Non-destructive to the external call: the internal walk
+    /// "Compare callers": for each alignment of a subject, it shows two terminals side by side. One
+    /// is the trusted external Y or mtDNA terminal, from the imported GVCF. The other is the
+    /// terminal of the internal caller of Navigator. It **forces** the internal walk, whatever the
+    /// "prefer external caller" setting says. It shows where GATK and Navigator differ, for example
+    /// on ancient-DNA damage. It does not damage the external call, because the internal walk
     /// records its own separate rows.
     CompareCallers(ShowArgs),
-    /// Backfill the standardized-test-label read-profile fields (`total_bases`, `read_type`) on runs
-    /// imported before those fields existed. `total_bases` is recovered for free from cached
-    /// read-metrics; `read_type` is inferred from platform/test-type, with `--rescan` reading a
-    /// bounded prefix of the alignment to tell HiFi from CLR on generic-WGS PacBio runs.
+    /// Backfill the read-profile fields of the standardized test label (`total_bases` and
+    /// `read_type`) on runs that came in before those fields existed. `total_bases` comes for free
+    /// from the cached read metrics. `read_type` comes from the platform and the test type. With
+    /// `--rescan` it reads a bounded prefix of the alignment, to tell HiFi from CLR on a
+    /// generic-WGS PacBio run.
     BackfillProfiles(BackfillArgs),
-    /// Delete orphaned alignment (coverage-summary) records from the signed-in account's PDS — the
-    /// duplicates left by the old create-race (two records for one alignment). Dry-run by default;
-    /// pass `--apply` to actually delete. Requires being signed in.
+    /// Delete orphaned alignment (coverage-summary) records from the PDS of the account that signed
+    /// in. Those are the duplicates the old create-race left, with two records for one alignment.
+    /// It is a dry run by default, and `--apply` does the delete. The user must sign in first.
     PruneOrphans(PruneArgs),
-    /// Sign in to a PDS account via OAuth (opens a browser, waits for the loopback callback) and
-    /// persist the session so the other subcommands (publish, prune-orphans) can authenticate.
+    /// Sign in to a PDS account through OAuth. It opens a browser, and waits for the loopback
+    /// callback. It then persists the session, so that the other subcommands (publish,
+    /// prune-orphans) can authenticate.
     Login(LoginArgs),
     /// Attach public-catalog external ids (IGSR/HGDP/INSDC) derivable from each subject's local
     /// provenance, so bulk-imported public datasets publish ids that match their AppView catalog
     /// rows. Dry-run by default; pass `--apply` to write. Local-only (no PDS writes).
     BackfillCatalogIds(CatalogArgs),
-    /// Resolve subjects against the AppView samples API and attach, in one pass, the catalog name id
-    /// (IGSR/HGDP) plus the authoritative INSDC accession it returns (`SAMN…`→BIOSAMPLE, `ERS…`→ENA,
-    /// `SRS…`→SRA), correcting the local placeholder. Dry-run by default; `--apply` to write. Only
-    /// queries recognizable catalog aliases unless `--all`. Local writes only (no PDS).
+    /// Resolve subjects against the samples API of the AppView. In one pass it attaches the catalog
+    /// name id (IGSR or HGDP). It also attaches the authoritative INSDC accession the API returns
+    /// (`SAMN…`→BIOSAMPLE, `ERS…`→ENA, `SRS…`→SRA), and corrects the local placeholder. It is a
+    /// dry run by default, and `--apply` writes. It queries only catalog aliases it recognizes,
+    /// unless `--all`. It writes locally only, and never to a PDS.
     BackfillAccessions(AccessionArgs),
 }
 
 #[derive(Args)]
 pub struct IngestArgs {
-    /// Subject donor identifier (found by exact match, or created if absent). Mutually exclusive
-    /// with --external-id; one of the two is required.
+    /// Subject donor identifier. An exact match finds it, and this makes it when there is none. It
+    /// excludes --external-id, and one of the two is mandatory.
     #[arg(long, short, required_unless_present = "external_id")]
     subject: Option<String>,
-    /// Resolve the subject by a vendor id `(--id-source, ID)` instead of a donor identifier — e.g.
-    /// an FTDNA kit number. The subject must already exist (never created); pair with
-    /// --skip-unmatched to skip unknown ids quietly.
+    /// Resolve the subject by a vendor id `(--id-source, ID)`, and not by a donor identifier. An
+    /// FTDNA kit number is one example. The subject must already exist, and this never makes one.
+    /// Use it with --skip-unmatched to step over an unknown id with no message.
     #[arg(long, conflicts_with = "subject")]
     external_id: Option<String>,
     /// Vendor source for --external-id (default FTDNA).
     #[arg(long, default_value = navigator_domain::identity::IdSource::FTDNA)]
     id_source: String,
-    /// With --external-id: if no subject matches the id, skip quietly (exit 0) instead of erroring.
+    /// With --external-id: when no subject matches the id, step over it with no message (exit 0),
+    /// and do not raise an error.
     #[arg(long)]
     skip_unmatched: bool,
-    /// Force the sequencing-run test type for alignment files (e.g. "Big Y") instead of inferring
-    /// it. Useful for bulk imports where the directory layout names the test; CRAMs have no `.bai`
-    /// for the coverage-shape detector, so they otherwise fall back to WGS. Ignored for non-BAM/CRAM.
+    /// Force the test type of the sequencing run for alignment files (for example "Big Y"), instead
+    /// of an inference. It helps a bulk import where the directory layout names the test. A CRAM has
+    /// no `.bai` for the coverage-shape detector, so it would otherwise fall back to WGS. This does
+    /// nothing for a file that is not a BAM or a CRAM.
     #[arg(long)]
     test_type: Option<String>,
     /// Optional project name to assign the subject to (found or created).
     #[arg(long, short)]
     project: Option<String>,
-    /// Sex recorded only when the subject is created (e.g. male / female).
+    /// The sex, which the store keeps only when this makes the subject (male or female).
     #[arg(long)]
     sex: Option<String>,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
     #[arg(long)]
     db: Option<PathBuf>,
-    /// Files and/or directories to ingest. A directory is one staged sample (sidecar fast path);
-    /// a file is imported on its own.
+    /// The files and directories to ingest. A directory is one staged sample, and it takes the
+    /// sidecar fast path. A file comes in on its own.
     #[arg(required = true)]
     paths: Vec<PathBuf>,
 }
@@ -212,9 +231,9 @@ pub struct ProbeArgs {
     json: bool,
 }
 
-/// `archaic` takes an optional alignment override so a specific build can be genotyped directly —
-/// the app otherwise picks the subject's best-callable alignment, which makes the GRCh37/38 code
-/// path unreachable on a subject that also has CHM13 data.
+/// `archaic` takes an optional alignment override, so that a caller can genotype one specific build
+/// directly. Without it the app picks the best-callable alignment of the subject. The GRCh37 and
+/// GRCh38 code path is then out of reach on a subject that also has CHM13 data.
 #[derive(Args)]
 pub struct ArchaicArgs {
     /// Subject donor identifier.
@@ -247,8 +266,8 @@ pub struct ShowArgs {
 
 #[derive(Args)]
 pub struct DebugCallsArgs {
-    /// Subject donor identifier (used to pick an alignment when `--alignment` is omitted — prefers a
-    /// CHM13/HiFi alignment, else the first).
+    /// Subject donor identifier. It picks an alignment when `--alignment` is absent, and it prefers
+    /// a CHM13 or HiFi alignment, or the first one.
     #[arg(long, short)]
     subject: Option<String>,
     /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
@@ -261,17 +280,17 @@ pub struct DebugCallsArgs {
 
 #[derive(Args)]
 pub struct PrivateYArgs {
-    /// Subject donor identifier (used to pick an alignment when `--alignment` is omitted — prefers a
-    /// CHM13/HiFi alignment, else the first).
+    /// Subject donor identifier. It picks an alignment when `--alignment` is absent, and it prefers
+    /// a CHM13 or HiFi alignment, or the first one.
     #[arg(long, short)]
     subject: Option<String>,
     /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
     #[arg(long, short)]
     alignment: Option<i64>,
     /// **Batch**: compute and persist the private-Y bucket for every alignment of every member of
-    /// this project, instead of reporting one. Private-Y is what a cohort view needs to tell a
-    /// shared unnamed variant from a lone one, and it is cached per alignment — so a project has to
-    /// be walked once before anything cross-subject can use it.
+    /// this project, and do not report one. A cohort view needs private-Y to tell a shared unnamed
+    /// variant from a lone one. The cache holds it against each alignment, so one walk of a project
+    /// must come before anything cross-subject can use it.
     #[arg(long, short)]
     project: Option<String>,
     /// Recompute buckets that are already cached (default: skip them, so a batch is resumable).
@@ -287,8 +306,8 @@ pub struct PublishOriginsArgs {
     /// Lineage to publish: `y` (default) or `mt`.
     #[arg(long, default_value = "y")]
     lineage: String,
-    /// Actually enqueue the records. Without it nothing leaves the workspace and the command only
-    /// reports what would — genealogy is not something to publish by accident.
+    /// Put the records in the queue. Without this flag nothing leaves the workspace, and the command
+    /// only reports what would. Nobody must publish genealogy by accident.
     #[arg(long)]
     apply: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
@@ -298,15 +317,15 @@ pub struct PublishOriginsArgs {
 
 #[derive(Args)]
 pub struct BranchReportArgs {
-    /// Subject donor identifier (used to pick a Y/mt alignment when `--alignment` is omitted —
-    /// prefers a CHM13/HiFi alignment, else the first).
+    /// Subject donor identifier. It picks a Y or mt alignment when `--alignment` is absent, and it
+    /// prefers a CHM13 or HiFi alignment, or the first one.
     #[arg(long, short)]
     subject: Option<String>,
     /// Alignment id to genotype (from `show --json`). Takes precedence over `--subject`.
     #[arg(long, short)]
     alignment: Option<i64>,
-    /// Node to report: a haplogroup name (`R-FGC29071`) or a defining marker (`FGC29071`). The
-    /// report covers this node's descendant subtree.
+    /// The node to report: a haplogroup name (`R-FGC29071`), or a marker that defines one
+    /// (`FGC29071`). The report covers the descendant subtree of this node.
     #[arg(long, short)]
     node: String,
     /// Which tree to read: `y` or `mt`.
@@ -315,7 +334,7 @@ pub struct BranchReportArgs {
     /// Limit descent to this many levels below the node (default: the whole subtree).
     #[arg(long)]
     depth: Option<usize>,
-    /// Write the TSV here instead of printing a table.
+    /// Write the TSV here, and do not print a table.
     #[arg(long)]
     tsv: Option<PathBuf>,
     /// Emit JSON instead of a table. Mutually exclusive with `--tsv`.
@@ -328,10 +347,11 @@ pub struct BranchReportArgs {
 
 #[derive(Args)]
 pub struct CallArgs {
-    /// Subject donor identifier (used to resolve the alignment when `--alignment` is omitted).
+    /// Subject donor identifier. It resolves the alignment when `--alignment` is absent.
     #[arg(long, short)]
     subject: Option<String>,
-    /// Alignment id to call (from `show --json`). If omitted, the subject's sole alignment is used.
+    /// The alignment id to call, from `show --json`. Without it, this takes the one alignment of
+    /// the subject.
     #[arg(long, short)]
     alignment: Option<i64>,
     /// Restrict to a single contig (e.g. chrM, chr21). Default: every primary chromosome.
@@ -350,13 +370,13 @@ pub struct AnalyzeArgs {
     /// Alignment id to analyze (from `show --json`).
     #[arg(long, short)]
     alignment: i64,
-    /// Also build the autosomal consensus profile and estimate ancestry from it — the two heaviest
-    /// steps, which the GUI folds in only for the one-click Simple flow.
+    /// Also build the autosomal consensus profile, and estimate ancestry from it. Those are the two
+    /// heaviest steps, and the GUI takes them in only for the one-click Simple flow.
     #[arg(long)]
     ancestry: bool,
-    /// Also call structural variants (experimental). Off by default: SV walks every read in the
-    /// file for its own sake, measured at 2–5 h per whole-genome sample, and nothing else consumes
-    /// the result. The GUI's equivalent is the Sources tab's "Call SV" button.
+    /// Also call structural variants (experimental). It is off by default. SV walks every read in
+    /// the file for its own sake, at a measured 2–5 h for one whole-genome sample, and nothing else
+    /// reads the result. The equivalent in the GUI is the "Call SV" button on the Sources tab.
     #[arg(long)]
     sv: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
@@ -366,32 +386,35 @@ pub struct AnalyzeArgs {
 
 #[derive(Args)]
 pub struct RebuildArgs {
-    /// Rebuild every subject's signatures, including those without one yet (default: only subjects
-    /// that already have a Y or mt profile — the ones a placement change leaves stale).
+    /// Build the signatures of every subject again, and take the ones that have none yet too. The
+    /// default is only a subject that already has a Y or mt profile, because a placement change
+    /// leaves those stale.
     #[arg(long)]
     all: bool,
     /// Restrict to subjects in this project (by exact name).
     #[arg(long, short)]
     project: Option<String>,
-    /// Restrict to the subjects named in this file — one donor identifier or subject guid per line
-    /// (`#` comments and blanks ignored). Placement cost is dominated by subjects that own a
-    /// BAM/CRAM without cached genotypes, since those re-walk the alignment; a project filter can't
-    /// separate those from the cheap VCF-only subjects sharing the project, so scope by subject when
-    /// only some of them changed.
+    /// Take only the subjects this file names: one donor identifier, or one subject guid, on each
+    /// line. It drops a `#` comment and a blank line. The cost of a placement comes mostly from a
+    /// subject that owns a BAM or CRAM with no cached genotypes. Those walk the alignment a second
+    /// time. A project filter can not separate those from the low-cost VCF-only subjects
+    /// beside them. So scope by subject when only some of them changed.
     #[arg(long, value_name = "FILE")]
     subjects_file: Option<PathBuf>,
-    /// Only subjects placed against a **different haplotree** than the one now active — the sweep to
-    /// run when a new tree lands. Combines with the other filters (all of them must pass), and
-    /// implies `--all`: a subject can be due a re-placement without yet having a profile built.
+    /// Only the subjects that a placement put against a **different haplotree** from the one now
+    /// active. This is the sweep to run when a new tree lands. It combines with the other filters,
+    /// and all of them must pass. It also implies `--all`, because a subject can be due a new
+    /// placement before any profile exists for it.
     #[arg(long)]
     stale_tree: bool,
-    /// With `--stale-tree`, also take subjects whose calls carry **no tree fingerprint** — placed
-    /// before the field existed, so which tree they used is unknowable. That is a provenance
-    /// backfill, not a response to a tree change, and it is far larger: most such subjects own a
-    /// BAM/CRAM that re-placement re-walks. Off by default so the routine sweep stays runnable.
+    /// With `--stale-tree`, also take a subject whose calls carry **no tree fingerprint**. A
+    /// placement made those before the field existed, so nobody can know which tree they used. That
+    /// is a provenance backfill, and not an answer to a tree change, and it is far larger. Most such
+    /// subjects own a BAM or CRAM that a new placement walks again. It is off by default, so that
+    /// the routine sweep stays practical.
     #[arg(long)]
     include_unknown: bool,
-    /// With `--stale-tree`, list the affected subjects and exit without re-placing anything.
+    /// With `--stale-tree`, list the subjects it affects, then exit, and place nothing again.
     #[arg(long)]
     dry_run: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
@@ -411,14 +434,15 @@ pub struct ReingestArgs {
 
 #[derive(Args)]
 pub struct BackfillArgs {
-    /// Also read a bounded prefix of the alignment file to resolve `read_type` on runs the cheap
-    /// platform/test-type inference can't (generic-`WGS` PacBio: HiFi vs CLR). Touches the files.
+    /// Also read a bounded prefix of the alignment file. That resolves `read_type` on a run the
+    /// low-cost inference can not reach. The example is generic-`WGS` PacBio, where HiFi and CLR
+    /// both appear. This touches the files.
     #[arg(long)]
     rescan: bool,
     /// Restrict to subjects in this project (by exact name).
     #[arg(long, short)]
     project: Option<String>,
-    /// Emit the per-field counts as JSON.
+    /// Emit the count of each field as JSON.
     #[arg(long)]
     json: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
@@ -428,8 +452,8 @@ pub struct BackfillArgs {
 
 #[derive(Args)]
 pub struct AccessionArgs {
-    /// Actually attach the accessions and correct the local `sample_accession`. Without this it is a
-    /// dry run (queries the API read-only, writes nothing).
+    /// Attach the accessions, and correct the local `sample_accession`. Without this flag it is a
+    /// dry run: it queries the API read-only, and writes nothing.
     #[arg(long)]
     apply: bool,
     /// Query every subject, not just those whose name is a recognizable catalog alias (IGSR/HGDP).
@@ -438,7 +462,7 @@ pub struct AccessionArgs {
     /// Restrict to subjects in this project (by exact name).
     #[arg(long, short)]
     project: Option<String>,
-    /// Cap how many subjects are queried (for a bounded test run).
+    /// A cap on how many subjects this queries, for a bounded test run.
     #[arg(long)]
     limit: Option<usize>,
     /// Emit the outcome as JSON.
@@ -451,8 +475,8 @@ pub struct AccessionArgs {
 
 #[derive(Args)]
 pub struct CatalogArgs {
-    /// Actually write the derived ids. Without this flag the command is a dry run (reports counts,
-    /// writes nothing).
+    /// Write the derived ids. Without this flag the command is a dry run: it reports counts, and
+    /// writes nothing.
     #[arg(long)]
     apply: bool,
     /// Restrict to subjects in this project (by exact name).
@@ -478,8 +502,8 @@ pub struct LoginArgs {
 
 #[derive(Args)]
 pub struct PruneArgs {
-    /// Actually delete the orphans. Without this flag the command is a dry run (lists what it would
-    /// remove and touches nothing) — a PDS delete is irreversible, so it is opt-in.
+    /// Delete the orphans. Without this flag the command is a dry run: it lists what it would
+    /// remove, and touches nothing. Nobody can undo a PDS delete, so it is opt-in.
     #[arg(long)]
     apply: bool,
     /// Emit the outcome as JSON.
@@ -504,7 +528,7 @@ pub struct LiftVcfArgs {
     /// Output VCF path (`.vcf` or `.vcf.gz`).
     #[arg(long, short)]
     out: PathBuf,
-    /// Drop variants landing in the target chrY PAR.
+    /// Drop a variant that lands in the target chrY PAR.
     #[arg(long)]
     filter_par: bool,
     /// Workspace database path (defaults to the GUI's ~/.decodingus/navigator-rs.db).
@@ -512,12 +536,13 @@ pub struct LiftVcfArgs {
     db: Option<PathBuf>,
 }
 
-/// Run a CLI subcommand to completion, returning a process exit code. Spins its own tokio
-/// runtime so `main` (which must keep the GUI on the main thread) stays sync.
+/// Run a CLI subcommand to the end, and return a process exit code. It starts its own tokio
+/// runtime, so that `main` stays sync, because `main` must keep the GUI on the main thread.
 pub fn run(command: Command) -> i32 {
-    // 64 MiB stacks: Y/mt tree parse + placement recurse to the haplotree depth, and noodles' CRAM
-    // decoder recurses on `spawn_blocking` decode paths (deepest on CRAM 3.1) — either overflows
-    // tokio's default 2 MiB stack and aborts the process (matches the GUI worker runtime). See
+    // 64 MiB stacks. The Y and mt tree parse, and the placement, both recurse to the depth of the
+    // haplotree. The CRAM decoder of noodles also recurses on the `spawn_blocking` decode paths,
+    // and it goes deepest on CRAM 3.1. Either one overflows the default 2 MiB stack of tokio, and
+    // aborts the process. This matches the worker runtime of the GUI. See
     // `NAVIGATOR_DECODE_STACK_MB`.
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -627,7 +652,8 @@ async fn backfill_catalog_ids(args: CatalogArgs) -> i32 {
     0
 }
 
-/// Sign in via OAuth (browser + loopback callback) and persist the session for later subcommands.
+/// Sign in through OAuth, with a browser and a loopback callback, and persist the session for a
+/// later subcommand.
 async fn login(args: LoginArgs) -> i32 {
     let app = cli_try!(open(args.db).await);
     eprintln!("Opening browser to sign in as {}…", args.handle);
@@ -704,13 +730,13 @@ async fn backfill_profiles(args: BackfillArgs) -> i32 {
     0
 }
 
-/// Rebuild the genome-consensus Y **and** mtDNA signatures for a set of subjects. Used to re-place
-/// existing profiles after a placement/tree-provider change (e.g. the FTDNA→DecodingUs switch): the
-/// batch analyzer only *creates* a signature when one is missing, so profiles built on an older tree
-/// stay stale until rebuilt here.
+/// Build the genome-consensus Y **and** mtDNA signatures again, for a set of subjects. Use it to
+/// place existing profiles again after a change to the placement or the tree provider, for example
+/// the FTDNA→DecodingUs switch. The batch analyzer only *makes* a signature when one is missing, so
+/// a profile built on an older tree stays stale until this rebuilds it.
 async fn rebuild_signatures(args: RebuildArgs) -> i32 {
     use std::time::Instant;
-    // Reject the invalid combinations before opening the database or reading anything.
+    // Refuse an invalid combination before this opens the database, or reads anything.
     if (args.dry_run || args.include_unknown) && !args.stale_tree {
         eprintln!("error: --dry-run and --include-unknown only apply with --stale-tree");
         return 2;
@@ -721,13 +747,14 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
 
     let bios = cli_try!(app.list_all_biosamples().await);
 
-    // The staleness selector: which subjects were placed against a tree other than today's. Held as
-    // guids rather than folded into `wanted` because that set is matched against donor identifiers
-    // too, and a donor id that happened to look like a guid would cross-match.
+    // The staleness selector: which subjects a placement put against a tree other than the one
+    // today. It holds guids, and does not fold into `wanted`, because that set also matches against
+    // donor identifiers. A donor id that looked like a guid would then cross-match.
     let stale: Option<std::collections::HashSet<SampleGuid>> = if args.stale_tree {
-        // Two independent symptoms of the same thing, unioned: a *source call* stamped with another
-        // tree, and a *derived consensus* naming a branch this tree does not carry. The second can
-        // be true while every call beneath it is current, so neither selector subsumes the other.
+        // Two independent symptoms of the same thing, in a union. The first is a *source call*
+        // with another tree stamped on it. The second is a *derived consensus* that names a branch
+        // this tree does not carry. The second can be true while every call under it is current, so
+        // neither selector covers the other.
         let by_fingerprint = cli_try!(app.subjects_placed_against_another_tree(args.include_unknown).await);
         let off_tree = cli_try!(app.subjects_labelled_off_tree().await);
         let mut set: std::collections::HashSet<SampleGuid> = by_fingerprint.iter().copied().collect();
@@ -744,8 +771,8 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
         None
     };
 
-    // Accepts either identifier so a caller can feed whichever it has to hand — a report keyed by
-    // guid, or a list of donor ids.
+    // This accepts either identifier, so that a caller can give whichever it has. That is a report
+    // with the guid as its key, or a list of donor ids.
     let wanted: Option<std::collections::HashSet<String>> = match &args.subjects_file {
         Some(path) => match std::fs::read_to_string(path) {
             Ok(text) => Some(
@@ -789,10 +816,10 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
             rebuilt += 1;
             continue;
         }
-        // Default: only refresh subjects that already carry a Y or mt profile (the stale ones). With
-        // --all, build for every subject (those with no evidence just yield an empty profile).
-        // --stale-tree already names exactly who is due, and a subject can be due without yet having
-        // a profile, so it selects on its own.
+        // The default refreshes only a subject that already carries a Y or mt profile, which are
+        // the stale ones. With --all, it builds for every subject, and a subject with no evidence
+        // gives an empty profile. --stale-tree already names exactly who is due. A subject can be
+        // due before any profile exists, so it selects on its own.
         if !args.all && stale.is_none() {
             let has_y = matches!(app.cached_y_profile(b.guid).await, Ok(Some(_)));
             let has_mt = matches!(app.cached_mt_profile(b.guid).await, Ok(Some(_)));
@@ -801,15 +828,17 @@ async fn rebuild_signatures(args: RebuildArgs) -> i32 {
                 continue;
             }
         }
-        // Re-place the per-alignment calls *and* rebuild the signatures built from them — the same
-        // `replace_against_current_tree` the GUI chore runs, so the two surfaces can not drift.
-        // Rebuilding only the profiles (what this did) left every `haplogroup_call` row on the tree
-        // it was placed against, which is both the "sources diverge" conflicts on the Y card and the
-        // reason `--stale-tree` re-selected the same subjects forever: it selects *by* those call
-        // fingerprints, so a subject it had just "re-placed" was still due on the next run.
+        // Place the calls of each alignment again, *and* build the signatures that come from them
+        // again. This is the same `replace_against_current_tree` that the GUI chore runs, so the two
+        // surfaces can not drift.
         //
-        // Still cheap for an already-analyzed subject: each call is fingerprint-guarded, so an
-        // unchanged file and tree cost a comparison rather than a walk.
+        // A rebuild of the profiles alone, which is what this did, left every `haplogroup_call` row
+        // on the tree that placed it. That is both the "sources diverge" conflicts on the Y card,
+        // and the reason `--stale-tree` selected the same subjects for ever. It selects *by* those
+        // call fingerprints, so a subject it had just placed again was still due on the next run.
+        //
+        // The cost is still low for a subject an analysis already covered. A fingerprint guards each
+        // call, so an unchanged file and tree cost a comparison, and not a walk.
         let t = Instant::now();
         match app.replace_against_current_tree(b.guid).await {
             Err(e) => {
@@ -913,8 +942,8 @@ async fn compare_callers(args: ShowArgs) -> i32 {
                 for c in &cmps {
                     let ext = c.external.as_deref().unwrap_or("(none)");
                     let nav = c.navigator.as_deref().unwrap_or("(none)");
-                    // Only a real disagreement (both present, different) is flagged — a missing side
-                    // is just "the other caller did not produce a call here".
+                    // Only a real disagreement gets a flag, which means both are there and they
+                    // differ. A missing side is only "the other caller made no call here".
                     let differ = c.external.is_some() && c.navigator.is_some() && !c.agree();
                     if differ {
                         diverged += 1;
@@ -935,15 +964,17 @@ async fn compare_callers(args: ShowArgs) -> i32 {
     0
 }
 
-/// Time the per-alignment analysis steps (the GUI Full Analysis path) to profile where time goes.
+/// Time the analysis steps of each alignment (the Full Analysis path of the GUI), to profile where
+/// the time goes.
 async fn analyze(args: AnalyzeArgs) -> i32 {
     use std::time::Instant;
     let app = cli_try!(open(args.db).await);
     let id = args.alignment;
 
-    // The step list comes from `App::plan_full_analysis` — the same one the GUI's Full Analysis
-    // uses, so the two can not drift again. In particular this is what stops a `navigator analyze`
-    // from re-genotyping Y over a trusted external call the user asked to prefer.
+    // The step list comes from `App::plan_full_analysis`, which is the same one the Full Analysis
+    // of the GUI uses, so the two can not drift again. Above all, this is what stops a
+    // `navigator analyze` from genotyping Y again over a trusted external call the user asked to
+    // prefer.
     let mut steps = match app.plan_full_analysis(id, args.ancestry, args.sv, None).await {
         Ok(s) => s,
         Err(e) => {
@@ -965,8 +996,9 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
         let n = step_no;
         let total = steps.len();
         let t = Instant::now();
-        // Each arm renders its own one-line summary; `Err` is reported and the run continues, since
-        // a failed step (e.g. SV below the depth threshold) does not invalidate the rest.
+        // Each arm draws its own one-line summary. This reports an `Err` and the run continues,
+        // because a step that failed, for example SV below the depth threshold, does not invalidate
+        // the rest.
         let outcome: Result<String, navigator_app::AppError> = match &step {
             AnalysisStep::QualityMetrics => match app.run_unified_metrics(id).await {
                 Ok(r) => {
@@ -1022,7 +1054,7 @@ async fn analyze(args: AnalyzeArgs) -> i32 {
                 .map(|p| format!("{} site(s)", p.variants.len())),
             AnalysisStep::Ancestry { biosample_guid } => {
                 app.estimate_ancestry_from_consensus(*biosample_guid).await.map(|r| {
-                    // The top super-population is the headline the brief shows.
+                    // The top super-population is the main line the brief shows.
                     r.super_population_summary
                         .first()
                         .map(|p| format!("{} {:.0}%", p.super_population, p.percentage))
@@ -1058,9 +1090,9 @@ async fn open(db: Option<PathBuf>) -> Result<App, i32> {
     })
 }
 
-/// Resolve an optional `--project NAME` filter to its id. `Ok(None)` means "no filter"; `Err(code)`
-/// means the name matched nothing — the message is already printed, so the caller just returns the
-/// code as its exit status.
+/// Resolve an optional `--project NAME` filter to its id. `Ok(None)` means "no filter". `Err(code)`
+/// means the name matched nothing, and the message is already on the screen, so the caller returns
+/// the code as its exit status.
 async fn resolve_project_filter(app: &App, name: Option<&String>) -> Result<Option<i64>, i32> {
     let Some(name) = name else { return Ok(None) };
     let overview = app.project_overview().await.unwrap_or_default();
@@ -1073,15 +1105,15 @@ async fn resolve_project_filter(app: &App, name: Option<&String>) -> Result<Opti
     }
 }
 
-/// Find a subject by exact donor identifier, returning its guid if present. Callers that treat a
-/// missing subject as an error want [`require_subject`].
+/// Find a subject by an exact donor identifier, and return its guid when there is one. A caller
+/// that treats a missing subject as an error wants [`require_subject`].
 async fn find_subject(app: &App, donor: &str) -> Result<Option<SampleGuid>, i32> {
     let all = app.list_all_biosamples().await.map_err(report)?;
     Ok(all.into_iter().find(|b| b.donor_identifier == donor).map(|b| b.guid))
 }
 
-/// The subject with this exact donor identifier — the opening move of every `--subject` command.
-/// A missing subject is a plain user error, so the message is printed here and the caller just
+/// The subject with this exact donor identifier: the first move of every `--subject` command. A
+/// missing subject is a plain user error, so this prints the message, and the caller only
 /// propagates the code.
 async fn require_subject(app: &App, donor: &str) -> Result<SampleGuid, i32> {
     match find_subject(app, donor).await? {
@@ -1110,9 +1142,9 @@ async fn find_or_create_project(app: &App, name: &str) -> Result<i64, i32> {
     Ok(p.id)
 }
 
-/// Print an [`App`] error and yield the failure exit code. Kept as a free function for the
-/// `.map_err(report)?` sites inside the `Result`-returning helpers; steps in a command body use
-/// [`cli_try!`] instead.
+/// Print an [`App`] error, and give back the failure exit code. It stays a free function for the
+/// `.map_err(report)?` sites inside the helpers that return a `Result`. A step in a command body
+/// uses [`cli_try!`] instead.
 fn report(e: navigator_app::AppError) -> i32 {
     e.exit_code()
 }
@@ -1147,7 +1179,7 @@ async fn ingest(args: IngestArgs) -> i32 {
             Err(e) => return report(e),
         }
     } else {
-        // --subject is required-unless-present(external_id), so it is Some here.
+        // clap marks --subject required-unless-present(external_id), so it holds a value here.
         let subject = args.subject.clone().unwrap_or_default();
         match find_subject(&app, &subject).await {
             Ok(Some(g)) => (g, subject),
@@ -1172,11 +1204,14 @@ async fn ingest(args: IngestArgs) -> i32 {
         }
     }
 
-    // Partition the top-level inputs. A **directory** is one staged sample: it takes the sidecar
-    // fast path (Y/mt haplogroup from the GVCF + sex/read-metrics/coverage from text sidecars, no
-    // CRAM decode) via `add_sample_dir`, which groups the sidecars to their alignment — something
-    // per-file `add_data` can't do (and it would mis-route a `*.g.vcf.gz` through the plain-VCF
-    // reader). Individual **files** keep the per-file detect-and-import path.
+    // Split the top-level inputs. A **directory** is one staged sample. It takes the sidecar fast
+    // path through `add_sample_dir`, with no CRAM decode. The Y and mt haplogroup come from the
+    // GVCF. The sex, the read metrics and the coverage come from text sidecars.
+    //
+    // That function groups the sidecars to their alignment, and `add_data` on one file at a time can
+    // not. `add_data` would also send a `*.g.vcf.gz` through the plain-VCF reader. An individual
+    // **file** keeps the path
+    // that detects and imports one file.
     let mut sample_dirs: Vec<PathBuf> = Vec::new();
     let mut files: Vec<PathBuf> = Vec::new();
     for p in &args.paths {
@@ -1243,7 +1278,7 @@ async fn ingest(args: IngestArgs) -> i32 {
         }
     }
 
-    // Files: per-file detect + import.
+    // Files: detect and import one file at a time.
     for path in &files {
         match app.add_data_with_test_type(guid, path, args.test_type.as_deref()).await {
             Ok(detected) => {
@@ -1264,8 +1299,8 @@ async fn ingest(args: IngestArgs) -> i32 {
     }
     println!("\ningested {ok} item(s), {failed} failed, into subject \"{label}\"");
 
-    // A Y-SNP panel (BISDNA) was imported — place a Y haplogroup from its derived calls and
-    // report the terminal (the call is recorded for the donor consensus).
+    // An import brought in a Y-SNP panel (BISDNA). Place a Y haplogroup from its derived calls,
+    // and report the terminal. The store keeps the call for the donor consensus.
     if ysnp_panels > 0 {
         match app.assign_y_bisdna(guid, None).await {
             Ok(a) => match a.ranked.first() {
@@ -1279,8 +1314,9 @@ async fn ingest(args: IngestArgs) -> i32 {
         }
     }
 
-    // FTDNA Big Y CSV variant report(s) imported — the importer placed Y from the named (on-tree)
-    // calls; report the donor's reconciled Y terminal so the admin sees it land.
+    // An import brought in one or more FTDNA Big Y CSV variant reports. The importer placed Y from
+    // the named calls, which are on the tree. Report the reconciled Y terminal of the donor, so
+    // that the admin sees it land.
     if ftdna_csv > 0 {
         match app.haplogroup_consensus(guid, DnaType::Y).await {
             Ok(Some(c)) => println!("Y-DNA (FTDNA CSV): {}", c.haplogroup),
@@ -1429,8 +1465,8 @@ async fn debug_calls(args: DebugCallsArgs) -> i32 {
     }
 }
 
-/// Compute + persist private-Y for every alignment in a project. One process, so the multi-MB
-/// haplotree is fetched and parsed once rather than per subject.
+/// Compute and persist private-Y for every alignment in a project. It is one process, so it reads
+/// and parses the multi-MB haplotree one time, and not one time for each subject.
 async fn private_y_batch(app: &App, project: &str, force: bool) -> i32 {
     let Ok(Some(pid)) = resolve_project_filter(app, Some(&project.to_string())).await else {
         return 1;
@@ -1442,9 +1478,9 @@ async fn private_y_batch(app: &App, project: &str, force: bool) -> i32 {
     for (i, b) in members.iter().enumerate() {
         let alns = app.list_alignments_for_biosample(b.guid).await.unwrap_or_default();
         if alns.is_empty() {
-            // No alignment — but a vendor Y-VCF carries the same evidence, and until the VCF-backed
-            // engine existed these subjects (the large majority of a Y project) had no private-Y at
-            // all. Classify their call sets instead.
+            // No alignment. But a vendor Y-VCF carries the same evidence, and until the engine
+            // over VCFs existed, these subjects had no private-Y at all. They are the large
+            // majority of a Y project. Classify their call sets instead.
             let sets = app.list_variant_sets(b.guid).await.unwrap_or_default();
             let mut any = false;
             for set in sets.iter().filter(|s| s.source_type != navigator_app::SourceType::Chip) {
@@ -1475,8 +1511,9 @@ async fn private_y_batch(app: &App, project: &str, force: bool) -> i32 {
             continue;
         }
         for a in &alns {
-            // A row whose file is gone (e.g. a superseded vendor download) is not a computation
-            // failure — reporting it as one buries the real errors and sets a misleading exit code.
+            // A row whose file is gone, for example a vendor download that something replaced, is
+            // not a failure of the computation. To report it as one hides the real errors, and sets
+            // an exit code that misleads.
             if !a.bam_path.as_deref().is_some_and(|p| std::path::Path::new(p).exists()) {
                 missing += 1;
                 continue;
@@ -1522,10 +1559,10 @@ async fn private_y_batch(app: &App, project: &str, force: bool) -> i32 {
 
 /// Publish ancestral origins for the subjects the consent predicate allows.
 ///
-/// Two gates stand between an MDKA row and the wire, and this command reports both: the consent
-/// predicate (the workspace holds the subject's primary data, and the tester has not opted out of
-/// public sharing) decides `considered`; the field gates (surname only, birth year at or before
-/// 1900, country-only without one, coarsened coordinates) decide `refused`.
+/// Two gates stand between an MDKA row and the wire, and this command reports both. The consent
+/// predicate decides `considered`: the workspace holds the primary data of the subject, and the
+/// tester has not opted out of the public feed. The field gates decide `refused`: surname only, a
+/// birth year at or before 1900, country alone when there is no year, and coarse coordinates.
 async fn publish_origins(args: PublishOriginsArgs) -> i32 {
     let lineage = match args.lineage.to_lowercase().as_str() {
         "y" => navigator_app::Lineage::Y,
@@ -1626,7 +1663,7 @@ async fn private_y(args: PrivateYArgs) -> i32 {
     if let Some(warn) = bucket.qc_banner() {
         println!("  {warn}");
     }
-    // Per-variant detail (pos class region depth altDepth af publishable) for diagnosis.
+    // The detail of each variant (pos class region depth altDepth af publishable), for diagnosis.
     println!("  pos\tclass\tregion\tdepth\talt\taf\tpublish");
     for v in &bucket.variants {
         let class = match &v.class {
@@ -1648,7 +1685,8 @@ async fn private_y(args: PrivateYArgs) -> i32 {
     0
 }
 
-/// Per-marker branch report over a Y/mtDNA node's descendant subtree — table / `--tsv` / `--json`.
+/// A branch report for each marker, over the descendant subtree of a Y or mtDNA node. It gives a
+/// table, `--tsv`, or `--json`.
 async fn branch_report(args: BranchReportArgs) -> i32 {
     let app = cli_try!(open(args.db).await);
     let dna = match args.tree.to_ascii_lowercase().as_str() {
@@ -1667,7 +1705,7 @@ async fn branch_report(args: BranchReportArgs) -> i32 {
                 return 2;
             };
             let guid = cli_try!(require_subject(&app, subject).await);
-            // Y and mt want different alignments — a Big-Y run carries no chrM reads.
+            // Y and mt want different alignments, because a Big-Y run carries no chrM reads.
             match app.pick_alignment_for(guid, dna).await {
                 Ok(Some(id)) => id,
                 Ok(None) => {
@@ -1773,7 +1811,7 @@ async fn branch_report(args: BranchReportArgs) -> i32 {
     0
 }
 
-/// Deep-ancestry stability report — see [`navigator_app::App::ancient_ancestry_stability`].
+/// Deep-ancestry stability report. See [`navigator_app::App::ancient_ancestry_stability`].
 async fn debug_ancient(args: ShowArgs) -> i32 {
     let app = cli_try!(open(args.db).await);
     let guid = cli_try!(require_subject(&app, &args.subject).await);
@@ -1810,7 +1848,7 @@ async fn debug_ancient(args: ShowArgs) -> i32 {
     0
 }
 
-/// Tier B archaic segments — see [`navigator_app::App::call_archaic_segments_for_subject`].
+/// Tier B archaic segments. See [`navigator_app::App::call_archaic_segments_for_subject`].
 async fn archaic_segments(args: ShowArgs) -> i32 {
     let app = cli_try!(open(args.db).await);
     let guid = cli_try!(require_subject(&app, &args.subject).await);
@@ -1829,7 +1867,7 @@ async fn archaic_segments(args: ShowArgs) -> i32 {
     0
 }
 
-/// Archaic (Neanderthal / Denisovan) Tier-A marker count — see
+/// Archaic (Neanderthal, Denisovan) Tier-A marker count. See
 /// [`navigator_app::App::estimate_archaic_from_consensus`].
 async fn archaic(args: ArchaicArgs) -> i32 {
     let app = cli_try!(open(args.db).await);
@@ -1867,7 +1905,7 @@ async fn archaic(args: ArchaicArgs) -> i32 {
     0
 }
 
-/// Deep (ancient) ancestry via qpAdm — see [`navigator_app::App::estimate_deep_ancestry`].
+/// Deep (ancient) ancestry through qpAdm. See [`navigator_app::App::estimate_deep_ancestry`].
 async fn deep_ancestry(args: ShowArgs) -> i32 {
     let app = cli_try!(open(args.db).await);
     let guid = cli_try!(require_subject(&app, &args.subject).await);
@@ -1898,11 +1936,12 @@ async fn deep_ancestry(args: ShowArgs) -> i32 {
     }
 }
 
-/// Panel batch-process mode — see [`navigator_app::App::genotype_panel_for_alignment`].
+/// Panel batch-process mode. See [`navigator_app::App::genotype_panel_for_alignment`].
 async fn genotype_panel(args: ShowArgs) -> i32 {
     let app = cli_try!(open(args.db).await);
     let guid = cli_try!(require_subject(&app, &args.subject).await);
-    // Best-callable alignment + chips/VCFs (which fold in during the refresh) — one decode per subject.
+    // The best-callable alignment, plus the chips and VCFs, which come in during the refresh. One
+    // decode for each subject.
     match app.genotype_panel_for_subject(guid).await {
         Ok(Some((aln, sites))) => {
             println!("panel-genotyped best alignment #{aln} ({sites} sites); autosomal consensus refreshed.");
@@ -2005,16 +2044,19 @@ async fn show(args: ShowArgs) -> i32 {
     0
 }
 
-/// Resolve the alignment id to call: the explicit `--alignment`, else the subject's sole alignment.
+/// Resolve the alignment id to call: the explicit `--alignment`, or the one alignment of the
+/// subject.
 #[derive(Args)]
 pub struct DoctorArgs {
     /// Alignment id to diagnose.
     #[arg(long)]
     alignment: Option<i64>,
-    /// Subject donor identifier — used when `--alignment` is omitted and the subject has exactly one.
+    /// Subject donor identifier. It applies when `--alignment` is absent and the subject has
+    /// exactly one alignment.
     #[arg(long, short)]
     subject: Option<String>,
-    /// Diagnose a BAM/CRAM path directly, bypassing the workspace (for a file that was never imported).
+    /// Diagnose a BAM or CRAM path directly, with no workspace, for a file that no import brought
+    /// in.
     #[arg(long)]
     file: Option<PathBuf>,
     /// Reference FASTA to pair with `--file`. Required to decode a CRAM; ignored for a BAM.
@@ -2031,9 +2073,9 @@ pub struct DoctorArgs {
 /// Run the alignment preflight and print it. Exits 1 when a check failed, so this is usable as a
 /// gate in a script and not just by eye.
 ///
-/// `--file` deliberately skips opening the workspace: the file being undiagnosable is often *why*
-/// the user can not import it, so requiring a workspace record first would make the diagnostic
-/// unavailable in the case it exists for.
+/// `--file` does not open the workspace, and that is deliberate. A file nobody can diagnose is
+/// often *why* the user can not import it. To ask for a workspace record first would make the
+/// diagnostic absent in exactly the case it exists for.
 async fn doctor(args: DoctorArgs) -> i32 {
     let diagnosis = if let Some(file) = args.file {
         let reference = args.reference;

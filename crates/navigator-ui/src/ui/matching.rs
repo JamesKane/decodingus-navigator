@@ -1,12 +1,12 @@
-//! `impl NavigatorApp` — the **Matching** tab: federated-IBD discovery and consent.
+//! `impl NavigatorApp`: the **Matching** tab, for federated-IBD discovery and consent.
 //!
-//! This is the front door for machinery that was already complete but had no coherent surface. It
-//! is account-scoped, not subject-scoped: a conversation is keyed by our DID and the broker's
-//! request URI, and a local subject is chosen only when it is time to exchange dosages. The
-//! subject's own IBD tab keeps the *results* for that person; this tab owns the conversation.
+//! This is the front door for code that was already complete but had no coherent surface. It is
+//! account-scoped, and not subject-scoped. The key of a conversation is our DID and the request URI
+//! of the broker. A local subject comes into it only when it is time to exchange dosages. The IBD
+//! tab of the subject keeps the *results* for that person, and this tab owns the conversation.
 //!
-//! Three sub-tabs follow one conversation's life — a ranked candidate (Suggestions) becomes a
-//! request awaiting consent (Requests) and then a result (Results).
+//! Three sub-tabs follow the life of one conversation. A ranked candidate (Suggestions) becomes a
+//! request that waits for consent (Requests), and then a result (Results).
 use super::*;
 
 impl NavigatorApp {
@@ -52,14 +52,15 @@ impl NavigatorApp {
         });
     }
 
-    /// Which local subject an exchange speaks for. Explicit here rather than implied by whichever
-    /// subject tab happened to be open — the same account can hold several people's data, and
-    /// sending the wrong one's genotypes is not a recoverable mistake.
+    /// Which local subject an exchange speaks for. It is explicit here, and not implied by whatever
+    /// subject tab was open. One account can hold the data of more than one person. To send the
+    /// genotypes of the wrong one is a mistake nobody can undo.
     ///
-    /// Shown as the current choice plus a *Change* toggle rather than a dropdown: a workspace can
-    /// hold tens of thousands of subjects, and a `ComboBox` builds a widget per entry every frame
-    /// its popup is open. The reveal is the same filter-then-virtualized-list the subjects rail
-    /// uses, so the cost is the number of rows on screen, not the number in the workspace.
+    /// This shows the current choice, plus a *Change* toggle. It is not a dropdown. A workspace can
+    /// hold tens of thousands of subjects, and a `ComboBox` builds one widget for each entry on
+    /// every frame its popup is open. The reveal is the same filter over a virtualized list that
+    /// the subjects rail uses. So the cost is the number of rows on the screen, and not the number
+    /// in the workspace.
     fn matching_subject_picker(&mut self, ui: &mut egui::Ui) {
         if self.matching_subject.is_none() {
             self.matching_subject = self.selected_sample.or(self.all_biosamples.first().map(|b| b.guid));
@@ -128,8 +129,9 @@ impl NavigatorApp {
         }
     }
 
-    /// Ranked candidates from the AppView's engine. Pseudonymous: a candidate is an opaque sample
-    /// handle plus the signals behind its score — never a DID, never a name.
+    /// Ranked candidates from the engine of the AppView. They are pseudonymous: a candidate is an
+    /// opaque sample handle, plus the signals behind its score. It is never a DID, and never a
+    /// name.
     fn matching_suggestions(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui
@@ -149,8 +151,8 @@ impl NavigatorApp {
         });
         ui.label(egui::RichText::new(self.tr("network.note")).weak().small());
 
-        // Requesting an introduction and dismissing both remove a row, so filter against what the
-        // ledger already knows rather than trusting the fetched list to be current.
+        // A request for an introduction removes a row, and so does a dismiss. So filter against
+        // what the ledger already knows, and do not trust the fetched list to be current.
         let requested: std::collections::HashSet<String> = self
             .matching
             .iter()
@@ -221,7 +223,7 @@ impl NavigatorApp {
         }
     }
 
-    /// Every conversation that has not produced a result yet, with the action it is waiting on.
+    /// Every conversation that has no result yet, with the action it waits on.
     fn matching_requests(&mut self, ui: &mut egui::Ui) {
         let rows: Vec<navigator_app::MatchingEntry> = self
             .matching
@@ -249,8 +251,8 @@ impl NavigatorApp {
                 ui.strong("");
                 ui.end_row();
                 for e in &rows {
-                    // Before mutual consent there is no partner identity to show — the broker is
-                    // symmetric-blind by design, so the request URI is all either side has.
+                    // Before mutual consent there is no partner identity to show. The broker is
+                    // symmetric-blind by design, so the request URI is all that either side has.
                     match &e.partner_did {
                         Some(did) => {
                             let short: String = did.chars().take(20).collect();
@@ -370,8 +372,8 @@ impl NavigatorApp {
                         ui.colored_label(WARN_RED, self.tr("exchange.agreedNo"));
                     }
                     // Whether the AppView has this match on the discovery graph. Not every result
-                    // can be reported: a disputed summary, or a conversation with no AppView sample
-                    // handles, is deliberately kept private.
+                    // can go there. A summary in dispute stays private, and so does a conversation
+                    // with no AppView sample handles. That is deliberate.
                     if e.attested {
                         ui.colored_label(OK_GREEN, self.tr("matching.reportedYes"))
                             .on_hover_text(self.tr("matching.reportedHint"));
@@ -413,7 +415,8 @@ impl NavigatorApp {
 
 /// Agreement / success green, matching the exchange card's existing verdict colour.
 const OK_GREEN: egui::Color32 = egui::Color32::from_rgb(60, 160, 60);
-/// Disagreement / failure red (softer than [`DANGER`], which is reserved for destructive buttons).
+/// The red for disagreement and failure. It is softer than [`DANGER`], which is only for a
+/// destructive button.
 const WARN_RED: egui::Color32 = egui::Color32::from_rgb(200, 90, 90);
 
 /// i18n key for a direction.
@@ -424,7 +427,7 @@ fn direction_key(d: navigator_app::MatchingDirection) -> &'static str {
     }
 }
 
-/// i18n key for the tooltip explaining what a status is waiting on.
+/// i18n key for the tooltip that says what a status waits on.
 fn status_hint_key(s: navigator_app::MatchingStatus) -> &'static str {
     use navigator_app::MatchingStatus as S;
     match s {

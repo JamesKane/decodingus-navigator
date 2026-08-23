@@ -1,24 +1,27 @@
-//! Generic, reusable UI widgets and small formatters extracted from the view shell — leaf functions
-//! over `egui` with no `App`/`self` state (tables, cards, chips, stat tiles, dropdowns, and the
-//! number/guid formatters they share). The view code in `ui.rs` composes these.
+//! Generic, reusable UI widgets and small formatters, taken out of the view shell. They are leaf
+//! functions over `egui` with no `App` or `self` state. They cover tables, cards, chips, stat
+//! tiles, dropdowns, and the number and guid formatters they share. The view code in `ui.rs`
+//! composes these.
 
 use eframe::egui;
 use navigator_app::{CallState, HaploAssignment};
 use navigator_domain::variants::VariantCall;
 
-/// Click-to-sort + inline per-column filter state for one sticky-header table. Persisted on the
-/// `App` so the chosen sort column/direction and the typed filters survive across frames.
+/// Click-to-sort state, and the inline filter state of each column, for one sticky-header table.
+/// The `App` holds it, so that the chosen sort column, the direction, and the typed filters survive
+/// across frames.
 #[derive(Default)]
 pub(crate) struct TableControls {
     sort_col: Option<usize>,
     ascending: bool,
-    /// Per-column filter text, indexed by column. Grown on demand; empty entries are ignored.
+    /// The filter text of each column, with the column as the index. It grows on demand, and it
+    /// drops an empty entry.
     filters: Vec<String>,
 }
 
 impl TableControls {
-    /// Start sorted by `col` ascending (natural order) before the user clicks any header, so the
-    /// table opens in a sensible order (e.g. numbered FTDNA kits flow 1, 2, 10, 100).
+    /// Start with a sort by `col`, from small to large (natural order), before the user clicks any
+    /// header. The table then opens in a sensible order: numbered FTDNA kits flow 1, 2, 10, 100.
     pub(crate) fn sorted_by(col: usize) -> Self {
         Self {
             sort_col: Some(col),
@@ -27,7 +30,7 @@ impl TableControls {
         }
     }
 
-    /// Mutable handle to column `col`'s filter text (growing the backing store as needed).
+    /// A mutable handle to the filter text of column `col`. It grows the backing store as needed.
     pub(crate) fn filter_mut(&mut self, col: usize) -> &mut String {
         if self.filters.len() <= col {
             self.filters.resize(col + 1, String::new());
@@ -35,13 +38,15 @@ impl TableControls {
         &mut self.filters[col]
     }
 
-    /// The raw per-column filter text, for change-detection by the row caches (comparing this is
-    /// allocation-free, unlike calling [`Self::filter_norm`] per column every frame).
+    /// The raw filter text of each column, so that the row caches can detect a change. A compare of
+    /// this makes no allocation, and a call to [`Self::filter_norm`] for each column on every frame
+    /// does.
     pub(crate) fn filters_raw(&self) -> &[String] {
         &self.filters
     }
 
-    /// Trimmed, lower-cased filter text for `col` (empty when unset) — ready for `contains`.
+    /// Trimmed, lower-case filter text for `col`, empty when nothing sets it. It is ready for
+    /// `contains`.
     pub(crate) fn filter_norm(&self, col: usize) -> String {
         self.filters
             .get(col)
@@ -57,7 +62,8 @@ impl TableControls {
         self.ascending
     }
 
-    /// First click on a column sorts it ascending; clicking the active column flips direction.
+    /// The first click on a column sorts it from small to large. A click on the active column
+    /// flips the direction.
     pub(crate) fn toggle_sort(&mut self, col: usize) {
         if self.sort_col == Some(col) {
             self.ascending = !self.ascending;
@@ -70,8 +76,9 @@ impl TableControls {
     fn arrow(&self, col: usize) -> &'static str {
         match self.sort_col {
             Some(c) if c == col => {
-                // ⏶/⏷ (U+23F6/U+23F7), not ▲/▼ (U+25B2/U+25BC): only the former pair has glyphs in
-                // egui's Proportional family — see `every_source_string_literal_is_renderable`.
+                // ⏶/⏷ (U+23F6/U+23F7), not ▲/▼ (U+25B2/U+25BC). Only the first pair has glyphs in
+                // the Proportional family of egui. See
+                // `every_source_string_literal_is_renderable`.
                 if self.ascending {
                     " ⏶"
                 } else {
@@ -83,9 +90,9 @@ impl TableControls {
     }
 }
 
-/// Render one sticky-header cell: a clickable sort label (click to sort, click again to flip) over
-/// an inline per-column filter input. Pass `filterable = false` for columns that can't be filtered
-/// (e.g. an actions column) to draw the label only.
+/// Draw one sticky-header cell: a clickable sort label (click to sort, click again to flip) over an
+/// inline filter input for that column. Pass `filterable = false` for a column that takes no filter
+/// (for example an actions column), to draw the label only.
 pub(crate) fn sortable_header(ui: &mut egui::Ui, ctl: &mut TableControls, col: usize, label: &str, filterable: bool) {
     ui.vertical(|ui| {
         let title = format!("{label}{}", ctl.arrow(col));
@@ -107,9 +114,10 @@ pub(crate) fn sortable_header(ui: &mut egui::Ui, ctl: &mut TableControls, col: u
     });
 }
 
-/// Natural ("human") ordering: compare strings so embedded digit runs sort by numeric value, not
-/// lexically — e.g. `Kit-2` < `Kit-10` < `Kit-100`. Non-digit runs compare case-insensitively.
-/// Numeric runs are compared by trimmed length then digits, so arbitrarily long numbers are safe.
+/// Natural ("human") ordering. It compares strings so that a run of digits sorts by numeric value,
+/// and not lexically: `Kit-2` < `Kit-10` < `Kit-100`. A run that is not digits compares without
+/// regard to case. For a run of digits it compares the trimmed length first, then the digits, so a
+/// number of any length is safe.
 pub(crate) fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let mut ai = a.chars().peekable();
@@ -128,7 +136,8 @@ pub(crate) fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
                 if ord != Ordering::Equal {
                     return ord;
                 }
-                // Equal value — keep ordering stable by leading-zero count (e.g. `01` before `1`).
+                // Equal value. Keep the order stable by the count of zeros at the start, so `01`
+                // comes before `1`.
                 let ord = (na.len() - ta.len()).cmp(&(nb.len() - tb.len()));
                 if ord != Ordering::Equal {
                     return ord;
@@ -194,9 +203,9 @@ pub(crate) fn chip(ui: &mut egui::Ui, text: &str, bg: egui::Color32, fg: egui::C
     response
 }
 
-/// Whether a button embedded in a clickable row was activated: either it was clicked directly, or
-/// the row swallowed the press while the pointer was over the button. Both selectable-row lists (runs
-/// and their alignments) need the same rule, so it has one definition.
+/// True when the user activated a button inside a clickable row. Either the user clicked the button
+/// directly, or the row took the press while the pointer was over the button. Both lists of
+/// selectable rows (runs, and their alignments) need the same rule, so it has one definition.
 pub(crate) fn button_hit(button: &Option<egui::Response>, row_clicked: bool) -> bool {
     button
         .as_ref()
@@ -246,18 +255,18 @@ pub(crate) fn stat_card(ui: &mut egui::Ui, label: &str, value: usize) {
         });
 }
 
-/// Format an optional mean/median depth (one decimal), "—" when not computed.
+/// Format an optional mean or median depth (one decimal). `"—"` when nothing computed it.
 pub(crate) fn fmt_depth(o: Option<f64>) -> String {
     o.map(|v| format!("{v:.1}")).unwrap_or_else(|| "—".into())
 }
 
-/// Format an optional fraction (0–1) as a percentage, "—" when not computed.
+/// Format an optional fraction (0–1) as a percentage. `"—"` when nothing computed it.
 pub(crate) fn fmt_pct(o: Option<f64>) -> String {
     o.map(|v| format!("{:.1}%", v * 100.0)).unwrap_or_else(|| "—".into())
 }
 
-/// Render a haplogroup assignment: terminal + lineage + alternatives, then the child
-/// branches with per-SNP evidence that explains why descent stopped.
+/// Draw a haplogroup assignment: the terminal, the lineage and the alternatives. Then draw the
+/// child branches, with the evidence at each SNP that explains why descent stopped.
 pub(crate) fn show_assignment(ui: &mut egui::Ui, a: &HaploAssignment) {
     let Some(top) = a.ranked.first() else {
         ui.label("No match."); // free helper (no `self`); i18n when it takes a `lang` param
@@ -307,8 +316,8 @@ pub(crate) fn show_assignment(ui: &mut egui::Ui, a: &HaploAssignment) {
     }
 }
 
-/// A readable "change" string for a variant call, covering the indel forms the mtDNA
-/// derivation stores (one allele empty).
+/// A readable "change" string for a variant call. It also covers the indel forms that the mtDNA
+/// derivation stores, where one allele is empty.
 pub(crate) fn variant_change(c: &VariantCall) -> String {
     if c.alternate.is_empty() {
         format!("{}del", c.reference) // deletion
@@ -319,7 +328,7 @@ pub(crate) fn variant_change(c: &VariantCall) -> String {
     }
 }
 
-/// Trim a string, returning `None` when empty.
+/// Trim a string. Returns `None` when the result is empty.
 pub(crate) fn opt(s: &str) -> Option<String> {
     let t = s.trim();
     (!t.is_empty()).then(|| t.to_string())

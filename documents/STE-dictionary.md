@@ -61,6 +61,12 @@ the SAM record it writes.
 
 CIGAR · mapper · mate · minimizer · part · preset · template
 
+### Desktop UI
+
+`navigator-ui` is an egui shell. These are the nouns of that shell.
+
+chip · frame · modal · scroll area · tab · tooltip · viewport · widget
+
 ### Application concepts
 
 app · artifact · cache · command · event · liftover · migration · outbox · profile · project ·
@@ -88,9 +94,11 @@ reasoning model · streaming · copying · loading
 Read mapping adds two more. `chaining` is the middle step of minimap2's published seed-chain-align
 method, and `pairing` is the step that makes two mapped ends into one template: chaining · pairing
 
-Three more come from the sections above. `clustering` is the statistical method, `inbreeding` is
-the population-genetics term that names the F coefficient, and `grounding` is the LLM term for the
-facts that hold a model to the data: clustering · grounding · inbreeding
+Four more come from the sections above. `clustering` is the statistical method, `inbreeding` is
+the population-genetics term that names the F coefficient, `coding` is the genetics term for a
+region that codes for protein (never *colour coding*, which is a colour code), and `grounding` is
+the LLM term for the facts that hold a model to the data:
+clustering · coding · grounding · inbreeding
 
 GangSTR names its read classes `enclosing`, `spanning` and `flanking`. Those are the published
 names of the method, so they are Technical Names here: enclosing · spanning · flanking
@@ -156,8 +164,8 @@ Do not use a contraction. Write `do not`, not `don't`.
 
 ## How to convert a file
 
-This is the method that converted eight of the ten crates. Follow it, and a file needs about three
-passes.
+This is the method that converted every crate in the workspace. Follow it, and a file needs about
+three passes.
 
 ### The two tools
 
@@ -277,8 +285,10 @@ and deletion counts are equal, and every other difference must have a reason you
 
 ### Where the work stands
 
-Converted to zero: `navigator-align`, `navigator-analysis`, `navigator-app`, `navigator-panelbuild`,
-`navigator-refgenome`, `navigator-resource`, `navigator-store`, and `navigator-sync`.
+**The whole workspace is at zero.** Every crate under `crates/` has been converted:
+`navigator-align`, `navigator-analysis`, `navigator-app`, `navigator-domain`,
+`navigator-panelbuild`, `navigator-refgenome`, `navigator-resource`, `navigator-store`,
+`navigator-sync` and `navigator-ui`.
 
-Not started: `navigator-ui` and `navigator-domain`. Run `python3 scripts/ste-check.py` for the
-current count.
+Run `python3 scripts/ste-check.py` after any change. The check is advisory, so it will not stop a
+commit that reintroduces a violation; run it before you push.

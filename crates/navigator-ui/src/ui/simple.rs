@@ -1,34 +1,38 @@
-//! Simple mode's subject view: a left section rail and the dedicated panels it switches between.
+//! The subject view of Simple mode: a section rail on the left, and the panels it switches between.
 //!
-//! Simple mode began as a single vertical scroll of every brief section stacked in a row. That grew
-//! past the point where a casual reader could find anything in it — the paternal line, the ancestry
-//! donut, the relatives list and the chat all lived in one column several screens tall. This module
-//! splits that column into panels reached from a persistent rail, so the vertical extent of any one
-//! screen is bounded and the rail itself doubles as the summary (each item carries its own headline
-//! value: the terminal haplogroup, the top ancestry, the match count).
+//! Simple mode began as one vertical scroll, with every brief section stacked in a row. That grew
+//! past the point where a casual reader could find anything in it. The paternal line, the ancestry
+//! donut, the relatives list and the chat all lived in one column, and that column was some screens
+//! tall.
 //!
-//! The panels are ordered as a story rather than by subsystem: [`SimplePanel::Story`] is the landing
-//! synopsis, the two lineage panels reach the furthest back in time, [`SimplePanel::Ancestry`] runs
-//! deep origins → recent populations in chronological order, and [`SimplePanel::Relatives`] lands in
-//! the present day. Nothing here computes anything: it renders the precomputed [`SubjectBrief`] plus
-//! the live (online) relative suggestions, exactly as the old scroll did.
+//! This module splits that column into panels that a permanent rail reaches. So no one screen goes
+//! past a limit from top to bottom, and the rail itself is also the summary. Each item on the rail
+//! carries its own main value: the terminal haplogroup, the top ancestry, and the match count.
+//!
+//! The panels follow a story, and not the subsystems. [`SimplePanel::Story`] is the first synopsis.
+//! The two lineage panels reach the furthest back in time. [`SimplePanel::Ancestry`] runs from deep
+//! origins → recent populations, in time order. [`SimplePanel::Relatives`] arrives in the present
+//! day. Nothing here computes: it draws the [`SubjectBrief`] that already exists, plus the live
+//! relative suggestions from the network, exactly as the old scroll did.
 
 use super::*;
 
-/// Width of the section rail. Wide enough for a two-line item (label over its value) at the default
-/// text size without wrapping the haplogroup names, which are the longest values it carries.
+/// Width of the section rail. It is wide enough for a two-line item, with the label over its value,
+/// at the default text size. A haplogroup name then fits on one line, and those are the longest
+/// values the rail carries.
 const RAIL_WIDTH: f32 = 208.0;
 
-/// Fixed size of one at-a-glance tile. Fixed rather than content-sized so `horizontal_wrapped` can
-/// reflow the row (see [`NavigatorApp::simple_glance_grid`]); tall enough for a two-line value.
+/// The fixed size of one summary tile. The size does not follow its content, so that
+/// `horizontal_wrapped` can reflow the row (see [`NavigatorApp::simple_glance_grid`]). It is tall
+/// enough for a value on two lines.
 const TILE_SIZE: egui::Vec2 = egui::vec2(186.0, 76.0);
 
 impl NavigatorApp {
     /// The whole Simple-mode subject body: the rail on the left, the selected panel on the right.
     ///
-    /// The reference-download and "not analyzed yet" prompts render *above* the split rather than in
-    /// a panel — both block every panel equally, so burying either one behind a rail click would let
-    /// a user wander an empty view without being told why it is empty.
+    /// The reference-download prompt and the "not analyzed yet" prompt draw *above* the split, and
+    /// not inside a panel. Both block every panel equally. To put either one behind a rail click
+    /// would let a user walk an empty view, and nothing would say why it is empty.
     pub(crate) fn simple_subject_view(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         ui.separator();
         self.reference_prompt(ui);
@@ -67,8 +71,8 @@ impl NavigatorApp {
     // The rail
     // ---------------------------------------------------------------------------------------------
 
-    /// The section rail: one clickable item per panel, each showing its own headline value so the
-    /// rail reads as a summary of the whole subject without opening anything.
+    /// The section rail: one clickable item for each panel. Each item shows its own main value, so
+    /// that the rail reads as a summary of the whole subject, and the user opens nothing.
     fn simple_rail(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         // Values first (immutable reads), so the item loop can mutate `simple_panel` freely.
         let items: Vec<(SimplePanel, &'static str, &'static str, Option<String>)> = SimplePanel::ALL
@@ -99,8 +103,9 @@ impl NavigatorApp {
                             egui::RichText::new(*label)
                         });
                     });
-                    // A missing value is stated, not hidden: an item with no line under it reads as
-                    // a rendering gap, where "Not available yet" reads as a fact about the data.
+                    // Say that a value is missing, and do not hide it. An item with no line under
+                    // it reads as a gap where something failed to draw. "Not available yet" reads
+                    // as a fact about the data.
                     if let Some(v) = value {
                         ui.label(egui::RichText::new(v).weak().small());
                     } else if *panel != SimplePanel::Story {
@@ -119,8 +124,8 @@ impl NavigatorApp {
             self.simple_panel = panel;
         }
 
-        // The bridge to the full power-user view lives at the foot of the rail, where it is reachable
-        // from every panel rather than only from the bottom of one long scroll.
+        // The bridge to the full power-user view sits at the foot of the rail. Every panel can
+        // reach it there, and not only the bottom of one long scroll.
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(6.0);
@@ -133,12 +138,12 @@ impl NavigatorApp {
         }
     }
 
-    /// The one-line value the rail shows under a panel's name, or `None` when that panel has nothing
-    /// yet (the rail then says so explicitly).
+    /// The one-line value the rail shows under the name of a panel. `None` when that panel has
+    /// nothing yet, and the rail then says so.
     ///
-    /// Gated on the brief belonging to `guid`: the brief is rebuilt asynchronously after a subject
-    /// switch, and an ungated read would spend those frames labelling the new person with the
-    /// previous one's haplogroups.
+    /// A gate holds this to the brief that belongs to `guid`. The brief builds again
+    /// asynchronously after a subject switch. A read with no gate would spend those frames with the
+    /// haplogroups of the previous person under the name of the new one.
     fn simple_rail_value(&self, panel: SimplePanel, guid: SampleGuid) -> Option<String> {
         let brief = self.subject_brief.as_ref().filter(|(g, _)| *g == guid).map(|(_, b)| b);
         match panel {
@@ -157,9 +162,9 @@ impl NavigatorApp {
         }
     }
 
-    /// How many distinct people the Relatives panel would list: network suggestions plus any
-    /// completed exchange that has no suggestion behind it (a confirmed relative is still a relative
-    /// after the suggestion that introduced them has aged out of the AppView's list).
+    /// How many distinct people the Relatives panel would list: the network suggestions, plus any
+    /// exchange that completed with no suggestion behind it. A confirmed relative is still a
+    /// relative after the suggestion that introduced them drops off the list of the AppView.
     fn simple_relative_count(&self) -> usize {
         let suggested: std::collections::HashSet<&str> = self
             .ibd_suggestions
@@ -175,16 +180,16 @@ impl NavigatorApp {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Panel: Your story (landing)
+    // Panel: Your story (the first panel)
     // ---------------------------------------------------------------------------------------------
 
-    /// The landing synopsis: who this person is in one or two sentences, an at-a-glance grid that
-    /// jumps into the other panels, and the results chat.
+    /// The first synopsis: who this person is, in one or two sentences, a summary grid that jumps
+    /// into the other panels, and the results chat.
     ///
     /// When the local AI assistant has narrated the brief, that narration *replaces* the one-line
-    /// synopsis as the story — it says the same thing at more length and in better prose. The
-    /// structured one-liner stays reachable under "Plain summary" so the model's version is never
-    /// the only account of the data on the screen.
+    /// synopsis as the story. It says the same thing at more length, and in better prose. The
+    /// structured one-liner stays reachable under "Plain summary". The version of the model is then
+    /// never the only account of the data on the screen.
     fn simple_story_panel(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         let Some(brief) = self.subject_brief.as_ref().filter(|(g, _)| *g == guid).map(|(_, b)| b) else {
             self.simple_brief_placeholder(ui);
@@ -213,10 +218,11 @@ impl NavigatorApp {
         self.simple_chat_section(ui, guid);
     }
 
-    /// The synopsis card — the AI narration when there is one, the structured one-liner otherwise,
-    /// plus the generate/regenerate control when the local assistant is enabled.
+    /// The synopsis card. It holds the AI narration when there is one, and the structured one-liner
+    /// when there is not. It also holds the control that makes the narration, or makes it again,
+    /// when the local assistant is on.
     fn simple_synopsis_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid, summary: &str) {
-        // Prefer the live stream while generating; fall back to the finalized narration.
+        // Prefer the live stream while the model writes. Fall back to the final narration.
         let live = self
             .narration_stream
             .as_ref()
@@ -292,9 +298,10 @@ impl NavigatorApp {
         }
     }
 
-    /// The at-a-glance grid: one tile per remaining panel, each showing its headline value and
-    /// opening that panel when clicked. This is the landing screen's index — it is why the story
-    /// panel does not need to restate the paternal line, the ancestry donut, and the match list.
+    /// The summary grid: one tile for each of the other panels. Each tile shows the main value of
+    /// its panel, and a click opens that panel. This is the index of the first screen. It is why
+    /// the story panel does not have to restate the paternal line, the ancestry donut, and the
+    /// match list.
     fn simple_glance_grid(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         let tiles: Vec<(SimplePanel, &'static str, &'static str, Option<String>)> = SimplePanel::ALL
             .iter()
@@ -307,9 +314,9 @@ impl NavigatorApp {
         ui.label(egui::RichText::new(heading).strong().size(15.0));
         ui.add_space(6.0);
         let mut pick = None;
-        // Each tile is allocated at a fixed size *before* its frame draws. `Frame::show` reserves no
-        // space up front, so a frame built straight into `horizontal_wrapped` gives the layout no
-        // size to test against and the row never wraps — it just runs off the right edge. Allocating
+        // Each tile takes a fixed size *before* its frame draws. `Frame::show` reserves no space
+        // first, so a frame built straight into `horizontal_wrapped` gives the layout no size to
+        // test against. The row then never wraps, and it runs off the right edge. To take the size
         // first is what makes the reflow work.
         ui.horizontal_wrapped(|ui| {
             for (panel, icon, label, value) in &tiles {
@@ -325,7 +332,8 @@ impl NavigatorApp {
                                     ui.label(egui::RichText::new(format!("{icon}  {label}")).weak().small());
                                     ui.add_space(4.0);
                                     // Values run from "U5a1b1g" to "high-quality (28× average
-                                    // depth)", so they wrap inside the tile rather than widening it.
+                                    // depth)", so they wrap inside the tile, and do not make it
+                                    // wider.
                                     match value {
                                         Some(v) => ui.label(egui::RichText::new(v).size(15.0).strong()),
                                         None => ui.label(egui::RichText::new(empty).size(14.0).weak().italics()),
@@ -350,9 +358,10 @@ impl NavigatorApp {
     // Panel: paternal / maternal line
     // ---------------------------------------------------------------------------------------------
 
-    /// One lineage panel. Renders the brief's lineage card (haplogroup, age, origin, story,
-    /// confidence, descent trail) or, when this subject has no such line, an explanation of *why*
-    /// there is not one — "no data" with no reason is the complaint this redesign exists to fix.
+    /// One lineage panel. It draws the lineage card of the brief: the haplogroup, the age, the
+    /// origin, the story, the confidence, and the descent trail. When this subject has no such
+    /// line, it explains *why* there is none. "No data" with no reason is the complaint this
+    /// redesign exists to fix.
     fn simple_lineage_panel(&mut self, ui: &mut egui::Ui, guid: SampleGuid, kind: LineageKind) {
         let Some(brief) = self.subject_brief.as_ref().filter(|(g, _)| *g == guid).map(|(_, b)| b) else {
             self.simple_brief_placeholder(ui);
@@ -379,14 +388,14 @@ impl NavigatorApp {
     // Panel: ancestry (deep origins → recent populations)
     // ---------------------------------------------------------------------------------------------
 
-    /// The autosomal ancestry panel, ordered chronologically rather than by method: the ancient
-    /// source populations first, then the archaic (Neanderthal) trace, then the continental and
-    /// fine-grained populations of the last few thousand years, then the parent-split painting, then
-    /// the runs-of-homozygosity read on the two parental lines meeting again.
+    /// The autosomal ancestry panel, in time order and not by method. First the ancient source
+    /// populations, then the archaic (Neanderthal) trace. Then the continental and fine-grained
+    /// populations of the last few thousand years, then the parent-split painting. Last comes the
+    /// runs-of-homozygosity read on the two parental lines that come together again.
     ///
-    /// Reading it top to bottom is meant to be reading forwards in time. Sections with no data are
-    /// skipped silently — each depends on a different optional analysis, and an absent one is a step
-    /// not yet run, not a finding.
+    /// To read it from top to bottom is to read forwards in time. A section with no data goes, and
+    /// nothing says so. Each one depends on a different optional analysis, and an absent one is a
+    /// step that has not run, and not a result.
     fn simple_ancestry_panel(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         let Some(brief) = self.subject_brief.as_ref().filter(|(g, _)| *g == guid).map(|(_, b)| b) else {
             self.simple_brief_placeholder(ui);
@@ -444,8 +453,8 @@ impl NavigatorApp {
                 ui.add_space(4.0);
                 ui.label(&arch.summary_phrase);
                 ui.add_space(4.0);
-                // The count, framed as copies-of-copies-assayed exactly as the Advanced card does —
-                // never a "percent Neanderthal" (archaic-ancestry design S1/S7).
+                // The count, as copies over the copies assayed, exactly as the Advanced card puts
+                // it. It is never a "percent Neanderthal" (archaic-ancestry design S1 and S7).
                 ui.label(format!(
                     "{} of {} marker copies",
                     arch.total_copies, arch.possible_copies
@@ -490,9 +499,9 @@ impl NavigatorApp {
         });
         ui.add_space(10.0);
 
-        // The fine breakdown gets its own card rather than a collapsed row inside the one above:
-        // the panel has the vertical room the old single scroll did not, and it is the section most
-        // readers came for.
+        // The fine breakdown gets its own card, and not a collapsed row inside the one above. The
+        // panel has the room from top to bottom that the old single scroll did not, and this is the
+        // section most readers came for.
         if !a.fine_pops.is_empty() {
             card(ui, detail_title, |ui| {
                 for (name, pct) in a.fine_pops.iter().filter(|(_, p)| *p >= 0.5) {
@@ -529,13 +538,15 @@ impl NavigatorApp {
     // Panel: relatives
     // ---------------------------------------------------------------------------------------------
 
-    /// Genetic relatives, grouped by how close the relationship looks. Two kinds of row land here:
-    /// a **confirmed** relative, where an encrypted segment exchange has actually run and produced a
-    /// shared-cM total, and a **candidate**, where the AppView has only scored the signals we both
-    /// published. They are grouped by the same three bands, but the band is chosen from measured cM
-    /// where we have it and from the suggestion's tier where we do not — and the row says which,
-    /// because "close family" inferred from a score is a much weaker claim than the same words
-    /// backed by 1,800 shared centimorgans.
+    /// Genetic relatives, in groups by how close the relationship looks. Two kinds of row arrive
+    /// here. A **confirmed** relative comes from an encrypted segment exchange that ran and gave a
+    /// shared-cM total. A **candidate** comes from the AppView, which only scored the signals we
+    /// both published.
+    ///
+    /// Both use the same three bands. The band comes from measured cM where we have it, and from
+    /// the tier of the suggestion where we do not. The row says which one it used, because "close
+    /// family" from a score is a much weaker claim than the same words behind 1,800 shared
+    /// centimorgans.
     fn simple_relatives_panel(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         ui.heading(self.tr("brief.relatives"));
         ui.add_space(4.0);
@@ -543,8 +554,8 @@ impl NavigatorApp {
         ui.add_space(10.0);
 
         if self.account.is_none() {
-            // The heading is already on screen, so this is the hint alone rather than a full
-            // empty-state block repeating it.
+            // The heading is already on the screen, so this is the hint alone, and not a full
+            // empty-state block that says it again.
             ui.label(self.tr("brief.relativesSignIn"));
             return;
         }
@@ -621,7 +632,7 @@ impl NavigatorApp {
         }
     }
 
-    /// One relative row. Returns the sample guid when its Connect button was pressed.
+    /// One relative row. Returns the sample guid after the user presses its Connect button.
     fn simple_relative_row(&self, ui: &mut egui::Ui, row: &RelativeRow) -> Option<String> {
         let mut introduce = None;
         egui::Frame::group(ui.style())
@@ -649,8 +660,8 @@ impl NavigatorApp {
                         }
                     });
                 });
-                // The evidence line. Measured sharing beats a score, so it is what is shown when we
-                // have it; the tier note above already said which kind of row this is.
+                // The evidence line. A measured total wins over a score, so it appears when we
+                // have one. The tier note above already tells which kind of row this is.
                 match &row.shared {
                     Some(s) => {
                         ui.label(
@@ -748,7 +759,7 @@ impl NavigatorApp {
             ));
         }
 
-        // Strongest first inside each tier: measured sharing, then the composite score.
+        // Strongest first inside each tier: the measured total, then the composite score.
         rows.sort_by(|a, b| {
             let key = |r: &RelativeRow| (r.shared.as_ref().map(|s| s.total_cm).unwrap_or(0.0), r.score);
             key(b).partial_cmp(&key(a)).unwrap_or(std::cmp::Ordering::Equal)
@@ -760,8 +771,9 @@ impl NavigatorApp {
     // Panel: your test
     // ---------------------------------------------------------------------------------------------
 
-    /// The test the whole brief rests on: what it is, what it can and can't tell, its quality, the
-    /// global caveats, how fresh the narrative content is, and the export.
+    /// The test the whole brief rests on. It says what the test is, and what it can tell and what
+    /// it can not. It also gives the quality, the global caveats, how fresh the narrative content
+    /// is, and the export.
     fn simple_test_panel(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         let Some(brief) = self.subject_brief.as_ref().filter(|(g, _)| *g == guid).map(|(_, b)| b) else {
             self.simple_brief_placeholder(ui);
@@ -828,32 +840,35 @@ impl NavigatorApp {
         ui.label(egui::RichText::new(footer).weak().small());
     }
 
-    /// The offer to rebuild this person's genome against the complete reference, and the progress of
-    /// that job once it is running.
+    /// The offer to build the genome of this person again, against the complete reference, and the
+    /// progress of that job while it runs.
     ///
-    /// Lives under "Your test" because that is where this belongs honestly: it is a statement about
-    /// the limits of the data, alongside the depth and quality phrases. A reader here should never
-    /// need to know what a reference build is — only that the reference itself was unfinished, which
-    /// is a fact about the reference and not about their test.
+    /// It lives under "Your test", because that is the honest place for it. It is a statement about
+    /// the limits of the data, beside the depth and quality phrases. A reader here must never have
+    /// to know what a reference build is. They need only know that the reference itself was not
+    /// complete, and that is a fact about the reference, and not about their test.
     ///
-    /// The copy is careful on two points that are easy to get wrong. The completed assembly is
-    /// **genome-wide** — a full autosomal sequence as well as the first complete Y — and Y discovery
-    /// is merely what Navigator puts it to work on today; writing it as a paternal-line feature
-    /// would misdescribe what T2T actually delivered. And the finished genome is one donor's: of
-    /// European ancestry, carrying a J1a Y. Whose DNA a reference represents is exactly the sort of
-    /// thing that goes unsaid and should not.
+    /// The copy is careful on two points that are easy to get wrong. The first is that the complete
+    /// assembly is **genome-wide**: a full autosomal sequence, and the first complete Y. Y
+    /// discovery is only what Navigator puts it to work on today, and to write it as a
+    /// paternal-line feature would misdescribe what T2T delivered.
     ///
-    /// Whether to offer it at all was decided in the app layer, on the brief; see
+    /// The second is that the finished genome belongs to one donor, of European ancestry, with a
+    /// J1a Y. Whose DNA a reference represents is exactly the kind of thing that goes unsaid, and
+    /// must not.
+    ///
+    /// The app layer decided whether to offer it at all, on the brief. See
     /// `navigator_domain::brief::RealignOffer`.
     fn simple_realign_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         let offer = self.subject_brief.as_ref().and_then(|(_, b)| b.realign_offer.clone());
 
-        // A run in progress wins over the offer, so the card a user just started reports itself
-        // rather than continuing to invite the thing it is already doing.
+        // A run in progress wins over the offer. The card a user just started then reports itself,
+        // and does not go on to invite the thing it already does.
         //
-        // Matched on the *subject*, not the alignment. Comparing alignment ids meant this card had
-        // nothing to compare against once the offer was gone — and it went on to claim any running
-        // job, so a page open on one person announced another person's realignment as their own.
+        // The match is on the *subject*, and not on the alignment. A compare of alignment ids left
+        // this card with nothing to compare against once the offer was gone. It then claimed any
+        // job that ran, so a page open on one person announced the realignment of another person as
+        // their own.
         let running = self.realign.clone().filter(|state| state.biosample_guid == Some(guid));
 
         if let Some(state) = running {
@@ -902,13 +917,14 @@ impl NavigatorApp {
             ui.add_space(6.0);
             ui.label(self.tr("simple.realign.use"));
             ui.add_space(6.0);
-            // Whose genome the finished reference actually is, and whose Y — stated rather than
-            // left for a reader to assume it represents everyone equally.
+            // Whose genome the finished reference is, and whose Y. Say it, and do not leave a
+            // reader to assume that it represents everybody equally.
             ui.label(egui::RichText::new(self.tr("simple.realign.note")).weak().small());
             ui.add_space(6.0);
             ui.label(egui::RichText::new(self.tr("simple.realign.cost")).weak().small());
             ui.add_space(8.0);
-            // Opens the confirmation rather than starting: see `simple_realign_confirm_modal`.
+            // This opens the confirmation, and does not start the job. See
+            // `simple_realign_confirm_modal`.
             if ui.button(self.tr("simple.realign.action")).clicked() {
                 self.simple_realign_confirm = Some(offer.clone());
             }
@@ -917,8 +933,8 @@ impl NavigatorApp {
 
     // ---------------------------------------------------------------------------------------------
 
-    /// Shown by every panel while the brief for this subject is still being built (or when there is
-    /// none to build), so no panel renders as blank.
+    /// Every panel shows this while the brief for this subject still builds, and when there is none
+    /// to build. So no panel draws as blank.
     fn simple_brief_placeholder(&self, ui: &mut egui::Ui) {
         if self.subject_brief_loading {
             ui.horizontal(|ui| {
@@ -938,9 +954,9 @@ fn simple_era_divider(ui: &mut egui::Ui, label: &str) {
     ui.add_space(6.0);
 }
 
-/// How close a relative looks. Note this is a *presentation* band, not a relationship estimate: it
-/// decides which heading a person is listed under, and each heading states what the band was read
-/// from (see [`NavigatorApp::simple_relatives_panel`]).
+/// How close a relative looks. This is a band for *presentation*, and not an estimate of the
+/// relationship. It decides which heading a person appears under, and each heading says where the
+/// band came from (see [`NavigatorApp::simple_relatives_panel`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RelativeTier {
     Close,
@@ -968,10 +984,11 @@ impl RelativeTier {
         ),
     ];
 
-    /// Measured sharing decides the band when there is any; the composite score's tier decides it
-    /// otherwise. The cM cutoffs are the conservative ends of the standard bands — 1,200 cM is about
-    /// the floor for an aunt/uncle-or-closer relationship, 200 cM about the floor for a range that
-    /// still resolves to a nameable cousin rather than "somewhere back there".
+    /// A measured total decides the band when there is one, and the tier of the composite score
+    /// decides it when there is not. The cM cutoffs are the conservative ends of the standard
+    /// bands. A total of 1,200 cM is about the floor for an aunt or uncle, or a closer
+    /// relationship. A total of 200 cM is about the floor for a range that still resolves to a
+    /// cousin with a name. Below that it is "somewhere back there".
     fn of(shared: Option<&SharedDna>, strength: MatchStrength) -> Self {
         match shared {
             Some(s) if s.total_cm >= 1200.0 => RelativeTier::Close,
@@ -986,7 +1003,7 @@ impl RelativeTier {
     }
 }
 
-/// The measured half of a relative row: what a completed segment exchange actually found.
+/// The measured half of a relative row: what a completed segment exchange found.
 struct SharedDna {
     total_cm: f64,
     segments: i64,
@@ -1003,7 +1020,8 @@ impl From<&navigator_app::StoredIbdExchange> for SharedDna {
     }
 }
 
-/// One row of the relatives panel, pre-resolved so rendering does no interpretation.
+/// One row of the relatives panel. The code resolves it first, so that the draw reads nothing
+/// into it.
 struct RelativeRow {
     /// Short pseudonymous handle shown in the list.
     handle: String,
