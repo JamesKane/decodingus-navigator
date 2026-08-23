@@ -1,8 +1,8 @@
 //! Tests for the mapping pass.
 //!
 //! The one that matters is [`a_split_index_places_reads_exactly_where_a_whole_index_does`]. Every
-//! other property here is ordinary; that one is the design's central claim, and if it fails the
-//! memory bound that justifies this whole module is not free after all.
+//! other property here is ordinary. That one is the design's central claim. If it fails, the
+//! memory limit that gives this whole module its reason is not free after all.
 
 use std::path::PathBuf;
 
@@ -17,9 +17,9 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// A deterministic pseudo-random reference. Real-ish base composition matters: a low-complexity
-/// sequence collapses into a few minimizer buckets and maps ambiguously everywhere, which would
-/// make these tests measure the fixture rather than the code.
+/// A deterministic pseudo-random reference. The base composition must be near to real. A
+/// low-complexity sequence collapses into a few minimizer buckets and maps ambiguously
+/// everywhere. These tests would then measure the fixture, and not the code.
 fn reference_bases(contig: usize, len: usize) -> Vec<u8> {
     let mut state = 0x9E3779B97F4A7C15u64 ^ (contig as u64).wrapping_mul(0xD1B54A32D192ED03);
     (0..len)
@@ -46,7 +46,8 @@ fn write_reference(dir: &Path, contigs: usize, len: usize) -> PathBuf {
     path
 }
 
-/// Reads lifted straight out of the reference, so the true origin of each is known from its name.
+/// These reads come straight out of the reference, so the name of each read gives its true
+/// origin.
 fn write_reads(dir: &Path, contigs: usize, len: usize, per_contig: usize, read_len: usize) -> PathBuf {
     let path = dir.join("reads.fq");
     let mut text = Vec::new();
@@ -118,13 +119,13 @@ fn mapq(sam: &Path) -> Vec<(String, String)> {
 
 // ---- the claim ------------------------------------------------------------
 
-/// **The central property.** Splitting the index is a memory optimization; it must not be an
-/// accuracy decision. A read mapped against a 3-part index has to land exactly where it lands
-/// against a whole one — same contig, same position, same flags — because the per-part hits are
-/// merged and re-ranked before anything is emitted.
+/// **The central property.** A split index is a memory optimization. It must not be an accuracy
+/// decision. A read that maps against a 3-part index must land exactly where it lands against a
+/// whole index. The contig, the position and the flags must all be the same. The merge collects
+/// the hits from each part and ranks them again before the writer emits anything.
 ///
-/// If this ever fails, the memory table in `crate::batch` stops being free and the design has to
-/// be re-argued.
+/// If this ever fails, the memory table in `crate::batch` is no longer free, and the design needs
+/// a new argument.
 #[test]
 fn a_split_index_places_reads_exactly_where_a_whole_index_does() {
     let dir = scratch("equivalence");
@@ -145,7 +146,7 @@ fn a_split_index_places_reads_exactly_where_a_whole_index_does() {
     let whole_sam = dir.join("whole.sam");
     let whole_stats = run(&whole, &reads, &whole_sam, &dir, Preset::ShortRead);
 
-    // Split index: several parts, exercising the write-merge path.
+    // Split index: more than one part, so this uses the write-merge path.
     let split_idx = dir.join("split.mmi");
     build_index(
         &reference,
@@ -172,10 +173,10 @@ fn a_split_index_places_reads_exactly_where_a_whole_index_does() {
     );
 }
 
-/// MAPQ is the part of the answer a split index is *allowed* to differ on — a read's second-best
-/// hit can fall in another part — but the merge re-runs the MAPQ calculation across all parts
-/// precisely so it does not. On a reference with no duplicated sequence there is nothing to be
-/// ambiguous about, so it must agree exactly.
+/// A split index may differ on MAPQ, and only on MAPQ, because a read's second-best hit can fall
+/// in another part. But the merge does the MAPQ calculation again over all parts, and that is why
+/// it does not differ. This reference has no duplicated sequence, so nothing is ambiguous, and
+/// MAPQ must agree exactly.
 #[test]
 fn merging_restores_mapq_across_parts() {
     let dir = scratch("mapq");
@@ -212,8 +213,8 @@ fn merging_restores_mapq_across_parts() {
 
 // ---- ordinary properties --------------------------------------------------
 
-/// Reads were lifted out of the reference, so they must come back to the contig they came from.
-/// Without this the equivalence test above could pass with both sides equally wrong.
+/// These reads come out of the reference, so they must come back to the contig they came from.
+/// Without this check, the equivalence test above could pass with both sides equally wrong.
 #[test]
 fn reads_map_back_to_where_they_came_from() {
     let dir = scratch("placement");
@@ -252,13 +253,14 @@ fn reads_map_back_to_where_they_came_from() {
     }
 }
 
-/// A SAM record without a CIGAR is not an alignment, it is a coordinate guess — and nothing
-/// downstream (coverage, callable, SV, the variant caller) can consume it.
+/// A SAM record without a CIGAR is not an alignment. It is a coordinate guess, and nothing
+/// downstream can read it: not coverage, not callable, not SV, and not the variant caller.
 ///
-/// This exists because its absence was invisible: the placement and equivalence tests all passed
-/// while every record carried `*`, since chaining alone yields coordinates. It also pins the
-/// primary/supplementary flag, which failed the same way and for the same underlying reason —
-/// without base-level alignment, `map_query` never ranks the regions it returns.
+/// This test exists because the absence of the CIGAR was invisible. The placement tests and the
+/// equivalence tests all passed while every record carried `*`, because chaining alone gives
+/// coordinates. The test also pins the primary flag and the supplementary flag. Those failed the
+/// same way and for the same reason: without base-level alignment, `map_query` never ranks the
+/// regions it returns.
 #[test]
 fn records_carry_a_real_cigar_and_a_primary_flag() {
     let dir = scratch("cigar");
@@ -300,8 +302,9 @@ fn records_carry_a_real_cigar_and_a_primary_flag() {
     assert_eq!(primaries, 20, "every read should have exactly one primary record");
 }
 
-/// The SAM has to be readable by everything downstream, which starts with a header naming every
-/// contig — including, in the split case, contigs from parts that were never resident together.
+/// Everything downstream must be able to read the SAM. That starts with a header that names
+/// every contig. In the split case, that includes contigs from parts that were never in memory
+/// together.
 #[test]
 fn the_header_names_every_contig_across_every_part() {
     let dir = scratch("header");
@@ -333,8 +336,9 @@ fn the_header_names_every_contig_across_every_part() {
     assert!(text.contains("@PG"), "a realigned header must carry a @PG record");
 }
 
-/// An unmappable read gets a record rather than vanishing. Which reads failed is information —
-/// realignment exists partly to recover reads a previous reference could not place.
+/// An unmappable read still gets a record, and does not disappear. Which reads failed is
+/// information: realignment exists in part to recover reads that a previous reference could not
+/// place.
 #[test]
 fn unmappable_reads_are_written_as_unmapped_records() {
     let dir = scratch("unmapped");
@@ -368,8 +372,8 @@ fn unmappable_reads_are_written_as_unmapped_records() {
     assert_eq!(records[0].3, "4", "SAM flag 4 == unmapped");
 }
 
-/// Per-part hit blocks are one file per part for the whole read set — at genome scale that is
-/// large, so it must not survive the call.
+/// The hit blocks are one file for each part, and they hold the whole read set. At genome scale
+/// that is large, so it must not survive the call.
 #[test]
 fn split_scratch_is_cleaned_up() {
     let dir = scratch("cleanup");
@@ -400,8 +404,8 @@ fn split_scratch_is_cleaned_up() {
     assert!(leftovers.is_empty(), "scratch left behind: {leftovers:?}");
 }
 
-/// A multi-hour job has to stop when asked, and report the stop as itself rather than as a
-/// failure.
+/// A multi-hour job must stop when the user asks. It must report the stop as a stop, and not as
+/// a failure.
 #[test]
 fn cancellation_stops_the_mapping_pass() {
     let dir = scratch("cancel");
@@ -439,8 +443,8 @@ fn cancellation_stops_the_mapping_pass() {
     assert!(matches!(err, AlignError::Cancelled), "got {err:?}");
 }
 
-/// An index file with nothing in it must fail loudly rather than produce an empty, valid-looking
-/// SAM that a later stage would treat as "this sample simply has no reads".
+/// An index file with nothing in it must fail with a loud message. It must not make an empty SAM
+/// that looks correct, which a later stage would read as "this sample has no reads".
 #[test]
 fn an_empty_index_is_an_error() {
     let dir = scratch("emptyidx");
@@ -462,9 +466,9 @@ fn an_empty_index_is_an_error() {
 
 // ---- output containers ----------------------------------------------------
 
-/// BAM is the default container, and it has to hold exactly what SAM did. Read back through
-/// noodles as *typed* records, so this asserts on fields rather than on column positions — the
-/// same reason the writer exists.
+/// BAM is the default container, and it must hold exactly what SAM held. This test reads the BAM
+/// back through noodles as *typed* records. So it asserts on fields, and not on column positions.
+/// That is also the reason the writer exists.
 #[test]
 fn bam_output_round_trips_the_same_records_as_sam() {
     let dir = scratch("bam");
@@ -534,8 +538,8 @@ fn bam_output_round_trips_the_same_records_as_sam() {
     }
 }
 
-/// A BAM whose BGZF end-of-file block is missing reads as truncated. Writing it is the writer's
-/// job on `finish`, and nothing else in the test suite would notice if it stopped happening.
+/// A BAM whose BGZF end-of-file block is missing reads as truncated. The writer writes that
+/// block on `finish`, and nothing else in the test suite would see it if the writer stopped.
 #[test]
 fn bam_output_is_a_complete_bgzf_stream() {
     let dir = scratch("bgzf");
@@ -590,8 +594,8 @@ fn the_output_format_can_be_read_off_the_path() {
     assert_eq!(F::from_path(Path::new("x")), F::Bam, "BAM is the default");
 }
 
-/// CRAM can not be written without the reference it is compressed against, and saying so up front
-/// beats failing partway through a multi-hour job.
+/// A CRAM writer needs the reference that the compression uses. It must say so at the start, and
+/// must not fail part of the way through a multi-hour job.
 #[test]
 fn cram_without_a_reference_is_refused_before_any_work() {
     let dir = scratch("cramref");

@@ -3,9 +3,10 @@
 use super::*;
 
 impl NavigatorApp {
-    /// Chip-compatible IBD: pick two sources (each a WGS alignment or an imported chip) and compare
-    /// over the multi-build IBD panel — the chip↔WGS / chip↔chip volume path (build-aware, asset-
-    /// backed). Needs the `ibd_panel` asset built; a chip source needs its raw file (source_path).
+    /// IBD that works with a chip. Pick two sources, each a WGS alignment or an imported chip, and
+    /// compare them over the multi-build IBD panel. This is the volume path for chip↔WGS and
+    /// chip↔chip, it knows the build, and an asset backs it. It needs the `ibd_panel` asset, and a
+    /// chip source needs its raw file (source_path).
     pub(crate) fn genotyping_section(&mut self, ui: &mut egui::Ui) {
         let mut sources: Vec<(navigator_app::IbdSource, String)> = Vec::new();
         for a in &self.all_alignments {
@@ -64,7 +65,8 @@ impl NavigatorApp {
         self.render_ibd_result(ui);
     }
 
-    /// The identity-verification verdict (shared by the per-source + subject-level compare paths).
+    /// The identity-verification verdict. The compare path for each source, and the one at subject
+    /// level, share it.
     fn render_identity(&self, ui: &mut egui::Ui) {
         let Some(v) = &self.identity else { return };
         let (txt, col) = match v.status {
@@ -90,8 +92,8 @@ impl NavigatorApp {
         });
     }
 
-    /// Render the current IBD comparison result (summary line + segment table), if any. Shared by the
-    /// per-source picker and the subject-level consensus comparison.
+    /// Draw the current IBD comparison result, if there is one: a summary line and a segment table.
+    /// The picker of each source, and the consensus comparison at subject level, share it.
     fn render_ibd_result(&mut self, ui: &mut egui::Ui) {
         // Clone out of the borrow so the export button can touch `self.status` / `self.tx` below.
         let Some(cmp) = self.ibd_result.clone() else { return };
@@ -106,7 +108,8 @@ impl NavigatorApp {
         if cmp.segments.is_empty() {
             return;
         }
-        // Per-chromosome segment ideogram (true chr lengths when genome regions are loaded).
+        // A segment ideogram for each chromosome. It uses true chromosome lengths when the genome
+        // regions are in memory.
         ui.add_space(6.0);
         ui.label(egui::RichText::new(self.tr("ibd.segmentMap")).strong().small());
         let regions = self.genome_regions.as_ref().map(|(_, r)| r.as_ref());
@@ -149,19 +152,22 @@ impl NavigatorApp {
         });
     }
 
-    /// Subject-level IBD: compare this subject's autosomal consensus against another subject's — the
-    /// pooled-genotype path (no per-source genotyping). A near-complete match is the dedup/identity
-    /// signal (read off the relationship).
-    /// The comparison target is picked with a *Change* reveal — current choice, then a filter over a
-    /// virtualized list — rather than a dropdown. A `ComboBox` builds a widget per entry every frame
-    /// its popup is open, and this list is every other subject in the workspace; at 10k that is a
-    /// stall on each frame. The same reason the Matching tab's subject picker is shaped this way.
+    /// Subject-level IBD: compare the autosomal consensus of this subject against that of another
+    /// subject. This is the pooled-genotype path, and it genotypes no single source. A match that
+    /// is almost complete is the dedup and identity signal, which you read off the relationship.
+    ///
+    /// A *Change* reveal picks the comparison target: it shows the current choice, then a filter
+    /// over a virtualized list. It is not a dropdown. A `ComboBox` builds one widget for each entry
+    /// on every frame its popup is open, and this list is every other subject in the workspace. At
+    /// 10k that stops each frame. The subject picker of the Matching tab has this shape for the
+    /// same reason.
     pub(crate) fn consensus_ibd_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if !self.all_biosamples.iter().any(|b| b.guid != guid) {
             ui.label(egui::RichText::new(self.tr("hint.ibdNoOtherSubjects")).weak());
             return;
         }
-        // A lookup, not a copy of every subject — the old build allocated the whole roster per frame.
+        // A lookup, and not a copy of every subject. The old build allocated the whole roster on
+        // each frame.
         let sel = self
             .ibd_other_subject
             .and_then(|g| self.find_subject(g).map(|b| b.donor_identifier.clone()))
@@ -191,7 +197,8 @@ impl NavigatorApp {
                     b: self.ibd_other_subject.unwrap(),
                 });
             }
-            // Same-individual check (duplicate detection) over the same pooled consensus — no panel.
+            // The same-individual check (duplicate detection) over the same pooled consensus, with
+            // no panel.
             if ui
                 .add_enabled(ready, egui::Button::new(self.tr("ibd.verifyIdentity")))
                 .clicked()
@@ -217,10 +224,10 @@ impl NavigatorApp {
         self.render_ibd_result(ui);
     }
 
-    /// The revealed filter + virtualized subject list behind [`Self::consensus_ibd_section`]'s
-    /// *Change* button. Only the visible rows are built, so the cost is independent of workspace
-    /// size; the filtered `Vec` is assembled from immutable reads first so the scroll closure
-    /// borrows only locals.
+    /// The filter and the virtualized subject list that the *Change* button of
+    /// [`Self::consensus_ibd_section`] reveals. It builds only the visible rows, so the cost does
+    /// not depend on the size of the workspace. It assembles the filtered `Vec` from immutable
+    /// reads first, so the scroll closure borrows only locals.
     fn ibd_other_picker(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if !self.ibd_other_picking {
             return;
@@ -268,9 +275,10 @@ impl NavigatorApp {
         }
     }
 
-    /// This subject's completed federated exchanges. Discovery and consent are **not** here — they
-    /// are account-scoped and live in the top-level Matching tab; what this card answers is "what
-    /// did the network find for *this person*". Flows into the page scroll (no nested ScrollArea).
+    /// The federated exchanges of this subject that are complete. Discovery and consent are **not**
+    /// here. They are account-scoped, and they live in the top-level Matching tab. This card
+    /// answers one question: "what did the network find for *this person*". It goes into the page
+    /// scroll, with no nested ScrollArea.
     pub(crate) fn exchange_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if self.account.is_none() {
             ui.label(self.tr("network.signInRequired"));
@@ -314,8 +322,9 @@ impl NavigatorApp {
                         } else {
                             ui.colored_label(egui::Color32::from_rgb(200, 90, 90), self.tr("exchange.agreedNo"));
                         }
-                        // Open an encrypted DM with this match (social 3a) — sends a DM request and
-                        // jumps to Community → Messages, where the conversation appears once accepted.
+                        // Open an encrypted DM with this match (social 3a). It sends a DM request
+                        // and goes to Community → Messages, where the conversation appears after
+                        // the other side accepts.
                         if ui.button(self.tr("dm.message")).clicked() {
                             message_partner = Some(r.partner_did.clone());
                         }
@@ -328,14 +337,15 @@ impl NavigatorApp {
                 self.community_tab = CommunityTab::Messages;
                 self.dm_loaded = false; // force a fresh inbox/conversation load on entry
             }
-            // Per-tab AI explanation of these matches (M5) — additive, below the structured table.
+            // An AI explanation of these matches on this tab (M5). It is additive, and it sits
+            // below the structured table.
             ui.add_space(6.0);
             self.ai_explain(ui, guid, SignalKind::Ibd);
         }
     }
 
-    /// mtDNA haplogroup assigned directly from the alignment's chrM — the standalone counterpart
-    /// to the Y-DNA section's "Assign Y haplogroup".
+    /// An mtDNA haplogroup that comes directly from the chrM of the alignment. It is the standalone
+    /// equivalent of "Assign Y haplogroup" in the Y-DNA section.
     pub(crate) fn mt_haplogroup_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
         let has_bam = self.alignment_has_bam(alignment_id);
         ui.horizontal(|ui| {
@@ -361,7 +371,7 @@ impl NavigatorApp {
 
     /// De-novo haploid SNP calls for a specific `contig` (chrY on the Y-DNA tab, chrM on mtDNA).
     pub(crate) fn denovo_section(&mut self, ui: &mut egui::Ui, alignment_id: i64, contig: &str) {
-        // Reference is resolved from the build on demand, so only the BAM is required.
+        // The code resolves the reference from the build on demand, so it needs only the BAM.
         let has_bam = self.alignment_has_bam(alignment_id);
 
         ui.horizontal(|ui| {

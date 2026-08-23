@@ -39,7 +39,7 @@ use rowcache::{ReportRowCache, SubjectRowCache, VariantRows};
 
 #[derive(Default)]
 struct Forms {
-    /// Whether the inline "Add New Subject" form is expanded.
+    /// True when the inline "Add New Subject" form is open.
     show_add_subject: bool,
     project_name: String,
     project_admin: String,
@@ -72,9 +72,10 @@ enum Nav {
     Dashboard,
     Subjects,
     Projects,
-    /// Federated IBD discovery + consent. Top-level rather than a subject tab because a matching
-    /// conversation belongs to the *account* (it is keyed by our DID and the broker's request URI),
-    /// not to any one biosample — the subject is only chosen when it is time to exchange dosages.
+    /// Federated IBD discovery and consent. It is top-level, and not a subject tab, because a
+    /// matching conversation belongs to the *account*. Its key is our DID and the request URI of
+    /// the broker, and it belongs to no one biosample. The subject comes into it only when it is
+    /// time to exchange dosages.
     Matching,
     Community,
 }
@@ -137,7 +138,7 @@ impl CommunityTab {
     ];
 }
 
-/// Sub-tabs of the project detail panel (the member list vs the per-sample analysis report).
+/// Sub-tabs of the project detail panel: the member list, and the analysis report of each sample.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum ProjectTab {
     #[default]
@@ -155,11 +156,11 @@ impl ProjectTab {
     ];
 }
 
-/// Sub-tabs of the Settings dialog, grouping preferences by locality of concern (general appearance
-/// vs. server connection vs. ancestry-painter calibration vs. AI vs. reference genomes vs. one-off
-/// tools vs. read-only advanced info).
-// `pub(crate)` (unlike its sibling tab enums): `open_settings` deep-links into a specific tab, so
-// the type appears in a `pub(crate)` signature.
+/// Sub-tabs of the Settings dialog. They group the preferences by what each one covers: general
+/// appearance, server connection, ancestry-painter calibration, AI, reference genomes, one-off
+/// tools, and read-only advanced info.
+// `pub(crate)`, and its sibling tab enums are not: `open_settings` deep-links into a specific tab,
+// so the type appears in a `pub(crate)` signature.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum SettingsTab {
     #[default]
@@ -221,8 +222,9 @@ impl DetailTab {
         }
     }
 
-    /// `(tab, i18n key)` in display order. The DNA-type tabs (Y / mt / Autosomal / Ancestry) show the
-    /// subject's *consensus* across all sources; `Sources` is the per-sequencing-result hub.
+    /// `(tab, i18n key)` in display order. The DNA-type tabs (Y, mt, Autosomal, Ancestry) show the
+    /// *consensus* of the subject over all sources. `Sources` is the hub for each sequencing
+    /// result.
     const ALL: [(DetailTab, &'static str); 7] = [
         (DetailTab::Overview, "detail.overview"),
         (DetailTab::YDna, "detail.ydna"),
@@ -236,11 +238,12 @@ impl DetailTab {
 
 /// Sections of the Simple-mode subject view, in rail order.
 ///
-/// Simple mode used to be one long vertical scroll of every section at once; this splits it into
-/// dedicated panels reached from a left rail, with [`SimplePanel::Story`] as the landing synopsis.
-/// The order encodes the narrative the view is trying to tell: who you are, then the two lineages
-/// that reach furthest back, then the autosomal ancestry (deep origins → recent populations), then
-/// living relatives, then the test the whole thing rests on.
+/// Simple mode used to be one long vertical scroll, with every section at once. This splits it into
+/// panels that a left rail reaches, and [`SimplePanel::Story`] is the first synopsis.
+///
+/// The order holds the narrative the view tells. First who you are, then the two lineages that
+/// reach furthest back, then the autosomal ancestry (deep origins → recent populations). Then come
+/// the relatives who are alive, and last the test the whole thing rests on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum SimplePanel {
     #[default]
@@ -255,10 +258,10 @@ enum SimplePanel {
 impl SimplePanel {
     /// `(panel, icon, i18n label key)` in rail order.
     ///
-    /// Every icon here must be covered by egui's **Proportional** font family (Ubuntu-Light +
-    /// NotoEmoji + emoji-icon-font). That set is much narrower than it looks: `◆` U+25C6, `⚭` U+26AD,
-    /// `✓` U+2713 and `🧬` U+1F9EC are all absent and render as tofu boxes. `icon_glyphs_are_renderable`
-    /// pins this down — add an icon there when you add one here.
+    /// The **Proportional** font family of egui must cover every icon here (Ubuntu-Light,
+    /// NotoEmoji, emoji-icon-font). That set is much narrower than it looks: `◆` U+25C6, `⚭`
+    /// U+26AD, `✓` U+2713 and `🧬` U+1F9EC are all absent, and each one draws as a tofu box.
+    /// `icon_glyphs_are_renderable` pins this down, so add an icon there when you add one here.
     const ALL: [(SimplePanel, &'static str, &'static str); 6] = [
         (SimplePanel::Story, "📖", "simple.panel.story"),
         (SimplePanel::Paternal, "♂", "simple.panel.paternal"),
@@ -269,7 +272,8 @@ impl SimplePanel {
     ];
 }
 
-/// Y-DNA sub-tabs: compact haplogroup landing, the heavy SNP surface, and STR (separated from SNP).
+/// Y-DNA sub-tabs: a compact haplogroup first view, the heavy SNP surface, and STR, which is
+/// separate from SNP.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum YSub {
     #[default]
@@ -330,7 +334,7 @@ impl AutoSub {
     ];
 }
 
-/// Which Y-STR report view is shown in the Y-DNA tab.
+/// Which Y-STR report view the Y-DNA tab shows.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum StrReportView {
     /// FTDNA/YSEQ-style tier-grouped marker table.
@@ -338,7 +342,7 @@ enum StrReportView {
     ByPanel,
     /// Flat, filterable marker table.
     AllMarkers,
-    /// Cross-panel consensus value per marker.
+    /// The cross-panel consensus value of each marker.
     Consensus,
 }
 
@@ -353,8 +357,8 @@ struct RefRow {
     verify: String,
 }
 
-/// Editable Settings-dialog state (loaded from `AppSettings`; reference rows arrive via
-/// `Event::ReferenceSettings`).
+/// The Settings-dialog state the user can edit. It loads from `AppSettings`, and the reference rows
+/// arrive through `Event::ReferenceSettings`.
 #[derive(Clone)]
 struct SettingsForm {
     appview_url: String,
@@ -432,12 +436,13 @@ fn resolved_ui_scale() -> f32 {
     AppSettings::load().ui_scale.unwrap_or(1.0).clamp(0.5, 3.0)
 }
 
-/// One-shot auto UI-scale probe (the "behave like a native app" default). On the first frame the
-/// monitor size is known, derive a zoom when the OS reports a ~1.0 scale factor on a clearly
-/// high-resolution panel (e.g. native-4K, where macOS itself does not up-scale). A Retina / scaled
-/// display (native ppp > 1) is already handled by egui's native scaling, so it is left at 1.0. Skipped
-/// entirely when a manual scale is persisted (`probed` starts `true`). The result fills the Settings
-/// slider but is not persisted until the user saves — re-probed each launch otherwise.
+/// A one-shot auto UI-scale probe: the "behave like a native app" default. On the first frame that
+/// knows the monitor size, it derives a zoom when the OS reports a ~1.0 scale factor on a clearly
+/// high-resolution panel. Native 4K is the example, where macOS itself does not scale up. The
+/// native scaling of egui already controls a Retina or scaled display, which has a native ppp above
+/// 1, so this leaves that at 1.0. It does nothing at all when a manual scale is on disk, because
+/// `probed` then starts `true`. The result fills the Settings slider, and nothing persists it until
+/// the user saves, so it probes again on each launch.
 fn run_auto_scale(probed: &mut bool, form: &mut SettingsForm, ctx: &egui::Context) {
     if *probed {
         return;
@@ -459,7 +464,7 @@ fn run_auto_scale(probed: &mut bool, form: &mut SettingsForm, ctx: &egui::Contex
     }
 }
 
-/// In-flight full-analysis state, driving the modal dialog.
+/// The state of a full analysis in progress. It drives the modal dialog.
 #[derive(Clone)]
 struct AnalysisModal {
     step: usize,
@@ -467,23 +472,23 @@ struct AnalysisModal {
     label: String,
     detail: String,
     fraction: f32,
-    /// egui time (seconds) when this step began — for the elapsed-time display.
+    /// The egui time in seconds when this step began, for the elapsed-time display.
     started: f64,
 }
 
-/// A realignment in flight, or the result of the last one.
+/// A realignment in progress, or the result of the last one.
 ///
-/// Deliberately card state rather than a modal: a realignment runs for hours, and a dialog that
-/// owns the screen for that long stops the user doing anything else with a workspace they are
-/// perfectly able to keep using. The card sits with the alignment it belongs to and updates in
-/// place.
+/// This is card state on purpose, and not a modal. A realignment runs for hours. A dialog that owns
+/// the screen for that long stops the user from a workspace they can perfectly well keep open. The
+/// card sits with the alignment it belongs to, and it updates in place.
 #[derive(Clone)]
 struct RealignState {
-    /// The source alignment this job belongs to — cards for other alignments ignore it.
+    /// The source alignment this job belongs to. The card of another alignment ignores it.
     alignment_id: i64,
-    /// The subject it belongs to. Simple mode's card is about a *person*, not an alignment, so it
-    /// has to match on this: with only the alignment id to go on, a page open on subject A during a
-    /// job on subject B told A their genome was being rebuilt.
+    /// The subject it belongs to. The card of Simple mode is about a *person*, and not an
+    /// alignment, so it must match on this. With only the alignment id to go on, a page open on
+    /// subject A during a job on subject B told A the wrong thing. It reported a job at work on
+    /// their genome.
     biosample_guid: Option<SampleGuid>,
     step: usize,
     total: usize,
@@ -505,7 +510,8 @@ enum RealignFinished {
     Failed(String),
 }
 
-/// Editable copy of a project, driving the project Edit modal (Some ⇒ the dialog is shown).
+/// A copy of a project the user can edit. It drives the project Edit modal, and `Some` shows the
+/// dialog.
 #[derive(Clone)]
 struct EditProject {
     id: i64,
@@ -514,8 +520,8 @@ struct EditProject {
     administrator: String,
 }
 
-/// Editable copy of a sequence run, driving the run Edit modal (Some ⇒ the dialog is shown).
-/// Read-metric columns are not editable here, so they are not carried.
+/// A copy of a sequence run the user can edit. It drives the run Edit modal, and `Some` shows the
+/// dialog. The read-metric columns take no edit here, so this does not carry them.
 #[derive(Clone)]
 struct EditRun {
     id: i64,
@@ -527,8 +533,9 @@ struct EditRun {
     sequencing_facility: String,
 }
 
-/// Drives the destructive merge-sequence-runs modal (Some ⇒ shown). `secondary` is the run that
-/// will be emptied + deleted; `primary` is the chosen merge target (its picker default).
+/// This drives the destructive merge-sequence-runs modal, and `Some` shows it. `secondary` is the
+/// run this empties and then deletes. `primary` is the chosen merge target, and the default of its
+/// picker.
 #[derive(Clone)]
 struct MergeRuns {
     guid: SampleGuid,
@@ -536,7 +543,8 @@ struct MergeRuns {
     primary: Option<i64>,
 }
 
-/// Editable copy of an alignment, driving the alignment Edit modal (Some ⇒ the dialog is shown).
+/// A copy of an alignment the user can edit. It drives the alignment Edit modal, and `Some` shows
+/// the dialog.
 #[derive(Clone)]
 struct EditAlignment {
     id: i64,
@@ -546,7 +554,7 @@ struct EditAlignment {
     variant_caller: String,
 }
 
-/// Editable copy of a subject, driving the Edit modal (Some ⇒ the dialog is shown).
+/// A copy of a subject the user can edit. It drives the Edit modal, and `Some` shows the dialog.
 #[derive(Clone)]
 struct EditSubject {
     guid: SampleGuid,
@@ -566,9 +574,10 @@ struct EditKit {
     external_id: String,
 }
 
-/// Editable copy of an MDKA (most distant known ancestor), driving the MDKA edit modal (Some ⇒
-/// shown). All fields are strings for editing; years/coords are parsed on save (blank ⇒ cleared).
-/// `lineage` is fixed when the modal opens (Y/Mt/Auto). Upsert is keyed on `(guid, lineage)`.
+/// A copy of an MDKA (most distant known ancestor) the user can edit. It drives the MDKA edit
+/// modal, and `Some` shows it. Every field is a string, so that the user can edit it, and a save
+/// parses the years and the coordinates. A blank field clears its column. `lineage` does not change
+/// after the modal opens (Y, Mt or Auto). The key of the upsert is `(guid, lineage)`.
 #[derive(Clone)]
 struct EditMdka {
     guid: SampleGuid,
@@ -583,8 +592,8 @@ struct EditMdka {
     notes: String,
 }
 
-/// A data-source row pending delete confirmation. The `label` is shown in the confirm dialog;
-/// the variant carries the ids the worker command needs (and the parent id to refresh).
+/// A data-source row that waits for a delete confirmation. The confirm dialog shows the `label`,
+/// and the variant carries the ids the worker command needs, plus the parent id to refresh.
 #[derive(Clone)]
 enum DataDelete {
     Run { id: i64, guid: SampleGuid, label: String },
@@ -647,15 +656,17 @@ struct YReport {
     lineage: Vec<SnpEvidence>,
 }
 
-/// Initial window inner size (egui points) on a first run / when nothing is remembered. The reworked
-/// layout (subjects table + detail panel + action bar) needs room; the eframe default is far too small.
+/// The first inner size of the window, in egui points, on a first run, and when the app remembers
+/// nothing. The new layout needs room, because it holds the subjects table, the detail panel and
+/// the action bar. The eframe default is far too small.
 pub(crate) const DEFAULT_WINDOW: [f32; 2] = [1360.0, 900.0];
-/// Minimum window inner size — a sane floor so the layout never collapses.
+/// The minimum inner size of the window: a sane floor, so that the layout never collapses.
 pub(crate) const MIN_WINDOW: [f32; 2] = [1024.0, 680.0];
 
-/// Fit a desired window size (egui points) to the monitor, leaving a margin for the menu bar / dock /
-/// taskbar, and never below `min`. An over-large remembered size (e.g. from a bigger display) shrinks
-/// to fit; a size that already fits is returned unchanged. Pure, so the fit logic is unit-tested.
+/// Fit a wanted window size, in egui points, to the monitor. It leaves a margin for the menu bar,
+/// the dock and the taskbar, and it never goes below `min`. A remembered size that is too large,
+/// for example from a bigger display, shrinks to fit. A size that already fits comes back
+/// unchanged. It is pure, so a unit test covers the fit.
 pub(crate) fn fit_window_to_monitor(desired: [f32; 2], monitor: [f32; 2], min: [f32; 2]) -> [f32; 2] {
     let max_w = (monitor[0] * 0.98).max(min[0]);
     let max_h = (monitor[1] * 0.94).max(min[1]);
@@ -665,73 +676,77 @@ pub(crate) fn fit_window_to_monitor(desired: [f32; 2], monitor: [f32; 2], min: [
 pub struct NavigatorApp {
     tx: UnboundedSender<Command>,
     rx: Receiver<Event>,
-    /// In-flight full-analysis progress (Some ⇒ the modal dialog is shown).
+    /// The progress of a full analysis in progress. `Some` shows the modal dialog.
     analysis: Option<AnalysisModal>,
-    /// The running (or last finished) realignment; see [`RealignState`].
+    /// The realignment that runs now, or the last one that ended. See [`RealignState`].
     realign: Option<RealignState>,
-    /// Simple mode's pending realignment confirmation — the same [`RealignOffer`] the brief
-    /// supplied, rather than a tuple re-spelling its two fields.
+    /// The realignment confirmation of Simple mode, while it waits. It is the same [`RealignOffer`]
+    /// the brief gave, and not a tuple that writes out its two fields again.
     ///
-    /// Simple mode gets a confirmation step where Advanced does not, and the asymmetry is
-    /// deliberate: the Advanced card sits among alignment internals and states its cost in a
-    /// paragraph its reader is equipped to weigh. Simple mode's reader has been shown a story about
-    /// their ancestors, and should not be able to commit the machine to four hours and 276 GB by
-    /// misjudging one button.
+    /// Simple mode gets a confirmation step, and Advanced does not. That difference is deliberate.
+    /// The Advanced card sits among alignment internals, and it states its cost in a paragraph its
+    /// reader can weigh. The reader of Simple mode has seen a story about their ancestors. One
+    /// button, read wrong, must not commit the machine to four hours and 276 GB.
     simple_realign_confirm: Option<navigator_domain::brief::RealignOffer>,
-    /// Set the moment Cancel is clicked, cleared when the run actually ends.
+    /// The code sets this the moment the user clicks Cancel, and clears it when the run ends.
     ///
-    /// Cancellation is cooperative: the walkers stop at their next check, so there is always a gap
-    /// between the click and the run ending. Without this the UI gave no acknowledgement at all —
-    /// spinner, timer and progress bar carried on and the button stayed live — which is why the
-    /// button read as broken rather than as working-on-it.
+    /// Cancellation is cooperative. The walkers stop at their next check, so there is always a gap
+    /// between the click and the end of the run. Without this the UI gave no acknowledgement at
+    /// all: the spinner, the timer and the progress bar all continued, and the button stayed live.
+    /// That is why the button read as broken, and not as busy.
     cancelling: bool,
-    /// Subject being edited (Some ⇒ the Edit modal is shown).
+    /// The subject the user edits. `Some` shows the Edit modal.
     edit_subject: Option<EditSubject>,
-    /// Vendor-id (kit) association being added (Some ⇒ the add-kit modal is shown).
+    /// The vendor-id (kit) association the user adds. `Some` shows the add-kit modal.
     edit_kit: Option<EditKit>,
-    /// MDKA being edited/added (Some ⇒ the MDKA modal is shown).
+    /// The MDKA the user edits or adds. `Some` shows the MDKA modal.
     edit_mdka: Option<EditMdka>,
-    /// Subject pending delete confirmation (Some ⇒ the confirm dialog is shown).
+    /// The subject that waits for a delete confirmation. `Some` shows the confirm dialog.
     confirm_delete: Option<SampleGuid>,
-    /// Subject pending "clear all data" confirmation (Some ⇒ the confirm dialog is shown).
+    /// The subject that waits for a "clear all data" confirmation. `Some` shows the confirm
+    /// dialog.
     confirm_clear: Option<SampleGuid>,
-    /// Subject pending "reset haplogroup placement" confirmation (Some ⇒ the confirm dialog is shown).
+    /// The subject that waits for a "reset haplogroup placement" confirmation. `Some` shows the
+    /// confirm dialog.
     confirm_reset_haplo: Option<SampleGuid>,
     /// The last batch-import summary, shown in a modal until dismissed.
     batch_import: Option<BatchImportSummary>,
     /// Y-STR-from-sequence concordance for the selected subject: `(guid, source alignment, rows)`.
     str_concordance: Option<(SampleGuid, i64, Vec<StrConcordanceRow>)>,
-    /// Whether a Y-STR-from-sequence call is in flight (the heavy first pass).
+    /// True while a Y-STR-from-sequence call is in progress (the heavy first pass).
     str_running: bool,
     /// Cross-subject Y matches for the selected subject: `(guid, ranked matches)`. Gap §2.
     y_matches: Option<(SampleGuid, Vec<YMatch>)>,
-    /// Whether a Y-match search is in flight.
+    /// True while a Y-match search is in progress.
     y_matches_running: bool,
     /// Project filter for the Y-match search (None ⇒ whole workspace).
     y_match_project: Option<i64>,
     /// Text filter over the Y-match table (by donor / haplogroup).
     y_match_query: String,
-    /// Data-source row pending delete confirmation (Some ⇒ the confirm dialog is shown).
+    /// The data-source row that waits for a delete confirmation. `Some` shows the confirm dialog.
     confirm_data_delete: Option<DataDelete>,
-    /// Subject being assigned to a project: (subject, selected project or None). Some ⇒ picker shown.
+    /// The subject the user assigns to a project: (subject, selected project or None). `Some`
+    /// shows the picker.
     assign_project: Option<(SampleGuid, Option<i64>)>,
-    /// Project being edited (Some ⇒ the project Edit modal is shown).
+    /// The project the user edits. `Some` shows the project Edit modal.
     edit_project: Option<EditProject>,
-    /// Project pending delete confirmation: (id, name). Some ⇒ the confirm dialog is shown.
+    /// The project that waits for a delete confirmation: (id, name). `Some` shows the confirm
+    /// dialog.
     confirm_delete_project: Option<(i64, String)>,
-    /// Sequence run being edited (Some ⇒ the run Edit modal is shown).
+    /// The sequence run the user edits. `Some` shows the run Edit modal.
     edit_run: Option<EditRun>,
     merge_runs: Option<MergeRuns>,
     /// Whether the read-only Y-profile source-audit modal is open (reads the cached `y_profile`).
     audit_y_profile: bool,
-    /// Alignment being edited (Some ⇒ the alignment Edit modal is shown).
+    /// The alignment the user edits. `Some` shows the alignment Edit modal.
     edit_alignment: Option<EditAlignment>,
     /// Current frame's egui time (seconds), captured at the top of `update`.
     frame_time: f64,
-    /// Window-size persistence (all in egui points): the current inner size, the last size written to
-    /// [`AppSettings`], and when it last changed (`frame_time` seconds) for debounced saving.
-    /// `window_restored` guards the one-time restore-and-fit-to-screen; `startup_frames` lets it wait
-    /// until the UI scale (zoom) has settled so the sizes are in a stable unit.
+    /// Window-size persistence, all in egui points. It holds the current inner size, the last size
+    /// that went to [`AppSettings`], and when it last changed (`frame_time` seconds), for a
+    /// debounced save.
+    /// `window_restored` guards the one-time restore and fit to the screen. `startup_frames` lets
+    /// that wait until the UI scale (zoom) settles, so that the sizes are in a stable unit.
     window_size: Option<[f32; 2]>,
     saved_window_size: Option<[f32; 2]>,
     window_size_changed_at: f64,
@@ -740,44 +755,45 @@ pub struct NavigatorApp {
     /// Focused subject remembered from the last session (GUID string), applied once the subject list
     /// loads (`.take()`n so it restores only once).
     pending_restore_subject: Option<String>,
-    /// Signature of the last navigation state persisted to [`AppSettings`] (view | subject | tab), so
-    /// a save fires only when it actually changes.
+    /// The signature of the last navigation state that went to [`AppSettings`] (view | subject |
+    /// tab), so that a save fires only on a real change.
     saved_ui_sig: Option<String>,
     /// Selected primary navigation tab.
     nav: Nav,
     /// Interface mode: Simple (casual single-person briefs) vs. Advanced (full power-user UI).
     ui_mode: UiMode,
-    /// Whether the mode was explicitly pinned (env / settings / user toggle). When `false` the
-    /// first-run workspace heuristic may still adjust it as data loads.
+    /// True when something pinned the mode explicitly: the environment, the settings, or a user
+    /// toggle. With `false`, the first-run workspace heuristic can still change it as data loads.
     ui_mode_pinned: bool,
     /// Precomputed Simple-mode brief for the selected subject `(guid, brief)`; `None` until built.
     subject_brief: Option<(SampleGuid, SubjectBrief)>,
-    /// Whether a Subject Brief build is in flight.
+    /// True while a Subject Brief build is in progress.
     subject_brief_loading: bool,
     /// Free-text filter over the Simple-mode "My DNA" subject selector (matches the donor name).
     simple_subject_filter: String,
-    /// Which Simple-mode panel the left rail has open. Reset to the landing synopsis on every
-    /// subject switch — each person's view starts from their story, not from wherever the last
-    /// person's was left.
+    /// Which Simple-mode panel the left rail has open. It goes back to the first synopsis on every
+    /// subject switch. The view of each person starts from their story, and not from the panel that
+    /// held the last person.
     simple_panel: SimplePanel,
-    /// Whether the local-LLM "AI assistant" is enabled (cached from settings; gates "Polish with AI").
+    /// True when the local-LLM "AI assistant" is on. It comes from the settings cache, and it gates
+    /// "Polish with AI".
     ai_enabled: bool,
     /// AI-assisted narration of the selected subject's brief `(guid, narration)`; `None` until run.
     brief_narration: Option<(SampleGuid, NarratedBrief)>,
-    /// Live narration text accumulating while it streams `(guid, text)`; cleared when the final
-    /// narration arrives.
+    /// The live narration text, which grows while the stream runs, as `(guid, text)`. It clears
+    /// when the final narration arrives.
     narration_stream: Option<(SampleGuid, String)>,
-    /// Whether a brief narration request is in flight.
+    /// True while a brief narration request is in progress.
     narrating: bool,
     /// "Ask my results" chat history for the selected subject (cleared on subject switch).
     chat_history: Vec<ChatTurn>,
-    /// The chat input box + whether an answer is in flight.
+    /// The chat input box, and whether an answer is in progress.
     chat_input: String,
     chat_pending: bool,
-    /// Per-tab "Explain this" (M5) state for the selected subject, all cleared on subject switch:
-    /// the finalized explanations keyed by `(guid, signal)`, the live stream buffer for the one in
-    /// flight, and which `(guid, signal)` is currently being narrated (`None` = idle; only one runs
-    /// at a time, sharing the single worker).
+    /// The "Explain this" (M5) state of each tab, for the selected subject. A subject switch clears
+    /// all of it. It holds the final explanations, with `(guid, signal)` as the key. It also holds
+    /// the live stream buffer for the one in progress, and which `(guid, signal)` the model narrates
+    /// now. `None` means idle. Only one runs at a time, because they share the one worker.
     signal_narration: Vec<(SampleGuid, SignalKind, NarratedBrief)>,
     signal_stream: Option<(SampleGuid, SignalKind, String)>,
     signal_narrating: Option<(SampleGuid, SignalKind)>,
@@ -787,7 +803,8 @@ pub struct NavigatorApp {
     lang: crate::i18n::Lang,
     /// Dark (default) vs light theme.
     dark_mode: bool,
-    /// Whether the one-shot auto-UI-scale probe has run (skipped when a manual scale is persisted).
+    /// True after the one-shot auto-UI-scale probe runs. It does not run when a manual scale is on
+    /// disk.
     scale_probed: bool,
     /// Settings dialog open + its editable form.
     show_settings: bool,
@@ -799,13 +816,15 @@ pub struct NavigatorApp {
     llm_models: Vec<String>,
     llm_testing: bool,
     llm_test_msg: Option<String>,
-    /// Sort + inline per-column filter state for the subjects table.
+    /// The sort state, and the inline filter state of each column, for the subjects table.
     subjects_table_ctl: TableControls,
-    /// Bumped once per worker [`Event`] applied — the invalidation signal for the per-frame view
-    /// caches below. Every field they derive from is written in [`Self::drain_events`], so a change
-    /// of epoch is the one thing they all have to watch. Bumping on *every* event over-invalidates
-    /// (a progress tick rebuilds a table it did not affect) rather than risk showing stale rows: an
-    /// extra rebuild costs one frame, a missed one shows wrong data until the user clicks something.
+    /// This grows by one for each worker [`Event`] the code applies. It is the invalidation signal
+    /// for the view caches below. Every field they derive from comes from [`Self::drain_events`],
+    /// so a change of epoch is the one thing they all have to watch.
+    ///
+    /// A bump on *every* event invalidates too much, because a progress tick rebuilds a table it
+    /// did not touch. That is better than a risk of stale rows. One extra rebuild costs one frame,
+    /// and one that never happens shows wrong data until the user clicks something.
     data_epoch: u64,
     /// Derived display rows for the subjects table (see [`Self::subject_rows`]).
     subject_rows: SubjectRowCache,
@@ -818,57 +837,63 @@ pub struct NavigatorApp {
     /// Collapse the subjects side panel to a thin strip so the detail panel (charts/tables)
     /// gets the full width.
     subjects_collapsed: bool,
-    /// Collapse the projects side panel to a thin strip, handing the detail panel the full width.
+    /// Collapse the projects side panel to a thin strip, and give the detail panel the full width.
     projects_collapsed: bool,
     overview: Vec<ProjectOverview>,
     selected_project: Option<i64>,
-    /// When a subject was opened from a project's report row, the project id to return to (drives
-    /// the detail header's "back to project" button). Cleared on any other navigation.
+    /// When a subject came from the report row of a project, the project id to return to. It drives
+    /// the "back to project" button in the detail header. Any other navigation clears it.
     return_to_project: Option<i64>,
-    /// Per-sample coverage/haplogroup report rows for the selected project.
+    /// The coverage and haplogroup report rows of each sample, for the selected project.
     project_report: Vec<ProjectSampleReport>,
     /// Precomputed Y-STR overview (FTDNA-style chart) for the selected project; `None` until the
     /// background build returns. A boolean tracks the in-flight build so the UI can show a spinner.
     project_str_chart: Option<ProjectStrChart>,
     project_str_loading: bool,
-    /// Cohort Y **block tree** for the selected project; `None` until the background build returns.
-    /// Loaded **lazily on first view of the Tree tab**, not on project select like the STR chart:
-    /// building it fetches and parses a multi-MB haplotree, too much to spend on a tab nobody opened.
+    /// The cohort Y **block tree** for the selected project. It is `None` until the background build
+    /// returns. It loads **lazily, on the first view of the Tree tab**, and not on a project select
+    /// as the STR chart does. A build reads and parses a multi-MB haplotree, and that is too much to
+    /// spend on a tab nobody opened.
     project_blocktree: Option<ProjectBlockTree>,
     project_blocktree_loading: bool,
     /// Blocks (by node id) the user expanded to reveal their equivalent SNPs and full member list.
     /// Zoom factor for the block-tree canvas (1.0 = natural size).
     blocktree_zoom: f32,
-    /// Candidate branch open for review (its synthetic node id), if any. A candidate is an
-    /// inference, so it gets a surface that shows the evidence rather than asking for trust.
+    /// The candidate branch open for review, as its synthetic node id, when there is one. A
+    /// candidate is an inference, so it gets a surface that shows the evidence, and does not ask for
+    /// trust.
     blocktree_review: Option<i64>,
-    /// Block whose member roster is showing beside the tree. The Big Tree keeps the men in a table
-    /// rather than in the diagram; this is that table, scoped to what the user clicked.
+    /// The block whose member roster sits beside the tree. The Big Tree keeps the men in a table,
+    /// and not in the diagram. This is that table, held to what the user clicked.
     blocktree_selected: Option<i64>,
-    /// Recentre the canvas on the root next frame — set when a tree first arrives, so the view does
-    /// not open on the empty left margin of a canvas far wider than any viewport.
+    /// Centre the canvas on the root again on the next frame. The code sets it when a tree first
+    /// arrives. The view then does not open on the empty left margin of a canvas far wider than any
+    /// viewport.
     blocktree_recentre: bool,
     samples: Vec<Biosample>,
     /// Every biosample (the project-independent subjects list).
     all_biosamples: Vec<Biosample>,
-    /// Per-subject Y/mt terminal haplogroups for the list columns (`guid → (Y, mt)`).
+    /// The terminal Y and mt haplogroups of each subject, for the list columns (`guid → (Y, mt)`).
     haplo_summary: std::collections::HashMap<SampleGuid, (Option<String>, Option<String>)>,
-    /// Per-subject analysis status (Pending/Complete) for the subjects-list Status column. A subject
-    /// absent from the map has no alignments to analyze (shown with no status).
+    /// The analysis status of each subject (Pending or Complete), for the Status column of the
+    /// subjects list. A subject the map does not hold has no alignment to analyze, and it appears
+    /// with no status.
     subject_status: std::collections::HashMap<SampleGuid, SubjectAnalysisStatus>,
     selected_sample: Option<SampleGuid>,
     runs: Vec<SequenceRun>,
     /// Donor-level haplogroup consensus for the selected subject (Y, mtDNA).
     consensus_y: Option<Consensus>,
     consensus_mt: Option<Consensus>,
-    /// YFull-style descent reports for the selected subject, loaded lazily per `DnaType` and cached
-    /// as `Some(report)` / `None` (placed-but-empty), so a built-once result is not re-fetched; plus
-    /// the (guid, dna) pairs currently loading. All cleared on subject switch.
+    /// Descent reports in the YFull style, for the selected subject. Each `DnaType` loads lazily,
+    /// and the cache holds `Some(report)`, or `None` when placement reached it and it is empty. A
+    /// result that built one time never loads again. This also holds the (guid, dna) pairs that
+    /// load now. A subject switch clears all of it.
     descent_reports: Vec<(SampleGuid, DnaType, Option<DescentReport>)>,
     descent_loading: Vec<(SampleGuid, DnaType)>,
-    /// Per-marker branch report for the selected subject: the node-name text inputs (Y / mt), the
-    /// last-loaded report cached as `Some(report)` / `None` (no alignment), and the (guid, dna) pairs
-    /// currently loading. Cleared on subject switch. Node-triggered (a Load button), not lazy.
+    /// The branch report of each marker, for the selected subject. It holds the node-name text
+    /// inputs (Y and mt), and the last report the cache took, as `Some(report)`, or `None` when
+    /// there is no alignment. It also holds the (guid, dna) pairs that load now. A subject switch
+    /// clears it. A node starts it, from a Load button, and it is not lazy.
     branch_node_y: String,
     branch_node_mt: String,
     branch_reports: Vec<(SampleGuid, DnaType, Option<navigator_app::BranchReport>)>,
@@ -880,7 +905,8 @@ pub struct NavigatorApp {
     heteroplasmy: Option<(i64, Vec<HeteroplasmySite>)>,
     /// STR profiles for the selected subject.
     str_profiles: Vec<StrProfile>,
-    /// Y-STR report view-state: which view, which provider (when multiple), and the marker filter.
+    /// The view state of the Y-STR report: which view, which provider when there is more than one,
+    /// and the marker filter.
     str_report_view: StrReportView,
     str_provider: Option<String>,
     str_marker_filter: String,
@@ -890,7 +916,7 @@ pub struct NavigatorApp {
     chip_profiles: Vec<ChipProfile>,
     /// mtDNA sequences for the selected subject.
     mtdna_sequences: Vec<MtdnaSequence>,
-    /// rCRS-relative mutation lists per mtDNA sequence id (loaded on demand).
+    /// The mutation list against rCRS of each mtDNA sequence id. It loads on demand.
     mtdna_variants: std::collections::HashMap<i64, Vec<MtVariant>>,
     /// Last mtDNA haplogroup assignment: (sequence id, assignment).
     mtdna_haplogroup: Option<(i64, HaploAssignment)>,
@@ -903,7 +929,7 @@ pub struct NavigatorApp {
     auto_sub: AutoSub,
     /// Full Y placement report (ranked candidates + lineage SNP evidence) for an alignment.
     y_report: Option<YReport>,
-    /// True while the haplogroup report is being built.
+    /// True while a build of the haplogroup report runs.
     y_report_running: bool,
     /// Last mtDNA-from-alignment haplogroup assignment: (alignment id, assignment).
     mt_haplogroup: Option<(i64, HaploAssignment)>,
@@ -916,7 +942,8 @@ pub struct NavigatorApp {
     ancient_ancestry: Option<AncestryResult>,
     /// Reference PC1/PC2 centroids for the PCA scatter, keyed by alignment_id (lazy-loaded).
     pca_reference: Option<(i64, PcaCentroids)>,
-    /// Which PCA-reference key we have already dispatched a load for (avoids re-sending every frame).
+    /// The PCA-reference key we already dispatched a load for. It stops a second dispatch on every
+    /// frame.
     pca_reference_attempted: Option<i64>,
     /// Donor-level private-Y union across the subject's sources.
     donor_private_y: Option<PrivateBucket>,
@@ -924,37 +951,39 @@ pub struct NavigatorApp {
     y_profile: Option<YProfile>,
     /// Y-variant profile status filter (None = all).
     y_profile_filter: Option<YVariantStatus>,
-    /// Text search across the variant/SNP tables (by SNP name / site), per table.
+    /// Text search over the variant and SNP tables, by SNP name or site, one for each table.
     y_profile_query: String,
     mt_profile_query: String,
     auto_profile_query: String,
     private_y_query: String,
     str_seq_query: String,
-    /// Catalogued Y-SNP names at variant positions (`position → name`), used to annotate the two
-    /// Y-SNP tables' position-only / novel calls. Resolved once per subject from the Y-SNP dictionary.
+    /// The catalogued Y-SNP names at variant positions (`position → name`). They annotate the
+    /// position-only and novel calls of the two Y-SNP tables. The Y-SNP dictionary resolves them one
+    /// time for each subject.
     y_snp_names: std::collections::HashMap<i64, String>,
-    /// True once we have dispatched the Y-SNP-name resolution for the current subject (avoids re-sending).
+    /// True after we dispatch the Y-SNP-name resolution for the current subject. It stops a second
+    /// dispatch.
     y_snp_names_requested: bool,
-    /// True while the (expensive) Y-variant profile is being built.
+    /// True while a build of the Y-variant profile runs. That build has a high cost.
     y_profile_loading: bool,
     /// The selected subject's multi-source mtDNA consensus profile.
     mt_profile: Option<navigator_app::ConsensusProfile>,
     /// mtDNA consensus-profile status filter (None = all).
     mt_profile_filter: Option<YVariantStatus>,
-    /// True while the (expensive) mtDNA consensus profile is being built.
+    /// True while a build of the mtDNA consensus profile runs. That build has a high cost.
     mt_profile_loading: bool,
     /// The selected subject's multi-source autosomal (diploid 0/1/2) consensus profile.
     auto_profile: Option<navigator_app::DiploidProfile>,
     /// Autosomal consensus status filter (None = all).
     auto_profile_filter: Option<YVariantStatus>,
-    /// True while the (expensive) autosomal consensus profile is being built.
+    /// True while a build of the autosomal consensus profile runs. That build has a high cost.
     auto_profile_loading: bool,
-    /// Whether the consensus-driven donor ancestry estimate is in flight.
+    /// True while the donor ancestry estimate from the consensus is in progress.
     estimating_donor_ancestry: bool,
-    /// Whether the heavy deep (ancient) ancestry estimate is in flight.
+    /// True while the heavy deep (ancient) ancestry estimate is in progress.
     estimating_deep_ancestry: bool,
-    /// Local-ancestry painting: (alignment id, result with per-side segments + side labels).
-    /// `painting_running` while genotyping.
+    /// Local-ancestry painting: (alignment id, result). The result holds the segments of each side,
+    /// and the side labels. `painting_running` is true while the genotyping runs.
     painting: Option<(i64, PaintingResult)>,
     painting_running: bool,
     /// Runs-of-homozygosity result for the selected subject. `roh_running` while the HMM computes.
@@ -971,7 +1000,7 @@ pub struct NavigatorApp {
     finding_private_y: bool,
     /// Callable-region BED (external mask), reused across private-Y runs.
     y_mask_path: Option<PathBuf>,
-    /// Use the sample's own callable-Y BED (self-referential) rather than an external mask.
+    /// Use the callable-Y BED of the sample itself (self-referential), and not an external mask.
     y_self_mask: bool,
     selected_run: Option<i64>,
     alignments: Vec<Alignment>,
@@ -979,16 +1008,17 @@ pub struct NavigatorApp {
     /// An alignment to auto-select once its run's alignments load (subject-centric default).
     pending_alignment: Option<i64>,
     coverage: Option<Coverage>,
-    /// Cached coverage per alignment for the selected run's Data Sources rows (so each row shows
-    /// coverage/callable without first selecting that alignment). Keyed by alignment id.
+    /// The cached coverage of each alignment, for the Data Sources rows of the selected run. Each
+    /// row then shows coverage and callable before anybody selects that alignment. The key is the
+    /// alignment id.
     coverage_by_aln: std::collections::HashMap<i64, Coverage>,
-    /// Genome-region metadata (cytoband ideogram) for the selected alignment's build, `(alignment_id,
-    /// regions)`. Lazily fetched when the Ideogram tab is opened.
+    /// Genome-region metadata (the cytoband ideogram) for the build of the selected alignment, as
+    /// `(alignment_id, regions)`. It loads lazily when the user opens the Ideogram tab.
     genome_regions: Option<(i64, std::sync::Arc<navigator_app::GenomeRegions>)>,
-    /// True while the cytoBand fetch is in flight.
+    /// True while the cytoBand read is in progress.
     loading_regions: bool,
-    /// The alignment we have already kicked off (or completed) a region load for — avoids re-firing
-    /// the fetch every frame, including after a failure.
+    /// The alignment we already started a region load for, or completed one for. It stops a second
+    /// read on every frame, and after a failure too.
     regions_attempted: Option<i64>,
     /// Which contig's depth histogram the coverage view charts: `None` = whole-genome histogram,
     /// `Some(i)` = `coverage.contig_coverage_stats[i]`.
@@ -1004,19 +1034,20 @@ pub struct NavigatorApp {
     denovo: std::collections::HashMap<String, Vec<DenovoCall>>,
     running_denovo: bool,
     all_alignments: Vec<Alignment>,
-    /// `(project_id, eligible alignment ids)` for the project realignment card — answered by the
-    /// app, because the rule is the app's and the number has to be scoped to the project rather
-    /// than to the workspace.
+    /// `(project_id, eligible alignment ids)` for the project realignment card. The app answers it,
+    /// because the rule belongs to the app, and the number must cover the project, and not the whole
+    /// workspace.
     project_realignable: Option<(i64, Vec<i64>)>,
-    /// The project a count has already been requested for, so the card does not re-ask every frame
-    /// (including after a failure). Same shape as `regions_attempted`.
+    /// The project that already has a count request. The card then does not ask again on every
+    /// frame, and it does not ask again after a failure. It has the same shape as
+    /// `regions_attempted`.
     project_realignable_asked: Option<i64>,
     /// Chip-compatible IBD compare: the two picked sources (each a WGS alignment or an imported chip).
     ibd_src_a: Option<navigator_app::IbdSource>,
     ibd_src_b: Option<navigator_app::IbdSource>,
     /// Subject-level (consensus) IBD compare: the other subject picked for comparison.
     ibd_other_subject: Option<SampleGuid>,
-    /// Whether the consensus-compare subject picker's filter + list is revealed.
+    /// True when the filter and the list of the consensus-compare subject picker are open.
     ibd_other_picking: bool,
     /// Filter text for that picker.
     ibd_other_filter: String,
@@ -1026,46 +1057,49 @@ pub struct NavigatorApp {
     identity: Option<IdentityVerification>,
     /// Federated IBD: pseudonymous match suggestions fetched from the AppView.
     ibd_suggestions: Vec<IbdSuggestion>,
-    /// Whether a suggestions fetch is in flight (drives the spinner).
+    /// True while a read of the suggestions is in progress. It drives the spinner.
     loading_ibd_suggestions: bool,
-    /// Per-candidate introduction status, keyed by `suggested_sample_guid` (e.g. "PENDING").
+    /// The introduction status of each candidate, with `suggested_sample_guid` as the key, for
+    /// example "PENDING".
     ibd_intros: std::collections::HashMap<String, String>,
     /// The selected subject's persisted IBD exchange results.
     exchange_results: Vec<navigator_app::StoredIbdExchange>,
-    /// True while an inbox refresh / consent / exchange run is in flight.
+    /// True while an inbox refresh, a consent, or an exchange run is in progress.
     exchange_busy: bool,
-    /// The matching ledger: every conversation, whatever its stage. Replaces the per-card view of
-    /// the same data, and unlike `ibd_intros` it survives a restart because the app persists it.
+    /// The matching ledger: every conversation, whatever its stage. It replaces the view of the
+    /// same data on each card. `ibd_intros` does not survive a restart, and this does, because the
+    /// app persists it.
     matching: Vec<navigator_app::MatchingEntry>,
-    /// Which stage of the Matching panel is showing.
+    /// Which stage of the Matching panel is on the screen.
     matching_tab: MatchingTab,
-    /// Candidates dismissed this session, hidden immediately rather than waiting for a refetch
-    /// (the AppView keeps the authoritative dismissal).
+    /// The candidates the user dismissed in this session. They go at once, and the code does not
+    /// wait for a second read. The AppView keeps the authoritative dismissal.
     dismissed_candidates: std::collections::HashSet<String>,
     /// The local subject whose dosages an exchange will use. Defaults to the selected subject.
     matching_subject: Option<SampleGuid>,
-    /// Whether the subject picker's filter + list is revealed (it is a reveal, not a dropdown, so a
-    /// 10k-subject workspace costs only the rows on screen).
+    /// True when the filter and the list of the subject picker are open. It is a reveal, and not a
+    /// dropdown, so a workspace of 10k subjects costs only the rows on the screen.
     matching_subject_picking: bool,
     /// Filter text for that picker.
     matching_subject_filter: String,
-    /// Request URI whose consent decision is being confirmed, with what we know of the request.
+    /// The request URI whose consent decision waits for a confirmation, with what we know of the
+    /// request.
     consent_prompt: Option<navigator_app::MatchingEntry>,
     /// Signed-in account DID, or `None`. Gates the "Publish" actions.
     account: Option<String>,
     /// Whether the last PDS write reached the server (offline indicator).
     online: bool,
-    /// Outbox rows still awaiting a successful push (the "N pending" sync indicator).
+    /// The outbox rows that still wait for a push to succeed (the "N pending" sync indicator).
     sync_pending: i64,
-    /// True while a PULL reconcile is in flight.
+    /// True while a PULL reconcile is in progress.
     pulling: bool,
     logging_in: bool,
     publishing: bool,
-    /// A batch project-directory import is in flight (disables the button).
+    /// True while a batch project-directory import is in progress. It disables the button.
     importing: bool,
-    /// The dir to retry importing once needed references are downloaded.
+    /// The dir to import a second time, after the necessary references arrive.
     pending_import_dir: Option<PathBuf>,
-    /// Reference builds an import is waiting on (prompt the user to download).
+    /// The reference builds an import waits on. Prompt the user to download them.
     reference_needs: Vec<BuildNeed>,
     /// In-flight reference download: (build, received, total).
     reference_progress: Option<(String, u64, Option<u64>)>,
@@ -1074,42 +1108,45 @@ pub struct NavigatorApp {
     /// A newer installer is available (drives the update-notification modal). Set once by the
     /// startup `CheckForUpdate`; cleared when the user dismisses it.
     update_info: Option<navigator_app::UpdateInfo>,
-    /// A project-wide analyze pass is running (disables the report's analyze button).
+    /// True while an analyze pass over the whole project runs. It disables the analyze button of
+    /// the report.
     analyzing: bool,
-    /// Streaming deep-analyze progress: `(done, total, current_sample, fraction)` while running.
+    /// Deep-analyze progress from the stream: `(done, total, current_sample, fraction)` while the
+    /// pass runs.
     deep_progress: Option<(usize, usize, String, f32)>,
     /// Workspace-chore survey (Dashboard → Maintenance). `None` until the user asks for it: two of
     /// the three chores cost real work to measure, one a multi-MB tree fetch.
     maintenance: Option<Vec<navigator_app::ChoreSurvey>>,
-    /// True while the survey is in flight, so the button can say so.
+    /// True while the survey is in progress, so that the button can say so.
     maintenance_surveying: bool,
-    /// The chore currently running, with its progress line.
+    /// The chore that runs now, with its progress line.
     chore_running: Option<(navigator_app::Chore, usize, usize, String, f32)>,
     /// What the last chore did, kept on screen so a finished job is not just a vanished bar.
     chore_last: Option<(navigator_app::Chore, navigator_app::ChoreOutcome)>,
-    /// The dry-run FTDNA import plan being reviewed (drives the review modal).
+    /// The dry-run FTDNA import plan under review. It drives the review modal.
     ftdna_plan: Option<FtdnaImportPlan>,
-    /// The admin's per-kit resolutions for the fuzzy rows in [`Self::ftdna_plan`].
+    /// The resolution the admin chose for each kit, for the fuzzy rows in [`Self::ftdna_plan`].
     ftdna_resolutions: std::collections::BTreeMap<String, FtdnaResolution>,
     /// The selected subject's imported genealogy (vendor ids + FTDNA member + MDKA), for the
     /// Overview card. `(guid, data)` so a stale bundle from a prior subject is not shown.
     genealogy: Option<(SampleGuid, FtdnaGenealogy)>,
     /// The current project's Y-STR clustering, keyed by project id (so a stale one is not shown).
     project_clustering: Option<(i64, YstrClustering)>,
-    /// True while the project Y-STR clustering is computing.
+    /// True while the project Y-STR clustering runs.
     clustering_running: bool,
     /// Active project detail sub-tab (Members vs Report).
     project_tab: ProjectTab,
     /// Filter for the project Members list (kit / name / branch substring).
     member_filter: String,
-    /// Sort + inline per-column filter state for the project Report table.
+    /// The sort state, and the inline filter state of each column, for the project Report table.
     report_table_ctl: TableControls,
     // ---- Community (social) ------------------------------------------------
     /// Active Community sub-tab (Support / Feed / Notifications).
     community_tab: CommunityTab,
     /// The signed-in account's support threads.
     support_threads: Vec<navigator_app::SocialThreadSummary>,
-    /// The opened thread's `(conversation_id, messages)` — `None` when viewing the list.
+    /// The `(conversation_id, messages)` of the open thread. It is `None` while the list is on the
+    /// screen.
     open_thread: Option<(String, Vec<navigator_app::SocialMessage>)>,
     /// The loaded community feed.
     feed: Option<navigator_app::FeedView>,
@@ -1137,19 +1174,20 @@ pub struct NavigatorApp {
     thread_reply: String,
     feed_content: String,
     feed_topic: String,
-    /// Opt-in: also publish the next community post to the signed-in PDS as a federated
-    /// `feed.post` record (roadmap 3b). Off by default — publishing to your own repo is an
+    /// Opt-in: also publish the next community post to the PDS that signed in, as a federated
+    /// `feed.post` record (roadmap 3b). It is off by default, because a write to your own repo is an
     /// explicit, portable public act.
     feed_publish_pds: bool,
     forms: Forms,
     status: String,
     /// The file-level diagnosis behind the last failed alignment command, when there was one.
-    /// Set by [`Event::Diagnosed`], shown in a modal, and cleared when the user dismisses it or
-    /// starts something new. `Some` is what makes the status bar's "Details" affordance appear —
-    /// an error with no diagnosis must not offer one.
+    /// [`Event::Diagnosed`] sets it, a modal shows it, and it clears when the user dismisses it or
+    /// starts something new. `Some` is what makes the "Details" control of the status bar appear.
+    /// An error with no diagnosis must not offer one.
     diagnosis: Option<String>,
-    /// Whether the diagnosis modal is open. Separate from [`Self::diagnosis`] so dismissing the
-    /// modal keeps the report reachable from the status bar instead of destroying it.
+    /// True when the diagnosis modal is open. It is separate from [`Self::diagnosis`], so that a
+    /// dismiss of the modal keeps the report reachable from the status bar, and does not destroy
+    /// it.
     show_diagnosis: bool,
 }
 
@@ -1161,30 +1199,32 @@ pub(crate) const ACCENT: egui::Color32 = egui::Color32::from_rgb(45, 125, 246);
 /// Destructive-action red (Delete buttons, the confirm modals, unconfirmed rows).
 const DANGER: egui::Color32 = egui::Color32::from_rgb(220, 60, 60);
 
-/// Rows shown before the heavy variant/site tables (Y/mt/autosomal consensus profiles, private-Y,
-/// de-novo SNPs) scroll internally. On a WGS these run thousands of rows; bounding them keeps the
-/// detail page navigable instead of forcing endless scrolling — but the pane must be tall enough to
-/// be useful (the user wants 20-30 rows, not a 3-row slot).
+/// How many rows the heavy variant and site tables show before they scroll inside themselves. Those
+/// tables are the Y, mt and autosomal consensus profiles, private-Y, and the de-novo SNPs. On a WGS
+/// they run thousands of rows. A limit keeps the detail page easy to move around, with no endless
+/// scroll. But the pane must be tall enough to be useful: the user wants 20-30 rows, and not a slot
+/// of 3.
 const PROFILE_TABLE_ROWS: usize = 26;
 
-/// Explicit height for a scrollable profile table that shows up to [`PROFILE_TABLE_ROWS`] rows of the
-/// given `count`, then scrolls. Sized to the content when there are fewer rows (no empty pane).
-/// Computed (rather than a fixed constant) because a nested `ScrollArea` with vertical `auto_shrink`
-/// collapses to a few rows inside the page scroll — we pair this with `auto_shrink([false, false])`.
+/// An explicit height for a profile table that scrolls. It shows as many as
+/// [`PROFILE_TABLE_ROWS`] rows of the given `count`, then it scrolls. With fewer rows it takes the
+/// size of its content, so there is no empty pane. The code calculates it, and does not use a fixed
+/// constant. A nested `ScrollArea` with vertical `auto_shrink` collapses to a few rows inside the
+/// page scroll. Pair this with `auto_shrink([false, false])`.
 fn profile_pane_height(ui: &egui::Ui, count: usize) -> f32 {
     let row_h = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y + 3.0;
     let rows = count.clamp(1, PROFILE_TABLE_ROWS) as f32;
     row_h * (rows + 1.0) // +1 for the header row
 }
 
-/// Apply the Decoding-Us workbench look: a dark (or light) palette with the accent blue,
-/// rounded widgets, and roomier spacing — the visual base that closes most of the gap to the
-/// Scala Workbench. Re-applied on theme toggle.
+/// Apply the Decoding-Us workbench look: a dark or light palette with the accent blue, rounded
+/// widgets, and more room between them. That is the visual base that closes most of the gap to the
+/// Scala Workbench. A theme toggle applies it again.
 fn apply_theme(ctx: &egui::Context, dark: bool) {
     use egui::{Color32, Rounding, Stroke};
-    // Pin the preference so egui stops following the OS theme — otherwise `theme_preference`
-    // defaults to `System` and our styled visuals get clobbered by the host (e.g. a light macOS
-    // would show light even with Dark selected in Settings).
+    // Pin the preference, so that egui stops following the theme of the OS. If not,
+    // `theme_preference` defaults to `System`, and the host writes over our styled visuals. A light
+    // macOS would then show light, even with Dark selected in Settings.
     ctx.set_theme(if dark {
         egui::ThemePreference::Dark
     } else {
@@ -1271,9 +1311,11 @@ impl NavigatorApp {
         let _ = tx.send(Command::VerifySourceFiles); // flag any imported file that moved/disappeared
         let _ = tx.send(Command::LoadAssetStatus); // ancestry/IBD "data sources" line
 
-        // Check for a newer installer at startup (unless the user opted out). Non-fatal — a failed
-        // check just logs to the status line; the app never auto-updates.
-        // One read of settings.json for the whole constructor — it was loaded six separate times.
+        // Check for a newer installer at startup, unless the user opted out. It is not fatal: a
+        // check that fails only logs to the status line, and the app never updates itself.
+        //
+        // One read of settings.json for the whole constructor. The code used to load it six
+        // separate times.
         let settings = AppSettings::load();
         if settings.check_for_updates != Some(false) {
             let _ = tx.send(Command::CheckForUpdate);
@@ -1281,13 +1323,15 @@ impl NavigatorApp {
         // Persisted theme wins; default dark. (Must match `dark_mode` below.)
         let dark = !matches!(settings.theme.as_deref(), Some("light"));
         apply_theme(&cc.egui_ctx, dark);
-        // Persisted UI scale (egui zoom) — fixes tiny text on a native-4K display the OS reports at
-        // scale factor 1.0. egui's keyboard zoom (Cmd +/-/0) also works but is not persisted.
+        // The UI scale (the egui zoom) from disk. It fixes tiny text on a native-4K display that
+        // the OS reports at scale factor 1.0. The keyboard zoom of egui (Cmd +/-/0) also works, and
+        // nothing persists that.
         cc.egui_ctx.set_zoom_factor(resolved_ui_scale());
-        // Restore the last navigation position (view / focused subject / detail tab). The subject is
-        // applied once the list loads (see the `AllBiosamples` handler); nav/tab apply immediately
-        // (nav is then reconciled to the interface mode by `normalize_for_mode`). Seed `saved_ui_sig`
-        // with the restored intent so a matching restore does not trigger a redundant re-save.
+        // Restore the last navigation position: the view, the focused subject, and the detail tab.
+        // The subject applies after the list loads (see the `AllBiosamples` handler). The nav and
+        // the tab apply at once, and `normalize_for_mode` then reconciles the nav to the interface
+        // mode. Fill `saved_ui_sig` with the restored intent, so that a restore that matches does
+        // not start a save nobody needs.
         let restore = &settings;
         let restored_nav = restore
             .last_nav
@@ -1336,7 +1380,8 @@ impl NavigatorApp {
             edit_alignment: None,
             frame_time: 0.0,
             window_size: None,
-            // The remembered size (if any) — seeded so an unchanged window never re-writes settings.
+            // The remembered size, when there is one. It starts here, so that an unchanged window
+            // never writes the settings again.
             saved_window_size: settings.window_size,
             window_size_changed_at: 0.0,
             window_restored: false,
@@ -1575,15 +1620,18 @@ impl NavigatorApp {
         }
     }
 
-    /// Remember the window size across launches and fit it to the screen. `screen_rect`,
-    /// `monitor_size`, and [`egui::ViewportCommand::InnerSize`] are all in egui points at the current
-    /// zoom, so persisting `screen_rect` and restoring at the same (persisted) zoom round-trips exactly.
+    /// Remember the window size across launches, and fit it to the screen. `screen_rect`,
+    /// `monitor_size` and [`egui::ViewportCommand::InnerSize`] are all in egui points at the current
+    /// zoom. So a `screen_rect` on disk, restored at the same zoom from disk, round-trips exactly.
     ///
-    /// The one-time restore/fit runs via `InnerSize` at runtime — not the startup `ViewportBuilder`,
-    /// which sizes before the UI scale is applied — once the zoom has settled (`startup_frames >= 2`,
-    /// `scale_probed`) and the monitor size is known: the remembered size is clamped to fit the screen
-    /// (an over-large size from a bigger display shrinks). Afterwards, size changes are saved to
-    /// [`AppSettings`], debounced until they settle and once more on window close.
+    /// The one-time restore and fit runs through `InnerSize` at runtime. It does not use the startup
+    /// `ViewportBuilder`, which sets the size before the UI scale applies. It waits until the zoom
+    /// settles (`startup_frames >= 2` and `scale_probed`), and until the monitor size is there. It
+    /// then clamps the remembered size to fit the screen, so a size that is too large, from a bigger
+    /// display, shrinks.
+    ///
+    /// After that, a change of size goes to [`AppSettings`]. The code debounces the write until the
+    /// size settles, and it writes one more time on window close.
     fn manage_window_geometry(&mut self, ctx: &egui::Context) {
         self.startup_frames = self.startup_frames.saturating_add(1);
         let size = ctx.screen_rect().size();
@@ -1596,7 +1644,7 @@ impl NavigatorApp {
         // One-time restore + fit-to-screen, after the zoom has settled so `cur`/target share a unit.
         if !self.window_restored {
             let monitor = ctx.input(|i| i.viewport().monitor_size);
-            // Wait until the UI scale (zoom) is settled and the monitor size is known.
+            // Wait until the UI scale (zoom) settles, and until the monitor size is there.
             let Some(mon) = monitor.filter(|_| self.scale_probed && self.startup_frames >= 2) else {
                 ctx.request_repaint(); // keep frames coming until we can restore
                 return; // don't track/save until the restore has run
@@ -1609,16 +1657,17 @@ impl NavigatorApp {
             self.window_restored = true;
         }
 
-        // Keep `self.window_size` current (the on-exit save reads it) and persist shortly after a
-        // resize settles, coalescing a drag into one write. The *definitive* final save is
-        // [`Self::on_exit`], reached on window close and on macOS Cmd+Q — which terminates via
-        // `applicationWillTerminate:` and never runs a `close_requested` update frame, so relying on
-        // that flag alone lost the size. This in-loop save just means a hard kill still has a recent
-        // size on disk.
+        // Keep `self.window_size` current, because the on-exit save reads it. Persist shortly after
+        // a resize settles, so that one drag becomes one write. The *definitive* final save is
+        // [`Self::on_exit`], which a window close reaches, and so does Cmd+Q on macOS. Cmd+Q
+        // terminates through `applicationWillTerminate:`, and it never runs a `close_requested`
+        // update frame, so that flag alone lost the size. This save inside the loop means that a
+        // hard kill still leaves a recent size on disk.
         if self.window_size != Some(cur) {
             self.window_size = Some(cur);
             self.window_size_changed_at = self.frame_time;
-            // Ensure a frame fires after the resize stops so the settled save runs even if idle.
+            // Make sure a frame fires after the resize stops, so that the settled save runs even
+            // when nothing else happens.
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
         if self.frame_time - self.window_size_changed_at >= 0.5 {
@@ -1626,9 +1675,9 @@ impl NavigatorApp {
         }
     }
 
-    /// Write the window size to [`AppSettings`] (load-modify-save, so other settings are preserved),
-    /// skipping the write when it already matches disk. Shared by the debounced in-loop save and the
-    /// on-exit save.
+    /// Write the window size to [`AppSettings`]. It loads, changes and saves, so that the other
+    /// settings stay. It drops the write when the value already matches disk. The debounced save
+    /// inside the loop, and the on-exit save, both use it.
     fn persist_window_size(&mut self, size: [f32; 2]) {
         if self.saved_window_size == Some(size) {
             return;
@@ -1650,13 +1699,13 @@ impl NavigatorApp {
         )
     }
 
-    /// Persist the navigation position (view / focused subject / detail tab) to [`AppSettings`] when it
-    /// changes, so the next launch reopens where the user left off. Called once per frame; the
-    /// signature guard means a write happens only on an actual navigation change (load-modify-save, so
-    /// the window size and every other setting are preserved).
+    /// Persist the navigation position to [`AppSettings`] when it changes: the view, the focused
+    /// subject, and the detail tab. The next launch then opens where the user left off. This runs on
+    /// each frame, and the signature guard means a write happens only on a real navigation change.
+    /// It loads, changes and saves, so that the window size and every other setting stay.
     fn persist_ui_state(&mut self) {
-        // Hold off until the one-time subject restore has been applied (consumed once the subject list
-        // first loads). Otherwise the early frames — before any subject is selected — would overwrite
+        // Wait until the one-time subject restore applies, which happens when the subject list
+        // first loads. If not, the early frames, before anything selects a subject, would write over
         // the remembered subject with `None`.
         if self.pending_restore_subject.is_some() {
             return;
@@ -1676,9 +1725,10 @@ impl NavigatorApp {
 }
 
 impl eframe::App for NavigatorApp {
-    /// Final, reliable window-size save. eframe calls this on shutdown (from `save_and_destroy` on
-    /// `LoopExiting`), which macOS Cmd+Q reaches via `applicationWillTerminate:` — a path that runs no
-    /// `close_requested` update frame. `self.window_size` is kept current by `manage_window_geometry`.
+    /// The final, reliable window-size save. eframe calls it on shutdown, from `save_and_destroy` on
+    /// `LoopExiting`. Cmd+Q on macOS reaches that through `applicationWillTerminate:`, and that path
+    /// runs no `close_requested` update frame. `manage_window_geometry` keeps `self.window_size`
+    /// current.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if let Some(size) = self.window_size {
             self.persist_window_size(size);
@@ -1690,13 +1740,15 @@ impl eframe::App for NavigatorApp {
         self.frame_time = ctx.input(|i| i.time);
         run_auto_scale(&mut self.scale_probed, &mut self.settings_form, ctx);
         self.manage_window_geometry(ctx);
-        // While an analysis runs, keep repainting so the spinner/elapsed timer animate even
-        // during a long step that emits no events (e.g. whole-genome coverage).
+        // While an analysis runs, keep the paint going, so that the spinner and the elapsed timer
+        // animate. That holds even during a long step that emits no event, for example whole-genome
+        // coverage.
         if self.analysis.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
         }
         self.drain_events();
-        // Mode upkeep: first-run heuristic (until pinned) + auto-select the sole subject in Simple.
+        // Mode upkeep: the first-run heuristic, until something pins the mode, and the auto-select
+        // of the one subject in Simple.
         self.apply_ui_mode_heuristic();
         self.auto_select_single_subject();
         self.handle_file_drops(ctx);
@@ -1717,9 +1769,10 @@ impl eframe::App for NavigatorApp {
                     )
                     .on_hover_text(self.tr("status.pendingHint"));
                 }
-                // PULL reconcile — a PDS-repo op, so it needs a real PDS (OAuth) account. A local
-                // did:key identity (federation/exchange only) has no PDS repo → show it disabled with
-                // a reason rather than letting it fail with a confusing "not signed in".
+                // PULL reconcile is an operation on a PDS repo, so it needs a real PDS (OAuth)
+                // account. A local did:key identity covers federation and exchange only, and it has
+                // no PDS repo. So show the control disabled, with a reason. Do not let it fail with
+                // a "not signed in" that puzzles the user.
                 if let Some(acct) = self.account.clone() {
                     let is_pds = !acct.starts_with("did:key:");
                     ui.separator();
@@ -1737,15 +1790,15 @@ impl eframe::App for NavigatorApp {
                 ui.separator();
                 ui.label(egui::RichText::new(self.tr("status.label")).weak());
                 ui.label(&self.status);
-                // Only offered when a diagnosis exists — an error without one must not imply
-                // there is more to see. Re-opens the modal after it has been dismissed.
+                // This appears only when a diagnosis exists, because an error with none must not
+                // suggest there is more to see. It opens the modal again after a dismiss.
                 if self.diagnosis.is_some() && ui.button(self.tr("status.details")).clicked() {
                     self.show_diagnosis = true;
                 }
             });
         });
-        // The action bar's batch/compare/add-to-project affordances are power-user features —
-        // Advanced only.
+        // The batch, compare and add-to-project controls of the action bar are power-user
+        // features, and they appear in Advanced only.
         if self.nav == Nav::Subjects && self.ui_mode == UiMode::Advanced {
             self.action_bar(ctx);
         }
@@ -1791,9 +1844,9 @@ impl eframe::App for NavigatorApp {
 /// Render a depth histogram (`bin d` = bases observed at depth `d`, top bin = ≥255) as an
 const STR_CONFLICT: egui::Color32 = egui::Color32::from_rgb(220, 150, 60);
 
-/// FTDNA/YSEQ-style By-Panel view: markers grouped into tiers (Y-12 / Y-25 / …), each tier rendered
-/// as transposed mini-grids (marker-name row over value row, ≤12 markers wide). Conflicting markers
-/// are amber.
+/// The By-Panel view in the FTDNA or YSEQ style. It groups markers into tiers (Y-12, Y-25, and so
+/// on). It draws each tier as transposed mini-grids: a marker-name row over a value row, and no more
+/// than 12 markers wide. A marker in conflict is amber.
 fn str_by_panel_view(ui: &mut egui::Ui, profile: &StrProfile, provider: &str, comparison: &StrComparison) {
     let conflicts: std::collections::HashSet<String> = comparison
         .conflicts
@@ -1806,9 +1859,9 @@ fn str_by_panel_view(ui: &mut egui::Ui, profile: &StrProfile, provider: &str, co
         return;
     }
     let canon = strpanel::canonical_provider(provider);
-    // No inner scroll area here — the detail panel is already wrapped in one vertical
-    // ScrollArea, and nesting a second (fixed-height) one clips the panel tables and
-    // captures the wheel so the page can't scroll. Let the tiers flow into the page scroll.
+    // No inner scroll area here. One vertical ScrollArea already wraps the detail panel. A second
+    // one of fixed height inside it clips the panel tables and takes the wheel, so the page can not
+    // scroll. Let the tiers flow into the page scroll.
     for (tier, markers) in &groups {
         ui.add_space(6.0);
         ui.label(egui::RichText::new(format!("{canon} {tier}  ({} markers)", markers.len())).strong());
@@ -1833,8 +1886,9 @@ fn str_by_panel_view(ui: &mut egui::Ui, profile: &StrProfile, provider: &str, co
     }
 }
 
-/// Flat, filterable marker table: Marker | Panel | Value, plus ⚠ | Other when >1 provider (the
-/// other provider's disagreeing value). Conflicting values are amber.
+/// A flat marker table with a filter: Marker | Panel | Value. With more than one provider it adds
+/// ⚠ | Other, which is the value of the other provider that does not agree. A value in conflict is
+/// amber.
 fn str_all_markers_view(
     ui: &mut egui::Ui,
     profile: &StrProfile,
@@ -1870,8 +1924,8 @@ fn str_all_markers_view(
     });
     let f = filter.trim().to_uppercase();
     let cols = if multi { 5 } else { 3 };
-    // Flow into the detail panel's outer ScrollArea (no nested vertical scroll — it clips
-    // the table and steals the wheel).
+    // Flow into the outer ScrollArea of the detail panel. No nested vertical scroll, because that
+    // clips the table and takes the wheel.
     egui::Grid::new("str_all_grid")
         .striped(true)
         .num_columns(cols)
@@ -1917,9 +1971,10 @@ fn str_all_markers_view(
         });
 }
 
-/// Canonical short label + badge color for a consensus status, shared by the Y/mt consensus card
-/// and the autosomal diploid card. `Novel` can't arise on the diploid (panel-site) path — see
-/// [`navigator_domain::consensus::reconcile_diploid`] — but is mapped here for completeness.
+/// The canonical short label and badge color for a consensus status. The Y and mt consensus card,
+/// and the autosomal diploid card, both use it. `Novel` can not arise on the diploid path over panel
+/// sites (see [`navigator_domain::consensus::reconcile_diploid`]), and the map holds it here to be
+/// complete.
 fn consensus_status_badge(status: YVariantStatus) -> (&'static str, egui::Color32) {
     let amber = egui::Color32::from_rgb(220, 150, 60);
     match status {
@@ -1932,11 +1987,14 @@ fn consensus_status_badge(status: YVariantStatus) -> (&'static str, egui::Color3
     }
 }
 
-/// Shared renderer for a multi-source consensus profile (Y or mtDNA — same generic engine): header
-/// (counts + lineage label + provenance), a status filter, and the per-variant grid. `variant_col`
-/// names the identity column ("SNP" / "Mutation"); `kind` labels the empty state; `id_salt` keeps the
-/// two cards' scroll/grid ids distinct. `snp_names` annotates a position-only/novel row with the
-/// catalogued Y-SNP name at that site (empty for mtDNA, whose mutations are already named).
+/// The shared draw for a multi-source consensus profile, Y or mtDNA, over the same generic engine.
+/// It has a header with the counts, the lineage label and the provenance. Then comes a status
+/// filter, then a grid with one row for each variant.
+///
+/// `variant_col` names the identity column ("SNP" or "Mutation"). `kind` labels the empty state.
+/// `id_salt` keeps the scroll and grid ids of the two cards distinct. `snp_names` adds the
+/// catalogued Y-SNP name at a site to a position-only or novel row. It is empty for mtDNA, whose
+/// mutations already have names.
 #[allow(clippy::too_many_arguments)]
 fn draw_consensus_profile(
     ui: &mut egui::Ui,
@@ -2001,9 +2059,10 @@ fn draw_consensus_profile(
         YState::Ancestral => "ancestral",
         YState::NoCall => "no-call",
     };
-    // Bound the table to a fixed-height scroll pane — on a WGS these run thousands of rows and would
-    // otherwise force endless page scrolling. Status/text filters narrow the list; a cap bounds a
-    // pathological profile. The header/filter row above stays fixed; only the grid scrolls.
+    // Hold the table inside a scroll pane of fixed height. On a WGS these run thousands of rows,
+    // and they would otherwise force an endless page scroll. The status filter and the text filter
+    // narrow the list, and a cap limits a pathological profile. The header and filter row above
+    // stays fixed, and only the grid scrolls.
     const CAP: usize = 2000;
     // A catalogued Y-SNP name at this site (for a position-only / novel row).
     let cataloged_at = |v: &navigator_domain::consensus::ConsensusVariant| {
@@ -2013,9 +2072,9 @@ fn draw_consensus_profile(
             None
         }
     };
-    // Which variants match is cached — only `CAP` rows are ever rendered, but the total needs the
-    // whole profile scanned, and this fn runs every frame. (`snp_names` feeds the search, and it is
-    // loaded by an event, so `epoch` covers it too.)
+    // A cache holds which variants match. The view draws only `CAP` rows, but the total needs a
+    // scan of the whole profile, and this function runs on every frame. `snp_names` feeds the
+    // search, and an event loads it, so `epoch` covers it too.
     let status = *filter;
     let matching = rows.get(epoch, status, &q, &profile.variants, |v| {
         if status.is_some_and(|f| v.status != f) {
@@ -2106,9 +2165,10 @@ fn draw_consensus_profile(
     }
 }
 
-/// Renderer for the autosomal diploid consensus profile — the 0/1/2 sibling of
-/// [`draw_consensus_profile`]. Header (confirmed/conflict/single + confidence), a status filter, and a
-/// per-site grid `Site (rsID) | GT (0/0,0/1,1/1) | Status | Sources (per-source dosage)`.
+/// The draw for the autosomal diploid consensus profile: the 0/1/2 sibling of
+/// [`draw_consensus_profile`]. It has a header with confirmed, conflict, single and the confidence,
+/// then a status filter, then a grid with one row for each site:
+/// `Site (rsID) | GT (0/0,0/1,1/1) | Status | Sources (dosage of each source)`.
 fn draw_diploid_profile(
     ui: &mut egui::Ui,
     profile: &navigator_app::DiploidProfile,
@@ -2170,8 +2230,9 @@ fn draw_diploid_profile(
         2 => "1/1",
         _ => "./.",
     };
-    // The panel has ~1.2M sites — a non-virtualized Grid lays out every row per frame and beach-balls.
-    // Render fixed-width columns through ScrollArea::show_rows, which only builds the visible slice.
+    // The panel has ~1.2M sites. A Grid with no virtualization lays out every row on every frame,
+    // and the app then stops to respond. Draw fixed-width columns through ScrollArea::show_rows,
+    // which builds only the visible slice.
     const W_SITE: f32 = 150.0;
     const W_GT: f32 = 44.0;
     const W_STATUS: f32 = 130.0;
@@ -2215,10 +2276,10 @@ fn draw_diploid_profile(
             }
         });
     };
-    // Bound the rows to a fixed-height scroll pane (the panel is ~1.2M sites). A hard cap keeps only
-    // `shown` widgets built per frame, never the full panel; the status/text filters narrow further.
-    // Which sites match is cached (`rows`) — the count needs the whole panel scanned, and this fn
-    // runs every frame.
+    // Hold the rows inside a scroll pane of fixed height, because the panel is ~1.2M sites. A hard
+    // cap builds only `shown` widgets on each frame, and never the full panel. The status filter and
+    // the text filter narrow it further. A cache holds which sites match (`rows`), because the count
+    // needs a scan of the whole panel, and this function runs on every frame.
     const CAP: usize = 2000;
     let status = *filter;
     let matching = rows.get(epoch, status, &q, &profile.variants, |v| {
@@ -2246,8 +2307,9 @@ fn draw_diploid_profile(
     }
 }
 
-/// The rCRS-relative mtDNA mutation list, grouped by region (HVR2 / Coding / HVR1) — the classic
-/// mtDNA result. `variants` are derived against the bundled rCRS; notation is standard mtDNA form.
+/// The mtDNA mutation list against rCRS, in groups by region (HVR2, Coding, HVR1). It is the classic
+/// mtDNA result. The `variants` come from a derivation against the bundled rCRS, and the notation is
+/// the standard mtDNA form.
 fn mtdna_mutations_view(ui: &mut egui::Ui, mtdna_id: i64, variants: &[MtVariant]) {
     if variants.is_empty() {
         ui.label(egui::RichText::new("Identical to rCRS (no mutations).").weak());
@@ -2302,7 +2364,7 @@ mod window_geometry_tests {
 
     #[test]
     fn size_that_fits_is_unchanged() {
-        // A comfortable window on a 2560×1440 monitor is left as-is.
+        // A comfortable window on a 2560×1440 monitor stays as it is.
         let got = fit_window_to_monitor([1600.0, 1000.0], [2560.0, 1440.0], MIN_WINDOW);
         assert_eq!(got, [1600.0, 1000.0]);
     }
@@ -2370,11 +2432,13 @@ mod nav_persistence_tests {
 
 /// Every icon the chrome renders must have a real glyph in the font family it renders with.
 ///
-/// egui's **Proportional** family is Ubuntu-Light + NotoEmoji-Regular + emoji-icon-font — a much
-/// narrower set than "Unicode". Picking a plausible-looking character without checking is how the
-/// Simple-mode rail shipped `◆`, `⚭` and `✓` and the nav shipped `🧬`, all four of which rendered as
-/// empty tofu boxes. A missing glyph is invisible to every other test and to the compiler; only
-/// looking at the running app catches it. So look at the fonts instead.
+/// The **Proportional** family of egui is Ubuntu-Light, NotoEmoji-Regular and emoji-icon-font. That
+/// is a much narrower set than "Unicode".
+///
+/// A character that looks plausible, with no check, is how the Simple-mode rail went out with `◆`,
+/// `⚭` and `✓`. The nav went out with `🧬`. All four drew as empty tofu boxes. A glyph that is
+/// missing stays invisible to every other test, and to the compiler. Only a look at the live app
+/// catches it. So read the fonts instead.
 #[cfg(test)]
 mod icon_glyph_tests {
     use super::egui::{FontDefinitions, FontFamily};
@@ -2383,9 +2447,10 @@ mod icon_glyph_tests {
 
     /// True when at least one font in `Proportional`'s fallback chain has a glyph for `c`.
     ///
-    /// Reads egui's own `FontDefinitions::default()` rather than a vendored copy of the `.ttf`s, so
-    /// the test keeps testing the fonts the app actually ships as egui is upgraded. `glyph_id`
-    /// returns 0 (`.notdef` — the tofu box) when a font has no mapping for the character.
+    /// It reads the `FontDefinitions::default()` of egui itself, and not a vendored copy of the
+    /// `.ttf` files. So the test keeps its grip on the fonts the app ships, as egui moves forward.
+    /// `glyph_id` returns 0, which is `.notdef`, the tofu box, when a font has no mapping for the
+    /// character.
     fn renderable(c: char) -> bool {
         let defs = FontDefinitions::default();
         let chain = &defs.families[&FontFamily::Proportional];
@@ -2397,10 +2462,10 @@ mod icon_glyph_tests {
 
     #[test]
     fn probe_agrees_with_known_bad_glyphs() {
-        // Guards the test itself: if these ever start reporting renderable, the check has broken
-        // rather than the fonts having improved. The second row is the near-miss set — each one is
-        // a character someone reached for because it looked right, and each shipped a box: `✕`
-        // beside `✖`, `✎` beside `✏`, `●` beside `⚫`, `▲▼▸` beside `⏶⏷▶`.
+        // This guards the test itself. If these ever come back as drawable, the check broke, and
+        // the fonts did not improve. The second row is the near-miss set. Each one is a character
+        // somebody reached for because it looked right, and each one went out as a box: `✕` beside
+        // `✖`, `✎` beside `✏`, `●` beside `⚫`, and `▲▼▸` beside `⏶⏷▶`.
         for c in ['◆', '⚭', '✓', '🧬', '✕', '✎', '✗', '●', '▲', '▼', '▸', '→'] {
             assert!(
                 !renderable(c),
@@ -2408,15 +2473,15 @@ mod icon_glyph_tests {
                 c as u32
             );
         }
-        // And the replacements they were traded for, so a font change that drops one is caught here
-        // rather than in a screenshot.
+        // And the replacements that took their place, so that this test catches a font change that
+        // drops one, and a screenshot does not.
         for c in ['♂', '✖', '✏', '⚫', '⚪', '⏶', '⏷', '▶', '›'] {
             assert!(renderable(c), "sanity: {c} (U+{:04X}) is present", c as u32);
         }
     }
 
-    /// Prints coverage for the characters the app already uses plus a candidate set — run this when
-    /// choosing an icon instead of picking one that merely looks right:
+    /// Prints the coverage of the characters the app already uses, plus a candidate set. Run it
+    /// when you choose an icon, instead of a character that only looks right:
     /// `cargo test -p navigator-ui --bin navigator report_glyph_coverage -- --ignored --nocapture`
     #[test]
     #[ignore = "diagnostic, not a gate — see the doc comment for how to run it"]
@@ -2445,10 +2510,11 @@ mod icon_glyph_tests {
 
     /// Every character of every translated string must be drawable.
     ///
-    /// The rail and nav icons below were checked individually, which left the ~1,900 strings in the
-    /// catalogs unchecked — and those held eight more undrawable characters (`←→▾◆●✓✗🗂`), including
-    /// the status dot on the dashboard and the check/cross on the exchange screen. Scanning the
-    /// whole catalog is the only version of this test that can't be outgrown by new copy.
+    /// A check on the rail and nav icons below covers each one on its own. That left the ~1,900
+    /// strings in the catalogs with no check at all. Those held eight more characters nothing can
+    /// draw (`←→▾◆●✓✗🗂`). Among them were the status dot on the dashboard, and the check and the
+    /// cross on the exchange screen. A scan of the whole catalog is the only version of this test
+    /// that new copy can not outgrow.
     #[test]
     fn every_translated_string_is_renderable() {
         let mut bad: Vec<String> = Vec::new();
@@ -2474,31 +2540,33 @@ mod icon_glyph_tests {
 
     /// Every string literal this crate draws must be drawable.
     ///
-    /// `every_translated_string_is_renderable` covers the catalogs, which is where user-facing copy
-    /// belongs — but icons do not live there. A button label like `ui.small_button("✎")` is a bare
-    /// literal in the source, invisible to the catalog scan, and that is where the second round of
-    /// tofu boxes was found: the MDKA edit/remove buttons and the kit-remove button on the
-    /// Genealogy card, every clear-filter `✕`, the Y-STR agreement `✓`/`✗`, the sortable-table
-    /// arrows, and the match-strength meter. Listing those by hand is the failure mode this test
-    /// exists to remove — it reads the sources themselves, so a new icon is covered the moment it
-    /// is typed.
+    /// `every_translated_string_is_renderable` covers the catalogs, and that is where copy for a
+    /// person belongs. But icons do not live there. A button label like `ui.small_button("✎")` is a
+    /// bare literal in the source, and the catalog scan can not see it. That is where the second
+    /// round of tofu boxes turned up. They were the MDKA buttons, the kit-remove button on the
+    /// Genealogy card, and every clear-filter `✕`. They were also the Y-STR agreement marks, the
+    /// arrows of the sortable table, and the match-strength meter.
     ///
-    /// Parsing rather than grepping is what makes that safe. Comments and doc comments are full of
-    /// characters that are never drawn (`→`, `⇒`, `◆` naming the bug they describe), so the AST —
-    /// which has literals and no comments — is the right input, with `visit_attribute` overridden
-    /// to drop `#[doc = "…"]` as well.
+    /// A list by hand is the failure mode this test exists to remove. It reads the sources
+    /// themselves, so a new icon has a check the moment somebody types it.
     ///
-    /// Two things are deliberately out of scope, because egui never draws them: `cli.rs`, whose
-    /// output goes to a terminal rendering in the user's own font, and `#[cfg(test)]` modules,
-    /// whose literals are assertion messages.
+    /// A parse, and not a grep, is what makes that safe. Comments and doc comments are full of
+    /// characters that nothing ever draws: `→`, `⇒`, and a `◆` that names the fault it describes.
+    /// So the AST is the right input, because it holds literals and no comments. An override of
+    /// `visit_attribute` also drops `#[doc = "…"]`.
     ///
-    /// So is the rest of the workspace, and that is a real gap rather than an oversight: two of the
-    /// boxes this round fixed were built in `navigator-app` (a consensus warning, the reference
-    /// notes on an import summary) and only rendered here. The invariant can't simply be lifted to
-    /// that crate — it serves the CLI and the HTML exporter too, where `→` and `✓` are correct —
-    /// and which of its strings reach a window is a dataflow question, not a syntactic one. When a
-    /// lower crate builds a string for the UI, it is on the author to check it; `report_glyph_coverage`
-    /// is the tool for that.
+    /// Two things are out of scope on purpose, because egui never draws them. The first is `cli.rs`,
+    /// whose output goes to a terminal that draws in the font of the user. The second is a
+    /// `#[cfg(test)]` module, whose literals are assertion messages.
+    ///
+    /// So is the rest of the workspace, and that is a real gap, and not an oversight. Two of the
+    /// boxes this round fixed came from `navigator-app`: a consensus warning, and the reference
+    /// notes on an import summary. Only this crate drew them.
+    ///
+    /// The invariant can not move to that crate as it stands. That crate also serves the CLI and
+    /// the HTML exporter, where `→` and `✓` are correct. Which of its strings reach a window is a
+    /// dataflow question, and not a syntactic one. When a lower crate builds a string for the UI,
+    /// the author has to check it, and `report_glyph_coverage` is the tool for that.
     #[test]
     fn every_source_string_literal_is_renderable() {
         use syn::visit::Visit;
@@ -2521,10 +2589,11 @@ mod icon_glyph_tests {
                     syn::visit::visit_item_mod(self, m);
                 }
             }
-            /// A macro body is an unparsed `TokenStream`, and syn's visitor skips it — which would
-            /// hide most of what this test is for, since nearly every label is built by `format!`.
-            /// Walking the tokens by hand costs one recursion and needs no guess about the macro's
-            /// grammar: a `LitStr` is a `LitStr` wherever it sits.
+            /// A macro body is a `TokenStream` that nothing parsed, and the visitor of syn steps
+            /// over it. That would hide most of what this test is for, because `format!` builds
+            /// almost every label. A walk of the tokens by hand costs one recursion. It also needs
+            /// no guess about the grammar of the macro: a `LitStr` is a `LitStr` wherever it
+            /// sits.
             fn visit_macro(&mut self, m: &'ast syn::Macro) {
                 self.tokens(m.tokens.clone());
             }
@@ -2547,8 +2616,8 @@ mod icon_glyph_tests {
             }
         }
 
-        /// True for `#[cfg(test)]` — matched on the token text, which is stable enough for an
-        /// attribute this conventional and avoids pulling in a nested-meta parser.
+        /// True for `#[cfg(test)]`. It matches on the token text, which is stable enough for an
+        /// attribute this conventional, and it avoids a nested-meta parser.
         fn is_cfg_test(attr: &syn::Attribute) -> bool {
             attr.path().is_ident("cfg") && attr.parse_args::<syn::Path>().is_ok_and(|p| p.is_ident("test"))
         }
@@ -2592,7 +2661,8 @@ mod icon_glyph_tests {
         );
     }
 
-    /// The marks in the asset-status line, which are built inline rather than translated.
+    /// The marks in the asset-status line, which the code builds inline, and no catalog
+    /// translates.
     #[test]
     fn asset_status_marks_are_renderable() {
         use crate::charts::{MARK_ABSENT, MARK_PRESENT, MARK_VERIFIED};

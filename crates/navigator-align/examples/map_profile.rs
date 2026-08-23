@@ -1,9 +1,9 @@
-//! Profiling harness for the mapping stage alone — stage B with nothing else in the sample.
+//! A harness that profiles the mapping stage alone: stage B with nothing else in the sample.
 //!
-//! The mapping stage runs read → map → write per batch, and the CPU-load graph shows a valley
-//! between the peaks: the rayon pool idles while one thread inflates gzip and parses the next
-//! batch of reads. This runs `map_pairs` and nothing else, so a profile attributes that valley to
-//! a function rather than to a stage.
+//! The mapping stage does read → map → write for each batch. The CPU-load graph shows a valley
+//! between the peaks. The rayon pool is idle there, because one thread inflates gzip and parses
+//! the next batch of reads. This example runs `map_pairs` and nothing else, so a profile points
+//! at a function and not at a stage.
 //!
 //! ```sh
 //! cargo build --profile profiling -p navigator-align --example map_profile
@@ -14,8 +14,8 @@
 //!   samply record target/profiling/examples/map_profile
 //! ```
 //!
-//! `LIMIT_SECONDS` stops after a fixed wall-clock budget, so a profile can be taken over a couple
-//! of minutes of steady state instead of the three quarters of an hour a whole sample takes.
+//! `LIMIT_SECONDS` stops the run after a fixed wall-clock budget. A profile then covers about two
+//! minutes of steady state, and not the three quarters of an hour that a whole sample needs.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stats = match navigator_align::map_pairs(&index, &r1, &r2, &out, &scratch, &params, &cancelled, &mut progress) {
         Ok(stats) => stats,
-        // Hitting the time budget is the normal way this ends.
+        // The time budget is the normal reason for this loop to stop.
         Err(navigator_align::AlignError::Cancelled) => {
             eprintln!("stopped at the {limit}s budget");
             return Ok(());

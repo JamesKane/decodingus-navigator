@@ -1,14 +1,17 @@
 //! The grounding context for the M4 "ask my results" chat (see
-//! `documents/design/local-llm-expansion.md`). Narration (M1) stays grounded in the lean
-//! [`SubjectBrief`](crate::brief::SubjectBrief) fact sheet; the chat needs to answer about *more*
-//! signals (Y-STR panels, private-Y variants, mtDNA mutations, IBD matches, genetic sex), so it
-//! grounds in a [`ResultsContext`] = the brief plus curated, summary-level facts for those signals.
+//! `documents/design/local-llm-expansion.md`). Narration (M1) keeps its grounding in the lean
+//! [`SubjectBrief`](crate::brief::SubjectBrief) fact sheet. The chat must answer about *more*
+//! signals: Y-STR panels, private-Y variants, mtDNA mutations, IBD matches, and genetic sex. So it
+//! grounds in a [`ResultsContext`], which is the brief plus curated, summary-level facts for those
+//! signals.
 //!
-//! As with [`llm_prompt`](crate::llm_prompt), this layer is pure: the per-signal facts are plain,
-//! already-vetted values the app fills in (the domain crate must not depend on analysis/store), and
-//! [`results_fact_sheet`] is the unit-tested builder so the exact text we send stays reviewable. The
-//! model remains a *rewriter, not a source of facts*: every section is summary-level, and the inline
-//! notes keep STR/mtDNA/IBD framed as lineage facts, never health or trait claims.
+//! Like [`llm_prompt`](crate::llm_prompt), this layer is pure. The facts for each signal are plain
+//! values that the app already vetted and filled in. The domain crate must not depend on analysis
+//! or the store. [`results_fact_sheet`] is the builder, and it has unit tests, so a person can
+//! review the exact text we send.
+//!
+//! The model stays a *rewriter, not a source of facts*. Every section is summary-level, and the
+//! inline notes keep STR, mtDNA and IBD as lineage facts, never as health or trait claims.
 
 use crate::brief::SubjectBrief;
 use crate::llm_prompt::narrate_fact_sheet;
@@ -22,7 +25,8 @@ pub struct SexFact {
     pub confidence: String,
 }
 
-/// One Y-STR panel: its name and how many markers it carries (summary only — never the raw values).
+/// One Y-STR panel: its name, and how many markers it carries. Summary only, and never the raw
+/// values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YStrPanelFact {
     pub panel: String,
@@ -33,23 +37,25 @@ pub struct YStrPanelFact {
 /// distinction: novel-in-unique-sequence vs off-path vs structural-region).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrivateYFact {
-    /// Novel calls in unique sequence — the high-confidence new-branch candidates.
+    /// Novel calls in unique sequence: the high-confidence new-branch candidates.
     pub novel_unique: usize,
-    /// Variants off known branches — suggest previously-unknown branch depth.
+    /// Variants off known branches. They suggest branch depth that nobody knew before.
     pub off_path: usize,
-    /// Calls in structural/paralog-prone regions — suspect, to be treated with caution.
+    /// Calls in structural regions, and regions where paralogs are common. Read them with
+    /// caution.
     pub structural: usize,
 }
 
-/// Above this many novel-in-unique private-Y calls, a single sample is almost certainly reporting
-/// artifacts rather than real new-branch candidates. The de-novo tree pipeline's per-WGS-sample novel
-/// count runs ~3–39 (median), so a count in the dozens is normal and the low hundreds is a red flag —
-/// typically contamination, shallow/uneven coverage, or a reference-build mismatch.
+/// Above this count of novel-in-unique private-Y calls, one sample almost certainly gives
+/// artifacts, and not real new-branch candidates. In the de-novo tree pipeline, the novel count of
+/// one WGS sample runs ~3–39 (median). So a count in the dozens is normal, and a count in the low
+/// hundreds is a warning. The usual causes are contamination, shallow or uneven coverage, and a
+/// mismatch of the reference build.
 pub const PRIVATE_Y_QC_WARN: usize = 50;
 
-/// A one-line QC banner when the novel-in-unique private-Y count is implausibly high for one sample
-/// (see [`PRIVATE_Y_QC_WARN`]), else `None`. Surfaced in reports and the `private-y` CLI so an
-/// elevated count reads as "check this sample" rather than "you have this many new branches".
+/// A one-line QC banner when the novel-in-unique private-Y count is too high to be plausible for
+/// one sample (see [`PRIVATE_Y_QC_WARN`]). `None` if not. Reports and the `private-y` CLI show it.
+/// A high count then reads as "check this sample", and not as "you have this many new branches".
 pub fn private_y_qc_banner(novel_unique: usize) -> Option<String> {
     (novel_unique >= PRIVATE_Y_QC_WARN).then(|| {
         format!(
@@ -71,9 +77,9 @@ pub struct MtMutationsFact {
     pub examples: Vec<String>,
 }
 
-/// One IBD match, reduced to relationship band + sharing — **no identifying details** (the partner is
-/// deliberately not named; this is the user's own workspace data described as a relationship, not a
-/// person).
+/// One IBD match, reduced to the relationship band and how much DNA the two share. It carries **no
+/// detail that identifies anybody**. It does not name the partner, and that is deliberate. This is
+/// the workspace data of the user, described as a relationship and not as a person.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IbdMatchFact {
     pub relationship: String,
@@ -88,9 +94,10 @@ pub struct IbdFact {
     pub closest: Option<IbdMatchFact>,
 }
 
-/// The brief plus curated summaries of the other signals — the grounding context for the M4 chat.
-/// Absent signals are `None` / empty and are simply omitted from the fact sheet (so the model can't
-/// restate what is not there), exactly like the brief's own optional sections.
+/// The brief, plus curated summaries of the other signals: the grounding context for the M4 chat.
+/// A signal that is absent is `None` or empty, and the fact sheet leaves it out. The model can
+/// then not restate what is not there. This is exactly what the brief does with its own optional
+/// sections.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResultsContext {
     pub brief: SubjectBrief,
@@ -101,8 +108,8 @@ pub struct ResultsContext {
     pub ibd: Option<IbdFact>,
 }
 
-/// Which result signal a per-tab "Explain this" narration (M5) targets — also the key used to pull a
-/// single signal's section out of a [`ResultsContext`] via [`signal_section`].
+/// Which result signal an "Explain this" narration on one tab (M5) points at. It is also the key
+/// that takes the section of one signal out of a [`ResultsContext`], through [`signal_section`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SignalKind {
     Sex,
@@ -129,11 +136,11 @@ impl SignalKind {
     }
 }
 
-// --- Per-signal section builders -----------------------------------------------------------------
-// Each returns the labelled, summary-level block for one signal (leading `\n`, so they concatenate
-// cleanly after the brief's fact sheet), or `None` when the subject has nothing for that signal. The
-// blocks are shared verbatim between the M4 chat grounding ([`results_fact_sheet`]) and the M5
-// per-tab narration ([`signal_section`]).
+// --- Section builders, one for each signal -------------------------------------------------------
+// Each returns the labelled, summary-level block for one signal, or `None` when the subject has
+// nothing for that signal. Each block starts with `\n`, so the blocks join cleanly after the fact
+// sheet of the brief. The M4 chat grounding ([`results_fact_sheet`]) and the M5 narration on one
+// tab ([`signal_section`]) share these blocks verbatim.
 
 fn sex_section(sex: &Option<SexFact>) -> Option<String> {
     let sex = sex.as_ref()?;
@@ -214,10 +221,10 @@ fn ibd_section(ibd: &Option<IbdFact>) -> Option<String> {
     Some(s)
 }
 
-/// Runs-of-homozygosity section, read from the brief's [`RohBrief`](crate::brief::RohBrief) (ROH is a
-/// brief signal, unlike the others, so its source is `ctx.brief.roh`). Used for the M5 per-tab
-/// "Explain this" on the ROH card; the M4 chat already carries ROH via the brief's own fact sheet
-/// (see [`results_fact_sheet`]), so it is deliberately *not* re-appended there.
+/// Runs-of-homozygosity section, from the [`RohBrief`](crate::brief::RohBrief) of the brief. ROH is
+/// a brief signal, and the others are not, so its source is `ctx.brief.roh`. The M5 "Explain this"
+/// on the ROH card uses it. The M4 chat already carries ROH through the fact sheet of the brief
+/// (see [`results_fact_sheet`]). So this does *not* add it there again, and that is deliberate.
 fn roh_section(brief: &SubjectBrief) -> Option<String> {
     let r = brief.roh.as_ref()?;
     let mut s = String::from("\nShared ancestry (runs of homozygosity):\n");
@@ -260,8 +267,9 @@ fn archaic_section(brief: &SubjectBrief) -> Option<String> {
         _ => s.push_str("- no population comparison: the test covers too few marker sites to rank\n"),
     }
     s.push_str(&format!("- pattern: {}\n", a.pattern));
-    // The model must not turn a count into a percentage or a Denisovan claim; both are explicitly
-    // out of scope for this signal (design S1/S7) and the narration is grounded only in this text.
+    // The model must not turn a count into a percentage, and must not make a Denisovan claim. The
+    // design puts both out of scope for this signal (S1 and S7), and this text is the only
+    // grounding the narration has.
     s.push_str(
         "- note: this is a COUNT of marker copies, not a percentage of the genome, and it is specific \
          to this panel — do not compare it to another company's number, and do not restate it as a \
@@ -274,8 +282,8 @@ fn archaic_section(brief: &SubjectBrief) -> Option<String> {
     Some(s)
 }
 
-/// The labelled section for a single signal, or `None` when the subject has nothing for it — the
-/// grounding for an M5 per-tab "Explain this" narration of just that signal.
+/// The labelled section for one signal, or `None` when the subject has nothing for it. This is the
+/// grounding for an M5 "Explain this" narration of that one signal.
 pub fn signal_section(ctx: &ResultsContext, kind: SignalKind) -> Option<String> {
     match kind {
         SignalKind::Sex => sex_section(&ctx.sex),
@@ -288,9 +296,10 @@ pub fn signal_section(ctx: &ResultsContext, kind: SignalKind) -> Option<String> 
     }
 }
 
-/// Build the chat's grounding fact sheet: the brief's fact sheet (unchanged from narration) plus a
-/// labelled, summary-level block per present signal. Pure and unit-tested — this is the exact text
-/// that goes in the chat system message as "your only source of facts".
+/// Build the grounding fact sheet of the chat. It is the fact sheet of the brief, which narration
+/// does not change, plus a labelled, summary-level block for each signal that is there. Pure, and
+/// unit tested. This is the exact text that goes into the chat system message as "your only source
+/// of facts".
 pub fn results_fact_sheet(ctx: &ResultsContext) -> String {
     let mut s = narrate_fact_sheet(&ctx.brief);
     for section in [
@@ -299,8 +308,9 @@ pub fn results_fact_sheet(ctx: &ResultsContext) -> String {
         private_y_section(&ctx.private_y),
         mt_section(&ctx.mt_mutations),
         ibd_section(&ctx.ibd),
-        // ROH already reaches the sheet via narrate_fact_sheet (it lives on the brief); the archaic
-        // block does not, so add it explicitly or the chat can not answer about it.
+        // ROH already reaches the sheet through narrate_fact_sheet, because it lives on the
+        // brief. The archaic block does not, so add it here, or the chat can not answer about
+        // it.
         archaic_section(&ctx.brief),
     ]
     .into_iter()
@@ -439,20 +449,20 @@ mod tests {
             longest_mb: 7.1,
         });
 
-        // M4 chat: the fact sheet carries the ROH facts (via the brief) with the run counts.
+        // M4 chat: the fact sheet carries the ROH facts, through the brief, with the run counts.
         let sheet = results_fact_sheet(&ctx);
         assert!(sheet.contains("Shared ancestry (runs of homozygosity)"));
         assert!(sheet.contains("pattern: Outbred"));
         assert!(sheet.contains("F_ROH: 0.0080"));
         assert!(sheet.contains("6 run(s)"));
 
-        // M5 per-tab: the focused section renders and stays in the ancestry lane (no health language).
+        // M5 on one tab: the focused section draws, and stays on ancestry (no health language).
         let section = signal_section(&ctx, SignalKind::Roh).expect("roh section");
         assert!(section.contains("F_ROH: 0.0080"));
         assert!(section.contains("longest 7 Mb"));
         assert!(!mentions_health(&section), "ROH must not read as a health result");
 
-        // Absent when ROH has not been computed.
+        // Absent until something computes ROH.
         ctx.brief.roh = None;
         assert!(signal_section(&ctx, SignalKind::Roh).is_none());
     }
@@ -475,8 +485,8 @@ mod tests {
         assert!(section.contains("12126 archaic-allele copies out of 599864"));
         assert!(section.contains("more than 12% of EUR"));
 
-        // The grounding must actively steer the model off the two framings the design forbids:
-        // restating a count as a percent-Neanderthal, and reporting a Denisovan finding.
+        // The grounding must push the model off the two forms the design forbids. It must not
+        // restate a count as a percent-Neanderthal, and it must not report a Denisovan result.
         assert!(
             section.contains("not a percentage"),
             "must warn against percent framing"
@@ -490,7 +500,7 @@ mod tests {
         // The chat fact sheet carries it too.
         assert!(results_fact_sheet(&ctx).contains("Neanderthal (archaic) markers"));
 
-        // Absent until the count has been computed.
+        // Absent until something computes the count.
         ctx.brief.archaic = None;
         assert!(signal_section(&ctx, SignalKind::Archaic).is_none());
     }
@@ -557,7 +567,7 @@ mod tests {
         let ctx = full_context();
         let ystr = signal_section(&ctx, SignalKind::YStr).unwrap();
         assert!(ystr.contains("Y-111 (111 markers)"));
-        // It is just that signal — not the private-Y or sex blocks.
+        // It is only that signal, and not the private-Y block or the sex block.
         assert!(!ystr.contains("Private Y variants"));
         assert!(!ystr.contains("Genetic sex"));
 

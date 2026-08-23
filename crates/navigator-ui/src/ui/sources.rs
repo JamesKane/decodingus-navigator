@@ -31,8 +31,9 @@ impl NavigatorApp {
             }
         });
 
-        // Local copy so the table's row clicks can update the histogram selection without
-        // borrowing `self` mutably while `&self.coverage` is held; written back after the match.
+        // A local copy. A row click in the table can then update the histogram selection with no
+        // mutable borrow of `self` while the code holds `&self.coverage`. It writes the copy back
+        // after the match.
         let mut sel = self.coverage_hist_contig;
         match &self.coverage {
             None if !self.running => {
@@ -78,7 +79,8 @@ impl NavigatorApp {
                     ui.weak("or click a contig row");
                 });
 
-                // Per-contig table: stats joined with the GATK/callable breakdown by header order.
+                // A table for each contig: the stats joined with the GATK and callable breakdown,
+                // by header order.
                 egui::ScrollArea::vertical()
                     .max_height(520.0)
                     .id_salt("cov_contig_table")
@@ -179,10 +181,10 @@ impl NavigatorApp {
 
     /// The realignment card for one alignment: offer, progress, or result.
     ///
-    /// One card that changes state rather than a modal. A realignment runs for hours; a dialog
-    /// owning the screen for that long would stop the user working with a workspace they can
-    /// perfectly well keep using, and would have nowhere to live once the job finished. This sits
-    /// with the alignment it belongs to and rewrites itself in place.
+    /// One card that changes state, and not a modal. A realignment runs for hours. A dialog that
+    /// owned the screen for that long would stop the user from a workspace they can perfectly well
+    /// keep open. It would also have nowhere to live once the job ended. This card sits with the
+    /// alignment it belongs to, and rewrites itself in place.
     pub(crate) fn realign_section(&mut self, ui: &mut egui::Ui, alignment_id: i64) {
         let Some(alignment) = self.alignments.iter().find(|a| a.id == alignment_id).cloned() else {
             return;
@@ -200,7 +202,7 @@ impl NavigatorApp {
             return;
         }
 
-        // The state of *this* alignment's job, if the running one belongs to it.
+        // The state of the job of *this* alignment, if the job that runs belongs to it.
         let state = self
             .realign
             .as_ref()
@@ -234,7 +236,7 @@ impl NavigatorApp {
                     self.realign = None;
                 }
             }
-            // ---- running ----
+            // ---- in progress ----
             None if state.is_some() => {
                 let state = state.expect("checked");
                 let fraction = if state.total > 0 {
@@ -273,15 +275,16 @@ impl NavigatorApp {
                     ui.label("This alignment has already been realigned.");
                     return;
                 }
-                // `is_target_build` rather than a comparison spelled here: it trims where
-                // `eq_ignore_ascii_case` alone does not, so a stored " chm13v2.0" was offered by
-                // this card and then refused by the job. The rule belongs to the app.
+                // `is_target_build`, and not a comparison written out here. It trims where
+                // `eq_ignore_ascii_case` alone does not. A stored " chm13v2.0" once got an offer
+                // from this card, and then the job refused it. The rule belongs to the app.
                 if navigator_app::is_target_build(&alignment.reference_build) {
                     ui.label(format!("Already on {target} — there is nothing to realign."));
                     return;
                 }
-                // A row with no file can not be re-mapped; the job fails at `MissingPaths`. The app's
-                // `realignable_for_subject` has always excluded these — this card did not.
+                // Nothing can map a row that has no file again, and the job fails at
+                // `MissingPaths`. The `realignable_for_subject` of the app has always left these
+                // out, and this card did not.
                 if alignment.bam_path.is_none() {
                     ui.label("This alignment has no file to re-map.");
                     return;
@@ -461,9 +464,9 @@ impl NavigatorApp {
         });
     }
 
-    /// One DNA type's consensus row plus its override controls, audit log, and publish
-    /// button. The consensus/audit are cloned up front so the form fields can be borrowed
-    /// mutably for the override inputs.
+    /// The consensus row of one DNA type, plus its override controls, its audit log, and its
+    /// publish button. The code clones the consensus and the audit first, so that the form fields
+    /// can take a mutable borrow for the override inputs.
     pub(crate) fn consensus_block(&mut self, ui: &mut egui::Ui, label: &str, dna_type: DnaType) {
         let cons = match dna_type {
             DnaType::Y => self.consensus_y.clone(),
@@ -672,8 +675,9 @@ impl NavigatorApp {
             }
         });
 
-        // The persisted donor consensus (reloaded on select) — so the haplogroup stays visible
-        // without re-running. The fresh per-run assignment, when present, adds the SNP detail.
+        // The persisted donor consensus, which a select loads again, so the haplogroup stays
+        // visible with no second run. The fresh assignment of each run, when there is one, adds
+        // the SNP detail.
         if let Some(c) = &self.consensus_y {
             ui.label(
                 egui::RichText::new(format!(
@@ -785,9 +789,9 @@ impl NavigatorApp {
         }
     }
 
-    /// The full Y-haplogroup placement report (gap §8): the ranked candidate haplogroups + the
-    /// defining-SNP evidence along the reported lineage. Shown once "Full report" is run, flowing into
-    /// the page scroll (no nested ScrollArea).
+    /// The full Y-haplogroup placement report (gap §8): the ranked candidate haplogroups, and the
+    /// evidence from the SNPs that define each node along the reported lineage. It appears after
+    /// "Full report" runs, and it goes into the page scroll, with no nested ScrollArea.
     fn haplo_report_section(&self, ui: &mut egui::Ui, alignment_id: i64) {
         let Some(r) = &self.y_report else { return };
         if r.alignment_id != alignment_id {

@@ -1,13 +1,15 @@
-//! Cross-subject Y-chromosome matching — the *between-subjects* layer on top of the single-subject
-//! Y profile. Given one subject, rank every other by Y relatedness (the FTDNA "Big Y match list"
-//! idea): shared derived SNPs, shared private/novel variants, the divergence haplogroup, Y-STR
-//! genetic distance, and rough SNP- and STR-based TMRCA estimates.
+//! Cross-subject Y-chromosome matching: the *between-subjects* layer on top of the single-subject
+//! Y profile. From one subject, it ranks every other subject by Y relatedness. This is the FTDNA
+//! "Big Y match list" idea. Four kinds of evidence count: derived SNPs in common, private or novel
+//! variants in common, the divergence haplogroup, and Y-STR genetic distance. It also gives rough
+//! TMRCA estimates from SNPs and from STRs.
 //!
-//! This module is pure (no I/O): the app assembles a [`YMatchProfile`] per subject from cached data
-//! — the consensus Y-variant set, the placement-tree lineage, and the imported STR markers — and
-//! calls [`rank`]. SNP comparison is keyed by **variant name** (build-independent), matching the
-//! consensus engine ([`crate::consensus`]); STR distance reuses [`crate::strprofile::values_match`]
-//! so multi-copy markers compare order-independently.
+//! This module is pure, with no I/O. The app assembles a [`YMatchProfile`] for each subject from
+//! cached data: the consensus Y-variant set, the placement-tree lineage, and the imported STR
+//! markers. It then calls [`rank`]. The **variant name** is the key for SNP comparison, which is
+//! independent of the build, and matches the consensus engine ([`crate::consensus`]). STR distance
+//! reuses [`crate::strprofile::values_match`], so multi-copy markers compare without regard to
+//! order.
 
 use std::collections::HashSet;
 
@@ -16,13 +18,14 @@ use serde::{Deserialize, Serialize};
 use crate::strprofile::{values_match, StrMarker};
 use du_domain::ids::SampleGuid;
 
-/// Big-Y-700 convention: ~1 SNP accumulates per this many years on the callable region (FTDNA cites
-/// an average ≈ 83 yr/SNP). Used only for the **rough** SNP TMRCA — wide confidence interval.
+/// Big-Y-700 convention: about 1 SNP appears in this many years on the callable region (FTDNA
+/// cites an average ≈ 83 yr/SNP). Used only for the **rough** SNP TMRCA, which has a wide
+/// confidence interval.
 pub const YEARS_PER_SNP: f64 = 83.0;
-/// Years per generation, for converting a year estimate to generations.
+/// Years in one generation, to change a year estimate into generations.
 pub const YEARS_PER_GEN: f64 = 32.0;
-/// Average per-marker, per-generation Y-STR mutation rate (FTDNA-panel order of magnitude). Used only
-/// for the **rough** STR TMRCA — wide confidence interval.
+/// Average Y-STR mutation rate for one marker in one generation (FTDNA-panel order of magnitude).
+/// Used only for the **rough** STR TMRCA, which has a wide confidence interval.
 pub const MU_PER_MARKER_GEN: f64 = 0.0025;
 
 /// Which evidence backed a pairwise comparison.
@@ -39,7 +42,7 @@ pub enum YSignal {
 }
 
 impl YSignal {
-    /// Ranking tier — SNP-backed first, then STR-only, then nothing.
+    /// Rank tier: SNP-backed first, then STR-only, then nothing.
     fn tier(self) -> u8 {
         match self {
             YSignal::SnpStr | YSignal::Snp => 0,
@@ -56,7 +59,8 @@ pub struct Tmrca {
     pub years: f64,
 }
 
-/// A lightweight per-subject snapshot, assembled by the app from cached data and fed to [`compare_y`].
+/// A lightweight snapshot of one subject. The app assembles it from cached data for
+/// [`compare_y`].
 #[derive(Debug, Clone)]
 pub struct YMatchProfile {
     pub guid: SampleGuid,
@@ -74,8 +78,8 @@ pub struct YMatchProfile {
 }
 
 impl YMatchProfile {
-    /// Whether the subject has Y-SNP calls to compare (independent of the tree/lineage being present —
-    /// lineage only adds the divergence haplogroup).
+    /// True when the subject has Y-SNP calls to compare. This does not depend on a tree or a
+    /// lineage, which only add the divergence haplogroup.
     fn has_snp(&self) -> bool {
         !self.derived.is_empty() || !self.novel.is_empty()
     }
@@ -91,7 +95,7 @@ pub struct YMatch {
     pub shared_derived: usize,
     /// Count of **private/novel** SNPs both carry (shared off-tree variants = candidate sub-branch).
     pub shared_novel: usize,
-    /// The deepest haplogroup the two lineages share (their LCA), if both are placed.
+    /// The deepest haplogroup the two lineages share (their LCA), when placement reached both.
     pub divergence: Option<String>,
     /// Y-STR genetic distance over markers present in both (None when not comparable).
     pub str_gd: Option<i64>,
@@ -104,8 +108,9 @@ pub struct YMatch {
     pub signal: YSignal,
 }
 
-/// The deepest haplogroup two lineages share — the longest common prefix of the two root→terminal
-/// paths — and its depth (number of shared steps). Returns `(None, 0)` if either lineage is empty.
+/// The deepest haplogroup two lineages share, and its depth in shared steps. That haplogroup is
+/// the longest common prefix of the two root→terminal paths. Returns `(None, 0)` if either lineage
+/// is empty.
 fn divergence(a: &[String], b: &[String]) -> (Option<String>, usize) {
     let mut last = None;
     let mut depth = 0;
@@ -136,9 +141,9 @@ fn str_gd(a: &[StrMarker], b: &[StrMarker]) -> (i64, i64) {
     (differing, compared)
 }
 
-/// Rough SNP TMRCA: each lineage accumulates its private (non-shared) variants since divergence at
-/// ~[`YEARS_PER_SNP`]; TMRCA years ≈ average private count × yr/SNP. Approximate — depends on equal
-/// callable coverage between the two subjects.
+/// Rough SNP TMRCA. Each lineage collects its own private variants after the divergence, at about
+/// one in [`YEARS_PER_SNP`]. TMRCA years ≈ average private count × yr/SNP. This is approximate, and
+/// it depends on equal callable coverage between the two subjects.
 fn snp_tmrca(private_a: usize, private_b: usize) -> Tmrca {
     let years = ((private_a + private_b) as f64 / 2.0) * YEARS_PER_SNP;
     Tmrca {
@@ -147,9 +152,9 @@ fn snp_tmrca(private_a: usize, private_b: usize) -> Tmrca {
     }
 }
 
-/// Rough STR TMRCA via a stepwise model: expected differences over two lineages ≈ 2·markers·μ·g, so
-/// generations to MRCA ≈ gd / (2·markers·μ). Approximate — single average mutation rate, no per-marker
-/// rates or TiP-grade modelling.
+/// Rough STR TMRCA from a stepwise model: expected differences over two lineages ≈ 2·markers·μ·g,
+/// so generations to MRCA ≈ gd / (2·markers·μ). This is approximate. It uses one average mutation
+/// rate, with no rate for each marker, and no TiP-grade model.
 fn str_tmrca(gd: i64, markers: i64) -> Option<Tmrca> {
     if markers <= 0 {
         return None;
@@ -211,9 +216,10 @@ pub fn compare_y(query: &YMatchProfile, cand: &YMatchProfile) -> YMatch {
     }
 }
 
-/// Rank candidates against the query, best match first. SNP-primary: SNP-backed matches first (more
-/// shared derived SNPs, then deeper divergence), then STR-only by ascending genetic distance.
-/// Candidates with no comparable evidence (`YSignal::None`) are dropped. The query itself is skipped.
+/// Rank candidates against the query, best match first. SNP-primary: a SNP-backed match comes
+/// first (more shared derived SNPs, then a deeper divergence), then an STR-only match, by genetic
+/// distance from small to large. This drops a candidate with no comparable evidence
+/// (`YSignal::None`), and it steps over the query itself.
 pub fn rank(query: &YMatchProfile, candidates: &[YMatchProfile]) -> Vec<YMatch> {
     let mut out: Vec<YMatch> = candidates
         .iter()
@@ -244,7 +250,8 @@ mod tests {
         }
     }
 
-    /// Deterministic distinct guid per donor name (so self-skip works without a real UUID source).
+    /// A deterministic distinct guid for each donor name, so self-skip works with no real UUID
+    /// source.
     fn guid_for(donor: &str) -> SampleGuid {
         let mut h: u128 = 0xcbf2_9ce4_8422_2325;
         for b in donor.bytes() {
@@ -343,7 +350,7 @@ mod tests {
         );
         // Distant SNP match (shares only the backbone).
         let distant = prof("Distant", &["R", "R-M269"], &["M269"], &[], &[("DYS393", "14")]);
-        // STR-only (no lineage) — must rank below any SNP-backed match.
+        // STR-only (no lineage). It must rank below any SNP-backed match.
         let stronly = prof("StrOnly", &[], &[], &[], &[("DYS393", "13")]);
         let ranked = rank(&q, &[distant.clone(), stronly.clone(), close.clone()]);
         assert_eq!(ranked.len(), 3);
@@ -356,7 +363,7 @@ mod tests {
     #[test]
     fn no_common_evidence_is_dropped_and_self_skipped() {
         let q = prof("Q", &["R", "R-M269"], &["M269"], &[], &[("DYS393", "13")]);
-        // No lineage and no overlapping STR markers → nothing comparable.
+        // No lineage, and no STR markers in common → nothing comparable.
         let nothing = prof("Nothing", &[], &[], &[], &[("DYS999", "10")]);
         let ranked = rank(&q, &[q.clone(), nothing]);
         assert!(ranked.is_empty());

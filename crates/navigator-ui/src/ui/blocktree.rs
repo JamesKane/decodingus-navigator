@@ -1,28 +1,29 @@
-//! The project **block tree** view (`impl NavigatorApp`) — the cohort haplotree for the open
-//! project, drawn the way Alex Williamson's Big Tree draws it (the presentation FTDNA's Block Tree
-//! borrowed): **top-down**, depth increasing downward, and each block showing *its equivalent SNPs*
-//! rather than a count of them.
+//! The project **block tree** view (`impl NavigatorApp`): the cohort haplotree for the open
+//! project. It draws the way the Big Tree of Alex Williamson draws it, and the FTDNA Block Tree
+//! took that same presentation. It is **top-down**, with depth that grows downward. Each block
+//! shows *its equivalent SNPs*, and not a count of them.
 //!
-//! That last point is the whole idea. A block is the run of phylogenetically equivalent mutations on
-//! a branch — the order within it is unknowable — so the SNP list **is** the block, and printing
-//! "17 SNPs" withholds exactly what the view exists to show. The members move out to a roster beside
-//! the tree, as the Big Tree puts them in a table below it: the diagram carries the phylogeny, the
-//! roster carries the men.
+//! That last point is the whole idea. A block is the run of phylogenetically equivalent mutations
+//! on a branch, and nobody can know the order inside it. So the SNP list **is** the block, and a
+//! printed "17 SNPs" withholds exactly what the view exists to show. The members move out to a
+//! roster beside the tree, as the Big Tree puts them in a table below it. The diagram carries the
+//! phylogeny, and the roster carries the men.
 //!
-//! The aggregate is built off the UI thread (`App::project_block_tree`, see
-//! `documents/design/project-block-tree.md`); this module only lays it out and paints it.
+//! The aggregate builds off the UI thread (`App::project_block_tree`, see
+//! `documents/design/project-block-tree.md`). This module only lays it out and paints it.
 //!
-//! The backbone above the cohort is a **breadcrumb, not a block**. The Big Tree's subclade pages do
-//! the same: `R-P312/S116 > Z46577 > Z290 > L21/S145 > … > CTS4466/S1136` runs as a path across the
-//! top, and the diagram starts at the clade in view. Without that, a cohort whose induced root folds
-//! a thousand-SNP backbone opens on one absurd box that is all of the canvas and none of the cohort.
+//! The backbone above the cohort is a **breadcrumb, and not a block**. The subclade pages of the
+//! Big Tree do the same: `R-P312/S116 > Z46577 > Z290 > L21/S145 > … > CTS4466/S1136` runs as a
+//! path across the top, and the diagram starts at the clade in view. Without that, a cohort whose
+//! induced root folds a backbone of a thousand SNPs opens on one absurd box. That box is all of the
+//! canvas, and none of the cohort.
 //!
 //! Two performance rules, because a group project can hold thousands of members:
 //!
-//! - **Layout is computed once per (tree, expansion, zoom)**, not rebuilt per frame. [`layout`] is a
-//!   pure function over `&[Block]`, so it is testable without a canvas.
-//! - **Drawing is culled to `clip_rect`.** Only blocks actually on screen are painted, so a tree
-//!   with thousands of blocks costs the same per frame as one with a dozen.
+//! - **Layout runs one time for each (tree, expansion, zoom)**, and not again on each frame.
+//!   [`layout`] is a pure function over `&[Block]`, so a test can check it with no canvas.
+//! - **The draw culls to `clip_rect`.** It paints only the blocks on the screen. A tree with
+//!   thousands of blocks then costs the same on each frame as one with a dozen.
 
 use std::collections::HashMap;
 
@@ -37,43 +38,45 @@ use super::*;
 const BOX_W: f32 = 84.0;
 const ROW_H: f32 = 12.0; // one line of SNP text inside a block
 const H_GAP: f32 = 6.0; // horizontal gap between sibling subtrees
-/// Vertical gap between a block and its children — **zero**. In the Big Tree a parent block spans
-/// the full width of its descendants and they sit flush against its underside, so *containment*
-/// carries the parent/child relation and no connector is drawn between levels. A gap here would also
-/// corrupt the vertical scale, which is meant to read as accumulated mutations and nothing else.
+/// The vertical gap between a block and its children is **zero**. In the Big Tree a parent block
+/// spans the full width of its descendants, and they sit flush against its underside. So
+/// *containment* carries the parent-child relation, and the view draws no connector between levels.
+/// A gap here would also corrupt the vertical scale, which must read as accumulated mutations and
+/// nothing else.
 const V_GAP: f32 = 0.0;
 /// Stem length from the last block down to the band of biosample boxes.
 const STEM: f32 = 26.0;
 /// Ruler tick interval, in SNPs.
 const TICK_SNPS: usize = 5;
-/// Width of the left gutter carrying the SNP ruler.
+/// Width of the left gutter that holds the SNP ruler.
 const GUTTER_W: f32 = 30.0;
 const PAD: f32 = 4.0;
 /// A man's box, and the width of a private-variant block. Wide enough that "Private variants" sets
 /// on one line and a long kit name (`GMWOF5428705`) is not cropped.
 const MEMBER_W: f32 = 84.0;
-// No SNP cap: a block's height **is** its elapsed time. Mutations accumulate at a roughly steady
-// rate, so the number of phylogenetically equivalent SNPs on a branch is how long that branch ran
-// unbroken — and eliding any of them shortens the box, which is to say it misreports the time. A
-// line may still carry several *names* (synonyms for one mutation, as `BY30547 Y43043` is one SNP
-// with two names); it never carries two mutations.
+// No SNP cap: the height of a block **is** the time it covers. Mutations accumulate at an almost
+// steady rate, so the count of phylogenetically equivalent SNPs on a branch is how long that branch
+// ran unbroken. To leave any of them out shortens the box, and that misreports the time. One line
+// can still carry more than one *name*, because a mutation can have synonyms, as `BY30547 Y43043`
+// is one SNP with two names. It never carries two mutations.
 //
-// This is affordable because the one pathological case is handled elsewhere: the backbone above the
-// cohort is a breadcrumb, not a block (see `upstream_breadcrumb`).
+// The cost is acceptable, because another place controls the one pathological case. The backbone
+// above the cohort is a breadcrumb, and not a block (see `upstream_breadcrumb`).
 
 // Muted, close to the Big Tree's tan-on-parchment but keyed for a dark theme.
 const BLOCK_BG: egui::Color32 = egui::Color32::from_rgb(44, 46, 51);
 const BLOCK_BG_PLACED: egui::Color32 = egui::Color32::from_rgb(48, 61, 52); // carries members
-/// A candidate branch reads as *provisional*: amber, not the green of a published branch. It is an
-/// inference from shared private variants, and must never be mistaken for a named haplogroup.
+/// A candidate branch reads as *provisional*: amber, and not the green of a published branch. It
+/// comes from an inference over shared private variants, and nobody must read it as a named
+/// haplogroup.
 const BLOCK_BG_CANDIDATE: egui::Color32 = egui::Color32::from_rgb(66, 57, 38);
 const CANDIDATE_STROKE: egui::Color32 = egui::Color32::from_rgb(190, 148, 70);
 const BLOCK_STROKE: egui::Color32 = egui::Color32::from_rgb(78, 84, 94);
 const SELECTED_STROKE: egui::Color32 = egui::Color32::from_rgb(120, 170, 220);
 const EDGE: egui::Color32 = egui::Color32::from_rgb(72, 78, 88);
 const SNP_FG: egui::Color32 = egui::Color32::from_rgb(176, 182, 192);
-/// Men are grey against the tree's colour, as the Big Tree draws them — they are the evidence the
-/// phylogeny is built from, not part of the phylogeny.
+/// The men are grey against the colour of the tree, as the Big Tree draws them. They are the
+/// evidence behind the phylogeny, and not a part of it.
 const MEMBER_BG: egui::Color32 = egui::Color32::from_rgb(58, 60, 66);
 const MEMBER_FG: egui::Color32 = egui::Color32::from_rgb(198, 202, 210);
 /// Private variants get their own colour because they are a different *kind* of claim: unnamed
@@ -90,7 +93,7 @@ pub(crate) struct Placed {
     pub rect: egui::Rect,
 }
 
-/// One laid-out man, hanging off the bottom of the block he is placed on.
+/// One man in the layout. He hangs off the bottom of the block that holds him.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlacedMember {
     /// Index into the `blocks` slice.
@@ -100,9 +103,9 @@ pub(crate) struct PlacedMember {
     pub rect: egui::Rect,
 }
 
-/// Render a mean over a handful of men: whole numbers plain, otherwise one decimal. Rounding 4.5 to
-/// 5 would hide that a branch sits half a mutation from its neighbour; printing `4.0` for an exact 4
-/// is just noise.
+/// Draw a mean over a few men: a whole number plain, and anything else with one decimal. To round
+/// 4.5 to 5 would hide that a branch sits half a mutation from its neighbour. To write `4.0` for an
+/// exact 4 is only noise.
 fn fmt_average(v: f32) -> String {
     if (v - v.round()).abs() < 0.05 {
         format!("{}", v.round() as i64)
@@ -113,13 +116,13 @@ fn fmt_average(v: f32) -> String {
 
 /// The private-variant block below a branch: the mutations its men carry that no branch names yet.
 ///
-/// The mean is over the men whose terminal **is** this block — not its subtree. A branch that both
-/// splits and holds men counts only the men standing on it, which is what FTDNA reports too
-/// (`R-FGC29071` averages over 2 participants while 7 more sit on branches below it).
+/// The mean is over the men whose terminal **is** this block, and not over its subtree. A branch
+/// that both splits and holds men counts only the men on it. FTDNA reports it the same way:
+/// `R-FGC29071` averages over 2 participants, while 7 more sit on branches below it.
 ///
-/// It is drawn **on the same vertical scale as the blocks**, because it measures the same thing —
-/// mutations accrued since the named branch above it, which is the time between that branch and the
-/// present. That is what makes it belong in the diagram rather than in a tooltip: the ruler reads
+/// The view draws it **on the same vertical scale as the blocks**, because it measures the same
+/// thing. That is the mutations after the named branch above it, which is the time between that
+/// branch and the present. So it belongs in the diagram, and not in a tooltip, and the ruler reads
 /// straight through it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PlacedPrivate {
@@ -127,11 +130,12 @@ pub(crate) struct PlacedPrivate {
     pub block: usize,
     /// Mean private-variant count across the men here that have one.
     pub average: f32,
-    /// How many men that mean is over — `private_novel` is `None` when never computed, which is not
-    /// zero, so an average over 2 of 30 men must not read as the branch's.
+    /// How many men that mean covers. `private_novel` is `None` when nothing computed it, and that
+    /// is not zero. So an average over 2 of 30 men must not read as the average of the branch.
     pub counted: usize,
-    /// Men dropped as implausible (see [`PRIVATE_Y_QC_WARN`]). Never silently: the block is marked
-    /// and the hover says how many, because "we excluded a third of this branch" is a finding.
+    /// Men that the code dropped as implausible (see [`PRIVATE_Y_QC_WARN`]). It never does that
+    /// with no message: the block carries a mark, and the hover says how many. "We left out a third
+    /// of this branch" is a result.
     pub suppressed: usize,
     pub rect: egui::Rect,
 }
@@ -154,16 +158,18 @@ pub(crate) struct Layout {
     pub size: egui::Vec2,
 }
 
-/// Graduations for the SNP ruler, walking the **deepest lineage** — the one that accrued the most
-/// mutations, and so the one that reaches furthest down the canvas.
+/// Graduations for the SNP ruler. It walks the **deepest lineage**, which is the one that took the
+/// most mutations, and so the one that reaches furthest down the canvas.
 ///
-/// The ticks are computed rather than spaced evenly, because evenly spaced would be wrong: each
-/// block spends one row on its name, so a fixed pixels-per-SNP scale drifts by a row per generation.
-/// Walking the lineage and placing each graduation inside the block that contains it keeps the axis
-/// honest — the ticks come out *nearly* regular, and where they do not, the irregularity is real.
+/// The code calculates the ticks, and does not space them evenly, because an even space would be
+/// wrong. Each block spends one row on its name, so a fixed scale of pixels for each SNP drifts by
+/// one row in each generation. A walk of the lineage, with each graduation inside the block that
+/// holds it, keeps the axis honest. The ticks come out *almost* regular, and where they do not, the
+/// irregularity is real.
 fn ruler_ticks(blocks: &[Block], placed: &[Placed], row_h: f32, pad: f32) -> Vec<Tick> {
-    // Cumulative mutations to the bottom of each block, so "deepest" means most mutations, not most
-    // generations — a long slow branch outranks several short ones.
+    // Cumulative mutations down to the bottom of each block. So "deepest" means the most
+    // mutations, and not the most generations, and one long slow branch wins over some short
+    // ones.
     let index: HashMap<i64, usize> = blocks.iter().enumerate().map(|(i, b)| (b.node_id, i)).collect();
     let mut cum = vec![0usize; blocks.len()];
     let mut best = (0usize, 0usize); // (mutations, block)
@@ -189,7 +195,7 @@ fn ruler_ticks(blocks: &[Block], placed: &[Placed], row_h: f32, pad: f32) -> Vec
         let n = blocks[i].loci.len();
         // The SNP rows start below the name row.
         let body_top = placed[i].rect.top() + pad + row_h;
-        // Every multiple of TICK_SNPS that falls inside this block's run of mutations.
+        // Every whole number of TICK_SNPS that falls inside the run of mutations of this block.
         let mut k = (seen / TICK_SNPS + 1) * TICK_SNPS;
         while k <= seen + n {
             ticks.push(Tick {
@@ -203,49 +209,52 @@ fn ruler_ticks(blocks: &[Block], placed: &[Placed], row_h: f32, pad: f32) -> Vec
     ticks
 }
 
-/// Lines a block's box needs: the branch name, one line per equivalent SNP, and the member count.
+/// The lines the box of a block needs: the branch name, one line for each equivalent SNP, and the
+/// member count.
 fn lines_for(b: &Block) -> usize {
-    // The name's row + one row per SNP. Every SNP, always — see the note above. The old member-count
-    // row is gone: the men are boxes in the band below, so counting them here was both redundant and
-    // a row of height that no mutation paid for.
+    // The row of the name, plus one row for each SNP. Every SNP, always: see the note above. The
+    // old member-count row is gone. The men are boxes in the band below, so a count here was
+    // redundant. It was also a row of height that no mutation paid for.
     1 + b.loci.len()
 }
 
-/// The folded backbone above the cohort, as a path rather than a box.
+/// The folded backbone above the cohort, as a path and not as a box.
 ///
-/// Returns `(path, snps)` when the induced root is a *collapsed run* — a chain of branches the
-/// cohort descends through, folded into one block because no split within it separates any two
-/// members. R1b-CTS4466Plus opens on `R-Z290`, which is 24 folded branches and 1,763 SNPs: 25
-/// branch-lengths of backbone that would be twelve times taller than the cohort hanging off it.
+/// Returns `(path, snps)` when the induced root is a *collapsed run*. That is a chain of branches
+/// the cohort descends through, folded into one block, because no split inside it separates any two
+/// members. R1b-CTS4466Plus opens on `R-Z290`, which is 24 folded branches and 1,763 SNPs. That is
+/// 25 branch-lengths of backbone, and it would be twelve times taller than the cohort below it.
 ///
-/// The test is the *fold*, not whether men sit on it. A collapsed run is by construction more than
-/// one branch, so its height is a sum across the tree above the cohort rather than one branch's
-/// elapsed time — the one place where height-as-time does not hold. A root that was never collapsed
-/// is a single genuine branch and stays in the canvas at full height like any other.
+/// The test is the *fold*, and not whether men sit on it. A collapsed run is by construction more
+/// than one branch. So its height is a sum across the tree above the cohort, and not the time of
+/// one branch. It is the one place where height-as-time does not hold. A root that never collapsed
+/// is one genuine branch, and it stays in the canvas at full height like any other.
 ///
-/// Men parked on the backbone (shallow kits, typically) keep their roster: the breadcrumb selects
-/// the block, so nothing is lost but the box.
+/// Men parked on the backbone, usually shallow kits, keep their roster. The breadcrumb selects the
+/// block, so nothing goes but the box.
 pub(crate) fn upstream_breadcrumb(blocks: &[Block]) -> Option<(String, usize)> {
     let root = blocks.iter().find(|b| b.parent.is_none())?;
     if root.collapsed.is_empty() {
         return None;
     }
-    // `collapsed` is root-most first and the surviving block keeps the deepest name, so appending it
-    // reads oldest → youngest, the direction the breadcrumb is travelled.
+    // `collapsed` has the root-most entry first, and the block that survives keeps the deepest
+    // name. So the name at the end reads oldest → youngest, which is the direction of the
+    // breadcrumb.
     let mut path = root.collapsed.clone();
     path.push(root.name.clone());
     Some((path.join("  ›  "), root.loci.len()))
 }
 
 /// Lay `blocks` (in pre-order, as [`ProjectBlockTree`] delivers them) onto a canvas: **depth → y**,
-/// tidy-tree order → **x**, root at the top. A parent is centred over the horizontal extent of its
-/// children, so a branch point sits above the lineages it splits into.
+/// tidy-tree order → **x**, root at the top. A parent centres over the horizontal extent of its
+/// children, so a branch point comes above the lineages it splits into.
 ///
-/// A block hangs **directly beneath its parent**, not on a row shared with everything at its depth.
-/// That makes vertical position cumulative: how far down a block sits is the mutations accumulated
-/// along the path to it, so the y axis reads as elapsed time the same way a box's height does.
-/// Aligning depths into rows would instead pad every short branch out to the tallest box beside it,
-/// which is both a lot of empty canvas and a lie about when the branch happened.
+/// A block hangs **directly under its parent**, and not on a row it shares with everything at its
+/// depth. That makes the vertical position cumulative. How far down a block sits is the mutations
+/// that accumulated along the path to it. So the y axis reads as elapsed time, the same way the
+/// height of a box does. To put every depth on its own row would pad each short branch out to the
+/// tallest box beside it. That is a lot of empty canvas, and it lies about when the branch
+/// happened.
 ///
 /// Pure: no `Ui`, no state. Extents bottom-up, then positions top-down.
 pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
@@ -271,10 +280,12 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
     let heights: Vec<f32> = blocks.iter().map(|b| lines_for(b) as f32 * row_h + 2.0 * pad).collect();
     let mut member_slots: Vec<(usize, usize, f32)> = Vec::new();
 
-    // Pass 1, bottom-up: the horizontal extent each subtree needs. `blocks` is pre-order, so
-    // iterating in reverse visits every child before its parent.
-    // A man occupies a slot beside his block's child subtrees: the Big Tree hangs him off the bottom
-    // of his terminal on a stem of his own, so he needs horizontal room like a subtree does.
+    // Pass 1, bottom-up: the horizontal extent each subtree needs. `blocks` is pre-order, so a walk
+    // in reverse visits every child before its parent.
+    //
+    // A man takes a slot beside the child subtrees of his block. The Big Tree hangs him off the
+    // bottom of his terminal, on a stem of his own. So he needs horizontal room, the same as a
+    // subtree does.
     let slots = |i: usize| children[i].len() + blocks[i].members.len();
     let mut extent = vec![box_w; blocks.len()];
     for i in (0..blocks.len()).rev() {
@@ -298,11 +309,11 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
     let mut deepest = 0.0f32;
     // Pre-order, so a parent's top is always settled before its children read it.
     let mut top = vec![0.0f32; blocks.len()];
-    // Cumulative SNPs down to each block's top — the quantity the ruler measures.
+    // Cumulative SNPs down to the top of each block: the quantity the ruler measures.
     let mut snps_above = vec![0usize; blocks.len()];
     for i in 0..blocks.len() {
-        // Icicle: the block spans its whole subtree. A parent therefore visibly *contains* the
-        // lineages it splits into, which is how the Big Tree shows descent — no elbow needed.
+        // Icicle: the block spans its whole subtree. So a parent visibly *contains* the lineages
+        // it splits into, which is how the Big Tree shows descent, and no elbow is necessary.
         let rect = egui::Rect::from_min_size(egui::pos2(left[i], top[i]), egui::vec2(extent[i], heights[i]));
         for &c in &children[i] {
             top[c] = rect.bottom() + v_gap;
@@ -314,8 +325,9 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
             let kids: f32 = children[i].iter().map(|&c| extent[c]).sum::<f32>();
             let total = kids + blocks[i].members.len() as f32 * member_w + h_gap * (n - 1) as f32;
             let mut cx = left[i] + (extent[i] - total) / 2.0;
-            // Men take a slot to the left of the subclades, so a lineage that both splits and holds
-            // men makes room for both. Their boxes are positioned later, once the band is known.
+            // Men take a slot to the left of the subclades, so a lineage that both splits and
+            // holds men makes room for both. Their boxes take their positions later, after the
+            // code knows the band.
             for m in 0..blocks[i].members.len() {
                 member_slots.push((i, m, cx));
                 cx += member_w + h_gap;
@@ -329,16 +341,18 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
         placed.push(Placed { idx: i, rect });
     }
 
-    // Private variants, between a branch and its men — flush under the block, on the same scale, so
-    // the ruler measures straight through. The span is the men's, not the block's: these mutations
-    // belong to the men standing here, not to the subclades that branch off elsewhere under it.
+    // Private variants, between a branch and its men. They sit flush under the block, on the same
+    // scale, so the ruler measures straight through. The span is the span of the men, and not of
+    // the block. These mutations belong to the men here, and not to the subclades that branch off
+    // in another place under it.
     let mut privates: Vec<PlacedPrivate> = Vec::new();
     for (i, b) in blocks.iter().enumerate() {
-        // A donor whose raw novel count trips the workspace's own plausibility threshold is dropped
-        // whole, not trimmed. `PRIVATE_Y_QC_WARN` already declares such a count "unusually high for
-        // one sample — check for contamination, low/uneven coverage, or a reference-build mismatch",
-        // which is a statement about the *sample*, so its gated count is not trustworthy either. One
-        // donor at 661 would otherwise set a branch's height single-handed.
+        // A donor whose raw novel count goes past the plausibility threshold of the workspace
+        // drops whole, and nothing trims it. `PRIVATE_Y_QC_WARN` already calls such a count
+        // "unusually high for one sample". It says to check for contamination, for low or uneven
+        // coverage, or for a mismatch of the reference build. That is a statement about the
+        // *sample*, so its gated count is not trustworthy either. One donor at 661 would otherwise
+        // set the height of a branch on its own.
         let plausible = |m: &&navigator_app::BlockMember| {
             !m.private_novel
                 .is_some_and(|n| n >= navigator_domain::results_context::PRIVATE_Y_QC_WARN)
@@ -365,10 +379,10 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
         ) else {
             continue;
         };
-        // **One column wide, always** — centred over the men it covers. The figure is a single
-        // branch-level statistic, so sizing the box to the number of men would imply it is a
-        // per-man quantity, and would make an identical average look different on two branches for
-        // no reason but headcount.
+        // **One column wide, always**, centred over the men it covers. The figure is one statistic
+        // at branch level. A box that grew with the number of men would suggest a quantity for
+        // each man. It would also make one average look different on two branches, for no reason
+        // but the headcount.
         let h = (average * row_h).max(row_h) + 2.0 * pad;
         let rect = egui::Rect::from_min_size(
             egui::pos2((lo + hi) / 2.0, placed[i].rect.bottom()),
@@ -384,10 +398,10 @@ pub(crate) fn layout(blocks: &[Block], zoom: f32) -> Layout {
         });
     }
 
-    // The men sit in one band beneath the whole diagram, as the Big Tree tables them below it,
-    // reached by a stem from their block. Sharing a baseline is what makes them scannable: hung from
-    // their own blocks they would step down the page in lockstep with the phylogeny, which says
-    // nothing about the men.
+    // The men sit in one band under the whole diagram, as the Big Tree tables them below it. A stem
+    // from their block reaches them. One shared baseline is what makes them easy to read. Hung
+    // from their own blocks, they would step down the page in lockstep with the phylogeny, and that
+    // says nothing about the men.
     let band = deepest + stem;
     let members: Vec<PlacedMember> = member_slots
         .into_iter()
@@ -415,8 +429,8 @@ impl NavigatorApp {
     pub(crate) fn project_blocktree_section(&mut self, ui: &mut egui::Ui) {
         let Some(pid) = self.selected_project else { return };
 
-        // Lazy load — the aggregate fetches and parses a multi-MB haplotree, so it is not built on
-        // project select like the STR chart is.
+        // A lazy load. The aggregate reads and parses a multi-MB haplotree, so a project select
+        // does not build it, as it builds the STR chart.
         if self.project_blocktree.is_none() && !self.project_blocktree_loading {
             self.project_blocktree_loading = true;
             let _ = self.tx.send(Command::LoadProjectBlockTree(pid));
@@ -436,8 +450,8 @@ impl NavigatorApp {
             return;
         };
 
-        // Summary line: how much of the project the tree actually accounts for. `unplaced` is shown
-        // even when zero-length is impossible — a cohort with skew must not look complete.
+        // Summary line: how much of the project the tree covers. It shows `unplaced` even when a
+        // length of zero is impossible, because a cohort with skew must not look complete.
         let placed: usize = tree.blocks.iter().map(|b| b.members.len()).sum();
         let unplaced = tree.unplaced.len();
         let summary = format!(
@@ -448,8 +462,8 @@ impl NavigatorApp {
             tree.blocks.len(),
             self.tr("blocktree.summary.blocks"),
         );
-        // The coordinate space matters: node names are build-independent, the SNP positions are not,
-        // so the view says which tree and which build it is showing.
+        // The coordinate space matters. Node names are independent of the build, and the SNP
+        // positions are not, so the view says which tree and which build it draws.
         let coords = if tree.build_key.is_empty() {
             tree.provider.clone()
         } else {
@@ -462,8 +476,8 @@ impl NavigatorApp {
                 self.tr("blocktree.unplaced.hint")
             )
         });
-        // Candidate branches are the thing a published tree can't tell you, so they get their own
-        // line rather than being left for the user to notice in the canvas.
+        // A candidate branch is the thing a published tree can not tell you, so it gets its own
+        // line. The user does not have to see it in the canvas.
         let candidates = tree.blocks.iter().filter(|b| b.candidate).count();
         let candidate_msg = (candidates > 0).then(|| {
             let mut s = format!("{candidates} {}", self.tr("blocktree.candidates"));
@@ -483,8 +497,8 @@ impl NavigatorApp {
             }
             s
         });
-        // Every label is resolved before the closure: `self.tr` borrows `self`, and the zoom slider
-        // needs `&mut` — the two can't coexist inside one closure.
+        // Take every label before the closure. `self.tr` borrows `self`, and the zoom slider needs
+        // `&mut`, and the two can not live inside one closure.
         let roster_empty = self.tr("blocktree.roster.empty").to_string();
         let upstream_snps = self.tr("blocktree.upstream.snps").to_string();
         let upstream_hint = self.tr("blocktree.upstream.hint").to_string();
@@ -527,8 +541,8 @@ impl NavigatorApp {
             self.blocktree_recentre = false;
             return;
         }
-        // The backbone above the cohort becomes a path across the top; the canvas draws what is
-        // left, which is the cohort itself.
+        // The backbone above the cohort becomes a path across the top. The canvas draws the
+        // remainder, which is the cohort itself.
         let upstream = upstream_breadcrumb(&tree.blocks);
         let drawn: Vec<Block> = if upstream.is_some() {
             let root = tree.blocks.iter().find(|b| b.parent.is_none()).map(|b| b.node_id);
@@ -550,8 +564,8 @@ impl NavigatorApp {
         let mut select_upstream = false;
         if let Some((path, snps)) = &upstream {
             // The lineage the cohort descends through, and how many mutations sit on it. It is a
-            // path rather than a block because its height would dwarf everything the cohort is.
-            // Clickable, so the men parked on the backbone still reach the roster.
+            // path, and not a block, because its height would be far larger than the whole cohort.
+            // The user can click it, so the men parked on the backbone still reach the roster.
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 select_upstream |= ui
@@ -567,8 +581,8 @@ impl NavigatorApp {
         }
         ui.add_space(4.0);
 
-        // Roster first, from the right, so the tree takes whatever is left — the Big Tree keeps the
-        // men in a table rather than in the diagram, and the diagram needs the room.
+        // The roster comes first, from the right, so the tree takes the remainder. The Big Tree
+        // keeps the men in a table, and not in the diagram, and the diagram needs the room.
         let roster = self
             .blocktree_selected
             .and_then(|id| tree.blocks.iter().find(|b| b.node_id == id))
@@ -613,8 +627,8 @@ impl NavigatorApp {
                         rows.len(),
                         |ui, range| {
                             for (name, novel) in &rows[range] {
-                                // `None` means private-Y was never computed — not the same as zero,
-                                // so it shows nothing rather than "(0)".
+                                // `None` means nothing computed private-Y. That is not the same as
+                                // zero, so this shows nothing, and not "(0)".
                                 let text = match novel {
                                     Some(n) if *n > 0 => format!("{name}  ({n})"),
                                     _ => name.clone(),
@@ -627,7 +641,7 @@ impl NavigatorApp {
         }
 
         // Centre the first view on the root. The canvas is far wider than any viewport, and its
-        // left edge is empty space belonging to subtrees that hang further down.
+        // left edge is empty space that belongs to subtrees further down.
         let root_x = lay
             .placed
             .iter()
@@ -649,10 +663,10 @@ impl NavigatorApp {
             let font = egui::FontId::proportional(11.0 * zoom);
             let small = egui::FontId::proportional(9.5 * zoom);
 
-            // The SNP ruler, in the left gutter: the scale that makes a block's height readable as a
-            // quantity rather than an impression. Graduated in mutations accumulated from the top of
-            // this view — not from the root of the tree, which is above the cohort and in the
-            // breadcrumb.
+            // The SNP ruler, in the left gutter. It is the scale that makes the height of a block
+            // a quantity, and not an impression. Its graduations are the mutations that
+            // accumulated from the top of this view. They do not start at the root of the tree,
+            // which is above the cohort and in the breadcrumb.
             {
                 let g = egui::Rect::from_min_size(
                     egui::pos2(canvas.left(), canvas.top()),
@@ -682,11 +696,12 @@ impl NavigatorApp {
                 let rect = p.rect.translate(origin);
                 let b = &drawn[p.idx];
 
-                // No connector to the parent: the block sits flush under it and inside its span, so
-                // containment shows the descent. An elbow here would be drawing what the geometry
+                // No connector to the parent. The block sits flush under it, and inside its span,
+                // so containment shows the descent. An elbow here would draw what the geometry
                 // already says.
 
-                // Cull: everything below is per-block text layout, the expensive part.
+                // Cull here: everything below is the text layout of each block, which costs the
+                // most.
                 if !clip.intersects(rect) {
                     continue;
                 }
@@ -708,14 +723,14 @@ impl NavigatorApp {
                 let row = ROW_H * zoom;
                 let mut y = rect.top() + pad;
                 let cx = rect.center().x;
-                // Clipped to the box: a label that outgrows its block is then cropped rather than
-                // spilling across the canvas, whatever the text turns out to be.
+                // Clipped to the box. A label larger than its block gets a crop, and it does not
+                // run across the canvas, whatever the text turns out to be.
                 let inner = painter.with_clip_rect(rect.shrink(1.0));
                 let put = |text: String, color: egui::Color32, f: &egui::FontId, y: f32| {
                     inner.text(egui::pos2(cx, y), egui::Align2::CENTER_TOP, text, f.clone(), color);
                 };
 
-                // A candidate has no published name — the view supplies the label, localized.
+                // A candidate has no published name, so the view gives the label, and localizes it.
                 let (title, title_fg) = if b.candidate {
                     (candidate_label.clone(), CANDIDATE_STROKE)
                 } else {
@@ -724,16 +739,16 @@ impl NavigatorApp {
                 put(title, title_fg, &font, y);
                 y += row;
 
-                // The equivalent SNPs themselves, one per line — the block's actual content, and the
-                // reason its height means something. Printing a count instead withholds both the
-                // mutations and the sense of time the box is carrying.
+                // The equivalent SNPs themselves, one on each line. They are the content of the
+                // block, and the reason its height has a value. A count instead of them withholds
+                // both the mutations and the sense of time the box carries.
                 for l in &b.loci {
                     put(l.name.clone(), SNP_FG, &small, y);
                     y += row;
                 }
-                // ONE interact per block. Two on the same rect meant the later one sat on top and
-                // swallowed the click: every candidate has members, so the double-click handler
-                // always existed for them and single-click never fired.
+                // ONE interact for each block. With two on the same rect, the later one sat on top
+                // and took the click. Every candidate has members, so the double-click handler
+                // always existed for them, and single-click never fired.
                 let resp = ui.interact(rect, egui::Id::new(("blocktree", b.node_id)), egui::Sense::click());
                 if resp.double_clicked() {
                     // Jump to a member's subject page.
@@ -741,8 +756,8 @@ impl NavigatorApp {
                         open_subject = Some(m.guid);
                     }
                 } else if resp.clicked() {
-                    // A named block expands to show its members; a candidate is an inference, so
-                    // clicking it opens the evidence instead of just more names.
+                    // A named block expands to show its members. A candidate is an inference, so a
+                    // click on it opens the evidence, and not only more names.
                     if b.candidate {
                         review = Some(b.node_id);
                     } else {
@@ -774,8 +789,8 @@ impl NavigatorApp {
                     continue;
                 }
                 painter.rect_filled(rect, 2.0, PRIVATE_BG);
-                // A suppressed donor is a fact about the branch, so the box says so rather than
-                // quietly reporting a mean over whoever survived.
+                // A donor the code held back is a fact about the branch, so the box says so. It
+                // does not give a mean over the survivors with no message.
                 let edge = if pv.suppressed > 0 {
                     egui::Stroke::new(1.5_f32, CANDIDATE_STROKE)
                 } else {
@@ -783,11 +798,11 @@ impl NavigatorApp {
                 };
                 painter.rect_stroke(rect, 2.0, edge);
 
-                // The box's height is the measurement, so the text has to fit *it* — never the
-                // other way round. A one-mutation block is one row tall, which holds one line, and
-                // the line that matters is the number: the title is a label, the value is the
-                // finding. So the title appears only when both fit, exactly as the Big Tree drops it
-                // from its thin blocks.
+                // The height of the box is the measurement, so the text has to fit *it*, and never
+                // the other way round. A one-mutation block is one row tall, and that holds one
+                // line. The line that matters is the number: the title is a label, and the value is
+                // the result. So the title appears only when both fit, exactly as the Big Tree
+                // drops it from its thin blocks.
                 let inner = painter.with_clip_rect(rect.shrink(1.0));
                 let pad_z = PAD * zoom;
                 let avail = rect.width() - 2.0 * pad_z;
@@ -806,8 +821,8 @@ impl NavigatorApp {
                 } else {
                     value.size().y
                 };
-                // Centred in the box, as the reference centres it — with the text top-aligned once
-                // the box is shorter than the text, so what survives the clip is the start of it.
+                // Centred in the box, as the reference centres it. The text aligns to the top once
+                // the box is shorter than the text, so the start of it survives the clip.
                 let mut y = rect.top() + ((rect.height() - used) / 2.0).max(pad_z);
                 if both {
                     inner.galley(
@@ -830,9 +845,9 @@ impl NavigatorApp {
                 );
                 if resp.hovered() {
                     let b = &drawn[pv.block];
-                    // Name the denominator. It is the men whose terminal *is* this block — not the
-                    // subtree — and among those, only the ones private-Y has actually been computed
-                    // for, since `private_novel` is `None` until then and `None` is not zero.
+                    // Name the denominator. It is the men whose terminal *is* this block, and not
+                    // the subtree. Among those, it is only the ones that private-Y covered, because
+                    // `private_novel` is `None` until then, and `None` is not zero.
                     let mut tip = format!(
                         "{}\nOn average {} publishable private variant(s) in {} of {} men placed here",
                         b.name,
@@ -858,15 +873,16 @@ impl NavigatorApp {
             }
 
             // Men, as the Big Tree draws them: a grey box on a stem below the block they sit on.
-            // They are the evidence the phylogeny rests on, so they belong in the diagram — the
-            // roster beside it stays for the private-variant counts and for scanning a long list.
+            // They are the evidence the phylogeny rests on, so they belong in the diagram. The
+            // roster beside it stays for the private-variant counts, and to read a long list.
             for pm in &lay.members {
                 let rect = pm.rect.translate(origin);
                 let b = &drawn[pm.block];
                 // A stem from the block down to the band. This is the one connector the diagram
-                // still draws, because a man's box is the one thing not positioned by containment.
-                // Start the stem below the private-variant block when there is one, so the man hangs
-                // off his own unnamed mutations rather than appearing to hang off the named branch.
+                // still draws, because the box of a man is the one thing containment does not
+                // place. Start the stem below the private-variant block when there is one. The man
+                // then hangs off his own unnamed mutations, and does not look as though he hangs
+                // off the named branch.
                 let from = lay
                     .privates
                     .iter()
@@ -944,8 +960,8 @@ impl NavigatorApp {
                 .add_filter("HTML", &["html"])
                 .save_file()
             {
-                // One button, either format — chosen by the extension the user typed, as the other
-                // two-format exports in this app do.
+                // One button for both formats. The extension the user typed chooses, as it does
+                // for the other two-format exports in this app.
                 let html_wanted = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("html"));
                 let body = if html_wanted { html } else { tsv };
                 match std::fs::write(&path, body) {
@@ -975,8 +991,8 @@ mod tests {
     use super::*;
     use navigator_app::{Block, BlockMember};
 
-    /// Layout depends only on the *number* of members, so the guid can be the nil one — this keeps
-    /// `uuid` out of the UI crate's dependencies.
+    /// The layout depends only on the *count* of members, so the guid can be the nil one. That
+    /// keeps `uuid` out of the dependencies of the UI crate.
     fn member(name: &str) -> BlockMember {
         BlockMember {
             guid: SampleGuid(Default::default()),
@@ -1026,8 +1042,9 @@ mod tests {
         assert!(lay.placed[1].rect.top() >= lay.placed[0].rect.bottom());
     }
 
-    /// Vertical position is cumulative, so a lineage that accrued more mutations sits lower than its
-    /// cousin at the same depth. Aligning depths into rows would flatten exactly that difference.
+    /// The vertical position is cumulative, so a lineage that took more mutations sits lower than
+    /// its cousin at the same depth. To put every depth on its own row would flatten exactly that
+    /// difference.
     #[test]
     fn a_lineage_that_accrued_more_snps_sits_lower() {
         let mut root = block(1, 0, 0, &[]);
@@ -1084,15 +1101,15 @@ mod tests {
         let sh = layout(&[short], 1.0).placed[0].rect.height();
         let th = layout(&[tall], 1.0).placed[0].rect.height();
         assert!(th > sh, "20 equivalent SNPs must stand taller than 2");
-        // One line per SNP: the 18 extra mutations are 18 extra rows.
+        // One line for each SNP: the 18 extra mutations are 18 extra rows.
         assert!(
             (th - sh - 18.0 * ROW_H).abs() < 0.5,
             "height tracks the SNP count exactly"
         );
     }
 
-    /// No cap, at any size. A truncated box is a shortened box, and a shortened box is a shorter
-    /// span of time than the branch actually ran.
+    /// No cap, at any size. A box with a truncation is a shorter box, and a shorter box is a
+    /// shorter span of time than the branch ran.
     #[test]
     fn a_large_block_is_never_truncated() {
         let mut b = block(1, 0, 0, &[]);
@@ -1102,8 +1119,8 @@ mod tests {
         assert!((lay.placed[0].rect.height() - (601.0 * ROW_H + 2.0 * PAD)).abs() < 0.5);
     }
 
-    /// The backbone the cohort merely passed through is upstream context, so it leaves the canvas
-    /// for the breadcrumb — otherwise one member-less box is taller than the whole cohort below it.
+    /// The backbone the cohort only passed through is upstream context, so it leaves the canvas for
+    /// the breadcrumb. If not, one box with no members is taller than the whole cohort below it.
     #[test]
     fn a_folded_backbone_root_becomes_a_breadcrumb() {
         let mut root = block(1, 0, 0, &[]);
@@ -1115,8 +1132,8 @@ mod tests {
         assert_eq!(path, "P312  ›  L21  ›  Z290", "oldest to youngest");
         assert_eq!(snps, 900);
 
-        // The live cohort's backbone carries two shallow kits, so men on it must not keep it in the
-        // canvas — the fold is what makes it upstream.
+        // The backbone of the live cohort carries two shallow kits. Men on it must not keep it in
+        // the canvas, because the fold is what makes it upstream.
         root.members = vec![member("a")];
         assert!(upstream_breadcrumb(&[root]).is_some());
     }
@@ -1127,7 +1144,7 @@ mod tests {
         assert!(upstream_breadcrumb(&split()).is_none());
     }
 
-    /// Men are blocks of their own hanging under their terminal, the way the Big Tree stems them.
+    /// Each man is a block of his own, under his terminal, the way the Big Tree stems them.
     #[test]
     fn men_share_one_band_below_the_diagram() {
         let mut blocks = split();
@@ -1149,7 +1166,7 @@ mod tests {
         );
     }
 
-    /// The ruler is the scale that makes a block's height a quantity rather than an impression.
+    /// The ruler is the scale that makes the height of a block a quantity, and not an impression.
     #[test]
     fn the_ruler_graduates_the_deepest_lineage_in_snps() {
         let mut root = block(1, 0, 0, &[]);
@@ -1176,8 +1193,8 @@ mod tests {
 
     #[test]
     fn men_do_not_overlap_their_uncles() {
-        // A block that both splits and holds men has to make room for both: the men take slots
-        // beside the child subtrees rather than sitting on top of them.
+        // A block that both splits and holds men has to make room for both. The men take slots
+        // beside the child subtrees, and not on top of them.
         let mut root = block(1, 0, 0, &["m1", "m2", "m3"]);
         root.subtree_members = 4;
         let lay = layout(&[root, block(2, 1, 1, &["a"])], 1.0);
@@ -1227,7 +1244,7 @@ mod tests {
             (pv.rect.top() - lay.placed[0].rect.bottom()).abs() < 0.01,
             "flush under its branch — the axis must not skip"
         );
-        // The men hang below it, and it is centred on them.
+        // The men hang below it, and it centres on them.
         let (lo, hi) = (
             lay.members.iter().map(|m| m.rect.left()).fold(f32::MAX, f32::min),
             lay.members.iter().map(|m| m.rect.right()).fold(f32::MIN, f32::max),
@@ -1241,8 +1258,8 @@ mod tests {
         }
     }
 
-    /// One column wide regardless of headcount. The average is a branch-level figure; sizing the box
-    /// to the number of men would make an identical average look different on two branches.
+    /// One column wide, whatever the headcount. The average is a figure at branch level. A box that
+    /// grew with the number of men would make one average look different on two branches.
     #[test]
     fn private_blocks_are_one_column_wide_whatever_the_headcount() {
         let mut one = block(1, 0, 0, &["a"]);
@@ -1260,8 +1277,8 @@ mod tests {
         assert!((w1 - MEMBER_W).abs() < 0.01, "one member column wide");
     }
 
-    /// The mean is over the men *placed on* the block, not its subtree — FTDNA reports 4 over 2
-    /// participants for R-FGC29071 while 7 more men sit on branches below it.
+    /// The mean is over the men *on* the block, and not over its subtree. FTDNA reports 4 over 2
+    /// participants for R-FGC29071, while 7 more men sit on branches below it.
     #[test]
     fn the_average_covers_the_men_placed_here_not_the_subtree() {
         let mut here = block(1, 0, 0, &["a", "b"]);
@@ -1304,7 +1321,7 @@ mod tests {
         assert_eq!(pv.suppressed, 1, "and the exclusion is reported, never silent");
     }
 
-    /// The average is of the *publishable* count — the one a branch claim could rest on.
+    /// The average is over the *publishable* count: the one a branch claim could rest on.
     #[test]
     fn the_average_is_of_the_gated_count() {
         let mut b = block(1, 0, 0, &["a"]);
@@ -1320,7 +1337,7 @@ mod tests {
         assert_eq!(fmt_average(4.5), "4.5", "rounding would hide half a mutation");
     }
 
-    /// `private_novel` is `None` until private-Y has been computed, which is not the same as zero.
+    /// `private_novel` is `None` until private-Y runs, and that is not the same as zero.
     #[test]
     fn a_branch_with_no_private_y_computed_gets_no_block() {
         let lay = layout(&split(), 1.0);
@@ -1329,7 +1346,7 @@ mod tests {
             "absent evidence must not be drawn as zero mutations"
         );
 
-        // And a mean is taken only over the men that have one.
+        // And the mean covers only the men that have one.
         let mut b = block(1, 0, 0, &["a", "b", "c"]);
         b.members[0].private_novel = Some(9);
         b.members[0].private_publishable = Some(9);

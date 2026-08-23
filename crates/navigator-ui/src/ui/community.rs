@@ -1,6 +1,7 @@
-//! `impl NavigatorApp` — the Community tab: the signed-in tester's social surface over the AppView's
-//! signed Edge API (Support threads to the team / community Feed / Notifications). Account-global
-//! (not per-subject); requires a signed-in identity. Mirrors the `central` rendering idioms.
+//! `impl NavigatorApp`: the Community tab. It is the social surface of a tester who has signed in,
+//! over the signed Edge API of the AppView: Support threads to the team, the community Feed, and
+//! Notifications. It is global to the account, and not tied to one subject. It needs an identity
+//! that has signed in. It mirrors the idioms that `central` uses to draw.
 use super::*;
 
 impl NavigatorApp {
@@ -42,7 +43,8 @@ impl NavigatorApp {
         });
     }
 
-    /// Re-poll all sections (also drives the app-bar bell via the Notifications event).
+    /// Poll all sections again. This also drives the app-bar bell, through the Notifications
+    /// event.
     fn refresh_community(&self) {
         let _ = self.tx.send(Command::LoadSupportThreads);
         let _ = self.tx.send(Command::LoadCommunityFeed);
@@ -164,13 +166,14 @@ impl NavigatorApp {
                     self.feed_topic.clear();
                 }
             });
-            // Opt-in federation: publishing to your own PDS makes the post a portable, public
-            // `feed.post` record (mirrored back as a "via Atmosphere" entry). Only a real PDS
-            // account has a repo to write to — a local did:key identity can't federate.
+            // Federation is opt-in. A write to your own PDS makes the post a portable, public
+            // `feed.post` record, which comes back as a `via Atmosphere` entry. Only a real PDS
+            // account has a repo to write to, and a local did:key identity can not federate.
             let can_federate = self.account.as_deref().is_some_and(|d| !d.starts_with("did:key:"));
             if can_federate {
-                // Bind the labels first: `tr()` borrows `&self`, which would clash with the
-                // `&mut self.feed_publish_pds` checkbox binding (the i18n borrow gotcha).
+                // Bind the labels first. `tr()` borrows `&self`, which would clash with the
+                // `&mut self.feed_publish_pds` bind of the checkbox. This is the i18n borrow
+                // trap.
                 let label = self.tr("community.publishPds");
                 let hint = self.tr("community.publishPds.hint");
                 ui.checkbox(&mut self.feed_publish_pds, label).on_hover_text(hint);
@@ -301,7 +304,7 @@ impl NavigatorApp {
         });
         ui.add_space(8.0);
 
-        // Inbound requests awaiting our consent (symmetric-blind).
+        // Inbound requests that wait for our consent (symmetric-blind).
         if !self.dm_incoming.is_empty() {
             ui.label(egui::RichText::new(self.tr("dm.incoming")).strong());
             for r in self.dm_incoming.clone() {
@@ -438,7 +441,7 @@ impl NavigatorApp {
     }
 }
 
-/// A truncated DID for display (pseudonymous handle, not PII) — full value goes in a hover.
+/// A truncated DID for display (a pseudonymous handle, not PII). The full value goes in a hover.
 fn short_did(did: &str) -> String {
     did.chars().take(20).collect()
 }
@@ -450,7 +453,7 @@ struct FeedCard<'a> {
     body: &'a str,
     at: Option<&'a str>,
     pinned: bool,
-    /// Provenance badge (e.g. "via Atmosphere" for a federated post).
+    /// Provenance badge, for example `via Atmosphere` for a federated post.
     badge: Option<&'a str>,
 }
 

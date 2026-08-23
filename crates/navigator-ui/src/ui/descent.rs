@@ -1,7 +1,8 @@
-//! YFull-YReport-style descent visualization (`impl NavigatorApp`): the subject's root→terminal
-//! Y/mtDNA path drawn as labelled node badges, each followed by its defining SNPs as call-colored
-//! chips. One generic renderer (built on the `DescentReport` aggregate) serves both lineages and
-//! two densities — a compact path chain for the Simple view, the full chip wall for Advanced.
+//! A descent visualization in the style of a YFull YReport (`impl NavigatorApp`). It draws the
+//! root→terminal Y or mtDNA path of the subject as labelled node badges. After each badge come the
+//! SNPs that define that node, as chips coloured by the call. One generic function, built on the
+//! `DescentReport` aggregate, serves both lineages and two densities. Those are a compact path
+//! chain for the Simple view, and the full chip wall for Advanced.
 
 use super::*;
 
@@ -13,10 +14,11 @@ const ANCESTRAL: egui::Color32 = egui::Color32::from_rgb(200, 120, 40); // ances
 const NOCALL: egui::Color32 = egui::Color32::from_rgb(110, 110, 110); // no confident base
 
 impl NavigatorApp {
-    /// Render the descent report for `dna`, loading it lazily off the worker thread on first view and
-    /// caching the result. `compact` = the Simple-view path chain; otherwise the full Advanced report.
-    /// Additive and self-contained: shows a spinner while loading and a plain note when there is no
-    /// placement, so it is safe to drop into any tab.
+    /// Draw the descent report for `dna`. It loads the report lazily off the worker thread on the
+    /// first view, and caches the result. `compact` gives the path chain of the Simple view, and
+    /// anything else gives the full Advanced report. It is additive and self-contained: it shows a
+    /// spinner while the report loads, and a plain note when there is no placement. So it is safe
+    /// to put into any tab.
     pub(crate) fn descent_card(&mut self, ui: &mut egui::Ui, guid: SampleGuid, dna: DnaType, compact: bool) {
         self.ensure_descent(guid, dna);
         let entry = self
@@ -26,7 +28,8 @@ impl NavigatorApp {
             .map(|(_, _, r)| r.is_some());
         match entry {
             Some(true) => {
-                // Render inside a block so the report borrow ends before the (mutating) export button.
+                // Draw inside a block, so that the borrow of the report ends before the export
+                // button, which needs a mutable borrow.
                 let has_snps = {
                     let report = self
                         .descent_reports
@@ -37,7 +40,8 @@ impl NavigatorApp {
                     self.render_descent(ui, report, compact);
                     report.nodes.iter().any(|n| !n.snps.is_empty())
                 };
-                // Export the descent report (mirrors the on-screen grid) to TSV — full view only.
+                // Export the descent report to TSV. It mirrors the grid on the screen, and it is
+                // in the full view only.
                 if !compact && has_snps {
                     ui.add_space(6.0);
                     if ui.button(self.tr("descent.export")).clicked() {
@@ -65,8 +69,9 @@ impl NavigatorApp {
         }
     }
 
-    /// Shown when there is no cached report: a one-time "Build" affordance that runs (and persists)
-    /// the variant profile this report is drawn from, or a plain note if it is built but unplaced.
+    /// This appears when the cache holds no report. It is a one-time "Build" control that runs the
+    /// variant profile this report comes from, and persists it. If that profile exists but has no
+    /// placement, this is a plain note instead.
     fn descent_build_prompt(&mut self, ui: &mut egui::Ui, guid: SampleGuid, dna: DnaType) {
         let (built, loading) = match dna {
             DnaType::Y => (self.y_profile.is_some(), self.y_profile_loading),
@@ -99,10 +104,11 @@ impl NavigatorApp {
         }
     }
 
-    /// Inline replacement for the Simple-view brief's lineage trail: the compact, call-coloured
-    /// descent path when the variant profile is built, otherwise the plain root→tip name trail (so
-    /// the brief card is never empty and Simple mode never triggers an expensive build). Render-only;
-    /// `subject_brief_view` pre-fires [`ensure_descent`] so the report loads.
+    /// An inline replacement for the lineage trail of the Simple-view brief. It gives the compact,
+    /// call-coloured descent path when the variant profile exists, and the plain root→tip name
+    /// trail when it does not. So the brief card is never empty, and Simple mode never starts a
+    /// build that costs hours. This only draws: `subject_brief_view` fires [`ensure_descent`]
+    /// first, so the report loads.
     pub(crate) fn brief_descent_trail(&self, ui: &mut egui::Ui, guid: SampleGuid, lb: &LineageBrief) {
         let dna = match lb.kind {
             LineageKind::Paternal => DnaType::Y,
@@ -118,7 +124,7 @@ impl NavigatorApp {
             self.render_descent_compact(ui, report);
             return;
         }
-        // Fallback until the profile is built: the plain collapsible root→tip trail.
+        // The fallback until the profile exists: the plain collapsible root→tip trail.
         if lb.lineage_path.len() > 1 {
             ui.add_space(2.0);
             egui::CollapsingHeader::new(self.tr("brief.lineageTrail"))
@@ -129,8 +135,8 @@ impl NavigatorApp {
         }
     }
 
-    /// Fire a `LoadDescentReport` command if this (subject, DNA) report is not already loaded or in
-    /// flight. Idempotent — safe to call every frame.
+    /// Fire a `LoadDescentReport` command if this (subject, DNA) report is not already loaded, and
+    /// not already in progress. It is idempotent, and safe to call on every frame.
     pub(crate) fn ensure_descent(&mut self, guid: SampleGuid, dna: DnaType) {
         let loaded = self.descent_reports.iter().any(|(g, d, _)| *g == guid && *d == dna);
         let loading = self.descent_loading.iter().any(|(g, d)| *g == guid && *d == dna);
@@ -141,7 +147,8 @@ impl NavigatorApp {
     }
 
     fn render_descent(&self, ui: &mut egui::Ui, report: &DescentReport, compact: bool) {
-        // The root carries no defining SNPs; drop empty nodes so the chain starts at the first call.
+        // The root has no SNPs that define it. Drop an empty node, so the chain starts at the
+        // first call.
         if report.nodes.iter().all(|n| n.snps.is_empty()) {
             ui.label(egui::RichText::new(self.tr("descent.none")).weak());
             return;
@@ -153,8 +160,8 @@ impl NavigatorApp {
         }
     }
 
-    /// Simple view: the lineage as a wrapped chain of node badges with a derived/total count each,
-    /// terminal highlighted. No per-SNP chips.
+    /// Simple view: the lineage as a wrapped chain of node badges, each with a derived count and a
+    /// total count, and the terminal highlighted. It draws no chip for each SNP.
     fn render_descent_compact(&self, ui: &mut egui::Ui, report: &DescentReport) {
         ui.horizontal_wrapped(|ui| {
             let mut first = true;
@@ -176,8 +183,9 @@ impl NavigatorApp {
         });
     }
 
-    /// Advanced view: a colour legend, then per node a badge + a wrapped grid of its defining SNPs
-    /// as chips coloured by the sample's call (derived / ancestral / no-call).
+    /// Advanced view: a colour legend, then for each node a badge and a wrapped grid. The grid
+    /// holds the SNPs that define the node, as chips coloured by the call of the sample (derived,
+    /// ancestral, or no-call).
     fn render_descent_full(&self, ui: &mut egui::Ui, report: &DescentReport) {
         ui.horizontal_wrapped(|ui| {
             legend_chip(ui, self.tr("descent.derived"), DERIVED);
@@ -226,7 +234,7 @@ impl NavigatorApp {
     }
 }
 
-/// (derived, total) defining-SNP counts for one node.
+/// (derived, total) counts, over the SNPs that define one node.
 fn node_counts(node: &navigator_app::NodeEvidence) -> (usize, usize) {
     let derived = node
         .snps

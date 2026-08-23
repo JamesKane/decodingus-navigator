@@ -1,29 +1,31 @@
-//! Paired-end mapping — the `sr` path, and so most vendor WGS.
+//! Paired-end mapping: the `sr` path, and so most vendor WGS.
 //!
-//! A pair is not two independent reads. Mapping them together lets a confidently-placed mate
-//! rescue an ambiguous one, and the fragment's expected span is evidence about where the second
-//! end belongs; both feed MAPQ. So the two ends are mapped as one *fragment*
-//! ([`minimap2::map::map_frag_queries`]) and then paired ([`minimap2::pe::pair`]), which is what
-//! sets `proper_frag`, adjusts MAPQ, and decides which region of each end is the primary.
+//! A pair is not two independent reads. Mapping them together lets a mate with a confident
+//! position rescue a mate that is ambiguous. The expected span of the fragment is also evidence
+//! about where the second end belongs. Both of those feed MAPQ.
+//!
+//! So the mapper maps the two ends as one *fragment* ([`minimap2::map::map_frag_queries`]), and
+//! then pairs them ([`minimap2::pe::pair`]). That step sets `proper_frag`, adjusts MAPQ, and
+//! decides which region of each end is the primary.
 //!
 //! ## What this module has to build itself
 //!
-//! The pieces above are public in `minimap2-pure-rs`. Its **PE SAM formatting is not** — that
-//! lives in private `pipeline.rs` helpers, so the mate-facing half of each record is assembled
-//! here: the paired flags, `RNEXT`/`PNEXT`, and `TLEN`.
+//! The pieces above are public in `minimap2-pure-rs`. **The code that makes its PE SAM text is
+//! not.** That code lives in private `pipeline.rs` helpers. So this module builds the mate half of
+//! each record itself: the paired flags, `RNEXT`/`PNEXT`, and `TLEN`.
 //!
-//! The approach mirrors upstream's: format the single-end line with the public writer (which
-//! already knows CIGAR, clipping, and tags), then fill in the paired fields. That is string
-//! surgery on a formatted SAM line, which is worth naming rather than hiding — but the
-//! alternative is reimplementing CIGAR and tag emission, which is far more of the delicate work,
-//! not less. [`set_pair_fields`] is deliberately small and heavily tested for that reason.
+//! The method is the same as upstream. Make the single-end line with the public writer, which
+//! already knows CIGAR, clipping, and tags. Then fill in the paired fields. That is string surgery
+//! on a SAM line, and this module says so instead of a quiet name for it. But the alternative is a
+//! new implementation of CIGAR emission and tag emission, which is more of the delicate work, and
+//! not less. [`set_pair_fields`] is small on purpose, and it has many tests for that reason.
 //!
 //! ## Split indexes
 //!
-//! Same shape as the single-end path: map the fragment against each part, spill per-segment hit
-//! blocks, then merge each end across parts and re-pair. The re-pair after the merge is essential
-//! — pairing decided per part would be based on a fraction of the genome, exactly the error the
-//! merge exists to prevent.
+//! Same shape as the single-end path. Map the fragment against each part, and spill the hit
+//! blocks for each segment. Then merge each end over all parts, and pair them again. The pair step
+//! after the merge is necessary. Pairing that the code decides for each part would use only a
+//! fraction of the genome. That is exactly the error the merge exists to stop.
 
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
@@ -47,8 +49,8 @@ use crate::map::{
 };
 use crate::output::AlignmentWriter;
 
-/// SAM flag bits this module sets. Named because a bare `0x20` in flag arithmetic is unreadable
-/// and the difference between `0x20` and `0x10` is a silently wrong strand.
+/// SAM flag bits this module sets. They have names because a bare `0x20` in flag arithmetic is
+/// hard to read. The difference between `0x20` and `0x10` is a wrong strand with no warning.
 mod flag {
     pub const PAIRED: u16 = 0x1;
     pub const PROPER_PAIR: u16 = 0x2;
@@ -60,8 +62,8 @@ mod flag {
 
 /// Map `reads1`/`reads2` as pairs against the index, writing SAM to `out`.
 ///
-/// The two files must be in lockstep — record *n* of each is one template — which is what
-/// `navigator-analysis`'s revert stage guarantees for the FASTQ it produces.
+/// The two files must be in lockstep: record *n* of each is one template. The revert stage of
+/// `navigator-analysis` guarantees that for the FASTQ it makes.
 #[allow(clippy::too_many_arguments)]
 pub fn map_pairs(
     index_path: &Path,
@@ -123,17 +125,19 @@ fn map_pairs_single_part(
     let header = writer.header().clone();
     let chunk = opt.mini_batch_size;
 
-    // Read, map and write run as three overlapping stages rather than in strict alternation.
+    // Read, map and write run as three stages that overlap, and not one after the other.
     //
-    // Alternating meant the pool idled through two phases of every cycle: a profile of the stage
-    // put ~60% of the serial phase in BGZF compression, ~15% in BAM record encoding and ~9% in
-    // gzip inflate, all of it while sixteen cores waited. Threading the compression removed the
-    // largest piece; overlapping the stages is what removes the *waiting*, because the reader can
-    // be inflating batch n+1 and the writer encoding batch n-1 while the pool maps batch n.
+    // One stage after the other left the pool idle through two phases of every cycle. A profile of
+    // the stage put ~60% of the serial phase in BGZF compression, and ~15% in BAM record
+    // encoding. Another ~9% was gzip inflate. All of it ran while sixteen cores waited.
     //
-    // Order is preserved by construction: one reader, one writer, and batches crossing each
-    // channel in sequence. Depth is small on purpose — a batch is tens of MB, and a deep queue
-    // would just let a fast mapper build a backlog in memory ahead of a slow disk.
+    // Threads on the compression removed the largest piece. Stages that overlap remove the *idle
+    // time*. The reader can inflate batch n+1, and the writer can encode batch n-1, while the pool
+    // maps batch n.
+    //
+    // The design keeps the order: one reader, one writer, and batches that cross each channel in
+    // sequence. The depth is small on purpose. A batch is tens of MB. A deep queue would only
+    // let a fast mapper build a backlog in memory ahead of a slow disk.
     let (read_tx, read_rx) = std::sync::mpsc::sync_channel::<Vec<(BseqRecord, BseqRecord)>>(PIPELINE_DEPTH);
     let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<Vec<Vec<RecordBuf>>>(PIPELINE_DEPTH);
 
@@ -141,8 +145,9 @@ fn map_pairs_single_part(
         let reader = scope.spawn(move || -> Result<(), AlignError> {
             let mut pairs = PairReader::open(reads1, reads2)?;
             while let Some(batch) = pairs.next_batch(chunk)? {
-                // A closed channel means the mapper stopped — cancelled, or a stage failed. Its
-                // error is the one worth reporting, so this exits quietly.
+                // A closed channel means the mapper stopped: the user cancelled it, or a stage
+                // failed. The error of the mapper is the one to report, so this exits with no
+                // message.
                 if read_tx.send(batch).is_err() {
                     break;
                 }
@@ -159,8 +164,9 @@ fn map_pairs_single_part(
                     }
                 }
             }
-            // Finishing here, on the thread that owns the writer, is what writes BGZF's
-            // end-of-file block. A writer dropped mid-stream leaves a file readers call truncated.
+            // The finish here, on the thread that owns the writer, is what writes the BGZF
+            // end-of-file block. A writer that drops in mid-stream leaves a file that readers call
+            // truncated.
             writer.finish(out)
         });
 
@@ -199,8 +205,8 @@ fn map_pairs_single_part(
             .join()
             .map_err(|_| AlignError::Message("reader thread panicked".into()))?;
 
-        // A downstream failure usually shows up first as a send error upstream, so the real cause
-        // is reported ahead of the symptom.
+        // A downstream failure usually shows first as a send error upstream, so this reports the
+        // real cause before the symptom.
         scribe_result?;
         mapped_result?;
         reader_result?;
@@ -211,10 +217,11 @@ fn map_pairs_single_part(
     Ok(outcome)
 }
 
-/// Batches in flight per pipeline stage.
+/// Batches in progress in each pipeline stage.
 ///
-/// One in hand and one queued is enough to keep a stage from waiting on its neighbour; more only
-/// buys memory. A batch is `mini_batch_size` bases of reads plus the records built from them.
+/// One in hand and one in the queue is enough to keep a stage off its neighbour. More than that
+/// only costs memory. A batch is `mini_batch_size` bases of reads, plus the records the code makes
+/// from them.
 const PIPELINE_DEPTH: usize = 2;
 
 // ---- split path -----------------------------------------------------------
@@ -243,8 +250,8 @@ fn map_pairs_split(
     }
 
     let pool = thread_pool(params)?;
-    // One scratch file per part; each holds two blocks per template, R1 then R2, so the file is
-    // positional in exactly the way the single-end path's is.
+    // One scratch file for each part. Each holds two blocks for each template, R1 then R2, so
+    // the file is positional in exactly the way the single-end file is.
     for (index, part) in parts.iter().enumerate() {
         let opt = part_opt(map_opt, part);
         let path = split::split_tmp_path(&prefix, index);
@@ -330,7 +337,7 @@ fn merge_pairs(
             return Err(AlignError::Cancelled);
         }
         for (r1, r2) in &batch {
-            // Two blocks per template per part, in the order they were written.
+            // Two blocks for each template and each part, in the order the writer made them.
             let mut blocks1 = Vec::with_capacity(parts);
             let mut blocks2 = Vec::with_capacity(parts);
             for (path, reader) in readers.iter_mut() {
@@ -353,15 +360,16 @@ fn merge_pairs(
                 frag_gap: m2.frag_gap,
             };
 
-            // Restore orientation only now: the per-part blocks were written in the flipped space
-            // the mapper worked in, and the merge operates on those coordinates.
+            // Restore orientation only now. The blocks for each part are in the flipped space
+            // that the mapper worked in, and the merge operates on those coordinates.
             let (rev1, rev2) = orient_flags(&opt);
             restore_orientation(&mut res1, r1.l_seq as i32, rev1);
             restore_orientation(&mut res2, r2.l_seq as i32, rev2);
 
-            // Re-pair *after* merging: the merge rebuilt each end's regions from scratch, so
-            // whatever pairing the per-part passes established is gone. Pairing decided per part
-            // would rest on a fraction of the genome anyway — the error the merge exists to undo.
+            // Pair again *after* the merge. The merge built the regions of each end again from
+            // the start, so any pairing that the passes for each part made is gone. Pairing that
+            // the code decides for each part would use only a fraction of the genome anyway. That
+            // is the error the merge exists to undo.
             repair(&opt, &mut res1, &mut res2, r1, r2);
             emit_pair(&mut writer, merged_header, &opt, r1, r2, &res1, &res2, out, &mut stats)?;
         }
@@ -373,14 +381,15 @@ fn merge_pairs(
     Ok(stats)
 }
 
-/// Map a batch of templates as fragments, preserving input order.
+/// Map a batch of templates as fragments, and keep the input order.
 ///
-/// Each element is that template's per-segment results, R1 then R2. Both ends go in together
-/// because that is what lets a confidently-placed mate inform an ambiguous one — mapping them
-/// separately and reconciling afterwards throws that away.
+/// Each element is the result for each segment of that template, R1 then R2. Both ends go in
+/// together, because that is what lets a mate with a confident position inform a mate that is
+/// ambiguous. To map them apart and then join the results throws that away.
 ///
-/// Results come back in **flipped** coordinate space when the library orientation calls for it;
-/// callers restore at the right moment, which differs between the whole-index and split paths.
+/// Results come back in **flipped** coordinate space when the library orientation needs it. A
+/// caller restores them at the right moment, which is different in the whole-index path and the
+/// split path.
 fn map_frag_batch(
     pool: &rayon::ThreadPool,
     index: &MmIdx,
@@ -399,11 +408,11 @@ fn map_frag_batch(
     })
 }
 
-/// Turn a mapped batch into finished records, in the pool, preserving batch order.
+/// Turn a mapped batch into finished records, in the pool, and keep the batch order.
 ///
-/// The orientation restore moves in here with the formatting: it is per-template work that was
-/// also running on the writing thread. `collect` into a `Result` keeps the first error and keeps
-/// the output ordered, so a failure reads the same as it did when this was a serial loop.
+/// The orientation restore moves in here with the record build. It is work for each template that
+/// also ran on the write thread. `collect` into a `Result` keeps the first error, and keeps the
+/// output in order. So a failure reads the same as it did when this was a serial loop.
 #[allow(clippy::too_many_arguments)]
 fn build_batch_records(
     pool: &rayon::ThreadPool,
@@ -420,42 +429,45 @@ fn build_batch_records(
             .par_iter()
             .zip(mapped.into_par_iter())
             .map(|((r1, r2), mut results)| {
-                // Fragment mapping returns one result per segment, R1 then R2. Popping in reverse
-                // keeps that association; an absent segment (which should not happen) degrades to
-                // "this end mapped nowhere" rather than shifting the pairing.
+                // Fragment mapping returns one result for each segment, R1 then R2. A pop in
+                // reverse keeps that association. A segment that is absent (which must not happen)
+                // becomes "this end mapped nowhere", and does not move the pairing.
                 let mut res2 = results.pop().unwrap_or_else(empty_result);
                 let mut res1 = results.pop().unwrap_or_else(empty_result);
                 let (rev1, rev2) = orient_flags(opt);
                 restore_orientation(&mut res1, r1.l_seq as i32, rev1);
                 restore_orientation(&mut res2, r2.l_seq as i32, rev2);
 
-                // No `repair` here, deliberately. `map_frag_queries` already ran `pe::pair` over
-                // the fragment, so the ends arrive paired: `proper_frag`, MAPQ, and `sam_pri` are
-                // set. Pairing them a second time *clears* `proper_frag` — the re-pair is scored
-                // against a fragment gap that only means something in the split path, where
-                // merging discarded the original pairing. Adding a call here is the
-                // obvious-looking change that silently drops 0x2 from every record.
+                // No `repair` here, and that is deliberate. `map_frag_queries` already ran
+                // `pe::pair` over the fragment, so the ends arrive in a pair, with `proper_frag`,
+                // MAPQ and `sam_pri` all set. A second pair step *clears* `proper_frag`. It scores
+                // against a fragment gap that matters only in the split path, where the merge
+                // discarded the original pairing. A call here looks like the correct change, and
+                // it drops 0x2 from every record with no warning.
                 build_pair_records(index, opt, header, r1, r2, &res1, &res2, out)
             })
             .collect()
     })
 }
 
-/// Whether each end is flipped for mapping, from the preset's library orientation.
+/// Which ends the code flips for mapping, from the library orientation of the preset.
 fn orient_flags(opt: &MapOpt) -> (bool, bool) {
     ((opt.pe_ori >> 1) & 1 != 0, opt.pe_ori & 1 != 0)
 }
 
-/// Put both ends into the orientation the fragment mapper expects, per the preset's library
-/// orientation (`pe_ori`).
+/// Put both ends into the orientation the fragment mapper expects, from the library orientation
+/// of the preset (`pe_ori`).
 ///
-/// This is easy to miss and fails quietly. `sr` sets `pe_ori = 1`, meaning FR: R2 arrives
-/// reverse-complemented relative to R1, and must be flipped so both ends read the same way before
-/// the fragment is chained. Skip it and the ends still *map* — coordinates, strands, and mate
-/// fields all come out right — but no pair is ever judged concordant, so `proper_frag` is never
-/// set and every record loses its 0x2 flag.
+/// This is easy to miss, and it fails with no message. `sr` sets `pe_ori = 1`, which is FR. R2
+/// arrives as the reverse complement of R1. The code must flip it, so that both ends read the same
+/// way before the chaining step.
 ///
-/// Returns the possibly-flipped sequences and whether each was flipped, for [`restore_orientation`].
+/// Skip that flip and the ends still *map*: coordinates, strands and mate fields all come out
+/// right. But no pair is ever concordant, so nothing ever sets `proper_frag`, and every record
+/// loses its 0x2 flag.
+///
+/// Returns the sequences, which it may have flipped, and which ends it flipped. That second value
+/// is for [`restore_orientation`].
 fn orient(opt: &MapOpt, seq1: &[u8], seq2: &[u8]) -> (Vec<u8>, Vec<u8>, bool, bool) {
     let rev1 = (opt.pe_ori >> 1) & 1 != 0;
     let rev2 = opt.pe_ori & 1 != 0;
@@ -470,8 +482,8 @@ fn flip(seq: &[u8], revcomp: bool) -> Vec<u8> {
     out
 }
 
-/// Undo [`orient`] on the results, so coordinates and strands describe the read as it was given
-/// to us rather than the flipped copy the mapper saw.
+/// Undo [`orient`] on the results. Coordinates and strands then describe the read as the caller
+/// gave it, and not the flipped copy the mapper saw.
 fn restore_orientation(result: &mut MapResult, qlen: i32, was_flipped: bool) {
     if !was_flipped {
         return;
@@ -491,8 +503,8 @@ fn restore_orientation(result: &mut MapResult, qlen: i32, was_flipped: bool) {
     }
 }
 
-/// A result with no alignments. `MapResult` has no `Default`, and the fields it would need are
-/// not obviously zero, so this is spelled out once.
+/// A result with no alignments. `MapResult` has no `Default`, and the fields it needs are not
+/// clearly zero, so this file writes the value out one time.
 fn empty_result() -> MapResult {
     MapResult {
         regs: Vec::new(),
@@ -503,8 +515,9 @@ fn empty_result() -> MapResult {
 
 /// Run the pairing step over an already-mapped pair.
 fn repair(opt: &MapOpt, res1: &mut MapResult, res2: &mut MapResult, r1: &BseqRecord, r2: &BseqRecord) {
-    // `pe::pair` reads each end's alignment extras; without base-level alignment on both ends
-    // there is nothing to score a pairing against, and upstream skips it on the same condition.
+    // `pe::pair` reads the alignment extras of each end. Without base-level alignment on both
+    // ends there is nothing to score a pairing against, and upstream skips it on the same
+    // condition.
     if res1.regs.is_empty() || res2.regs.is_empty() || res1.regs[0].extra.is_none() || res2.regs[0].extra.is_none() {
         return;
     }
@@ -544,14 +557,15 @@ fn emit_pair(
     Ok(())
 }
 
-/// Every SAM record for one template, built without touching the writer.
+/// Every SAM record for one template, and the writer does not take part.
 ///
-/// This is the work that used to happen on the writing thread: minimap2 formats each alignment as
-/// a SAM line, the line is parsed back into a typed record, and the paired fields are filled in.
-/// All of it is per-record independent, so it belongs in the mapping pool. Leaving it on the
-/// writing thread made mapping a strictly alternating read → map → write cycle in which the pool
-/// was idle for two of the three phases: a WGS run measured ~26% pool utilisation, with the
-/// mapping itself accounting for only a quarter of a stage that took 3 h 40 m.
+/// This is the work that used to happen on the write thread. minimap2 makes a SAM line from each
+/// alignment. The code parses that line back into a typed record, and then fills in the paired
+/// fields. The work for each record is independent, so it belongs in the mapping pool.
+///
+/// On the write thread it made mapping a strict read → map → write cycle, and the pool was idle
+/// for two of the three phases. A WGS run measured ~26% pool use, and the mapping itself was only
+/// a quarter of a stage that took 3 h 40 m.
 #[allow(clippy::too_many_arguments)]
 fn build_pair_records(
     index: &MmIdx,
@@ -682,33 +696,34 @@ fn emit_end(
 
 /// The mapper's own rule for which regions reach the output.
 ///
-/// A region whose `parent` is not itself is a *secondary* alignment — another place the read could
-/// have gone. `NO_PRINT_2ND` says not to emit those, and the `sr` preset sets it, because for short
-/// reads the ambiguity is already carried by MAPQ.
+/// A region whose `parent` is not itself is a *secondary* alignment. It is another place the read
+/// could have gone. `NO_PRINT_2ND` says not to emit those, and the `sr` preset sets it, because
+/// for short reads MAPQ already carries the ambiguity.
 ///
-/// This has to be applied here because Navigator formats records itself: `minimap2-pure-rs` keeps
-/// its PE SAM assembly private, so the pipeline that would have applied this rule
-/// (`minimap2::map`, on the `r.id != r.parent` test) is the one part of the crate we do not go
-/// through. Without it every alternative placement was written out — on a targeted-Y sample,
-/// 404 million secondary records against 62 million primaries, 86.6% of the file, each with no
-/// SEQ, inflating the alignment to 17 GB and dragging every later stage through them.
+/// This module must apply the rule here, because Navigator builds records itself.
+/// `minimap2-pure-rs` keeps its PE SAM assembly private. So this code does not go through the
+/// pipeline that would apply the rule: `minimap2::map`, on the `r.id != r.parent` test.
 ///
-/// Supplementary alignments are kept: their `parent` *is* themselves, they carry sequence, and
-/// they are how a split read is represented.
+/// Without the rule, every alternative placement went into the file. On a targeted-Y sample that
+/// was 404 million secondary records against 62 million primaries, or 86.6% of the file, and none
+/// carried SEQ. It grew the alignment to 17 GB, and every later stage had to read all of them.
+///
+/// This keeps supplementary alignments. Their `parent` *is* themselves, they carry sequence, and
+/// they are how the format shows a split read.
 pub(crate) fn emits_record(opt: &MapOpt, reg: &AlignReg) -> bool {
     !(opt.flag.contains(MapFlags::NO_PRINT_2ND) && reg.id != reg.parent)
 }
 
-/// The region a mate is "at" for the purposes of `RNEXT`/`PNEXT` — its primary alignment.
+/// The region a mate is "at" for `RNEXT` and `PNEXT`: its primary alignment.
 fn primary(result: &MapResult) -> Option<&AlignReg> {
     result.regs.iter().find(|r| r.sam_pri).or_else(|| result.regs.first())
 }
 
 /// Fill in the paired half of a record: flags, `RNEXT`, `PNEXT`, `TLEN`.
 ///
-/// The single-end writer produced everything else. This used to patch the formatted SAM text by
-/// column position; it now mutates a typed [`RecordBuf`], so a mate position can not end up in the
-/// template-length field however the formatter's layout changes.
+/// The single-end writer made everything else. This code used to patch the SAM text by column
+/// position. It now changes a typed [`RecordBuf`], so a mate position can not land in the
+/// template-length field, whatever the layout of the formatter does.
 ///
 /// `own` is this record's region (`None` for an unmapped read) and `mate` is the mate's primary.
 fn set_pair_fields(record: &mut RecordBuf, own: Option<&AlignReg>, mate: Option<&AlignReg>, is_first: bool) {
@@ -737,8 +752,8 @@ fn set_pair_fields(record: &mut RecordBuf, own: Option<&AlignReg>, mate: Option<
             *record.mate_alignment_start_mut() = Position::new(m.rs as usize + 1);
         }
         (Some(o), None) => {
-            // An unmapped mate is conventionally reported at this record's own locus, so the pair
-            // stays together once the file is coordinate-sorted.
+            // By convention, an unmapped mate goes at the locus of this record, so the pair
+            // stays together after a coordinate sort of the file.
             *record.mate_reference_sequence_id_mut() = Some(o.rid as usize);
             *record.mate_alignment_start_mut() = Position::new(o.rs as usize + 1);
         }
@@ -776,10 +791,10 @@ fn tlen(own: &AlignReg, mate: &AlignReg) -> i64 {
     }
 }
 
-/// Both ends of a template must share a QNAME, so a trailing `/1` or `/2` has to go.
+/// Both ends of a template must share a QNAME, so a `/1` or `/2` at the end has to go.
 ///
-/// Our own revert stage writes bare names, but vendor FASTQ frequently carries the suffix, and a
-/// mismatched QNAME silently breaks pairing for every downstream tool.
+/// Our own revert stage writes bare names. But vendor FASTQ often carries the suffix, and a QNAME
+/// that does not match breaks pairing for every downstream tool, with no warning.
 fn strip_mate_suffix(name: &str) -> &str {
     let bytes = name.as_bytes();
     if bytes.len() > 2 && bytes[bytes.len() - 2] == b'/' {
@@ -813,17 +828,19 @@ impl PairReader {
 
     /// The next batch of templates, or `None` at end of input.
     ///
-    /// Reads the two files **one record at a time in step**, accumulating until the base budget is
-    /// reached. The obvious implementation — ask each file for a batch and zip the results — is
-    /// wrong, and wrong in a way that looks right on tidy data: the underlying reader batches by
-    /// *bases*, so two files whose reads differ in length yield different record counts from the
-    /// same budget. Real data has a tail of shorter reads from adapter and quality trimming, so a
-    /// 332,653-against-332,722 mismatch appears on a genuine WGS and never on a fixture where every
-    /// read is the same length.
+    /// This reads the two files **one record at a time in step**, and collects records until it
+    /// reaches the base budget.
     ///
-    /// A file genuinely ending before the other is still an error rather than a truncation: R1/R2
-    /// that have lost their order would pair every later read with the wrong mate, which is far
-    /// worse than refusing to run.
+    /// There is a simpler implementation: ask each file for a batch, and zip the results. It is
+    /// wrong, and it looks right on tidy data. The reader below batches by *bases*, so two files
+    /// whose reads differ in length give different record counts from the same budget. Real data
+    /// has a tail of shorter reads, which adapter trimming and quality trimming make. So a
+    /// mismatch of 332,653 against 332,722 appears on a real WGS, and never on a fixture where
+    /// every read is the same length.
+    ///
+    /// A file that truly stops before the other is still an error, and not a truncation. R1 and R2
+    /// that have lost their order would pair every later read with the wrong mate. That is much
+    /// worse than a refusal to run.
     fn next_batch(&mut self, chunk: i64) -> Result<Option<Vec<(BseqRecord, BseqRecord)>>, AlignError> {
         let mut batch = Vec::new();
         let mut bases: i64 = 0;

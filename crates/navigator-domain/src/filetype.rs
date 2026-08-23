@@ -1,6 +1,6 @@
-//! File-type detection for the unified "Add data" flow (Scala's `FileTypeDetector`).
-//! Binary/structured formats are detected by extension; ambiguous text tables (STR vs
-//! chip) are scored by content fingerprint. Pure: callers pass the name + a head sample.
+//! File-type detection for the unified "Add data" flow (Scala's `FileTypeDetector`). The extension
+//! identifies a binary or structured format. A content fingerprint scores an ambiguous text table
+//! (STR against chip). Pure: a caller passes the name and a head sample.
 
 /// What a dropped/picked file looks like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,24 +11,27 @@ pub enum DetectedData {
     Variants,
     /// CompleteGenomics `masterVar` whole-genome variant table (`var-*-ASM.tsv[.bz2]`).
     CompleteGenomicsVar,
-    /// FTDNA Big Y CSV variant report (Named/Private Variants) — chrY derived calls, the
-    /// "lesser access" substitute for the BAM/CRAM/VCF.
+    /// FTDNA Big Y CSV variant report (Named or Private Variants): chrY derived calls, the
+    /// "lesser access" substitute for the BAM, CRAM or VCF.
     FtdnaCsvVariants,
     /// Y-STR profile table.
     StrProfile,
-    /// Named Y-SNP panel (e.g. BISDNA chromo2) — name + genotype + positive/negative verdict.
+    /// Named Y-SNP panel (for example BISDNA chromo2): name, genotype, and a positive or negative
+    /// verdict.
     YSnpPanel,
     /// Genotyping-array (chip) export.
     ChipData,
     /// mtDNA FASTA sequence.
     MtdnaFasta,
-    /// EIGENSTRAT autosomal call set (`.geno`/`.snp`/`.ind` triplet) — a trusted external caller's
-    /// 1240K genotypes (Reich-lab / `pileupCaller`), the autosomal counterpart to the Y/mt GVCFs.
+    /// EIGENSTRAT autosomal call set (the `.geno`/`.snp`/`.ind` triplet): the 1240K genotypes of a
+    /// trusted external caller (Reich-lab, `pileupCaller`). It is the autosomal equivalent of the
+    /// Y and mt GVCFs.
     EigenstratCallSet,
-    /// A trusted external caller's **autosomal** call set as a diploid VCF — a GATK4 gVCF
-    /// (`.g.vcf[.gz]`) *or* a genotyped all-sites VCF (e.g. `bcftools mpileup`/`call` over the 1240K
-    /// sites, with explicit `0/0` rows). Genotyped at the 1240K panel for the autosomal consensus.
-    /// (chrY/chrM GVCFs are the sidecar fast path, discovered in a directory, not here.)
+    /// The **autosomal** call set of a trusted external caller, as a diploid VCF. It is a GATK4
+    /// gVCF (`.g.vcf[.gz]`), *or* a genotyped all-sites VCF (for example `bcftools mpileup` and
+    /// `call` over the 1240K sites, with explicit `0/0` rows). The genotypes are at the 1240K
+    /// panel, for the autosomal consensus. (A chrY or chrM GVCF goes to the sidecar fast path,
+    /// which finds it in a directory, and not here.)
     GvcfCallSet,
     /// Unrecognized.
     Unknown,
@@ -62,31 +65,36 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
     if ends(".bam") || ends(".cram") {
         return DetectedData::Alignment;
     }
-    // A GATK gVCF (`.g.vcf[.gz]`) is genotyped at the 1240K panel — checked BEFORE the plain `.vcf`
-    // rule below (a gVCF also ends `.vcf.gz`). A gVCF named plainly `.vcf.gz` is imported as a normal
-    // variant set instead; the `.g.` convention is how GATK marks its genome VCFs.
-    // A gVCF is an autosomal call set only if it actually covers autosomes. A chrY- or chrM-only
-    // gVCF falls through to the `.vcf` branch below (`.g.vcf.gz` also ends `.vcf.gz`) and becomes a
-    // variant set, which is what a haploid-lineage call set is.
+    // A GATK gVCF (`.g.vcf[.gz]`) has genotypes at the 1240K panel. Check it BEFORE the plain
+    // `.vcf` rule below, because a gVCF also ends `.vcf.gz`. A gVCF with the plain name `.vcf.gz`
+    // becomes a normal variant set instead. The `.g.` convention is how GATK marks its genome
+    // VCFs.
+    //
+    // A gVCF is an autosomal call set only if it covers autosomes. A gVCF of chrY or chrM only
+    // falls through to the `.vcf` branch below, because `.g.vcf.gz` also ends `.vcf.gz`. It then
+    // becomes a variant set, which is what a haploid-lineage call set is.
     if (ends(".g.vcf") || ends(".g.vcf.gz") || ends(".g.vcf.bgz")) && !vcf_known_lineage_only(head) {
         return DetectedData::GvcfCallSet;
     }
-    // EIGENSTRAT call-set triplet — the user can point at any member; the importer resolves the
-    // siblings by shared basename. `.geno`/`.ind` are unambiguous; `.snp` too (no other `.snp` type).
+    // EIGENSTRAT call-set triplet. The user can point at any member, and the importer resolves the
+    // siblings by their shared basename. `.geno` and `.ind` are unambiguous, and so is `.snp`,
+    // because there is no other `.snp` type.
     if ends(".geno") || ends(".snp") || ends(".ind") {
         return DetectedData::EigenstratCallSet;
     }
     if ends(".vcf") || ends(".vcf.gz") || ends(".vcf.bgz") {
-        // A genotyped **all-sites** VCF — one that emits explicit hom-ref (`0/0`) rows, e.g. a
-        // `bcftools mpileup`/`call` or joint-genotyped VCF over the 1240K sites — is a trusted
-        // external autosomal call set, not a variant-only list. Route it to the panel importer so it
-        // drives the autosomal consensus. A variant-only VCF (no `0/0`) stays a normal variant set.
+        // A genotyped **all-sites** VCF emits explicit hom-ref (`0/0`) rows. An example is a
+        // `bcftools mpileup` or `call` VCF, or a joint-genotyped VCF, over the 1240K sites. That is
+        // a trusted external autosomal call set, and not a variant-only list. Send it to the panel
+        // importer, so that it drives the autosomal consensus. A variant-only VCF, with no `0/0`,
+        // stays a normal variant set.
         //
-        // Emitting hom-ref rows is **not** on its own enough: a vendor Y/mt product does it too.
-        // FTDNA Big Y (aengine) reports reference sites across chrY, so on the `0/0` signal alone a
-        // Big Y export was classified an *autosomal* 1240K call set — landing ~260k chrY records in
-        // the panel importer, which recognized 266 of them and produced no Y variant set at all, so
-        // no Y placement and no private-Y source. A haploid-lineage call set is a variant set.
+        // Hom-ref rows on their own are **not** enough, because a vendor Y or mt product emits
+        // them too. FTDNA Big Y (aengine) reports reference sites across chrY. On the `0/0` signal
+        // alone, a Big Y export classified as an *autosomal* 1240K call set. About 260k chrY
+        // records went to the panel importer, which recognized 266 of them and made no Y variant
+        // set at all. There was then no Y placement, and no private-Y source. A haploid-lineage
+        // call set is a variant set.
         if looks_like_genotyped_callset_vcf(head) && !vcf_known_lineage_only(head) {
             return DetectedData::GvcfCallSet;
         }
@@ -103,9 +111,10 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
         return DetectedData::MtdnaFasta;
     }
 
-    // CompleteGenomics masterVar — a whole-genome variant TSV (`.tsv[.bz2]`) with an unambiguous
-    // `>locus ploidy allele chromosome …` column header and a `cgatools`/`VAR-ANNOTATION` preamble.
-    // Checked here (before the STR/chip scorer) on the head, which the caller has decompressed.
+    // CompleteGenomics masterVar: a whole-genome variant TSV (`.tsv[.bz2]`) with an unambiguous
+    // `>locus ploidy allele chromosome …` column header, and a `cgatools` or `VAR-ANNOTATION`
+    // preamble. Check it here, before the STR and chip scorer, on the head that the caller
+    // decompressed.
     if looks_like_cg_master_var(head) {
         return DetectedData::CompleteGenomicsVar;
     }
@@ -121,13 +130,13 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
         return DetectedData::Unknown;
     }
 
-    // FTDNA Big Y Named/Private Variants CSV — an exact header signature, checked before the
-    // STR/chip scorer (which would otherwise mis-score the named report as chip).
+    // FTDNA Big Y Named or Private Variants CSV: an exact header signature. Check it before the
+    // STR and chip scorer, which would otherwise mis-score the named report as chip.
     if crate::ftdna_csv::looks_like_ftdna_variant_csv(head) {
         return DetectedData::FtdnaCsvVariants;
     }
 
-    // A named Y-SNP panel (BISDNA chromo2) is unambiguous — check it before the STR/chip
+    // A named Y-SNP panel (BISDNA chromo2) is unambiguous. Check it before the STR and chip
     // scorer, which would otherwise mis-score it as chip.
     if looks_like_ysnp_panel(&lines) {
         return DetectedData::YSnpPanel;
@@ -148,17 +157,17 @@ pub fn detect(file_name: &str, head: &str) -> DetectedData {
     }
 }
 
-/// Whether a VCF head shows the file to be **positively confined to haploid lineages** — chrY and/or
-/// chrM, with no autosome anywhere in sight.
+/// True when the head of a VCF shows the file is **positively confined to haploid lineages**:
+/// chrY, chrM, or both, with no autosome anywhere.
 ///
-/// `##contig=<ID=…>` declarations are authoritative and enumerate every contig, so they win when
-/// present; otherwise the `CHROM` column of the records in the head is used. VCFs are
-/// coordinate-sorted with chr1 first, so a whole-genome file shows an autosome immediately while a
-/// chrY/chrM product never does.
+/// The `##contig=<ID=…>` declarations are authoritative, and they list every contig, so they win
+/// when they are there. If not, this reads the `CHROM` column of the records in the head. A VCF is
+/// in coordinate order with chr1 first. A whole-genome file shows an autosome at once, and a chrY
+/// or chrM product never does.
 ///
-/// Returns `false` when there is **no contig evidence at all** (an empty or unreadable head). Absence
-/// of evidence is not evidence of absence: a `.g.vcf` we could not read should keep the claim its
-/// extension makes rather than be demoted on a guess.
+/// Returns `false` when there is **no contig evidence at all**, which is an empty or unreadable
+/// head. Absence of evidence is not evidence of absence. A `.g.vcf` we could not read must keep the
+/// claim its extension makes, and a guess must not demote it.
 ///
 /// This is the guard that keeps a haploid-lineage call set off the autosomal panel pipeline.
 fn vcf_known_lineage_only(head: &str) -> bool {
@@ -185,10 +194,10 @@ fn vcf_known_lineage_only(head: &str) -> bool {
     saw_record && !saw_autosome
 }
 
-/// A genotyped **all-sites** VCF: any data line whose `FORMAT` begins `GT` and whose sample genotype
-/// is an explicit hom-ref (`0/0` / `0|0`). A variant-only VCF never emits hom-ref rows, so this
-/// distinguishes a call set (which lists every site) from a plain variant list. It says nothing about
-/// *which* sites — pair it with [`vcf_known_lineage_only`] before calling anything autosomal.
+/// A genotyped **all-sites** VCF: any data line whose `FORMAT` starts with `GT`, and whose sample
+/// genotype is an explicit hom-ref (`0/0` or `0|0`). A variant-only VCF never emits hom-ref rows,
+/// so this separates a call set, which lists every site, from a plain variant list. It says nothing
+/// about *which* sites. Use it with [`vcf_known_lineage_only`] before you call anything autosomal.
 fn looks_like_genotyped_callset_vcf(head: &str) -> bool {
     head.lines()
         .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
@@ -201,9 +210,9 @@ fn looks_like_genotyped_callset_vcf(head: &str) -> bool {
 }
 
 /// Recognize a CompleteGenomics masterVar table from its head text. The `>locus … chromosome …
-/// varType …` column header is the unambiguous signature; the `cgatools` / `VAR-ANNOTATION`
-/// comment preamble corroborates it. Tolerant of the file being uncompressed here (the caller
-/// decompresses `.bz2` / `.gz` before sniffing).
+/// varType …` column header is the unambiguous signature, and the `cgatools` or `VAR-ANNOTATION`
+/// comment preamble supports it. This reads plain text, which is correct: the caller decompresses
+/// `.bz2` and `.gz` before this check.
 fn looks_like_cg_master_var(head: &str) -> bool {
     let mut has_column_header = false;
     let mut has_preamble = false;
@@ -253,10 +262,11 @@ fn count_token(haystack: &str, prefix: &str, min_digits: usize, max_digits: usiz
     count
 }
 
-/// Recognize a named Y-SNP panel (BISDNA chromo2): either the exact
-/// `SNPID<TAB>genotype<TAB>result` header, or — lacking it — several tab rows whose third
-/// column is a positive/negative/no_call/back-mutated verdict. Tolerant of the multi-line
-/// prose preamble BISDNA prepends (those lines are not tab-delimited and never match).
+/// Recognize a named Y-SNP panel (BISDNA chromo2). The signature is the exact
+/// `SNPID<TAB>genotype<TAB>result` header. Without that header, it takes some tab rows whose third
+/// column is a positive, negative, no_call or back-mutated verdict. The multi-line prose preamble
+/// that BISDNA puts first is harmless, because those lines are not tab-delimited and never
+/// match.
 fn looks_like_ysnp_panel(lines: &[&str]) -> bool {
     let is_verdict = |s: &str| {
         let v = s.trim().trim_matches(|c| c == '"').to_ascii_lowercase();
@@ -435,7 +445,7 @@ chr1\t246193\trs3094315\tG\tA\t225\t.\tDP=29\tGT:PL:DP:AD\t1/1:255,87,0:29:0,29
 chr1\t270133\trs12124819\tA\t.\t281\t.\tDP=33\tGT:DP:AD\t0/0:32:32
 ";
         assert_eq!(detect("WGS229.chm13.1240k.vcf.gz", head), DetectedData::GvcfCallSet);
-        // A variant-only VCF (only 1/1, 0/1 — no hom-ref) stays a normal variant set.
+        // A variant-only VCF (only 1/1 and 0/1, no hom-ref) stays a normal variant set.
         let variants_only = "\
 #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS
 chr1\t246193\t.\tG\tA\t225\t.\tDP=29\tGT\t1/1
@@ -443,10 +453,10 @@ chr1\t246193\t.\tG\tA\t225\t.\tDP=29\tGT\t1/1
         assert_eq!(detect("calls.vcf.gz", variants_only), DetectedData::Variants);
     }
 
-    /// The real FTDNA Big Y (aengine) shape: hom-ref rows across chrY and nothing else. Reporting
-    /// reference sites made it look like a 1240K call set, so ~260k chrY records went to the
-    /// autosomal panel importer — which matched 266 of them and created no Y variant set, leaving the
-    /// subject with no Y placement and no private-Y source.
+    /// The real FTDNA Big Y (aengine) shape: hom-ref rows across chrY, and nothing else. Because
+    /// it reports reference sites, it looked like a 1240K call set. About 260k chrY records went to
+    /// the autosomal panel importer, which matched 266 of them and made no Y variant set. The
+    /// subject was then left with no Y placement and no private-Y source.
     #[test]
     fn a_chr_y_only_genotyped_vcf_is_a_variant_set_not_an_autosomal_call_set() {
         let head = "\
@@ -459,7 +469,7 @@ chrY\t2781205\t.\tC\tA\t10.47\tQUAL=10.4\tBQ=37\tGT:AD:DP:GQ\t0/0:0,5:5:0
 chrY\t2781435\t.\tA\tT\t28.57\tQUAL=28.5\tBQ=37\tGT:AD:DP:GQ\t1/1:0,7:7:10
 ";
         assert_eq!(detect("variants.vcf.gz", head), DetectedData::Variants);
-        // Same for a chrY gVCF handed over directly rather than via the sidecar directory.
+        // The same for a chrY gVCF that comes in directly, and not through the sidecar directory.
         assert_eq!(detect("chrY.g.vcf.gz", head), DetectedData::Variants);
     }
 
@@ -497,7 +507,7 @@ chr1\t246193\trs3094315\tG\tA\t225\t.\tDP=29\tGT:DP\t0/0:29
 
     #[test]
     fn an_unreadable_head_keeps_the_gvcf_extensions_claim() {
-        // No contig evidence is not evidence of no autosomes — do not demote on a guess.
+        // No contig evidence is not evidence of no autosomes, so do not demote on a guess.
         assert_eq!(detect("sample.g.vcf.gz", ""), DetectedData::GvcfCallSet);
     }
 

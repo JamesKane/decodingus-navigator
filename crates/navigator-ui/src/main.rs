@@ -24,10 +24,11 @@ pub(crate) fn default_db_path() -> PathBuf {
 }
 
 fn main() -> eframe::Result<()> {
-    // Opt this process into the OS keychain — sessions and device keys must survive a restart.
-    // This is the *only* place it may be called: everything else (tests, CI, examples) keeps the
-    // in-memory default and so can never read or write the user's real credentials. Must run
-    // before any `App` is built, since `App::new` reloads the active account.
+    // Opt this process into the OS keychain, because sessions and device keys must survive a
+    // restart. This is the *only* place that may call it. Everything else (tests, CI, examples)
+    // keeps the in-memory default, and so can never read or write the real credentials of the
+    // user. This call must come before anything builds an `App`, because `App::new` loads the
+    // active account again.
     navigator_app::use_os_keychain();
 
     // With a subcommand, run headless (ingest/probe) and exit; with none, launch the GUI.
@@ -36,11 +37,11 @@ fn main() -> eframe::Result<()> {
     // First-run setup: seed the bundled ancestry/IBD assets, chrY masks, and HipSTR reference BEDs
     // shipped inside the installer image into ~/.decodingus/ if missing. No-op on later runs.
     //
-    // Headless seeds synchronously — the analysis starts at once, and there is no window whose
-    // appearance the copy could delay. The GUI seeds on a background thread instead, because the
-    // GRCh38 HipSTR BED alone is ~20 MB and that copy would otherwise sit in front of the first
-    // frame on exactly the run a new user is watching. `App::open` (on the worker thread) waits for
-    // it, so nothing can read a half-seeded cache.
+    // The headless path seeds in sequence. The analysis starts at once, and there is no window
+    // whose appearance the copy could delay. The GUI seeds on a background thread instead. The
+    // GRCh38 HipSTR BED alone is ~20 MB. That copy would otherwise come before the first frame, on
+    // exactly the run that a new user looks at. `App::open`, on the worker thread, waits
+    // for it, so nothing can read a cache that is only half seeded.
     if let Some(command) = parsed.command {
         let seeded = navigator_app::seed_bundled_all();
         if seeded.copied > 0 {
@@ -51,9 +52,10 @@ fn main() -> eframe::Result<()> {
     navigator_app::spawn_bundled_seed();
 
     let db_path = default_db_path();
-    // Open at the remembered size (falling back to a comfortable default), with a sane floor. This is
-    // only the initial hint — the builder sizes before the UI scale is applied, so `NavigatorApp`
-    // re-asserts the remembered size and fits it to the current screen on its first frames.
+    // Open at the size the app remembers, with a comfortable default if there is none, and a sane
+    // floor. This is only the first hint, because the builder sets the size before the UI scale
+    // applies. So `NavigatorApp` asserts the remembered size again, and fits it to the current
+    // screen, on its first frames.
     let initial_size = navigator_app::AppSettings::load()
         .window_size
         .unwrap_or(ui::DEFAULT_WINDOW);

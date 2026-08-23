@@ -1,14 +1,14 @@
-//! Y-STR profiles — a subject's short-tandem-repeat marker calls (e.g. DYS393=13),
-//! grouped by the panel/test that produced them (Y-37, Big Y-700 STRs, …). A pragmatic
-//! port of the Scala `StrProfile`: marker values + panel provenance, without the AT-URI/
-//! sync/derivation metadata (added later if needed). Types are pure; [`parse_csv`] turns
-//! exported marker tables (FTDNA/YSEQ-style) into markers without touching the filesystem.
+//! Y-STR profiles: the short-tandem-repeat marker calls of a subject (for example DYS393=13),
+//! grouped by the panel or test that made them (Y-37, Big Y-700 STRs, …). A pragmatic port of the
+//! Scala `StrProfile`: marker values and panel provenance, with no AT-URI, sync or derivation
+//! metadata (that can come later). The types are pure. [`parse_csv`] turns an exported marker
+//! table (FTDNA or YSEQ style) into markers, and never reads the filesystem.
 
 use du_domain::ids::SampleGuid;
 use serde::{Deserialize, Serialize};
 
-/// One STR marker call. `value` is kept as text because multi-copy markers report several
-/// alleles (e.g. "16-17" for DYS385) and palindromic markers can carry "-"/null.
+/// One STR marker call. This keeps `value` as text, because a multi-copy marker reports more than
+/// one allele (for example "16-17" for DYS385). A palindromic marker can also carry "-" or null.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StrMarker {
     pub marker: String,
@@ -23,13 +23,14 @@ pub struct ConsensusStrMarker {
     pub value: String,
     /// Panels that reported a (non-null) value for this marker.
     pub panels: usize,
-    /// True when panels reported differing values (a conflict to surface).
+    /// True when the panels reported values that do not agree (a conflict to show).
     pub conflict: bool,
 }
 
-/// Merge a subject's STR panels into one **donor consensus** profile: per marker, the modal
-/// (most common) value across panels, flagged when panels disagree. Null/palindromic-null
-/// values are skipped. Markers keep their first-seen order.
+/// Merge the STR panels of a subject into one **donor consensus** profile. For each marker it
+/// takes the modal (most common) value over the panels, and flags it when the panels disagree. It
+/// drops a null value and a palindromic null. Markers keep the order in which they first
+/// appeared.
 pub fn consensus_markers(profiles: &[StrProfile]) -> Vec<ConsensusStrMarker> {
     use std::collections::HashMap;
     let mut order: Vec<String> = Vec::new();
@@ -78,14 +79,14 @@ pub struct StrProfile {
     pub biosample_guid: SampleGuid,
     /// Panel name (one of [`KNOWN_PANELS`] or custom), e.g. "Y-37".
     pub panel_name: String,
-    /// Testing company / source (one of [`KNOWN_PROVIDERS`]).
+    /// Test company or source (one of [`KNOWN_PROVIDERS`]).
     pub provider: Option<String>,
-    /// How the STRs were obtained (one of [`KNOWN_SOURCES`]).
+    /// Where the STRs came from (one of [`KNOWN_SOURCES`]).
     pub source: Option<String>,
     pub markers: Vec<StrMarker>,
 }
 
-/// Fields for creating an STR profile (the store assigns the id).
+/// Fields to make an STR profile (the store assigns the id).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewStrProfile {
     pub biosample_guid: SampleGuid,
@@ -108,10 +109,10 @@ pub const KNOWN_PANELS: &[&str] = &[
     "CUSTOM",
 ];
 
-/// Known testing companies / sources.
+/// Known test companies and sources.
 pub const KNOWN_PROVIDERS: &[&str] = &["FTDNA", "YSEQ", "NEBULA", "DANTE", "WGS_DERIVED", "OTHER"];
 
-/// How a profile's STRs were obtained.
+/// Where the STRs of a profile came from.
 pub const KNOWN_SOURCES: &[&str] = &[
     "DIRECT_TEST",
     "WGS_DERIVED",
@@ -120,8 +121,8 @@ pub const KNOWN_SOURCES: &[&str] = &[
     "MANUAL_ENTRY",
 ];
 
-/// Trim whitespace and one layer of surrounding double-quotes from a cell (FTDNA/YSEQ pad
-/// values like `" 13"`), then trim again.
+/// Trim whitespace and one layer of double-quotes from around a cell (FTDNA and YSEQ pad values
+/// like `" 13"`), then trim again.
 fn clean_cell(s: &str) -> &str {
     s.trim().trim_matches('"').trim()
 }
@@ -162,15 +163,15 @@ fn looks_like_values(cells: &[&str]) -> bool {
     numeric * 10 >= non_empty.len() * 8 // ≥80%
 }
 
-/// Parse an exported STR marker table into markers. Two layouts are accepted:
+/// Parse an exported STR marker table into markers. It accepts two layouts:
 ///
-/// * **Tall**: one `marker,value` (a.k.a. `locus`/`allele`/`result`) row per line, with or
-///   without a header row.
-/// * **Wide**: the FTDNA / YSEQ export shape — a single header row of marker names and a
-///   single parallel row of values (often quoted and space-padded, e.g. `" 13"`).
+/// * **Tall**: one `marker,value` row on each line (also `locus`, `allele` or `result`), with a
+///   header row or without one.
+/// * **Wide**: the FTDNA or YSEQ export shape. This is one header row of marker names, and one
+///   parallel row of values (often quoted and space-padded, for example `" 13"`).
 ///
-/// Comma- or tab-separated; blank lines and leading `#` comments are ignored; markers with an
-/// empty/`-` value are skipped. Errors only if no usable markers are found.
+/// Cells are comma-separated or tab-separated. This drops a blank line, a `#` comment at the start
+/// of a line, and a marker whose value is empty or `-`. Errors only if it finds no usable marker.
 pub fn parse_csv(text: &str) -> Result<Vec<StrMarker>, String> {
     let content: Vec<&str> = text
         .lines()
@@ -178,9 +179,10 @@ pub fn parse_csv(text: &str) -> Result<Vec<StrMarker>, String> {
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .collect();
 
-    // Wide layout: exactly two rows — a header of marker names and a parallel row of values.
-    // Guard against a 2-row tall file by requiring several columns and confirming the first
-    // row reads as names (mostly letters) and the second as values (mostly digits/dashes).
+    // Wide layout: exactly two rows, a header of marker names and a parallel row of values.
+    // To guard against a tall file of two rows, this needs more than a few columns. It also checks
+    // that the first row reads as names (mostly letters), and the second as values (mostly digits
+    // and dashes).
     if content.len() == 2 {
         let sep = if content[0].contains('\t') { '\t' } else { ',' };
         let names: Vec<&str> = content[0].split(sep).map(clean_cell).collect();
@@ -201,7 +203,7 @@ pub fn parse_csv(text: &str) -> Result<Vec<StrMarker>, String> {
         }
     }
 
-    // Tall layout: one marker per row.
+    // Tall layout: one marker on each row.
     let mut markers = Vec::new();
     let mut header_checked = false;
     for line in content {
@@ -235,9 +237,9 @@ pub fn parse_csv(text: &str) -> Result<Vec<StrMarker>, String> {
     Ok(markers)
 }
 
-/// Y-STR distance between two profiles: differing marker values over markers present in
-/// both. Returns (differing, compared). Distance 0 over many shared markers is consistent
-/// with a shared paternal line (identity corroboration).
+/// Y-STR distance between two profiles: the count of marker values that do not agree, over the
+/// markers both profiles hold. Returns (count that differ, count compared). A distance of 0 over
+/// many shared markers agrees with a shared paternal line (identity corroboration).
 pub fn str_distance(a: &[StrMarker], b: &[StrMarker]) -> (i64, i64) {
     let mut differing = 0;
     let mut compared = 0;
@@ -256,14 +258,14 @@ pub fn str_distance(a: &[StrMarker], b: &[StrMarker]) -> (i64, i64) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkerConflict {
     pub marker: String,
-    /// `(provider, value)` per provider, provider order as first seen.
+    /// `(provider, value)` for each provider, in the order the providers first appeared.
     pub by_provider: Vec<(String, String)>,
 }
 
 /// Cross-provider comparison of a subject's STR profiles (e.g. FTDNA vs YSEQ).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StrComparison {
-    /// Markers reported by ≥2 providers with disagreeing values.
+    /// Markers that ≥2 providers report with values that do not agree.
     pub conflicts: Vec<MarkerConflict>,
     /// Markers reported by ≥2 providers that agree.
     pub agreement_count: usize,
@@ -271,8 +273,9 @@ pub struct StrComparison {
     pub providers: Vec<String>,
 }
 
-/// Whether two STR values represent the same allele(s). Multi-copy values (`"16-15"`) are compared
-/// order-independently (`"16-15"` ≡ `"15-16"`); everything else is a trimmed string match.
+/// True when two STR values are the same allele or alleles. A multi-copy value (`"16-15"`)
+/// compares without regard to order, so `"16-15"` ≡ `"15-16"`. Everything else is a trimmed string
+/// match.
 pub fn values_match(a: &str, b: &str) -> bool {
     let norm = |s: &str| {
         let mut parts: Vec<&str> = s.split('-').map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
@@ -282,12 +285,13 @@ pub fn values_match(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
-/// Compare a subject's STR profiles across providers: flag markers where providers disagree, count
-/// agreements, and list the providers. Mirrors the Scala `StrMarkerComparator.compare`. A profile's
-/// provider defaults to `"UNKNOWN"` when unset; multiple profiles from the same provider collapse to
-/// that provider's first-seen value for a marker.
+/// Compare the STR profiles of a subject across providers. It flags a marker where the providers
+/// disagree, counts the agreements, and lists the providers. Mirrors the Scala
+/// `StrMarkerComparator.compare`. The provider of a profile defaults to `"UNKNOWN"` when nothing
+/// sets it. More than one profile from the same provider collapses to the first value that provider
+/// gave for a marker.
 pub fn compare_profiles(profiles: &[StrProfile]) -> StrComparison {
-    // Normalized marker -> ordered list of (provider, value), one entry per provider.
+    // Normalized marker -> ordered list of (provider, value), one entry for each provider.
     let mut by_marker: Vec<(String, Vec<(String, String)>)> = Vec::new();
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut providers: Vec<String> = Vec::new();
@@ -385,8 +389,8 @@ mod tests {
 
     #[test]
     fn parses_wide_ftdna_layout_with_quotes_and_padding() {
-        // FTDNA/YSEQ shape: a row of marker names + a parallel row of quoted, space-padded
-        // values; multi-copy markers stay dash-joined; empty cells are skipped.
+        // FTDNA and YSEQ shape: a row of marker names, and a parallel row of quoted, space-padded
+        // values. A multi-copy marker stays dash-joined, and this drops an empty cell.
         let csv = "DYS393,DYS390,DYS385,DYS459,DYS464\n\" 13\",\" 24\",\" 11-15\",\" \",\" 14-15-17-17\"\n";
         let m = parse_csv(csv).unwrap();
         assert_eq!(m.len(), 4); // DYS459 (blank) skipped
@@ -415,7 +419,8 @@ mod tests {
 
     #[test]
     fn two_row_tall_file_is_not_mistaken_for_wide() {
-        // Two data rows, two columns each — still tall (the wide path needs ≥5 name columns).
+        // Two data rows, two columns each. This is still tall: the wide path needs ≥5 name
+        // columns.
         let csv = "DYS393,13\nDYS390,24\n";
         let m = parse_csv(csv).unwrap();
         assert_eq!(m.len(), 2);
@@ -468,7 +473,7 @@ mod tests {
         // Disagreement: flagged conflict.
         assert!(by("DYS390").unwrap().conflict);
 
-        // Null ("-") is skipped; single-panel marker still appears.
+        // This drops a null ("-"). A marker from one panel only still appears.
         assert!(by("DYS385").is_none());
         assert_eq!(by("DYS19").unwrap().panels, 1);
     }

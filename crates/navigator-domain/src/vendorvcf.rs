@@ -1,11 +1,11 @@
-//! Vendor-VCF classification — recognize FTDNA Big Y, Full Genomes Y Elite, YSEQ, etc. from a
-//! `.vcf` so the import can tag it (vendor label + a meaningful `SourceType`) instead of treating
-//! every VCF as a generic `IMPORTED` set.
+//! Vendor-VCF classification: recognize FTDNA Big Y, Full Genomes Y Elite, YSEQ, and others from
+//! a `.vcf`. The import can then tag it with a vendor label and a real `SourceType`, instead of a
+//! generic `IMPORTED` set for every VCF.
 //!
-//! Signals (from real exports): the `##source` meta line — FTDNA Big Y stamps `##source=aengine`
-//! (its Arpeggi caller) — plus the contig set (chrY-only ⇒ Y-targeted, chrM-only ⇒ mtDNA), the file
-//! name, and the sibling `readme.txt` FTDNA ships ("…BigY raw data…"). Mirrors the Scala
-//! `VcfCache.VcfVendor`.
+//! The signals come from real exports. The first is the `##source` meta line: FTDNA Big Y stamps
+//! `##source=aengine`, which is its Arpeggi caller. The others are the contig set (chrY-only ⇒
+//! Y-targeted, chrM-only ⇒ mtDNA), the file name, and the sibling `readme.txt` that FTDNA ships
+//! ("…BigY raw data…"). This mirrors the Scala `VcfCache.VcfVendor`.
 
 use crate::variants::SourceType;
 
@@ -35,8 +35,9 @@ impl VendorVcf {
         }
     }
 
-    /// Concordance weighting for the calls: vendor-grade targeted Y/mt sequencing is `TargetedNgs`;
-    /// consumer WGS vendors are short-read WGS; an unrecognized VCF stays generic `Imported`.
+    /// The concordance weight for the calls. Vendor-grade targeted Y or mt sequencing is
+    /// `TargetedNgs`. A consumer WGS vendor is short-read WGS. An unrecognized VCF stays generic
+    /// `Imported`.
     pub fn source_type(self) -> SourceType {
         match self {
             VendorVcf::FtdnaBigY | VendorVcf::FtdnaMtFull | VendorVcf::Yseq | VendorVcf::FullGenomes => {
@@ -52,8 +53,9 @@ impl VendorVcf {
     }
 }
 
-/// Classify a VCF from its header `meta` (the `##` lines, lower-casing handled here), the set of
-/// contig names it declares, its `filename`, and an optional sibling `readme` text.
+/// Classify a VCF from its header `meta` (the `##` lines, which this function puts into lower
+/// case). The other inputs are the set of contig names it declares, its `filename`, and an
+/// optional sibling `readme` text.
 pub fn classify(meta: &str, contigs: &[String], filename: &str, readme: Option<&str>) -> VendorVcf {
     let hay = format!("{} {} {}", meta, filename, readme.unwrap_or("")).to_lowercase();
     let only = |pred: fn(&str) -> bool| !contigs.is_empty() && contigs.iter().all(|c| pred(c));

@@ -1,7 +1,8 @@
-//! Per-marker branch report card (`impl NavigatorApp`): the sample's genotype at every defining
-//! marker of a chosen Y/mtDNA node's descendant subtree, for spot-checking placement accuracy and
-//! exchanging observations with other researchers. Node-triggered (a text input + Load button, not
-//! lazy), with a TSV export. Mirrors the descent card's worker/state wiring.
+//! A branch report card for each marker (`impl NavigatorApp`). It shows the genotype of the sample
+//! at every marker that defines a node in the descendant subtree of a chosen Y or mtDNA node. Use
+//! it to spot-check the accuracy of a placement, and to exchange observations with other
+//! researchers. A node starts it: a text input and a Load button, and it is not lazy. It has a TSV
+//! export. It mirrors how the descent card connects its worker and its state.
 
 use super::*;
 
@@ -86,8 +87,9 @@ impl NavigatorApp {
             return;
         }
 
-        // Render inside a block so the report borrow ends before the (mutating) export button; the
-        // block yields the formatted TSV + filename the button needs.
+        // Draw inside a block, so that the borrow of the report ends before the export button,
+        // which needs a mutable borrow. The block gives back the formatted TSV and the filename
+        // that the button needs.
         let (tsv, fname) = {
             let report = self
                 .branch_reports
@@ -135,9 +137,10 @@ impl NavigatorApp {
         );
         ui.add_space(4.0);
 
-        // A subtree rooted at a shallow node (R-M269, or the tree root) carries tens of thousands of
-        // markers — a Grid lays out every row per frame and beach-balls. Fixed-width columns through
-        // ScrollArea::show_rows build only the visible slice (same idiom as the consensus-panel table).
+        // A subtree with a shallow node at its root (R-M269, or the tree root) carries tens of
+        // thousands of markers. A Grid lays out every row on every frame, and the app then stops
+        // to respond. Fixed-width columns through ScrollArea::show_rows build only the visible
+        // slice. This is the same idiom as the consensus-panel table.
         const W_NODE: f32 = 110.0;
         const W_MARKER: f32 = 90.0;
         const W_POS: f32 = 80.0;

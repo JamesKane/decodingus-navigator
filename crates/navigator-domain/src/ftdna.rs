@@ -1,24 +1,24 @@
-//! FTDNA project-export parsers (FTDNA project-import design §3). Pure text→typed rows, no IO — the
+//! FTDNA project-export parsers (FTDNA project-import design §3). Pure text→typed rows, no IO. The
 //! app layer reads the files and hands the text here.
 //!
-//! Covers the two batch report CSVs that seed the importer's spine (Phase 1):
-//! - `Member_Information` — the roster (§3.1)
-//! - `Paternal_Ancestry` / `Maternal_Ancestry` — MDKA + clade path (§3.2, identical layout)
+//! It covers the two batch report CSVs that seed the spine of the importer (Phase 1):
+//! - `Member_Information`: the roster (§3.1)
+//! - `Paternal_Ancestry` and `Maternal_Ancestry`: MDKA and clade path (§3.2, identical layout)
 //!
-//! The wide `YDNA_Results_Overview` Y-STR chart (§3.3) is parsed by [`crate::strprofile`]; this
-//! module only handles the roster + ancestry files. All fields are looked up **by header name**
-//! (not fixed position) since exports vary, columns are quoted-with-commas, and headers carry HTML
-//! entities (`&gt;`, `&darr;`, `&amp;`) that are normalized here.
+//! [`crate::strprofile`] parses the wide `YDNA_Results_Overview` Y-STR chart (§3.3). This module
+//! controls only the roster file and the ancestry files. It finds every field **by header name**,
+//! and not by a fixed position. Exports vary, a column can carry quotes and commas, and headers
+//! carry HTML entities (`&gt;`, `&darr;`, `&amp;`) that this module normalizes.
 
-/// One member from `Member_Information` (§3.1). PII fields (`name`) are carried so the matcher can
-/// fuzzy-compare, but they are never federated.
+/// One member from `Member_Information` (§3.1). This holds the PII fields (`name`) so that the
+/// matcher can fuzzy-compare, but they never go to federation.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MemberRow {
     pub kit_number: String,
     pub name: Option<String>,
-    /// `Access Granted` — pose-as gate + Big Y data tier (`Advanced`/`Limited`/…).
+    /// `Access Granted`: the pose-as gate, and the Big Y data tier (`Advanced`/`Limited`/…).
     pub access_granted: Option<String>,
-    /// `Publicly Share DNA Results` (YES/NO) — federation consent.
+    /// `Publicly Share DNA Results` (YES/NO): federation consent.
     pub publicly_shares: Option<bool>,
 }
 
@@ -26,11 +26,12 @@ pub struct MemberRow {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AncestryRow {
     pub kit_number: String,
-    /// `Sub Group` — the project's clade/branch path (HTML-unescaped), e.g. `CTS4466>S1115>…`.
+    /// `Sub Group`: the clade or branch path of the project (HTML-unescaped), for example
+    /// `CTS4466>S1115>…`.
     pub sub_group: Option<String>,
     pub country: Option<String>,
-    /// `Paternal/Maternal Ancestor Name` with the inline `b.`/`d.` dates stripped to [`Self::birth_year`]/
-    /// [`Self::death_year`]; the leading name portion is kept here.
+    /// `Paternal/Maternal Ancestor Name`, with the inline `b.` and `d.` dates moved to
+    /// [`Self::birth_year`] and [`Self::death_year`]. The name part at the start stays here.
     pub ancestor_name: Option<String>,
     pub birth_year: Option<i32>,
     pub death_year: Option<i32>,
@@ -44,24 +45,25 @@ pub struct AncestryRow {
 /// reliable). Used to route a multi-file pick into the right parser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FtdnaFileKind {
-    /// `Member_Information` — the roster.
+    /// `Member_Information`: the roster.
     Member,
-    /// `Paternal_Ancestry` — paternal MDKA.
+    /// `Paternal_Ancestry`: paternal MDKA.
     PaternalAncestry,
-    /// `Maternal_Ancestry` — maternal MDKA.
+    /// `Maternal_Ancestry`: maternal MDKA.
     MaternalAncestry,
-    /// `YDNA_Results_Overview` — the wide Y-STR chart.
+    /// `YDNA_Results_Overview`: the wide Y-STR chart.
     YdnaOverview,
 }
 
 /// Classify an FTDNA export from its header row. `None` if it does not look like one of ours.
-/// Disambiguators: the marker block (`DYS…`) is unique to the Y-STR overview; the roster has the
-/// `Publicly Share DNA Results` consent column; the ancestry files use `Sub Group` (with a space)
-/// and a `Paternal`/`Maternal Ancestor Name`.
+/// Three signals separate them. Only the Y-STR overview has the marker block (`DYS…`). Only the
+/// roster has the `Publicly Share DNA Results` consent column. The ancestry files use `Sub Group`
+/// (with a space) and a `Paternal`/`Maternal Ancestor Name`.
 pub fn classify(text: &str) -> Option<FtdnaFileKind> {
-    // Read the header through the CSV reader so fully-quoted headers (`"Kit Number",…`, which fresh
-    // FTDNA exports use) are de-quoted/trimmed like the parsers do — a naive comma split would keep
-    // the quotes and miss every column.
+    // Read the header through the CSV reader. A fully-quoted header (`"Kit Number",…`, which a
+    // fresh FTDNA export uses) then loses its quotes, and the reader trims it, the same as the
+    // parsers do.
+    // A naive comma split would keep the quotes and miss every column.
     let (cols, _) = open(text).ok()?;
     let has = |name: &str| cols.iter().any(|c| c == name);
 
@@ -156,10 +158,11 @@ const YDNA_IDENTITY: &[&str] = &[
     "Subgroup",
 ];
 
-/// Parse the wide `YDNA_Results_Overview` Y-STR chart (§3.3) into `(kit, markers)` per member.
-/// Marker columns are every header not in [`YDNA_IDENTITY`]; multi-copy values stay dash-joined
-/// (`"10-14"`), matching the [`crate::strprofile::StrMarker`] convention. Skips the two leading
-/// non-member rows (panel / `MIN`) via the kit-number guard and drops blank/`0`/`-` marker cells.
+/// Parse the wide `YDNA_Results_Overview` Y-STR chart (§3.3) into `(kit, markers)` for each
+/// member. The marker columns are every header that [`YDNA_IDENTITY`] does not list. A multi-copy
+/// value stays dash-joined (`"10-14"`), which matches the [`crate::strprofile::StrMarker`]
+/// convention. The kit-number guard steps over the first two non-member rows (panel and `MIN`), and
+/// this drops a marker cell that is blank, `0`, or `-`.
 pub fn parse_ydna_overview(text: &str) -> Result<Vec<(String, Vec<crate::strprofile::StrMarker>)>, String> {
     use crate::strprofile::StrMarker;
     let (headers, mut rdr) = open(text)?;
@@ -197,8 +200,9 @@ pub fn parse_ydna_overview(text: &str) -> Result<Vec<(String, Vec<crate::strprof
 
 // ---- helpers --------------------------------------------------------------
 
-/// Build a `csv::Reader` over the text with the header row pulled out + HTML-unescaped. Flexible
-/// (some FTDNA exports have ragged trailing columns) and trims so quoted, space-padded cells clean up.
+/// Build a `csv::Reader` over the text, with the header row taken out and HTML-unescaped. It is
+/// flexible, because some FTDNA exports have ragged columns at the end. It also trims, so that a
+/// quoted, space-padded cell comes out clean.
 fn open(text: &str) -> Result<(Vec<String>, csv::Reader<&[u8]>), String> {
     let mut rdr = csv::ReaderBuilder::new()
         .flexible(true)
@@ -232,14 +236,14 @@ fn nonblank(s: String) -> Option<String> {
     }
 }
 
-/// A `Sub Group` value is only a clade path when it actually contains a lineage (`>`); FTDNA also
-/// uses free-text placeholders there ("Not Yet Tested Positive for Relevant SNPs").
+/// A `Sub Group` value is a clade path only when it holds a lineage (`>`). FTDNA also puts
+/// free-text placeholders there ("Not Yet Tested Positive for Relevant SNPs").
 fn nonblank_clade(s: String) -> Option<String> {
     nonblank(s).filter(|v| v.contains('>'))
 }
 
-/// A real kit number is non-empty and not one of the two leading non-member sentinel rows
-/// (`00000.` panel / `MIN`) the Y-STR overview carries — harmless to guard here too.
+/// A real kit number is not empty. It is also not one of the two non-member sentinel rows at the
+/// start (`00000.` panel and `MIN`) that the Y-STR overview carries. The guard here is harmless.
 fn is_real_kit(kit: &str) -> bool {
     let k = kit.trim();
     !k.is_empty() && k != "MIN" && !k.starts_with("00000")
@@ -254,13 +258,13 @@ fn parse_yes_no(s: &str) -> Option<bool> {
     }
 }
 
-/// Coordinate cell → f64, dropping the FTDNA `0` sentinel (means "no location").
+/// Coordinate cell → f64. This drops the FTDNA `0` sentinel, which means "no location".
 fn parse_coord(s: &str) -> Option<f64> {
     let v: f64 = s.trim().parse().ok()?;
     (v != 0.0).then_some(v)
 }
 
-/// Minimal HTML-entity unescape for the entities FTDNA emits in headers/values.
+/// A small HTML-entity unescape, for the entities FTDNA emits in headers and values.
 fn unescape_html(s: &str) -> String {
     s.replace("&gt;", ">")
         .replace("&lt;", "<")
@@ -272,11 +276,11 @@ fn unescape_html(s: &str) -> String {
         .to_string()
 }
 
-/// Split an FTDNA ancestor field into `(name, birth_year, death_year)`. The dates are embedded
-/// inline in varied shapes — `"Thomas Michael Kane, b. 1830 Clare, IE d. 1908 WI"`,
-/// `"Joseph Abbett, b. 19 Mar 1819 and d. 2 Nov 1852"` — so we locate `b.`/`d.` markers and take the
-/// first 4-digit year after each. The name is everything before the first marker (trailing comma
-/// trimmed).
+/// Split an FTDNA ancestor field into `(name, birth_year, death_year)`. The field holds the dates
+/// inline, in different shapes: `"Thomas Michael Kane, b. 1830 Clare, IE d. 1908 WI"`, or
+/// `"Joseph Abbett, b. 19 Mar 1819 and d. 2 Nov 1852"`. So we find the `b.` and `d.` markers, and
+/// take the first 4-digit year after each. The name is everything before the first marker, with a
+/// comma at the end trimmed.
 fn parse_ancestor_name(raw: &str) -> (Option<String>, Option<i32>, Option<i32>) {
     let lower = raw.to_ascii_lowercase();
     let b_pos = find_marker(&lower, "b.");
@@ -291,8 +295,8 @@ fn parse_ancestor_name(raw: &str) -> (Option<String>, Option<i32>, Option<i32>) 
     (name, birth, death)
 }
 
-/// Byte offset of a `b.`/`d.` date marker, requiring a word boundary before it (so the `b` in
-/// "Abbett" does not match). Returns the offset of the marker letter.
+/// Byte offset of a `b.` or `d.` date marker. It needs a word boundary before the marker, so that
+/// the `b` in "Abbett" does not match. Returns the offset of the marker letter.
 fn find_marker(lower: &str, marker: &str) -> Option<usize> {
     let bytes = lower.as_bytes();
     let mut from = 0;
@@ -380,7 +384,8 @@ mod tests {
 
     #[test]
     fn ydna_overview_parses_per_kit_markers_skipping_junk_rows() {
-        // header + the two leading non-member rows (panel / MIN) + B5163, space-padded + multi-copy.
+        // header, the two non-member rows at the start (panel, MIN), and B5163, space-padded and
+        // multi-copy.
         let csv =
             "Kit Number,Name,Paternal Ancestor Name,Country,Haplogroup,Test,Subgroup,DYS393,DYS390,DYS385,DYS459\n\
                     00000. R-FGC11134,,,,,, 00000. R-FGC11134, 13, 22, 10-14, 9-10\n\

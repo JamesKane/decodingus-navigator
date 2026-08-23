@@ -1,10 +1,10 @@
-//! Vendor-neutral Subject identity + FTDNA-specific member/MDKA types (FTDNA project-import
-//! design §4). Pure types, no IO.
+//! Vendor-neutral Subject identity, and the FTDNA-specific member and MDKA types (FTDNA
+//! project-import design §4). Pure types, no IO.
 //!
-//! **Privacy:** [`ExternalId`], [`FtdnaMember`], and [`Mdka`] are **PII / never-federated** — they
-//! must not be derived into a public PDS `fed` record nor put in an AppView-bound payload. They may
-//! only ever enter the encrypted Edge-to-Edge tier. Keep distinct from our own computed haplogroup
-//! calls (those live in `RunHaplogroupCall`).
+//! **Privacy:** [`ExternalId`], [`FtdnaMember`] and [`Mdka`] are **PII, and never federated**. No
+//! code may derive them into a public PDS `fed` record, or put them in a payload bound for the
+//! AppView. They may enter the encrypted Edge-to-Edge tier, and nothing else. Keep them separate
+//! from the haplogroup calls we compute, which live in `RunHaplogroupCall`.
 
 use du_domain::ids::SampleGuid;
 use serde::{Deserialize, Serialize};
@@ -26,17 +26,18 @@ pub struct ProjectMembership {
 pub struct ExternalId {
     pub id: i64,
     pub biosample_guid: SampleGuid,
-    /// `FTDNA` | `YSEQ` | `NEBULA` | `WGS` | `MANUAL` | … — see [`IdSource`] for the well-known set.
+    /// `FTDNA` | `YSEQ` | `NEBULA` | `WGS` | `MANUAL` | … See [`IdSource`] for the well-known set.
     pub source: String,
     /// Kit number / vendor id.
     pub external_id: String,
 }
 
-/// Well-known [`ExternalId::source`] values. Stored as plain strings (open set — new vendors are
-/// just a new value), but the common ones get constants to avoid typos at call sites.
+/// Well-known [`ExternalId::source`] values. The store holds them as plain strings, because the
+/// set is open and a new vendor is only a new value. The common ones have constants, to stop a typo
+/// at a call site.
 pub struct IdSource;
 impl IdSource {
-    // ── vendor kits (background-only on the AppView — never surfaced publicly) ──
+    // ── vendor kits (background-only on the AppView, and never public) ──
     pub const FTDNA: &'static str = "FTDNA";
     pub const YSEQ: &'static str = "YSEQ";
     pub const NEBULA: &'static str = "NEBULA";
@@ -47,9 +48,10 @@ impl IdSource {
     /// The Big Y variant/BAM package's internal sample UUID (links BAM ↔ variants; design §5).
     pub const FTDNA_BIGY_UUID: &'static str = "FTDNA_BIGY_UUID";
 
-    // ── public / open-consent catalog ids (the AppView surfaces these) ──
-    // These namespace tokens MUST match the AppView's `is_public` set exactly — it derives
-    // displayability from the namespace, so a typo silently demotes a public id to background-only.
+    // ── public / open-consent catalog ids (the AppView shows these) ──
+    // These namespace tokens MUST match the `is_public` set of the AppView exactly. The AppView
+    // decides what to display from the namespace, so a typo demotes a public id to
+    // background-only, and gives no message.
     pub const PGP: &'static str = "PGP";
     pub const IGSR: &'static str = "IGSR";
     pub const THOUSAND_GENOMES: &'static str = "1000G";
@@ -59,9 +61,10 @@ impl IdSource {
     pub const HGDP: &'static str = "HGDP";
     pub const SGDP: &'static str = "SGDP";
 
-    /// Whether a namespace is a public/open-consent catalog id (surfaced by the AppView) rather than
-    /// a vendor kit (kept off every public surface). Mirrors the AppView's `is_public` policy so the
-    /// two ends agree; an unrecognized namespace is treated as private (the safe default).
+    /// True when a namespace is a public open-consent catalog id, which the AppView shows, and
+    /// not a vendor kit, which stays off every public surface. This mirrors the `is_public` policy
+    /// of the AppView, so that the two ends agree. A namespace it does not recognize is private,
+    /// which is the safe default.
     pub fn is_public(source: &str) -> bool {
         matches!(
             source,
@@ -77,19 +80,21 @@ impl IdSource {
     }
 }
 
-/// Public/open-consent catalog identifiers derivable **purely from a sample's local provenance** —
-/// used to seed the AppView-visible `external_ids` for bulk-imported public datasets so they match
-/// their existing catalog rows. Deterministic pattern match only (no network/manifest lookup):
+/// Public open-consent catalog identifiers that come **only from the local provenance of a
+/// sample**. They seed the `external_ids` the AppView can see, for a public dataset that a bulk
+/// import brought in. The dataset then matches the catalog rows that already exist. This is a
+/// deterministic pattern match only, with no network or manifest lookup:
 ///
-/// - a 1000 Genomes / IGSR sample name (`HG#####` / `NA#####`) → `(IGSR, name)`;
+/// - a 1000 Genomes or IGSR sample name (`HG#####` / `NA#####`) → `(IGSR, name)`;
 /// - an HGDP catalog id (`HGDP#####`) → `(HGDP, name)`;
 /// - a genuine INSDC **sample** accession in `sample_accession` (`SAM*` → BIOSAMPLE, `ERS…` → ENA,
 ///   `SRS…` → SRA).
 ///
-/// A dataset-specific friendly name (the common case in ancient-DNA / population sets, where the
-/// accession is just a copy of the label) yields nothing — we never guess a namespace, because a
-/// wrong token silently fails the AppView's `(namespace, value)` dedup. GIAB `HG00x` (< 5 digits)
-/// is intentionally excluded to avoid colliding with build names.
+/// A friendly name that belongs to one dataset gives nothing. That is the common case in
+/// ancient-DNA and population sets, where the accession is only a copy of the label. We never guess
+/// a namespace, because a wrong token fails the `(namespace, value)` dedup of the AppView, and
+/// gives no message. GIAB `HG00x` (< 5 digits) stays out on purpose, so that it does not collide
+/// with a build name.
 pub fn catalog_ids_from_provenance(donor_identifier: &str, sample_accession: Option<&str>) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let d = donor_identifier.trim();
@@ -106,13 +111,13 @@ pub fn catalog_ids_from_provenance(donor_identifier: &str, sample_accession: Opt
     out
 }
 
-/// `HG#####` / `NA#####` — a 1000 Genomes / IGSR sample name (≥ 5 digits after the prefix).
+/// `HG#####` / `NA#####`: a 1000 Genomes or IGSR sample name (≥ 5 digits after the prefix).
 fn is_igsr_name(s: &str) -> bool {
     let rest = s.strip_prefix("HG").or_else(|| s.strip_prefix("NA"));
     matches!(rest, Some(r) if r.len() >= 5 && r.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// `HGDP#####` (optionally `HGDP_#####`) — an HGDP catalog id.
+/// `HGDP#####` (also `HGDP_#####`): an HGDP catalog id.
 fn is_hgdp_name(s: &str) -> bool {
     let rest = s.strip_prefix("HGDP").map(|r| r.strip_prefix('_').unwrap_or(r));
     matches!(rest, Some(r) if !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
@@ -138,8 +143,9 @@ pub fn insdc_sample_namespace(acc: &str) -> Option<&'static str> {
     }
 }
 
-/// FTDNA-reported member labels only (the batch-file metadata we do not otherwise model). Computed
-/// haplogroups stay in the haplogroup-call store — different provenance (design §4.2).
+/// FTDNA-reported member labels only: the batch-file metadata we do not model in another place. A
+/// computed haplogroup stays in the haplogroup-call store, because its provenance is different
+/// (design §4.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FtdnaMember {
     pub biosample_guid: SampleGuid,
@@ -148,10 +154,10 @@ pub struct FtdnaMember {
     pub mt_haplogroup_ftdna: Option<String>,
     /// `predicted` | `confirmed`.
     pub haplo_status: Option<String>,
-    /// `Advanced` | `Limited` | `None` — the pose-as gate, which also determines the reachable Big Y
-    /// data tier (design §3.5).
+    /// `Advanced` | `Limited` | `None`: the pose-as gate. It also sets which Big Y data tier the
+    /// code can reach (design §3.5).
     pub access_granted: Option<String>,
-    /// `Publicly Share DNA Results` consent flag — gates whether this Subject may federate.
+    /// `Publicly Share DNA Results` consent flag. It gates whether this Subject may federate.
     pub publicly_shares: Option<bool>,
 }
 
@@ -185,7 +191,7 @@ impl Lineage {
     }
 }
 
-/// Most Distant Known Ancestor on a lineage (design §4.3). One per Subject per lineage.
+/// Most Distant Known Ancestor on a lineage (design §4.3). One for each Subject and each lineage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mdka {
     pub id: i64,
@@ -220,16 +226,16 @@ pub struct NewMdka {
     pub notes: Option<String>,
 }
 
-/// Name particles that belong to the surname rather than to a given name — the tokens a surname
-/// may legitimately begin with. Without these, [`surname_of`] would refuse `van der Berg` and
-/// `de la Cruz`, which are surnames, while still refusing `Thomas Michael Kane`, which is not.
+/// Name particles that belong to the surname, and not to a given name. These are the tokens a
+/// surname may correctly start with. Without them, [`surname_of`] would refuse `van der Berg` and
+/// `de la Cruz`, which are surnames. It still refuses `Thomas Michael Kane`, which is not one.
 const NAME_PARTICLES: &[&str] = &[
     "van", "von", "der", "den", "de", "del", "della", "di", "da", "dos", "du", "la", "le", "les", "mac", "mc", "st",
     "st.", "saint", "ter", "ten", "af", "av", "al", "bin", "ibn", "ap", "ó", "ni", "nic", "mag", "fitz", "o", "o'",
 ];
 
-/// A token that starts the biographical tail rather than continuing the name: a year, a date, or
-/// the word that introduces one. Everything from here on is annotation.
+/// A token that starts the biographical tail, and does not continue the name: a year, a date, or
+/// the word before one. Everything from here on is annotation.
 fn is_annotation(token: &str) -> bool {
     let t = token.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
     if matches!(
@@ -238,8 +244,8 @@ fn is_annotation(token: &str) -> bool {
     ) {
         return true;
     }
-    // Any run of four digits reading as a year (1000-2099) — covers `1770`, `~1770`, `1919-1996`
-    // and `11/25/1843`.
+    // Any run of four digits that reads as a year (1000-2099). This covers `1770`, `~1770`,
+    // `1919-1996` and `11/25/1843`.
     token.as_bytes().windows(4).any(|w| {
         w.iter().all(u8::is_ascii_digit) && {
             let y: i32 = std::str::from_utf8(w).unwrap_or("0").parse().unwrap_or(0);
@@ -250,9 +256,9 @@ fn is_annotation(token: &str) -> bool {
 
 /// Decode the HTML entities the FTDNA CSV importer leaves in place (`L&#225;ire`, `Died&#160;26`).
 ///
-/// The root cause is the importer, not this function — but this is the last point before a name is
-/// published, and shipping `mac L&#225;ire` as a surname is worse than decoding it here. 61 of the
-/// 6,218 names in the reference corpus carry one.
+/// The root cause is the importer, and not this function. But this is the last point before a name
+/// goes out, and to send `mac L&#225;ire` as a surname is worse than to decode it here. In the
+/// reference corpus, 61 of the 6,218 names carry one.
 fn decode_entities(s: &str) -> String {
     if !s.contains('&') {
         return s.to_string();
@@ -298,21 +304,20 @@ fn decode_entities(s: &str) -> String {
     out
 }
 
-/// Generational suffixes, dropped before the surname is taken.
+/// Generational suffixes. This code drops them before it takes the surname.
 const NAME_SUFFIXES: &[&str] = &["jr", "jr.", "sr", "sr.", "i", "ii", "iii", "iv", "v", "esq", "esq."];
 
 /// Reduce a most-distant-known-ancestor's full name to a **surname**.
 ///
-/// This is a privacy gate, not a formatting nicety. An MDKA's surname, origin and dates are
-/// genealogical context that may be published (`proposals/ancestral-origin-icicle.md` §2 in the
-/// AppView repo); a given name is not, and it is what turns a published record into a named
-/// individual. The split therefore happens here, at the edge, before anything is serialized — the
-/// full name never leaves the workspace.
+/// This is a privacy gate, and not a matter of style. The surname, origin and dates of an MDKA are
+/// genealogical context that may go out (`proposals/ancestral-origin-icicle.md` §2 in the AppView
+/// repo). A given name may not, and a given name is what turns a published record into a named
+/// individual. So the split happens here, at the edge, before anything becomes bytes. The full name
+/// never leaves the workspace.
 ///
-/// Conservative by construction: it takes the **last** token plus any particles immediately
-/// preceding it, and returns `None` when there is nothing usable. A wrong split leaks a forename,
-/// so the AppView independently re-checks what arrives; this is the first of two gates, not the
-/// only one.
+/// The rule is conservative. It takes the **last** token, plus any particle directly before it, and
+/// it returns `None` when there is nothing usable. A wrong split leaks a forename, so the AppView
+/// checks again, on its own, what arrives. This is the first of two gates, and not the only one.
 ///
 /// ```text
 /// "Thomas Michael Kane"      → "Kane"
@@ -324,7 +329,7 @@ const NAME_SUFFIXES: &[&str] = &["jr", "jr.", "sr", "sr.", "i", "ii", "iii", "iv
 /// ```
 pub fn surname_of(full_name: &str) -> Option<String> {
     let decoded = decode_entities(full_name);
-    // `Surname, Given` — genealogy files are full of it, and the plain last-token rule would take
+    // `Surname, Given`. Genealogy files are full of it, and the plain last-token rule would take
     // the given name.
     let head = match decoded.split_once(',') {
         Some((last, _)) if !last.trim().is_empty() => last.to_string(),
@@ -334,13 +339,13 @@ pub fn surname_of(full_name: &str) -> Option<String> {
         .split_whitespace()
         .filter(|t| !t.trim_matches(|c: char| !c.is_alphanumeric()).is_empty())
         .collect();
-    // Cut at the first biographical annotation. A third of the reference corpus appends dates or a
-    // birthplace to the name — `William Macaulay ~1770 of Balnicol`, `Michael OConnell b1854 d1928
-    // St Louis` — and a plain last-token rule takes `Balnicol` and `Louis` as surnames.
+    // Cut at the first biographical annotation. A third of the reference corpus adds dates or a
+    // birthplace to the name: `William Macaulay ~1770 of Balnicol`, `Michael OConnell b1854 d1928
+    // St Louis`. A plain last-token rule takes `Balnicol` and `Louis` as surnames.
     if let Some(cut) = tokens.iter().position(|t| is_annotation(t)) {
         tokens.truncate(cut);
     }
-    // Drop trailing generational suffixes (`Jr.`, `III`).
+    // Drop a generational suffix at the end (`Jr.`, `III`).
     while tokens.last().is_some_and(|t| {
         NAME_SUFFIXES.contains(&t.to_lowercase().trim_end_matches('.').to_string().as_str())
             || NAME_SUFFIXES.contains(&t.to_lowercase().as_str())
@@ -386,7 +391,8 @@ mod tests {
         // Dataset friendly names (the bulk-set common case) → nothing; we never guess.
         assert!(catalog_ids_from_provenance("Ale22", Some("Ale22")).is_empty());
         assert!(catalog_ids_from_provenance("BulgarianB4", Some("BulgarianB4")).is_empty());
-        // GIAB HG002 (< 5 digits) is deliberately excluded to avoid build-name collisions.
+        // GIAB HG002 (< 5 digits) stays out on purpose, so that it does not collide with a build
+        // name.
         assert!(catalog_ids_from_provenance("HG002", None).is_empty());
     }
 
@@ -423,8 +429,8 @@ mod tests {
         assert_eq!(surname_of("Kane").as_deref(), Some("Kane"));
     }
 
-    /// Surnames that genuinely contain spaces must survive whole — refusing them would quietly
-    /// mangle Dutch, Spanish and Gaelic lines while the English ones sailed through.
+    /// A surname that truly holds a space must survive whole. To refuse those would damage Dutch,
+    /// Spanish and Gaelic lines, with no message, while the English ones passed.
     #[test]
     fn surname_keeps_its_particles() {
         assert_eq!(surname_of("Pieter van der Berg").as_deref(), Some("van der Berg"));
@@ -473,25 +479,25 @@ mod tests {
         );
     }
 
-    /// The FTDNA importer leaves HTML entities in the value. Publishing `mac L&#225;ire` as a
-    /// surname is worse than decoding it at the last point before it leaves.
+    /// The FTDNA importer leaves HTML entities in the value. To send `mac L&#225;ire` out as a
+    /// surname is worse than to decode it at the last point before it goes.
     #[test]
     fn surname_decodes_the_importers_html_entities() {
         assert_eq!(surname_of("Conall Corc mac L&#225;ire").as_deref(), Some("mac Láire"));
         assert_eq!(surname_of("Diarmaid &#211; Drisceoil").as_deref(), Some("Ó Drisceoil"));
         assert_eq!(surname_of("Jos&#233; de Mello").as_deref(), Some("de Mello"));
-        // A bare ampersand is left alone rather than eating the rest of the string.
+        // A bare ampersand stays as it is, and does not consume the rest of the string.
         assert_eq!(surname_of("Smith & Sons").as_deref(), Some("Sons"));
     }
 
-    /// Nothing usable yields nothing — never a stray fragment that would publish as a name.
+    /// Nothing usable gives nothing. It never gives a stray fragment that would go out as a name.
     #[test]
     fn surname_of_nothing_is_none() {
         assert_eq!(surname_of(""), None);
         assert_eq!(surname_of("   "), None);
         assert_eq!(surname_of("Jr."), None, "a suffix alone is not a surname");
         assert_eq!(surname_of("?"), None);
-        // Junk the corpus actually contains — better nothing than a fragment published as a name.
+        // Junk that the corpus holds. Nothing is better than a fragment that goes out as a name.
         assert_eq!(surname_of("trees.ancestry.com/tree/49418381/family"), None);
         assert_eq!(surname_of("1846 Duplin County, NC"), None);
         assert_eq!(surname_of("ABT. 1769 • Kilmalkedar, Co Kerry, Ireland"), None);

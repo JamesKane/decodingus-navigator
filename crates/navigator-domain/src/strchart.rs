@@ -1,10 +1,11 @@
-//! Aggregation for the FTDNA-style project "Y-DNA Results Overview" chart: per-subgroup, per-marker
-//! MIN / MAX / MODE statistics and per-cell deviation from the modal value (the colour coding).
+//! Aggregation for the FTDNA-style project "Y-DNA Results Overview" chart. It gives MIN, MAX and
+//! MODE statistics for each subgroup and each marker. For each cell it also gives the deviation
+//! from the modal value, which is the colour code.
 //!
-//! Marker values are kept as text (a multi-copy marker like DYS385 reports "11-15", DYS464 reports
-//! "14-15-16-17", CDY "37-37"). For ordering we parse a value into its sorted allele tuple and
-//! compare tuples; for the modal value we count the canonical (sorted) string. Non-numeric or null
-//! values ("-", "") are ignored.
+//! This module holds marker values as text (a multi-copy marker like DYS385 reports "11-15",
+//! DYS464 reports "14-15-16-17", CDY "37-37"). For ordering we parse a value into its sorted
+//! allele tuple and compare tuples. For the modal value we count the canonical (sorted) string.
+//! It drops a value that is not numeric, and a null value ("-", "").
 
 /// Parse an STR marker value into its sorted allele tuple, e.g. "11-15" → [11, 15], "13" → [13].
 /// Returns `None` for null/non-numeric values so callers can skip them.
@@ -42,8 +43,8 @@ pub struct MarkerStats {
     pub mode: Option<String>,
 }
 
-/// Summarise one marker column over a set of member values: numeric MIN/MAX (by sorted-tuple order)
-/// and the MODE (most frequent canonical value, ties → smallest tuple).
+/// Summarise one marker column over a set of member values. Gives the numeric MIN and MAX (by
+/// sorted-tuple order) and the MODE (most frequent canonical value, ties → smallest tuple).
 pub fn marker_stats<'a, I>(values: I) -> MarkerStats
 where
     I: IntoIterator<Item = &'a str>,
@@ -75,7 +76,7 @@ fn tuple_str(t: &[i32]) -> String {
     t.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("-")
 }
 
-/// How a cell's value relates to its subgroup's modal value — drives the colour coding.
+/// How a cell's value relates to the modal value of its subgroup. This drives the colour code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Deviation {
     /// Equal to (or order-equivalent to) the mode, or no mode / unparseable.

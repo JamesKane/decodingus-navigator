@@ -1,4 +1,4 @@
-//! Navigator domain types — the desktop-only aggregates that `du-domain` does not
+//! Navigator domain types: the desktop-only aggregates that `du-domain` does not
 //! cover: `SequenceRun`, `Alignment`, `AnalysisArtifact`, `YProfile`, IBD, and the
 //! `Workspace`/`Project` aggregate. Pure types, zero IO; this is the bottom of the
 //! dependency graph (`ui → app → {analysis, store, sync} → domain`).

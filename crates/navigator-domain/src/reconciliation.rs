@@ -1,10 +1,10 @@
-//! Donor-level reconciliation of Y/mtDNA haplogroup calls across multiple sources (runs,
-//! platforms, Sanger). Phase 1–2 of `documents/design/MultiSource_Reconciliation.md`:
-//! per-source [`RunHaplogroupCall`]s combine into a [`Consensus`] by tree topology.
+//! Donor-level reconciliation of Y and mtDNA haplogroup calls over more than one source (runs,
+//! platforms, Sanger). Phase 1–2 of `documents/design/MultiSource_Reconciliation.md`: the
+//! [`RunHaplogroupCall`] of each source combines into a [`Consensus`] by tree topology.
 //!
-//! Pure types + the consensus algorithm; persistence and the per-source recording live in
-//! the app/store. Per-variant concordance (all DNA types) lives in [`crate::consensus`];
-//! identity verification and heteroplasmy are later phases.
+//! Pure types, and the consensus algorithm. Persistence, and the record of each source, live in
+//! the app and the store. Concordance at each variant (all DNA types) lives in
+//! [`crate::consensus`]. Identity verification and heteroplasmy are later phases.
 
 use serde::{Deserialize, Serialize};
 
@@ -24,12 +24,15 @@ impl DnaType {
     }
 }
 
-/// Where a per-source haplogroup call came from — the precedence tier used when reconciling.
+/// Where the haplogroup call of one source came from: the precedence tier that reconciliation
+/// uses.
 ///
-/// - `External`: a trusted external caller (a GATK4 GVCF / 1240K call set imported via the sidecar
-///   fast path). The user runs an established pipeline and wants these preferred.
-/// - `NavigatorWalk`: Navigator's own genotyping — the CRAM walk, and chip/vendor-VCF placement.
-/// - `Manual`: a user override (persisted separately today; included for a complete precedence order).
+/// - `External`: a trusted external caller (a GATK4 GVCF or 1240K call set that the sidecar fast
+///   path imported). The user runs an established pipeline and wants these to win.
+/// - `NavigatorWalk`: the genotyping Navigator does itself: the CRAM walk, and chip or vendor-VCF
+///   placement.
+/// - `Manual`: a user override. The store holds it separately today, and it is here to make the
+///   precedence order complete.
 ///
 /// Higher [`rank`](CallProvenance::rank) wins when the "prefer external caller" policy is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -48,8 +51,9 @@ impl CallProvenance {
         }
     }
 
-    /// Parse a stored provenance token; anything unrecognized — including legacy `NULL`/empty rows
-    /// written before the column existed — is the internal `NavigatorWalk` tier.
+    /// Parse a stored provenance token. Anything it does not recognize is the internal
+    /// `NavigatorWalk` tier, and that includes a legacy `NULL` or empty row from before the column
+    /// existed.
     pub fn from_token(s: &str) -> CallProvenance {
         match s.trim() {
             "external" => CallProvenance::External,
@@ -58,7 +62,7 @@ impl CallProvenance {
         }
     }
 
-    /// Precedence tier — higher wins under the prefer-external policy.
+    /// Precedence tier: higher wins under the prefer-external policy.
     pub fn rank(self) -> u8 {
         match self {
             CallProvenance::NavigatorWalk => 0,
@@ -77,7 +81,7 @@ pub struct RunHaplogroupCall {
     pub haplogroup: String,
     /// Root→terminal lineage of haplogroup names.
     pub lineage: Vec<String>,
-    /// Assignment score (Kulczynski) — confidence proxy.
+    /// Assignment score (Kulczynski): a proxy for confidence.
     pub score: f64,
     pub matched: i64,
     pub expected: i64,
@@ -86,13 +90,13 @@ pub struct RunHaplogroupCall {
 /// How compatible a set of calls is (Scala `CompatibilityLevel`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompatibilityLevel {
-    /// Same branch, differing depths — all calls lie on one root→tip path.
+    /// Same branch, different depths: all calls lie on one root→tip path.
     Compatible,
     /// Diverge near the tips.
     MinorDivergence,
     /// Diverge on the backbone.
     MajorDivergence,
-    /// Diverge near the root — likely different individuals.
+    /// Diverge near the root: probably different individuals.
     Incompatible,
 }
 
@@ -121,7 +125,7 @@ pub struct AuditEntry {
     pub note: String,
 }
 
-/// Whether multiple sources come from the same individual (Scala `IdentityVerification`).
+/// Whether more than one source comes from the same individual (Scala `IdentityVerification`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerificationStatus {
     VerifiedSame,
@@ -131,8 +135,9 @@ pub enum VerificationStatus {
     VerifiedDifferent,
 }
 
-/// Identity evidence between two sources: autosomal genotype concordance (the primary
-/// signal — same individual ≈ 1.0, relatives notably lower) plus Y-STR corroboration.
+/// Identity evidence between two sources: autosomal genotype concordance, plus Y-STR
+/// corroboration. Concordance is the primary signal, at ≈ 1.0 for the same individual, and clearly
+/// lower for relatives.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IdentityVerification {
     pub status: VerificationStatus,
@@ -140,7 +145,8 @@ pub struct IdentityVerification {
     /// Fraction of shared-called sites with identical dosage (0–1), if any compared.
     pub snp_concordance: Option<f64>,
     pub sites_compared: i64,
-    /// Differing Y-STR markers across shared markers, if STR profiles were available.
+    /// The count of Y-STR markers that do not agree, over the shared markers, when STR profiles
+    /// exist.
     pub y_str_distance: Option<i64>,
     pub y_str_markers: i64,
 }
@@ -175,7 +181,8 @@ pub fn classify_identity(
             };
             (s, m.to_string())
         }
-        // No shared genotypes: Y-STR alone is paternal-line only — never "verified".
+        // No shared genotypes. Y-STR alone covers the paternal line only, and is never
+        // "verified".
         _ if y_str_markers > 0 => {
             let s = match y_str_distance {
                 Some(0) => VerificationStatus::LikelySame,
@@ -213,13 +220,14 @@ fn common_prefix(calls: &[RunHaplogroupCall]) -> Vec<String> {
     first.lineage[..len].to_vec()
 }
 
-/// Reconcile per-source calls into a donor-level consensus.
+/// Reconcile the calls of each source into a donor-level consensus.
 ///
-/// When all calls lie on one root→tip path (compatible), the consensus is the **most
-/// confident** call — not blindly the deepest, since a low-coverage source may extend one
-/// node further on thin evidence; any strictly-deeper call is reported as a tentative
-/// warning. When calls diverge, the consensus is the deepest node they all agree on (the
-/// LCA), and the divergence depth sets the compatibility level.
+/// When all calls lie on one root→tip path (compatible), the consensus is the **most confident**
+/// call, and not only the deepest. A low-coverage source can extend one node further on thin
+/// evidence. Any call that is strictly deeper becomes a tentative warning.
+///
+/// When calls diverge, the consensus is the deepest node they all agree on (the LCA), and the
+/// divergence depth sets the compatibility level.
 pub fn reconcile(calls: &[RunHaplogroupCall]) -> Option<Consensus> {
     if calls.is_empty() {
         return None;
@@ -259,8 +267,8 @@ pub fn reconcile(calls: &[RunHaplogroupCall]) -> Option<Consensus> {
     let prefix = common_prefix(calls);
     let max_depth = longest.lineage.len().max(1);
     let ratio = prefix.len() as f64 / max_depth as f64;
-    // Sharing only the root (≤1 node) means different lineages entirely. Otherwise the
-    // LCA's relative depth distinguishes a tip split from a backbone split.
+    // Two lineages that share only the root (≤1 node) are completely different. If they share
+    // more, the relative depth of the LCA separates a tip split from a backbone split.
     let compatibility = if prefix.len() <= 1 {
         CompatibilityLevel::Incompatible
     } else if ratio >= 0.66 {
@@ -294,15 +302,16 @@ pub fn reconcile(calls: &[RunHaplogroupCall]) -> Option<Consensus> {
     })
 }
 
-/// Reconcile per-source calls, honoring call provenance.
+/// Reconcile the calls of each source, and obey the call provenance.
 ///
-/// When `prefer_external` is set, only the highest-precedence tier present
-/// (Manual > External > NavigatorWalk) is reconciled into the consensus; lower tiers that place a
-/// different terminal are surfaced as a warning rather than allowed to drag the call. This is what
-/// stops a damaged ancient-DNA CRAM walk from out-scoring — and silently replacing — a clean
-/// external GATK4/1240K placement. When `prefer_external` is false, every call is reconciled
-/// together by confidence (the source-blind [`reconcile`]), so the two behave identically whenever
-/// no external call is present.
+/// With `prefer_external` set, only the highest-precedence tier present
+/// (Manual > External > NavigatorWalk) goes into the consensus. A lower tier that places a
+/// different terminal becomes a warning, and it can not pull the call away. A damaged ancient-DNA
+/// CRAM walk can out-score a clean external GATK4 or 1240K placement, and then take its place with
+/// no message. This is what stops that.
+///
+/// With `prefer_external` false, every call reconciles together by confidence, which is the
+/// source-blind [`reconcile`]. So the two behave the same whenever there is no external call.
 pub fn reconcile_with_provenance(
     calls: &[(CallProvenance, RunHaplogroupCall)],
     prefer_external: bool,
@@ -321,8 +330,8 @@ pub fn reconcile_with_provenance(
         .map(|(_, c)| c.clone())
         .collect();
     let mut consensus = reconcile(&top_calls)?;
-    // Note any lower-precedence source that places a *different* terminal — informative, not
-    // authoritative (the external caller was preferred).
+    // Note any lower-precedence source that places a *different* terminal. It is informative, and
+    // not authoritative, because the external caller won.
     let mut lower: Vec<&str> = calls
         .iter()
         .filter(|(p, _)| p.rank() < top)
@@ -423,7 +432,7 @@ mod tests {
 
     #[test]
     fn root_divergence_is_incompatible() {
-        // Share only "root" — different haplogroups entirely (different individuals?).
+        // Share only "root": completely different haplogroups (different individuals?).
         let a = call("a", 0.8, &["root", "R", "R-M269", "R-L21"]);
         let b = call("b", 0.8, &["root", "J", "J-M267"]);
         let c = reconcile(&[a, b]).unwrap();
@@ -432,8 +441,9 @@ mod tests {
 
     #[test]
     fn prefer_external_wins_over_a_higher_scoring_walk() {
-        // The ancient-DNA case: the CRAM walk out-scores the clean external call (deamination
-        // inflates matched sites onto a *different* deep terminal), yet the external call must win.
+        // The ancient-DNA case. The CRAM walk out-scores the clean external call, because
+        // deamination inflates matched sites onto a *different* deep terminal. The external call
+        // must still win.
         let external = call("gatk4 gvcf", 0.60, &["root", "R", "R-M269", "R-L21"]);
         let walk = call("cram walk", 0.95, &["root", "R", "R-M269", "R-L2"]);
         let c = reconcile_with_provenance(

@@ -3,8 +3,9 @@
 use super::*;
 
 impl NavigatorApp {
-    /// Route files dropped onto the window through the unified importer, attaching them to
-    /// the selected subject (auto-detected). No-op when nothing was dropped.
+    /// Send files that the user dropped onto the window through the unified importer, and attach
+    /// them to the selected subject, which the importer detects. It does nothing when the user
+    /// dropped nothing.
     pub(crate) fn handle_file_drops(&mut self, ctx: &egui::Context) {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if dropped.is_empty() {
@@ -14,8 +15,9 @@ impl NavigatorApp {
             self.status = "Select a subject before dropping data files.".into();
             return;
         };
-        // Route every dropped path (files and/or folders) through the batch importer in one go —
-        // folders are walked for data files; the result comes back as a single summary modal.
+        // Send every dropped path through the batch importer in one call, whether it is a file or
+        // a folder. The importer walks a folder for data files, and the result comes back as one
+        // summary modal.
         let paths: Vec<std::path::PathBuf> = dropped.into_iter().filter_map(|f| f.path).collect();
         if !paths.is_empty() {
             self.status = format!("Importing {} dropped item(s)…", paths.len());
@@ -26,8 +28,8 @@ impl NavigatorApp {
         }
     }
 
-    /// While files are being dragged over the window, dim the screen and show whether the
-    /// drop will land on a subject.
+    /// While the user drags files over the window, dim the screen, and show whether the drop will
+    /// go to a subject.
     pub(crate) fn paint_drop_hint(&self, ctx: &egui::Context) {
         if ctx.input(|i| i.raw.hovered_files.is_empty()) {
             return;
@@ -90,7 +92,8 @@ impl NavigatorApp {
             });
             ui.separator();
         }
-        // Members vs Report on tabs — both can run to thousands of rows, so they do not stack.
+        // Members and Report sit on tabs. Both can run to thousands of rows, so they do not
+        // stack.
         ui.add_space(4.0);
         self.project_tab = self.sub_bar(ui, self.project_tab, &ProjectTab::ALL);
         match self.project_tab {
@@ -107,10 +110,9 @@ impl NavigatorApp {
         }
     }
 
-    /// The Subjects work area: the selected subject's detail — header + sub-tabs.
-    /// A segmented sub-tab bar (one row of selectable labels + a separator). Takes the current
-    /// selection by value and returns the new one, so callers avoid a `&mut self.field` borrow clash
-    /// with `self.tr` inside the row.
+    /// A segmented sub-tab bar: one row of selectable labels, and a separator. It takes the current
+    /// selection by value, and returns the new one. A caller then avoids a `&mut self.field` borrow
+    /// clash with `self.tr` inside the row.
     pub(crate) fn sub_bar<T: Copy + PartialEq>(&self, ui: &mut egui::Ui, current: T, items: &[(T, &'static str)]) -> T {
         let mut sel = current;
         ui.horizontal(|ui| {
@@ -122,10 +124,11 @@ impl NavigatorApp {
         sel
     }
 
-    /// First-run call-to-action for the Simple-mode empty workspace: an "Import DNA" primary action
-    /// (pick file(s) → create a subject + import in one step) and a secondary "Add New Subject" that
-    /// reveals the inline name form. Without this the empty state told the user to add a subject but
-    /// offered no control to do so (Simple mode hides the left panel until a subject exists).
+    /// The first-run call-to-action for an empty workspace in Simple mode. The primary action is
+    /// "Import DNA": pick one or more files, and one step then makes a subject and imports. The
+    /// secondary action is "Add New Subject", which reveals the inline name form. Without this, the
+    /// empty state told the user to add a subject, and offered no control to do it. Simple mode
+    /// hides the left panel until a subject exists.
     fn simple_first_run(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space(56.0);
@@ -174,9 +177,10 @@ impl NavigatorApp {
                 self.add_subject_form(ui);
             }
 
-            // Reference genomes: a BAM/CRAM import needs one, and a multi-GB download is the slowest
-            // part of a first run. Users who already keep a FASTA on disk (a prior pipeline, another
-            // tool) can point us at it instead — deep-link them straight to Settings → References.
+            // Reference genomes. A BAM or CRAM import needs one, and a multi-GB download is the
+            // slowest part of a first run. A user who already keeps a FASTA on disk, from an
+            // earlier pipeline or another tool, can point us at it instead. Deep-link that user
+            // straight to Settings → References.
             ui.add_space(24.0);
             ui.separator();
             ui.add_space(10.0);
@@ -194,14 +198,16 @@ impl NavigatorApp {
         });
     }
 
-    /// When the selected subject has imported data that has not been analyzed yet, show a prominent
-    /// call-to-action to run the analysis pipeline — the brief stays empty until it runs. Shown only
-    /// in the `Pending` state (has alignments, coverage not yet computed); hidden once analysis
-    /// completes (→ `Complete`) or when the subject has nothing to analyze (no status row).
+    /// When the selected subject holds imported data that no analysis has covered, show a prominent
+    /// call-to-action to run the analysis pipeline. The brief stays empty until it runs. This
+    /// appears only in the `Pending` state, which means the subject has alignments and no coverage
+    /// yet. It goes away when the analysis ends (→ `Complete`), and when the subject has nothing to
+    /// analyze (no status row).
     pub(crate) fn simple_analyze_prompt(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
-        // Gate on the brief itself (rebuilt whenever the subject's data changes — import, clear,
-        // delete+re-add) rather than the separate `subject_status` census map, whose async refresh
-        // lagged behind those flows and left the prompt missing.
+        // Gate on the brief itself, and not on the separate `subject_status` census map. The brief
+        // builds again whenever the data of the subject changes: an import, a clear, or a delete
+        // and add again. The async refresh of that census map ran behind those flows, and left the
+        // prompt missing.
         let needs_analysis = matches!(&self.subject_brief, Some((g, b)) if *g == guid && b.needs_analysis);
         if !needs_analysis {
             return;
@@ -227,9 +233,10 @@ impl NavigatorApp {
         ui.add_space(6.0);
     }
 
-    /// Simple-mode "Your DNA sides": the parent-split chromosome painting in plain language. Paints
-    /// from the consensus on demand (same command/state as the Advanced card), shows the two side
-    /// tracks with their labels, and a top-populations summary per side.
+    /// The Simple-mode "Your DNA sides": the parent-split chromosome painting in plain language. It
+    /// paints from the consensus on demand, with the same command and state as the Advanced card.
+    /// It shows the two side tracks with their labels, and a summary of the top populations for
+    /// each side.
     pub(crate) fn simple_dna_sides_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         card(ui, self.tr("card.dnaSides"), |ui| {
             ui.label(egui::RichText::new(self.tr("dnaSides.intro")).small());
@@ -266,10 +273,12 @@ impl NavigatorApp {
         });
     }
 
+    /// The Subjects work area: the detail of the selected subject, with a header and sub-tabs.
     pub(crate) fn subjects_central(&mut self, ui: &mut egui::Ui) {
         let Some(guid) = self.selected_sample else {
-            // First launch (Simple mode, empty workspace) has no left panel and so no reachable
-            // Add-Subject button — give it a real call-to-action instead of a dead-end hint.
+            // The first launch, in Simple mode with an empty workspace, has no left panel, and so
+            // no Add-Subject button the user can reach. Give it a real call-to-action, and not a
+            // hint that leads nowhere.
             if self.ui_mode == UiMode::Simple && self.all_biosamples.is_empty() {
                 self.simple_first_run(ui);
             } else {
@@ -279,8 +288,8 @@ impl NavigatorApp {
         };
         self.subject_detail_header(ui, guid);
         ui.add_space(6.0);
-        // Simple mode hides the per-DNA-type tabs — the subject view is the plain-language brief,
-        // split across a section rail rather than stacked in one scroll (see `ui::simple`).
+        // Simple mode hides the tab of each DNA type. The subject view is the plain-language
+        // brief, split across a section rail, and not stacked in one scroll (see `ui::simple`).
         if self.ui_mode == UiMode::Simple {
             self.simple_subject_view(ui, guid);
             return;
@@ -304,7 +313,8 @@ impl NavigatorApp {
                 DetailTab::YDna => {
                     self.y_sub = self.sub_bar(ui, self.y_sub, &YSub::ALL);
                     match self.y_sub {
-                        // Compact landing: the subject's Y consensus (source of truth across sources).
+                        // A compact first view: the Y consensus of the subject, which is the
+                        // source of truth over all sources.
                         YSub::Haplogroup => {
                             card(ui, self.tr("card.yHaplogroup"), |ui| {
                                 if self.consensus_y.is_some() {
@@ -324,8 +334,9 @@ impl NavigatorApp {
                                 });
                             }
                         }
-                        // The heavy SNP surface: a compact chrY variant track as shared context, then
-                        // the heavy tables one at a time (each runs to thousands of rows on a WGS).
+                        // The heavy SNP surface. First a compact chrY variant track as shared
+                        // context, then the heavy tables one at a time. Each of those runs to
+                        // thousands of rows on a WGS.
                         YSub::Snp => {
                             self.ensure_y_snp_names(guid);
                             card(ui, self.tr("card.variantTrack"), |ui| self.y_variant_track(ui));
@@ -403,8 +414,9 @@ impl NavigatorApp {
                     }
                 }
                 DetailTab::Ancestry => {
-                    // Consensus is the source of truth: estimate from the subject's pooled autosomal
-                    // consensus (no per-alignment BAM walk), decoupled from any selected source.
+                    // The consensus is the source of truth. Estimate from the pooled autosomal
+                    // consensus of the subject, with no BAM walk for each alignment, and with no
+                    // link to any selected source.
                     card(ui, self.tr("card.donorAncestry"), |ui| {
                         ui.horizontal(|ui| {
                             let label = if self.donor_ancestry.is_some() { self.tr("common.refresh") } else { self.tr("btn.estimateAncestry") };
@@ -420,8 +432,8 @@ impl NavigatorApp {
                         });
                         asset_status_line(ui, &self.asset_status);
                         self.donor_ancestry_summary(ui);
-                        // Publish the subject's consensus ancestry breakdown (one record per method)
-                        // — available once it is been estimated.
+                        // Publish the consensus ancestry breakdown of the subject, one record for
+                        // each method. It is available after an estimate runs.
                         if self.donor_ancestry.is_some() {
                             self.publish_row(ui, "Publish ancestry to PDS", Command::PublishAncestry { biosample_guid: guid });
                         }
@@ -431,10 +443,11 @@ impl NavigatorApp {
                         ui.add_space(10.0);
                         card(ui, self.tr("card.pcaScatter"), |ui| self.pca_scatter_section(ui));
                     }
-                    // Detailed reports from the same consensus estimate (persisted alongside the
-                    // super-population ADMIXTURE): modern fine populations + ancient components. Each
-                    // is now a compact pie + legend, so the two sit **side by side** (columns) instead
-                    // of stacking — far less vertical scroll in the Advanced view.
+                    // Detailed reports from the same consensus estimate, which the store keeps
+                    // beside the super-population ADMIXTURE: modern fine populations, and ancient
+                    // components. Each is now a compact pie with a legend, so the two sit **side by
+                    // side** in columns, and do not stack. That is much less vertical scroll in the
+                    // Advanced view.
                     let show_modern = self.fine_ancestry.is_some();
                     let show_ancient = navigator_app::ANCIENT_ANCESTRY_ENABLED;
                     // The ancient card's build/refresh control + component render (borrows/mutates
@@ -489,7 +502,8 @@ impl NavigatorApp {
                         ui.add_space(10.0);
                         ancient_card(self, ui);
                     }
-                    // Chromosome painting (diploid local ancestry) — its own section, from the consensus.
+                    // Chromosome painting (diploid local ancestry): its own section, from the
+                    // consensus.
                     ui.add_space(10.0);
                     card(ui, self.tr("card.chromosomePainting"), |ui| {
                         ui.horizontal(|ui| {
@@ -512,7 +526,8 @@ impl NavigatorApp {
                             }
                         }
                     });
-                    // Runs of homozygosity (F_ROH / endogamy signal) — its own section, from the consensus.
+                    // Runs of homozygosity (F_ROH, the endogamy signal): its own section, from the
+                    // consensus.
                     ui.add_space(10.0);
                     card(ui, self.tr("card.roh"), |ui| {
                         ui.horizontal(|ui| {
@@ -534,12 +549,13 @@ impl NavigatorApp {
                             draw_roh(ui, result, regions);
                         }
                     });
-                    // Per-tab AI explanation of the ROH result (M5) — only once it is been computed.
+                    // An AI explanation of the ROH result on this tab (M5). It appears only after
+                    // the result exists.
                     if self.roh.is_some() {
                         ui.add_space(8.0);
                         self.ai_explain(ui, guid, SignalKind::Roh);
                     }
-                    // Archaic (Neanderthal / Denisovan) marker count — Tier A, from the consensus.
+                    // Archaic (Neanderthal, Denisovan) marker count: Tier A, from the consensus.
                     ui.add_space(10.0);
                     card(ui, self.tr("card.archaic"), |ui| {
                         ui.horizontal(|ui| {
@@ -566,8 +582,8 @@ impl NavigatorApp {
                         });
                         if let Some(r) = &self.archaic {
                             ui.add_space(8.0);
-                            // Headline is a COUNT over what was actually assayed — never a
-                            // "% Neanderthal" (design §1/§7).
+                            // The main figure is a COUNT over what the test assayed. It is never a
+                            // "% Neanderthal" (design §1 and §7).
                             ui.label(
                                 egui::RichText::new(format!(
                                     "{} of {}",
@@ -587,8 +603,8 @@ impl NavigatorApp {
                                 "Neanderthal-diagnostic {} · shared-archaic {}",
                                 r.neanderthal_copies, r.shared_copies
                             ));
-                            // §7: never present a small Denisovan number as a positive finding.
-                            // It sits at the noise floor for most non-Oceanian ancestries.
+                            // §7: never show a small Denisovan number as a positive result. It
+                            // sits at the noise floor for most ancestries outside Oceania.
                             ui.label(
                                 egui::RichText::new(self.tr("archaic.denisovanNote"))
                                     .weak()
@@ -600,8 +616,9 @@ impl NavigatorApp {
                                     ui.label(format!("More than {p:.0}% of {c} reference samples."));
                                 }
                                 _ => {
-                                    // Sparse input (a chip covers a few % of the panel, biased to its
-                                    // common tail) can not be ranked against the WGS-scored cohort.
+                                    // Sparse input can not rank against the cohort that WGS
+                                    // scored. A chip covers a few % of the panel, with a bias to
+                                    // its common tail.
                                     ui.label(
                                         egui::RichText::new(self.tr("archaic.noPercentile"))
                                             .weak()
@@ -617,16 +634,17 @@ impl NavigatorApp {
                             );
                         }
                     });
-                    // Per-tab AI explanation of the archaic result — only once it is been computed.
+                    // An AI explanation of the archaic result on this tab. It appears only after
+                    // the result exists.
                     if self.archaic.is_some() {
                         ui.add_space(8.0);
                         self.ai_explain(ui, guid, SignalKind::Archaic);
                     }
 
-                    // Tier B: archaic SEGMENTS (WGS only — needs genome-wide de-novo calls).
-                    // Withheld pending a working method: the card states that rather than
-                    // disappearing, because a section that silently vanishes between releases reads
-                    // as a bug, where a stated withholding is a finding about the data.
+                    // Tier B: archaic SEGMENTS. WGS only, because it needs genome-wide de-novo
+                    // calls. It waits for a method that works, and the card says so. It does not
+                    // go away, because a section that vanishes between releases, with no message,
+                    // reads as a fault. A stated hold is a result about the data.
                     ui.add_space(10.0);
                     card(ui, self.tr("card.archaicSegments"), |ui| {
                         if !navigator_app::ARCHAIC_SEGMENTS_ENABLED {
@@ -671,17 +689,18 @@ impl NavigatorApp {
                                 r.summary.n_segments, r.summary.pct_callable, r.summary.callable_mb
                             ));
                             ui.add_space(6.0);
-                            // The comparability limit sits directly under the number, not in a
-                            // footnote: this figure is measured against four sequenced archaic
-                            // genomes that represent some ancestries better than others, so
-                            // comparing it between people of different ancestry is the one use it
-                            // can not support. Stated where the number is read, or it will not be.
+                            // The comparability limit sits directly under the number, and not in a
+                            // footnote. The measure is against four sequenced archaic genomes, and
+                            // those represent some ancestries better than others. So a comparison
+                            // between people of different ancestry is the one use this figure can
+                            // not support. Put it where the reader sees the number, or nobody
+                            // reads it.
                             ui.label(
                                 egui::RichText::new(self.tr("archaicSegments.withinPopulation"))
                                     .color(egui::Color32::from_rgb(230, 180, 90)),
                             );
                             ui.add_space(4.0);
-                            // Lineage split is withheld, not merely absent — say so.
+                            // The lineage split is on hold, and not only absent. Say so.
                             ui.label(
                                 egui::RichText::new(self.tr("archaicSegments.noLineage"))
                                     .weak()
@@ -700,7 +719,8 @@ impl NavigatorApp {
                     // Discovery + consent live in the top-level Matching tab (they are
                     // account-scoped); what belongs to *this* subject is the results it produced.
                     card(ui, self.tr("card.encryptedExchange"), |ui| self.exchange_section(ui, guid));
-                    // Per-source compare + within-subject identity (the QC gate) — advanced.
+                    // A compare of each source, and identity inside one subject (the QC gate).
+                    // Advanced.
                     if self.selected_alignment.is_some() {
                         ui.add_space(10.0);
                         let per_source = self.tr("card.panelGenotypingIbd");
@@ -717,7 +737,7 @@ impl NavigatorApp {
             return;
         };
         ui.add_space(6.0);
-        // When the subject was opened from a project's report, offer a way back to that project.
+        // When the subject came from the report of a project, offer a way back to that project.
         if let Some(pid) = self.return_to_project {
             if ui.button(self.tr("detail.backToProject")).clicked() {
                 self.nav = Nav::Projects;
@@ -823,9 +843,10 @@ impl NavigatorApp {
         match &self.account {
             Some(did) => {
                 ui.label(format!("Signed in as {did}"));
-                // Via the catalog, not a literal: this line duplicated `account.online`/`.offline`
-                // in English-only text, and its hand-written dot was a character with no glyph in
-                // egui's font — an empty box next to "online" on the dashboard.
+                // Through the catalog, and not a literal. This line used to repeat
+                // `account.online` and `.offline` in English-only text. Its hand-written dot was a
+                // character with no glyph in the font of egui. That drew an empty box next to
+                // "online" on the dashboard.
                 ui.label(self.tr(if self.online {
                     "account.online"
                 } else {
@@ -840,8 +861,8 @@ impl NavigatorApp {
         self.maintenance_section(ui);
     }
 
-    /// i18n keys for a chore. Static because `tr` takes a `&'static str` — and because a chore
-    /// with no label should fail to compile rather than render a raw key.
+    /// i18n keys for a chore. They are static, because `tr` takes a `&'static str`. A chore with no
+    /// label must also fail to compile, and must not draw a raw key.
     fn chore_labels(chore: navigator_app::Chore) -> (&'static str, &'static str) {
         match chore {
             navigator_app::Chore::PrivateY => ("maint.privateY", "maint.privateY.hint"),
@@ -850,16 +871,16 @@ impl NavigatorApp {
         }
     }
 
-    /// **Workspace maintenance** — the periodic batch jobs, in one place.
+    /// **Workspace maintenance**: the periodic batch jobs, in one place.
     ///
     /// These were CLI-only (`private-y --project`, `rebuild-signatures --stale-tree`,
-    /// `publish-origins`), and each design doc that noted the missing GUI trigger also noted that
-    /// they wanted *one* answer rather than a button apiece. So this is a table over
-    /// `navigator_app::Chore`: a fourth chore is a row, not a new surface.
+    /// `publish-origins`). Each design doc that noted the missing GUI trigger also noted that they
+    /// wanted *one* answer, and not a button for each. So this is a table over
+    /// `navigator_app::Chore`: a fourth chore is a row, and not a new surface.
     ///
-    /// Nothing is surveyed until asked. Measuring what these would do costs real work — one walks
-    /// every alignment, another fetches and parses a multi-MB haplotree — and a dashboard must not
-    /// pay that on every visit.
+    /// No survey runs until the user asks for it. To measure what these would do costs real work:
+    /// one walks every alignment, and another reads and parses a multi-MB haplotree. A dashboard
+    /// must not pay that on every visit.
     fn maintenance_section(&mut self, ui: &mut egui::Ui) {
         ui.heading(self.tr("maint.title"));
         ui.label(egui::RichText::new(self.tr("maint.hint")).weak().small());
@@ -890,7 +911,8 @@ impl NavigatorApp {
         });
         ui.add_space(6.0);
 
-        // The running chore's own line, so a long job shows life rather than a frozen panel.
+        // The line of the chore in progress, so that a long job shows life, and not a frozen
+        // panel.
         if let Some((chore, done, total, label, fraction)) = self.chore_running.clone() {
             ui.group(|ui| {
                 ui.label(egui::RichText::new(self.tr(Self::chore_labels(chore).0)).strong());
@@ -914,8 +936,8 @@ impl NavigatorApp {
                     ui.vertical(|ui| {
                         ui.label(egui::RichText::new(self.tr(title)).strong());
                         ui.label(egui::RichText::new(self.tr(hint)).weak().small());
-                        // `due of total` — what makes "0 due" read as "nothing to do" rather than
-                        // "nothing found".
+                        // `due of total`. That is what makes "0 due" read as "nothing to do", and
+                        // not as "nothing found".
                         let line = match &s.blocked {
                             Some(why) => format!("{} — {why}", self.tr("maint.blocked")),
                             None => format!("{} / {} {}", s.due, s.total, self.tr("maint.due")),
@@ -972,7 +994,7 @@ impl NavigatorApp {
                             self.status = "Select an alignment (Data Sources) to run analysis.".into();
                         }
                     }
-                    // Compare needs a second subject (multi-select) — disabled for now.
+                    // Compare needs a second subject (multi-select), so it is off for now.
                     let _ = ui.add_enabled(false, egui::Button::new(self.tr("action.compare")));
                 });
             });
@@ -981,9 +1003,9 @@ impl NavigatorApp {
     }
 }
 
-/// A friendly default subject name derived from the first picked file's stem, stripping the known
-/// data-file extensions (including double extensions like `.vcf.gz`). `None` if nothing usable is
-/// left, so the caller can fall back to a localized default. The user can rename later.
+/// A friendly default subject name, from the stem of the first picked file. It removes the known
+/// data-file extensions, and a double extension like `.vcf.gz` too. `None` when nothing usable
+/// remains, so that the caller can fall back to a localized default. The user can rename it later.
 fn first_run_subject_name(paths: &[std::path::PathBuf]) -> Option<String> {
     const EXTS: [&str; 18] = [
         ".g.vcf.gz",

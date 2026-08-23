@@ -1,11 +1,11 @@
-//! Sync↔async bridge. egui runs the immediate-mode loop on the main thread; the
-//! `App` (tokio + sqlx) runs on a dedicated worker thread with its own runtime. The UI
-//! sends [`Command`]s and drains [`Event`]s each frame — no DB calls or domain
-//! decisions on the UI thread (plan §5).
+//! The bridge between sync and async. egui runs the immediate-mode loop on the main thread. The
+//! `App`, which is tokio and sqlx, runs on its own worker thread, with its own runtime. The UI
+//! sends [`Command`] values and drains [`Event`] values on each frame. No DB call, and no domain
+//! decision, happens on the UI thread (plan §5).
 //!
-//! Each command is handled on its own task so a long analysis run never blocks quick
-//! queries. The command→event mapping ([`handle`]) is pure and unit-tested; [`spawn`]
-//! is the thread/runtime/channel glue.
+//! Each command runs on its own task, so a long analysis never blocks a quick query. The map from
+//! command to event ([`handle`]) is pure, and it has unit tests. [`spawn`] is the glue for the
+//! thread, the runtime and the channels.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,12 +41,12 @@ pub enum YMask {
     SelfReferential,
     /// An external callable BED (e.g. the Poznik/1KG `b38_sites.bed`).
     Bed(PathBuf),
-    /// No mask (noisy — every off-backbone de-novo call).
+    /// No mask. It is noisy, because it takes every off-backbone de-novo call.
     None,
 }
 
-/// Fields for adding a biosample (the app assigns its `SampleGuid`). `project_id` is
-/// optional — biosamples are first-class and need not belong to a project.
+/// The fields to add a biosample. The app assigns its `SampleGuid`. `project_id` is optional,
+/// because a biosample stands on its own, and it does not have to belong to a project.
 #[derive(Debug, Clone)]
 pub struct NewBiosample {
     pub project_id: Option<i64>,
@@ -64,7 +64,7 @@ pub enum Command {
     /// Survey the workspace chores (what each would do if run). Deliberately on demand: two of the
     /// three cost real work to measure, one of them a multi-MB tree fetch.
     SurveyMaintenance,
-    /// Run one workspace chore, streaming `ChoreProgress` and finishing with `ChoreDone`.
+    /// Run one workspace chore. It streams `ChoreProgress`, and ends with `ChoreDone`.
     RunChore {
         chore: navigator_app::Chore,
         /// Recompute what is already cached (private-Y only; the others have nothing to force).
@@ -74,12 +74,12 @@ pub enum Command {
     CheckForUpdate,
     CreateProject(NewProject),
     LoadSamples(i64),
-    /// Load the per-sample coverage/haplogroup report for a project.
+    /// Load the coverage and haplogroup report of each sample, for a project.
     LoadProjectReport(i64),
-    /// Load (precompute) the per-member Y-STR overview (FTDNA-style chart) for a project.
+    /// Compute and load the Y-STR overview of each member (the FTDNA-style chart) for a project.
     LoadProjectStrChart(i64),
-    /// Build the cohort Y **block tree** for a project. Fetches + parses a multi-MB haplotree, so the
-    /// UI sends this lazily on first view of the Tree tab rather than on project select.
+    /// Build the cohort Y **block tree** for a project. It reads and parses a multi-MB haplotree.
+    /// So the UI sends it lazily, on the first view of the Tree tab, and not on a project select.
     LoadProjectBlockTree(i64),
     /// Build (off the UI thread) the plain-language Subject Brief for a subject (Simple mode).
     LoadSubjectBrief(SampleGuid),
@@ -88,14 +88,16 @@ pub enum Command {
         guid: SampleGuid,
         dna: DnaType,
     },
-    /// Build (off the UI thread) a per-marker branch report over `node`'s subtree for a subject.
+    /// Build a branch report for each marker, over the subtree of `node`, for a subject. It runs off
+    /// the UI thread.
     LoadBranchReport {
         guid: SampleGuid,
         dna: DnaType,
         node: String,
         depth: Option<usize>,
     },
-    /// Narrate a subject's brief via the local LLM ("Polish with AI"); falls back on any failure.
+    /// Narrate the brief of a subject through the local LLM ("Polish with AI"). It falls back on any
+    /// failure.
     NarrateBrief(SampleGuid),
     /// Ask the local LLM a question about a subject's results (grounded in the brief).
     AskQuestion {
@@ -103,26 +105,28 @@ pub enum Command {
         history: Vec<ChatTurn>,
         question: String,
     },
-    /// Explain a single result signal in plain language (per-tab "Explain this", M5).
+    /// Explain one result signal in plain language (the "Explain this" of a tab, M5).
     NarrateSignal {
         guid: SampleGuid,
         kind: SignalKind,
     },
-    /// Deep-analyze every sample in a project as a cancellable background job, streaming
-    /// per-sample `DeepAnalyzeProgress` and yielding between samples so the UI stays responsive.
-    /// Skips what the fast path already filled; cancelled via [`Command::CancelAnalysis`].
-    /// (The one-shot `App::analyze_project` is still used headless/by tests.)
+    /// Deep-analyze every sample in a project, as a background job the user can cancel. It streams
+    /// a `DeepAnalyzeProgress` for each sample, and gives up the thread between samples, so that
+    /// the UI stays responsive. It steps over what the fast path already filled.
+    /// [`Command::CancelAnalysis`] cancels it. The headless path, and the tests, still use the
+    /// one-shot `App::analyze_project`.
     DeepAnalyzeProject(i64),
     /// Load every biosample (subjects list), regardless of project.
     LoadAllBiosamples,
     /// Load donor-level Y/mt terminal haplogroups for every subject (fills the list columns).
     LoadHaploSummary,
-    /// Load per-subject analysis status (Pending/Complete) for the subjects-list Status column.
+    /// Load the analysis status of each subject (Pending or Complete), for the Status column of the
+    /// subjects list.
     LoadSubjectStatus,
     AddBiosample(NewBiosample),
-    /// Batch-import a NAS project directory (scan → Project/Biosample/Run/Alignment).
-    /// `reference` is optional: `None` lets the gateway resolve each build from the cache
-    /// (and report `ReferenceNeeded` if a download is required); `Some` pins a FASTA.
+    /// Batch-import a NAS project directory: scan → Project, Biosample, Run, Alignment.
+    /// `reference` is optional. With `None`, the gateway resolves each build from the cache, and
+    /// reports `ReferenceNeeded` when a download is necessary. `Some` pins a FASTA.
     ImportProjectDir {
         dir: PathBuf,
         reference: Option<PathBuf>,
@@ -138,7 +142,7 @@ pub enum Command {
         maternal: Option<PathBuf>,
         ystr: Option<PathBuf>,
     },
-    /// Commit a reviewed FTDNA import plan with the admin's per-kit resolutions.
+    /// Commit a reviewed FTDNA import plan, with the resolution the admin chose for each kit.
     CommitFtdnaImport {
         plan: FtdnaImportPlan,
         resolutions: std::collections::BTreeMap<String, FtdnaResolution>,
@@ -161,8 +165,9 @@ pub enum Command {
     StrConcordance {
         biosample_guid: SampleGuid,
     },
-    /// Rank every other workspace subject against this one by Y relatedness (gap §2). One-vs-all
-    /// over the workspace, or one project when `project_id` is set. Consumes cached profiles.
+    /// Rank every other subject in the workspace against this one by Y relatedness (gap §2). It is
+    /// one against all over the workspace, or over one project when `project_id` has a value. It
+    /// reads cached profiles.
     YMatches {
         biosample_guid: SampleGuid,
         project_id: Option<i64>,
@@ -215,8 +220,8 @@ pub enum Command {
     YHaploReport {
         alignment_id: i64,
     },
-    /// Assign a Y haplogroup from the subject's imported BISDNA / Y-SNP-panel calls (no
-    /// alignment) — records a donor call.
+    /// Assign a Y haplogroup from the imported BISDNA or Y-SNP-panel calls of the subject, with no
+    /// alignment. It records a donor call.
     AssignYBisdna {
         biosample_guid: SampleGuid,
     },
@@ -224,12 +229,14 @@ pub enum Command {
     AssignMtdnaHaplogroupFromAlignment {
         alignment_id: i64,
     },
-    /// Estimate autosomal ancestry from the subject's CONSENSUS (no BAM walk) — the default path.
+    /// Estimate autosomal ancestry from the CONSENSUS of the subject, with no BAM walk. This is the
+    /// default path.
     EstimateAncestryFromConsensus {
         biosample_guid: SampleGuid,
     },
-    /// Estimate **deep (ancient) ancestry** via qpAdm — genotypes the subject's best CHM13 alignment
-    /// at the full 1240k. Heavy (~1-2 min); explicit, on-demand.
+    /// Estimate **deep (ancient) ancestry** through qpAdm. It genotypes the best CHM13 alignment of
+    /// the subject at the full 1240k. It is heavy, at about 1 to 2 minutes, and it runs only on an
+    /// explicit request.
     EstimateDeepAncestry {
         biosample_guid: SampleGuid,
     },
@@ -237,7 +244,8 @@ pub enum Command {
     PaintAncestryFromConsensus {
         biosample_guid: SampleGuid,
     },
-    /// Load the cached chromosome painting (if current for the consensus signature) — cheap.
+    /// Load the cached chromosome painting, when it is current for the consensus signature. The
+    /// cost is low.
     LoadPainting {
         biosample_guid: SampleGuid,
     },
@@ -245,7 +253,7 @@ pub enum Command {
     ComputeRohFromConsensus {
         biosample_guid: SampleGuid,
     },
-    /// Load the cached ROH result (if current for the consensus signature) — cheap.
+    /// Load the cached ROH result, when it is current for the consensus signature. The cost is low.
     LoadRoh {
         biosample_guid: SampleGuid,
     },
@@ -253,7 +261,8 @@ pub enum Command {
     ComputeArchaicFromConsensus {
         biosample_guid: SampleGuid,
     },
-    /// Load the cached archaic marker count (if current for the consensus signature) — cheap.
+    /// Load the cached archaic marker count, when it is current for the consensus signature. The
+    /// cost is low.
     LoadArchaic {
         biosample_guid: SampleGuid,
     },
@@ -261,7 +270,7 @@ pub enum Command {
     CallArchaicSegments {
         biosample_guid: SampleGuid,
     },
-    /// Load the cached Tier B segment result — cheap.
+    /// Load the cached Tier B segment result. The cost is low.
     LoadArchaicSegments {
         biosample_guid: SampleGuid,
     },
@@ -279,15 +288,16 @@ pub enum Command {
     LoadPrivateY {
         alignment_id: i64,
     },
-    /// Unified import: multiple files and/or folders (folders walked for data files), each
-    /// auto-detected + routed; returns one [`Event::DataBatchImported`] summary.
+    /// Unified import: more than one file, or folder, or both. It walks a folder for data files. It
+    /// detects the type of each one and sends it to the right place, then returns one
+    /// [`Event::DataBatchImported`] summary.
     AddDataBatch {
         biosample_guid: SampleGuid,
         paths: Vec<PathBuf>,
     },
-    /// First-run convenience: create a subject and import `paths` into it in one step, so the
-    /// Simple-mode empty state can go from nothing to a populated brief with a single file pick.
-    /// Returns [`Event::SubjectCreatedAndImported`] (the new guid + the import summary).
+    /// A convenience for a first run: make a subject, and import `paths` into it, in one step. The
+    /// empty state of Simple mode can then go from nothing to a full brief with one file pick. It
+    /// returns [`Event::SubjectCreatedAndImported`], with the new guid and the import summary.
     CreateSubjectAndImport {
         donor_identifier: String,
         sex: Option<String>,
@@ -307,12 +317,13 @@ pub enum Command {
     LoadDonorPrivateY {
         biosample_guid: SampleGuid,
     },
-    /// Load the subject's multi-source Y-variant profile (concordance across all Y sources).
-    /// Load the persisted Y-profile snapshot (cheap; no genotyping).
+    /// Load the persisted snapshot of the multi-source Y-variant profile of the subject, which is
+    /// the concordance over all Y sources. The cost is low, and nothing genotypes.
     LoadYProfile {
         biosample_guid: SampleGuid,
     },
-    /// Recompute the Y-profile from all sources and persist the snapshot (expensive — re-genotypes).
+    /// Compute the Y-profile again from all sources, and persist the snapshot. The cost is high,
+    /// because it genotypes again.
     BuildYProfile {
         biosample_guid: SampleGuid,
     },
@@ -321,19 +332,23 @@ pub enum Command {
         biosample_guid: SampleGuid,
         positions: Vec<i64>,
     },
-    /// Load the persisted mtDNA consensus-profile snapshot (cheap; no genotyping).
+    /// Load the persisted mtDNA consensus-profile snapshot. The cost is low, and nothing
+    /// genotypes.
     LoadMtProfile {
         biosample_guid: SampleGuid,
     },
-    /// Recompute the mtDNA consensus profile from all sources and persist (expensive — re-places).
+    /// Compute the mtDNA consensus profile again from all sources, and persist it. The cost is
+    /// high, because it places again.
     BuildMtProfile {
         biosample_guid: SampleGuid,
     },
-    /// Load the persisted autosomal consensus-profile snapshot (cheap; no genotyping).
+    /// Load the persisted autosomal consensus-profile snapshot. The cost is low, and nothing
+    /// genotypes.
     LoadAutosomalProfile {
         biosample_guid: SampleGuid,
     },
-    /// Recompute the autosomal consensus from all sources and persist (expensive — panel-genotypes).
+    /// Compute the autosomal consensus again from all sources, and persist it. The cost is high,
+    /// because it genotypes at the panel.
     BuildAutosomalProfile {
         biosample_guid: SampleGuid,
     },
@@ -342,7 +357,7 @@ pub enum Command {
         path: PathBuf,
     },
     LoadCoverage(i64),
-    /// Cached coverage for several alignments at once (Data Sources alignment rows).
+    /// Cached coverage for more than one alignment at a time (the alignment rows of Data Sources).
     LoadCoverageBulk(Vec<i64>),
     /// Genome-region metadata (cytoband ideogram) for an alignment's build (Ideogram tab).
     LoadGenomeRegions {
@@ -365,19 +380,19 @@ pub enum Command {
         contig: String,
     },
     LoadAllAlignments,
-    /// How many of one project's alignments a realignment would actually act on.
+    /// How many alignments of one project a realignment would act on.
     ///
-    /// Asked of the app rather than counted in the UI. The card that shows this number used to
-    /// filter `all_alignments`, which is the whole workspace — so a project whose alignments were
-    /// every one already on the target build was still told 35 of them "in this project" could be
-    /// re-mapped. The batch it would have started was project-scoped and correct; only the number
-    /// was wrong, which is the more misleading way round.
+    /// This asks the app, and the UI does not count them. The card that shows this number used to
+    /// filter `all_alignments`, which is the whole workspace. So a project whose alignments were
+    /// every one already on the target build still read that 35 of them "in this project" could
+    /// map again. The batch it would have started covered the project, and was correct. Only the
+    /// number was wrong, and that is the worse way round.
     LoadRealignableInProject {
         project_id: i64,
         target_build: String,
     },
-    /// Compare two samples (each a WGS alignment or an imported chip) over the chip-compatible IBD
-    /// panel — the volume-case path (chip↔chip / chip↔WGS).
+    /// Compare two samples over the IBD panel that works with a chip. Each sample is a WGS alignment
+    /// or an imported chip. This is the volume path, for chip↔chip and chip↔WGS.
     CompareIbdSources {
         a: navigator_app::IbdSource,
         b: navigator_app::IbdSource,
@@ -387,7 +402,8 @@ pub enum Command {
         a: SampleGuid,
         b: SampleGuid,
     },
-    /// Verify two SUBJECTS are the same individual over their pooled autosomal consensus (no panel).
+    /// Check whether two SUBJECTS are the same individual, over their pooled autosomal consensus,
+    /// with no panel.
     VerifyIdentityConsensus {
         a: SampleGuid,
         b: SampleGuid,
@@ -395,21 +411,22 @@ pub enum Command {
     /// Federated IBD step 1: fetch the AppView's pseudonymous match suggestions for the
     /// signed-in account (registers the device key on first use).
     LoadIbdSuggestions,
-    /// Ask to be introduced to a candidate, recording the conversation in the matching ledger.
+    /// Ask for an introduction to a candidate, and record the conversation in the matching ledger.
     RequestIntroduction {
         suggestion: IbdSuggestion,
         biosample_guid: Option<SampleGuid>,
     },
-    /// Tell the AppView to stop suggesting a candidate.
+    /// Tell the AppView to drop a candidate from its suggestions.
     DismissCandidate {
         suggested_sample_guid: String,
     },
-    /// Adopt a local self-certifying did:key identity (desktop bootstrap — no PDS/OAuth).
+    /// Adopt a local did:key identity that certifies itself. It is the desktop bootstrap, with no
+    /// PDS and no OAuth.
     UseLocalIdentity,
     /// Reconcile the matching ledger against the broker (inbound requests + consent-ready sessions)
     /// and return every conversation.
     RefreshMatching,
-    /// Consent to (or decline) an inbound exchange request, recording the decision durably.
+    /// Consent to an inbound exchange request, or decline it, and record the decision durably.
     MatchingConsent {
         request_uri: String,
         given: bool,
@@ -419,8 +436,9 @@ pub enum Command {
     ForgetMatchingRequest {
         request_uri: String,
     },
-    /// Run a full IBD exchange for a subject over a consent-ready session (handshake → dosage
-    /// exchange → signed attestations → persist). Long-running; needs the peer online.
+    /// Run a full IBD exchange for a subject, over a session that has consent: handshake → dosage
+    /// exchange → signed attestations → persist. It takes a long time, and the peer must be
+    /// online.
     RunIbdExchange {
         info: ExchangeSessionInfo,
         biosample_guid: SampleGuid,
@@ -433,7 +451,8 @@ pub enum Command {
     DmInitiate {
         partner_did: String,
     },
-    /// Poll the DM inbox: inbound DM requests awaiting consent + consent-ready (not-yet-connected) sessions.
+    /// Poll the DM inbox: the inbound DM requests that wait for consent, and the sessions that have
+    /// consent and no connection yet.
     LoadDmInbox,
     /// Consent to (or decline) an inbound DM request.
     DmConsent {
@@ -455,7 +474,7 @@ pub enum Command {
         session_id: String,
         text: String,
     },
-    /// Pull + decrypt + persist any messages waiting on a conversation.
+    /// Pull, decrypt and persist any message that waits on a conversation.
     DmSync {
         session_id: String,
     },
@@ -466,14 +485,15 @@ pub enum Command {
         campaign_id: i64,
         accept: bool,
     },
-    /// Resolve the sequencing lab for runs that have an inferred instrument id but no facility,
-    /// via the AppView instrument→lab map (best-effort, cached). Sent on startup + after imports.
+    /// Resolve the sequencing lab for a run that has an inferred instrument id and no facility. It
+    /// goes through the instrument→lab map of the AppView, which is best-effort and cached. The UI
+    /// sends it on startup, and after an import.
     BackfillLabs,
-    /// Report who's signed in (no side effects) — sent on startup.
+    /// Report who signed in. It has no side effect, and the UI sends it on startup.
     AuthStatus,
     /// Report the current online/offline state (no side effects).
     SyncStatus,
-    /// Sign in to a PDS via OAuth (opens a browser); `handle` is a handle or DID.
+    /// Sign in to a PDS through OAuth, which opens a browser. `handle` is a handle or a DID.
     Login {
         handle: String,
     },
@@ -483,16 +503,18 @@ pub enum Command {
         alignment_id: i64,
         contig: String,
     },
-    /// Publish the subject's consensus ancestry breakdown (one record per method) to the signed-in PDS.
+    /// Publish the consensus ancestry breakdown of the subject, one record for each method, to the
+    /// PDS that signed in.
     PublishAncestry {
         biosample_guid: SampleGuid,
     },
-    /// Publish the subject anchor — the anonymized biosample summary + its sequence runs — to the
-    /// signed-in PDS. The record every derived record (coverage/ancestry) ties back to.
+    /// Publish the subject anchor to the PDS that signed in. That anchor is the anonymized biosample
+    /// summary, plus its sequence runs. Every derived record, for coverage or ancestry, ties back to
+    /// it.
     PublishBiosample {
         biosample_guid: SampleGuid,
     },
-    /// Attempt to push the ready outbox rows now (also runs periodically + after a publish).
+    /// Try to push the ready outbox rows now. It also runs at intervals, and after a publish.
     DrainOutbox,
     /// PULL reconcile: fetch the account's PDS records and reconcile against local (gap §5-p2).
     PullSync,
@@ -538,35 +560,37 @@ pub enum Command {
         heteroplasmy: Vec<HeteroplasmySite>,
         identity: Option<IdentityVerification>,
     },
-    /// Run the full per-alignment analysis pipeline (coverage → sex → metrics → variant calling →
-    /// Y haplogroup → ancestry), streaming `AnalysisProgress` per step. Each step's own result
-    /// event is forwarded too, so the detail tabs fill in as it runs. Structural variants are
-    /// **not** part of this — see [`Command::RunSv`], which the Sources tab dispatches on request.
+    /// Run the full analysis pipeline of one alignment: coverage → sex → metrics → variant calling
+    /// → Y haplogroup → ancestry. It streams an `AnalysisProgress` for each step. It also forwards
+    /// the result event of each step, so that the detail tabs fill in while it runs. Structural
+    /// variants are **not** part of this. See [`Command::RunSv`], which the Sources tab dispatches
+    /// on request.
     RunFullAnalysis {
         alignment_id: i64,
     },
-    /// Run the full analysis on a subject's representative alignment, resolving it from the guid
-    /// (see `default_alignment_for_subject`). The Simple "My DNA" view uses this so a casual user can
-    /// analyze without first drilling into the Advanced sources table to find an alignment id.
+    /// Run the full analysis on the representative alignment of a subject. It resolves that
+    /// alignment from the guid (see `default_alignment_for_subject`). The Simple "My DNA" view uses
+    /// it. A casual user can then analyze with no visit to the Advanced sources table to find an
+    /// alignment id.
     AnalyzeSubject {
         biosample_guid: SampleGuid,
     },
     /// Request cancellation of the in-flight full analysis (checked between steps).
     CancelAnalysis,
-    /// Realign an off-build alignment onto another reference (design/realignment-module.md).
-    /// Hours of work; streams `RealignProgress` per stage, then `RealignDone`.
+    /// Realign an off-build alignment onto another reference (design/realignment-module.md). It
+    /// takes hours. It streams a `RealignProgress` for each stage, then `RealignDone`.
     StartRealign {
         alignment_id: i64,
         target_build: String,
     },
-    /// Stop a running realignment. Shares the cancellation registry with the analysis pipeline —
-    /// only one long job runs at a time, by design.
+    /// Stop a realignment in progress. It shares the cancellation registry with the analysis
+    /// pipeline, because only one long job runs at a time, by design.
     CancelRealign,
     /// Realign every eligible alignment in a project, one after another.
     ///
-    /// Sequential, not parallel: each job already saturates the machine's cores and wants ~12 GB,
-    /// so running two would be slower than running them in turn and might exhaust memory. Cancel
-    /// stops the current job and abandons the rest of the queue.
+    /// One after another, and not in parallel. Each job already fills the cores of the machine, and
+    /// it wants ~12 GB. Two at a time would be slower than two in turn, and they could exhaust the
+    /// memory. A cancel stops the current job, and abandons the rest of the queue.
     StartProjectRealign {
         project_id: i64,
         target_build: String,
@@ -605,9 +629,11 @@ pub enum Command {
     },
     /// Delete a subject. Refused by the app layer if it still has dependent data.
     DeleteBiosample(SampleGuid),
-    /// Clear all sequencing + derived/imported analysis data for a subject, keeping the subject.
+    /// Clear all the sequencing data of a subject, and all the analysis data, whether derived or
+    /// imported. The subject itself stays.
     ClearBiosampleData(SampleGuid),
-    /// Reset only the subject's haplogroup placement (stale-lineage cleanup), keeping other data.
+    /// Reset the haplogroup placement of the subject, and nothing else. It is the cleanup for a
+    /// stale lineage, and the other data stays.
     ClearHaplogroupData(SampleGuid),
     /// Delete a sequence run (cascades to its alignments + artifacts). `biosample_guid` is the
     /// owner, so the UI can refresh that subject's run list.
@@ -682,19 +708,23 @@ pub enum Command {
         aligner: String,
         variant_caller: Option<String>,
     },
-    /// Load per-build reference-genome settings + cache status for the Settings dialog.
+    /// Load the reference-genome settings of each build, and the cache status, for the Settings
+    /// dialog.
     LoadReferenceSettings,
-    /// Force-refresh the cached haplotrees (clear the session memo + on-disk cache) so a corrected
-    /// AppView tree is picked up without an app restart; profiles re-interpret against it on reload.
+    /// Force a refresh of the cached haplotrees. It clears the session memo and the on-disk cache,
+    /// so that a corrected AppView tree arrives with no restart of the app. A profile then
+    /// interprets against it again on the next load.
     RefreshTrees,
     /// Health-check a local-LLM server at `base_url` (Settings "Test connection"): lists its models.
     TestLlmConnection {
         base_url: String,
     },
-    /// Persist **all** reference-source overrides at once (the Settings "References" table). One
-    /// command → one atomic write; per-row commands raced the config file into corruption (#26).
+    /// Persist **all** the reference-source overrides at one time (the "References" table of
+    /// Settings). One command → one atomic write. One command for each row raced the config file
+    /// into corruption (#26).
     SetReferenceOverrides(Vec<navigator_app::ReferenceOverrideInput>),
-    /// Re-hash a cached reference against its integrity sidecar (Settings "Verify").
+    /// Hash a cached reference again, and compare it with its integrity sidecar. The integrity-check
+    /// button of Settings sends this.
     VerifyReference {
         build: String,
     },
@@ -706,8 +736,8 @@ pub enum Command {
         out_vcf: PathBuf,
         filter_par: bool,
     },
-    // ---- social (Community tab — signed AppView Edge API) -------------------
-    /// List the signed-in account's support threads (team↔tester).
+    // ---- social (the Community tab, over the signed AppView Edge API) -------
+    /// List the support threads of the account that signed in (team↔tester).
     LoadSupportThreads,
     /// Read one support thread's messages (marks it read server-side).
     LoadSupportThread {
@@ -725,8 +755,8 @@ pub enum Command {
     },
     /// Read the community feed (announcements + community + federated).
     LoadCommunityFeed,
-    /// Post to the community feed (optionally tagged with a topic). When `publish_pds` is set, the
-    /// post is *also* published to the signed-in PDS as a federated `feed.post` record (roadmap 3b).
+    /// Post to the community feed, with an optional topic tag. When `publish_pds` has a value, the
+    /// post *also* goes to the PDS that signed in, as a federated `feed.post` record (roadmap 3b).
     PostCommunity {
         content: String,
         topic: Option<String>,
@@ -743,7 +773,7 @@ pub enum Command {
 /// A result/notification from the worker to the UI.
 #[derive(Debug, Clone)]
 pub enum Event {
-    /// Nothing to report (e.g. a cache-load that missed) — the UI ignores it.
+    /// Nothing to report, for example a cache load that missed. The UI ignores it.
     Noop,
     Overview(Vec<ProjectOverview>),
     /// Ancestry/IBD asset presence + integrity (the "data sources" transparency line).
@@ -751,13 +781,13 @@ pub enum Event {
     /// Haplotrees were force-refreshed (N cached files cleared); the UI re-loads open profiles.
     TreesRefreshed(usize),
     ProjectCreated(Project),
-    /// A project was updated or deleted; reload the overview.
+    /// Something changed or deleted a project, so load the overview again.
     ProjectsChanged,
     /// A batch project-directory import completed.
     ProjectImported(ProjectImportSummary),
     /// A dry-run FTDNA import plan, ready for the review modal.
     FtdnaPlan(FtdnaImportPlan),
-    /// The result of committing an FTDNA import.
+    /// The result of a commit of an FTDNA import.
     FtdnaImported(FtdnaImportSummary),
     /// A subject's imported genealogy bundle for the detail card.
     Genealogy {
@@ -781,38 +811,43 @@ pub enum Event {
         received: u64,
         total: Option<u64>,
     },
-    /// A reference build finished resolving (cached + indexed).
+    /// A reference build resolved. It is now in the cache, and it has an index.
     ReferenceReady {
         build: String,
         path: PathBuf,
     },
-    /// Building a BAM/CRAM coordinate index (`.bai`/`.crai`) so region queries work. `total` is the
-    /// compressed file size for a BAM (byte fraction) and `None` for a CRAM (indeterminate spinner).
+    /// A build of a BAM or CRAM coordinate index (`.bai`/`.crai`) is in progress, so that a region
+    /// query works. `total` is the compressed file size for a BAM, which gives a byte fraction. It
+    /// is `None` for a CRAM, which gives a spinner with no fraction.
     IndexProgress {
         file: String,
         done: u64,
         total: Option<u64>,
     },
-    /// A coordinate index finished building (or none was needed — `built` is the written path, if any).
+    /// A coordinate index build ended, or nothing needed one. `built` is the path the code wrote,
+    /// when there is one.
     IndexReady {
         built: Option<PathBuf>,
     },
-    /// A newer installer is available on GitHub Releases (the user is notified; no auto-update).
+    /// A newer installer exists on GitHub Releases. The app tells the user, and it never updates
+    /// itself.
     UpdateAvailable(Box<navigator_app::UpdateInfo>),
-    /// The installer-update check ran and the app is already current (or the check was skipped).
+    /// The installer-update check ran, and the app is already current. This also covers a check
+    /// that did not run.
     UpToDate,
-    /// Per-sample coverage/haplogroup report for a project.
+    /// The coverage and haplogroup report of each sample, for a project.
     ProjectReport {
         project_id: i64,
         rows: Vec<ProjectSampleReport>,
     },
-    /// Precomputed per-member Y-STR overview (FTDNA-style chart) for a project.
+    /// The Y-STR overview of each member (the FTDNA-style chart) for a project, computed first.
     ProjectStrChart {
         project_id: i64,
         chart: ProjectStrChart,
     },
-    /// The cohort Y block tree for a project. `tree` is `None` when the project has no members at
-    /// all — distinct from a tree with no placed members, which comes back with everyone `unplaced`.
+    /// The cohort Y block tree for a project. `tree` is `None` when the project has no member at
+    /// all. That differs from a tree where placement reached nobody, which comes back with everybody
+    /// `unplaced`.
     ProjectBlockTree {
         project_id: i64,
         tree: Box<Option<ProjectBlockTree>>,
@@ -829,15 +864,16 @@ pub enum Event {
         dna: DnaType,
         result: Result<Option<DescentReport>, String>,
     },
-    /// A per-marker branch report for a subject's Y/mtDNA subtree (`None` = no alignment; `Err` = a
-    /// load/lookup failure, e.g. node not found, surfaced to the status line).
+    /// A branch report for each marker, over the Y or mtDNA subtree of a subject. `None` means there
+    /// is no alignment. `Err` is a failure of the load or the lookup, for example a node nothing
+    /// found, and it goes to the status line.
     BranchReportLoaded {
         guid: SampleGuid,
         dna: DnaType,
         result: Result<Option<navigator_app::BranchReport>, String>,
     },
-    /// A streamed slice of narration text as it is generated (live preview; the final BriefNarration
-    /// is authoritative).
+    /// A slice of narration text from the stream, while the model writes it. It is a live preview,
+    /// and the final BriefNarration is the authoritative one.
     BriefNarrationChunk {
         guid: SampleGuid,
         text: String,
@@ -847,7 +883,7 @@ pub enum Event {
         guid: SampleGuid,
         result: Result<NarratedBrief, String>,
     },
-    /// A streamed slice of a chat answer as it is generated (live preview).
+    /// A slice of a chat answer from the stream, while the model writes it. It is a live preview.
     ChatAnswerChunk {
         guid: SampleGuid,
         text: String,
@@ -857,7 +893,8 @@ pub enum Event {
         guid: SampleGuid,
         result: Result<String, String>,
     },
-    /// A streamed slice of a per-signal "Explain this" narration (live preview).
+    /// A slice of an "Explain this" narration for one signal, from the stream. It is a live
+    /// preview.
     SignalNarrationChunk {
         guid: SampleGuid,
         kind: SignalKind,
@@ -869,8 +906,9 @@ pub enum Event {
         kind: SignalKind,
         result: Result<NarratedBrief, String>,
     },
-    /// A project-wide analyze pass finished (coverage + Y per sample). `cancelled` is true when a
-    /// streaming deep-analyze was stopped early (counts reflect what completed before the stop).
+    /// An analyze pass over the whole project ended, with coverage and Y for each sample.
+    /// `cancelled` is true when something stopped a streaming deep-analyze early, and the counts
+    /// then cover only what ended before the stop.
     ProjectAnalyzed {
         project_id: i64,
         samples: usize,
@@ -881,8 +919,9 @@ pub enum Event {
         errors: usize,
         cancelled: bool,
     },
-    /// Per-sample progress of a streaming deep-analyze pass: `done` of `total` samples processed,
-    /// `sample` is the donor id currently being analyzed, `fraction` drives the bar (0..1).
+    /// The progress of a streaming deep-analyze pass, one sample at a time: `done` of `total`
+    /// samples so far. `sample` is the donor id under analysis now, and `fraction` drives the bar
+    /// (0..1).
     DeepAnalyzeProgress {
         project_id: i64,
         done: usize,
@@ -892,7 +931,8 @@ pub enum Event {
     },
     /// The workspace-chore survey: what each chore would do if run now.
     MaintenanceSurvey(Vec<navigator_app::ChoreSurvey>),
-    /// Per-item progress of a running chore. `label` is the subject currently being worked.
+    /// The progress of a chore in progress, one item at a time. `label` is the subject it works on
+    /// now.
     ChoreProgress {
         chore: navigator_app::Chore,
         done: usize,
@@ -900,13 +940,14 @@ pub enum Event {
         label: String,
         fraction: f32,
     },
-    /// A chore finished (or was cancelled after doing `outcome.done` items).
+    /// A chore ended, or a cancel stopped it after `outcome.done` items.
     ChoreDone {
         chore: navigator_app::Chore,
         outcome: navigator_app::ChoreOutcome,
     },
-    /// Per-sample progress of a streaming project-directory import: `done` of `total` samples
-    /// written, `sample` is the sample id currently being imported, `fraction` drives the bar.
+    /// The progress of a streaming project-directory import, one sample at a time: `done` of
+    /// `total` samples written. `sample` is the sample id the import writes now, and `fraction`
+    /// drives the bar.
     ImportProgress {
         done: usize,
         total: usize,
@@ -919,18 +960,22 @@ pub enum Event {
     },
     /// All biosamples (the project-independent subjects list).
     AllBiosamples(Vec<Biosample>),
-    /// Per-subject Y/mt terminal haplogroups for the subjects list (`guid → (Y, mt)`).
+    /// The terminal Y and mt haplogroups of each subject, for the subjects list
+    /// (`guid → (Y, mt)`).
     HaploSummary(std::collections::HashMap<SampleGuid, (Option<String>, Option<String>)>),
-    /// Per-subject analysis status (Pending/Complete) for the subjects-list Status column.
+    /// The analysis status of each subject (Pending or Complete), for the Status column of the
+    /// subjects list.
     SubjectStatus(std::collections::HashMap<SampleGuid, SubjectAnalysisStatus>),
-    /// A biosample was added/changed; reload the subjects list (and any open project view).
+    /// Something added or changed a biosample. Load the subjects list again, and any open project
+    /// view.
     BiosamplesChanged,
     Runs {
         biosample_guid: SampleGuid,
         runs: Vec<SequenceRun>,
     },
     RunsChanged(SampleGuid),
-    /// A subject's analysis data was cleared (the UI fully reloads that subject + the list columns).
+    /// Something cleared the analysis data of a subject. The UI then loads that subject again in
+    /// full, and the list columns too.
     BiosampleDataCleared(SampleGuid),
     /// A subject's haplogroup placement was reset (the UI reloads that subject; other data stays).
     HaplogroupDataReset(SampleGuid),
@@ -977,8 +1022,9 @@ pub enum Event {
         biosample_guid: SampleGuid,
         matches: Vec<YMatch>,
     },
-    /// A batch import finished; the summary lists per-file imported/skipped outcomes. The UI
-    /// shows it in a modal and reloads the subject's data sections.
+    /// A batch import ended. The summary lists, for each file, whether the import took it or
+    /// stepped over it. The UI shows that in a modal, and loads the data sections of the subject
+    /// again.
     DataBatchImported {
         biosample_guid: SampleGuid,
         summary: BatchImportSummary,
@@ -1015,7 +1061,8 @@ pub enum Event {
         alignment_id: i64,
         assignment: HaploAssignment,
     },
-    /// Local-ancestry painting per chromosome (the "DNA painting"): per-side segments + side labels.
+    /// The local-ancestry painting of each chromosome (the "DNA painting"): the segments of each
+    /// side, and the side labels.
     AncestryPainting {
         alignment_id: i64,
         result: PaintingResult,
@@ -1099,7 +1146,8 @@ pub enum Event {
         alignment_id: i64,
         result: Option<Coverage>,
     },
-    /// Cached coverage for several alignments (Data Sources rows): `(alignment_id, result)`.
+    /// Cached coverage for more than one alignment (the Data Sources rows):
+    /// `(alignment_id, result)`.
     CoverageBulk(Vec<(i64, Option<Coverage>)>),
     /// Genome-region metadata (cytoband ideogram) for an alignment's build.
     GenomeRegions {
@@ -1123,8 +1171,8 @@ pub enum Event {
         contig: String,
         result: Option<Vec<DenovoCall>>,
     },
-    /// Full-analysis pipeline progress: starting `step` of `total` (1-based), with a `label`
-    /// + `detail` and the bar `fraction` (0..1).
+    /// The progress of the full-analysis pipeline: `step` of `total` begins, and both count from 1.
+    /// It carries a `label`, a `detail`, and the bar `fraction` (0..1).
     AnalysisProgress {
         step: usize,
         total: usize,
@@ -1132,7 +1180,7 @@ pub enum Event {
         detail: String,
         fraction: f32,
     },
-    /// The full-analysis pipeline finished (or was cancelled).
+    /// The full-analysis pipeline ended, or a cancel stopped it.
     AnalysisDone {
         cancelled: bool,
     },
@@ -1147,16 +1195,16 @@ pub enum Event {
         label: String,
         detail: String,
     },
-    /// A project-wide realignment finished. Separate from `RealignDone` (which fires per sample)
-    /// because a batch has its own outcome: how many of the queue actually completed, and whether
-    /// the rest were abandoned. An empty queue reports `queued: 0` rather than saying nothing.
+    /// A realignment over the whole project ended. It is separate from `RealignDone`, which fires
+    /// for each sample, because a batch has its own outcome. That outcome is how many of the queue
+    /// ended, and whether the rest went. An empty queue reports `queued: 0`, and never nothing.
     RealignBatchDone {
         queued: usize,
         completed: usize,
         cancelled: bool,
     },
-    /// A realignment finished, was cancelled, or failed. `new_alignment_id` is present only on
-    /// success — the row is inserted last, so its absence means nothing was registered.
+    /// A realignment ended, a cancel stopped it, or it failed. `new_alignment_id` has a value only
+    /// on success. The insert of that row comes last, so an absence means nothing registered.
     RealignDone {
         alignment_id: i64,
         biosample_guid: Option<SampleGuid>,
@@ -1165,9 +1213,9 @@ pub enum Event {
         summary: String,
     },
     AllAlignments(Vec<Alignment>),
-    /// The alignments in `project_id` a realignment to the target build would act on. Carries the
-    /// project id so a reply arriving after the user has moved on is discarded rather than shown
-    /// against the wrong project.
+    /// The alignments in `project_id` that a realignment to the target build would act on. It
+    /// carries the project id. A reply that comes back after the user moves on then goes away, and
+    /// it does not appear against the wrong project.
     RealignableInProject {
         project_id: i64,
         ids: Vec<i64>,
@@ -1175,23 +1223,23 @@ pub enum Event {
     Ibd(IbdComparison),
     /// Federated IBD match suggestions from the AppView (may be empty in a single-user dev AppView).
     IbdSuggestions(Vec<IbdSuggestion>),
-    /// The matching ledger — every conversation with its result attached. Emitted by the refresh
-    /// and by every mutation, so the panel never has to re-poll the broker to see its own action.
+    /// The matching ledger: every conversation, with its result. The refresh emits it, and so does
+    /// every mutation, so the panel never has to poll the broker again to see its own action.
     Matching(Vec<MatchingEntry>),
-    /// A candidate was dismissed; the UI drops its row.
+    /// Something dismissed a candidate, so the UI drops its row.
     CandidateDismissed {
         suggested_sample_guid: String,
     },
-    /// A DM request was opened to a partner DID (the UI refreshes the inbox).
+    /// A DM request went out to a partner DID. The UI refreshes the inbox.
     DmInitiated,
     /// The DM inbox: inbound DM requests + consent-ready sessions to connect.
     DmInbox {
         incoming: Vec<IncomingRequest>,
         ready: Vec<ExchangeSessionInfo>,
     },
-    /// A DM consent was recorded (the UI refreshes the inbox).
+    /// The store took a DM consent. The UI refreshes the inbox.
     DmConsented,
-    /// A DM session was connected (key persisted); the UI refreshes the conversation list.
+    /// A DM session connected, and the key is on disk. The UI refreshes the conversation list.
     DmConnected,
     /// The persisted DM conversation list.
     DmConversations(Vec<DmConversationSummary>),
@@ -1200,7 +1248,7 @@ pub enum Event {
         session_id: String,
         rows: Vec<DmMessage>,
     },
-    /// A DM was sent (the UI reloads the open transcript).
+    /// A DM went out. The UI loads the open transcript again.
     DmSent {
         session_id: String,
     },
@@ -1211,7 +1259,8 @@ pub enum Event {
     },
     /// The signed-in account's open recruitment invitations.
     RecruitmentInvitations(Vec<RecruitmentInvitation>),
-    /// A recruitment invitation response was recorded (the UI refreshes invitations + notifications).
+    /// The store took a response to a recruitment invitation. The UI refreshes the invitations and
+    /// the notifications.
     RecruitmentResponded,
     /// A full IBD exchange completed for a subject (the UI reloads its results).
     IbdExchangeDone {
@@ -1246,25 +1295,26 @@ pub enum Event {
     },
     /// Current signed-in account (DID), or `None` when signed out.
     Authenticated(Option<String>),
-    /// A record was published; `kind` is a human label, `uri` the `at://` URI.
+    /// A record went out. `kind` is a human label, and `uri` is the `at://` URI.
     Published {
         kind: String,
         uri: String,
     },
-    /// A publish was enqueued to the durable outbox (it'll send now if online, else on reconnect).
+    /// A publish went into the durable outbox. It sends now if the app is online, and on the next
+    /// connection if it is not.
     Queued {
         kind: String,
     },
-    /// Outbox rows still awaiting a successful push (the "N pending" indicator).
+    /// The outbox rows that still wait for a push to succeed (the "N pending" indicator).
     SyncPending(i64),
-    /// A result was exported to `path`; `label` is the human kind (e.g. "coverage (TSV)").
+    /// A result went to `path`. `label` is the human kind, for example "coverage (TSV)".
     Exported {
         label: String,
         path: PathBuf,
     },
     /// Whether the last PDS write reached the server (offline indicator).
     SyncOnline(bool),
-    /// A PULL reconcile finished (gap §5-p2): the per-action tallies.
+    /// A PULL reconcile ended (gap §5-p2). It carries the tally of each action.
     PullDone {
         in_sync: usize,
         applied: usize,
@@ -1272,7 +1322,8 @@ pub enum Event {
         repushed: usize,
         conflicts: usize,
     },
-    /// Source-file accessibility re-check finished; `missing` files are moved/deleted.
+    /// A second check on whether the source files are reachable ended. A `missing` file moved, or
+    /// something deleted it.
     SourceFilesVerified {
         missing: usize,
     },
@@ -1285,11 +1336,11 @@ pub enum Event {
     LabsResolved(usize),
     /// Local-LLM "Test connection" result: the models the server reports, or a plain-language error.
     LlmConnection(Result<Vec<String>, String>),
-    /// Per-build reference-genome settings + cache status for the Settings dialog.
+    /// The reference-genome settings of each build, and the cache status, for the Settings dialog.
     ReferenceSettings(Vec<RefBuildStatus>),
-    /// A reference override was saved; the UI may reload the settings rows.
+    /// The store took a reference override. The UI can load the settings rows again.
     ReferenceSettingsChanged,
-    /// Result of a reference integrity check (a short human-readable status per build).
+    /// The result of a reference integrity check: one short human-readable status for each build.
     ReferenceVerified {
         build: String,
         status: String,
@@ -1306,7 +1357,8 @@ pub enum Event {
         conversation_id: String,
         messages: Vec<navigator_app::SocialMessage>,
     },
-    /// A support thread was opened/replied; reload the list (+ the open thread).
+    /// Somebody opened a support thread, or replied to one. Load the list again, and the open
+    /// thread.
     SupportThreadPosted {
         conversation_id: String,
     },
@@ -1319,41 +1371,41 @@ pub enum Event {
         items: Vec<navigator_app::SocialNotification>,
         unread: i64,
     },
-    /// Notifications were marked read; reload them.
+    /// Something marked the notifications read. Load them again.
     NotificationsMarked,
     Error(String),
-    /// A command failed **and** a file-level preflight found a concrete cause. `message` is the
-    /// original error (still shown in the status bar); `report` is the pasteable diagnosis naming
-    /// the file actually at fault.
+    /// A command failed, **and** a preflight at file level found a concrete cause. `message` is the
+    /// original error, and the status bar still shows it. `report` is the diagnosis to paste, and it
+    /// names the file at fault.
     ///
-    /// Separate from [`Event::Error`] so the UI can offer the report without having to guess, from
-    /// a string, whether an error has one. Only emitted when the preflight actually failed a
-    /// check — a tree-download or network error must not raise a file report.
+    /// It is separate from [`Event::Error`], so that the UI can offer the report. The UI does not
+    /// have to guess from a string whether an error has one. It appears only when the preflight
+    /// failed a check. A tree download, or a network error, must not raise a file report.
     Diagnosed {
         message: String,
         report: String,
     },
     /// A run stopped because the user cancelled it.
     ///
-    /// Distinct from both `Error` (this is not a failure) and `Noop` (which would leave the
-    /// requesting control spinning forever — a standalone SV/de-novo run has no `AnalysisDone` to
-    /// clear its in-flight flag).
+    /// It differs from `Error`, because this is not a failure. It also differs from `Noop`, which
+    /// would leave the control that asked for it in a spin for ever. A standalone SV or de-novo run
+    /// has no `AnalysisDone` to clear its flag.
     Cancelled,
 }
 
-/// How a cancellation reads once it has been flattened to a string by an event.
+/// How a cancellation reads after an event flattens it to a string.
 const CANCELLED_MESSAGE: &str = "cancelled";
 
-/// The token for whichever cancellable run is in flight, so `CancelAnalysis` can reach it.
+/// The token of whichever cancellable run is in progress, so that `CancelAnalysis` can reach it.
 ///
-/// Replaces a single shared `AtomicBool` that each run reset to `false` at its own entry. Because
-/// every command is `tokio::spawn`ed, that reset raced the click: a cancel landing between the
-/// spawn and the reset was silently wiped, and a second run starting concurrently wiped the first
-/// one's pending cancel too. A [`CancelToken`] is created once per run and never un-cancelled, so
-/// there is no window in which a cancel can be lost.
+/// It replaces one shared `AtomicBool` that each run reset to `false` at its own start. Every
+/// command goes through `tokio::spawn`, so that reset raced the click. A cancel that arrived between
+/// the spawn and the reset went away with no message. A second run that started at the same time
+/// also wiped the cancel the first one still needed. A [`CancelToken`] comes into existence one time
+/// for each run, and nothing ever un-cancels it, so there is no window where a cancel can go.
 ///
-/// The generation counter keeps a finishing run from clearing a *newer* run's registration — the
-/// same stale-write bug in a different costume.
+/// The generation counter stops a run that ends from a clear of the registration of a *newer* run.
+/// That is the same stale-write fault in different clothes.
 #[derive(Clone, Default)]
 struct CancelRegistry {
     current: Arc<Mutex<Option<(u64, CancelToken)>>>,
@@ -1361,7 +1413,7 @@ struct CancelRegistry {
 }
 
 impl CancelRegistry {
-    /// Register a fresh token for a starting run. Returns its generation and the token.
+    /// Register a fresh token for a run that starts. Returns its generation and the token.
     fn begin(&self) -> (u64, CancelToken) {
         let gen = self.next_gen.fetch_add(1, Ordering::Relaxed);
         let token = CancelToken::new();
@@ -1369,7 +1421,7 @@ impl CancelRegistry {
         (gen, token)
     }
 
-    /// Retire this run's registration — but only if a newer run has not already replaced it.
+    /// Retire the registration of this run, but only when no newer run already replaced it.
     fn end(&self, gen: u64) {
         let mut slot = self.current.lock().unwrap();
         if slot.as_ref().is_some_and(|(g, _)| *g == gen) {
@@ -1377,8 +1429,8 @@ impl CancelRegistry {
         }
     }
 
-    /// Cancel whatever is running now. A no-op when nothing is, which is what makes a stray click
-    /// harmless rather than something that poisons the next run.
+    /// Cancel whatever runs now. It does nothing when nothing runs, and that is what makes a stray
+    /// click harmless, and not something that poisons the next run.
     fn cancel_current(&self) {
         if let Some((_, token)) = self.current.lock().unwrap().as_ref() {
             token.cancel();
@@ -1386,30 +1438,32 @@ impl CancelRegistry {
     }
 }
 
-/// Settle a finished alignment command into the event the UI should actually see.
+/// Settle a finished alignment command into the event the UI must see.
 ///
-/// Two things have to happen between a command failing and a user reading about it, and both are
-/// about not reporting the wrong thing:
+/// Two things have to happen between a command that fails and a user who reads about it. Both are
+/// there to keep the wrong thing off the screen.
 ///
-/// 1. A **cancellation** is swallowed. It travels as an error so it can unwind the walk from deep
-///    inside a walker, but the user asked for it — surfacing "Error: cancelled" would report their
-///    own click back to them as a failure. The run's `AnalysisDone { cancelled }` already says so.
-/// 2. A **genuine** failure gets a file-level diagnosis attached, because:
+/// 1. This drops a **cancellation**. It travels as an error, so that it can unwind the walk from
+///    deep inside a walker. But the user asked for it, and "Error: cancelled" would report their
+///    own click back to them as a failure. The `AnalysisDone { cancelled }` of the run already says
+///    it.
+/// 2. A **genuine** failure gets a diagnosis at file level.
 ///
-/// The errors this upgrades are the ones that name a path but not the *right* path: the reader
-/// helpers report whichever path the failing call was handed, so a bad index, an unreadable
-/// reference or a privacy-denied file all surface as `io error on <the alignment>`. Running
-/// [`App::diagnose_alignment`] probes each of those files separately and says which one it is.
+/// The errors this upgrades are the ones that name a path, and not the *right* path. The reader
+/// helpers report whatever path the call that failed received. So a bad index, a reference nothing
+/// can read, and a file behind a privacy denial all come out as `io error on <the alignment>`. A
+/// run of [`App::diagnose_alignment`] probes each of those files on its own, and says which one it
+/// is.
 ///
-/// Errors with no file-level cause pass through untouched — if every preflight check passes, the
-/// failure is genuinely elsewhere (tree fetch, liftover, appview) and a clean bill of health would
-/// be worse than saying nothing.
+/// An error with no cause at file level passes through untouched. If every preflight check passes,
+/// the failure is truly somewhere else, in a tree fetch, a liftover, or the appview. A clean bill of
+/// health would then be worse than nothing.
 async fn settle_alignment_command(app: &App, alignment_id: i64, event: Event) -> Event {
     let Event::Error(message) = event else {
         return event;
     };
-    // A cancelled walk is not a file problem, and not a failure: diagnosing it would be a slow lie
-    // and reporting it would contradict the user's own action.
+    // A walk the user cancelled is not a file problem, and not a failure. A diagnosis of it would
+    // be a slow lie, and a report of it would contradict the action of the user.
     if message == CANCELLED_MESSAGE {
         return Event::Cancelled;
     }
@@ -1422,10 +1476,9 @@ async fn settle_alignment_command(app: &App, alignment_id: i64, event: Event) ->
     }
 }
 
-/// Execute one command against the app, mapping success/failure to an [`Event`].
-/// Re-read a subject's genealogy bundle (vendor ids + FTDNA member + MDKA) and wrap it as a
-/// [`Event::Genealogy`] — the refresh emitted after any genealogy mutation so the detail card
-/// reflects the new state without a separate "changed" round-trip.
+/// Read the genealogy bundle of a subject again (the vendor ids, the FTDNA member, and the MDKA),
+/// and wrap it as an [`Event::Genealogy`]. This is the refresh that follows any genealogy mutation,
+/// so that the detail card shows the new state, with no separate "changed" round-trip.
 async fn reload_genealogy(app: &App, guid: SampleGuid) -> Event {
     ev(app.subject_genealogy(guid).await, |data| Event::Genealogy {
         guid,
@@ -1433,17 +1486,20 @@ async fn reload_genealogy(app: &App, guid: SampleGuid) -> Event {
     })
 }
 
-/// Map a fallible app call to an [`Event`]: `ok` names the success event, and **any** error becomes
-/// `Event::Error` carrying the error's `Display` text — the one place that policy is written down.
+/// Map an app call that can fail to an [`Event`]. `ok` names the success event, and **any** error
+/// becomes `Event::Error`, with the `Display` text of that error. This is the one place that writes
+/// the policy down.
 ///
-/// Nearly every arm of [`handle`] has this shape, so spelling it here keeps ~120 call sites from each
-/// restating it. `ok` is usually just the event constructor (`ev(app.refresh_trees().await,
-/// Event::TreesRefreshed)`); a closure covers the struct-variant and extra-field cases. Generic over
-/// the error type so store/analysis/io errors all route the same way; `FnOnce` so the closure may move
-/// captured values into the event.
+/// Almost every arm of [`handle`] has this shape, so one definition here keeps ~120 call sites from
+/// each writing it out. `ok` is usually the event constructor alone
+/// (`ev(app.refresh_trees().await, Event::TreesRefreshed)`), and a closure covers a struct variant,
+/// and a case with extra fields. It is generic over the error type, so that a store error, an
+/// analysis error and an io error all take the same route. It is `FnOnce`, so that the closure can
+/// move a captured value into the event.
 ///
-/// Arms that need more than this — a three-way `Ok(Some)`/`Ok(None)` split, an `.await` on the success
-/// path, or a non-`Display` message — keep their explicit `match`.
+/// An arm that needs more than this keeps its explicit `match`. That covers a three-way split of
+/// `Ok(Some)` and `Ok(None)`, an `.await` on the success path, and a message that is not
+/// `Display`.
 fn ev<T, E: std::fmt::Display>(result: Result<T, E>, ok: impl FnOnce(T) -> Event) -> Event {
     match result {
         Ok(value) => ok(value),
@@ -1451,6 +1507,7 @@ fn ev<T, E: std::fmt::Display>(result: Result<T, E>, ok: impl FnOnce(T) -> Event
     }
 }
 
+/// Do one command against the app, and map its success or failure to an [`Event`].
 pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
     match cmd {
         Command::LoadOverview => ev(app.project_overview().await, Event::Overview),
@@ -1462,7 +1519,8 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         },
         Command::RefreshTrees => ev(app.refresh_trees().await, Event::TreesRefreshed),
         Command::CreateProject(new) => ev(app.create_project(new).await, Event::ProjectCreated),
-        // ImportProjectDir streams ImportProgress from the spawn loop; reaching here is a bug.
+        // ImportProjectDir streams ImportProgress from the spawn loop, so a path that arrives here
+        // is a fault.
         Command::ImportProjectDir { .. } => Event::Error("internal: unrouted ImportProjectDir".into()),
         Command::PlanFtdnaImport {
             project_id,
@@ -1494,8 +1552,8 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         Command::ClusterProject(project_id) => ev(app.cluster_project_ystr(project_id).await, |clustering| {
             Event::ProjectClustering { project_id, clustering }
         }),
-        // ResolveReference is handled in the spawn loop (it streams progress events); reaching
-        // here would mean a routing bug.
+        // The spawn loop controls ResolveReference, because it streams progress events. A path that
+        // arrives here would be a fault in the routes.
         Command::ResolveReference { build } => Event::Error(format!("internal: unrouted ResolveReference {build}")),
         Command::LoadSamples(project_id) => ev(app.list_biosamples(project_id).await, |samples| Event::Samples {
             project_id,
@@ -1530,16 +1588,19 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 .await
                 .map_err(|e| e.to_string()),
         },
-        // NarrateBrief / AskQuestion stream from the spawn loop; reaching here is a bug.
+        // NarrateBrief and AskQuestion stream from the spawn loop, so a path that arrives here is
+        // a fault.
         Command::NarrateBrief(guid) => Event::Error(format!("internal: unrouted NarrateBrief {guid}")),
         Command::AskQuestion { guid, .. } => Event::Error(format!("internal: unrouted AskQuestion {guid}")),
         Command::NarrateSignal { guid, .. } => Event::Error(format!("internal: unrouted NarrateSignal {guid}")),
-        // DeepAnalyzeProject streams DeepAnalyzeProgress from the spawn loop; reaching here is a bug.
+        // DeepAnalyzeProject streams DeepAnalyzeProgress from the spawn loop, so a path that
+        // arrives here is a fault.
         Command::DeepAnalyzeProject(project_id) => {
             Event::Error(format!("internal: unrouted DeepAnalyzeProject {project_id}"))
         }
         Command::SurveyMaintenance => ev(app.maintenance_survey().await, Event::MaintenanceSurvey),
-        // RunChore streams ChoreProgress from the spawn loop; reaching here is a bug.
+        // RunChore streams ChoreProgress from the spawn loop, so a path that arrives here is a
+        // fault.
         Command::RunChore { chore, .. } => Event::Error(format!("internal: unrouted RunChore {}", chore.key())),
         Command::LoadSubjectStatus => ev(app.subject_analysis_status().await, Event::SubjectStatus),
         Command::LoadHaploSummary => ev(app.haplogroup_terminals().await, Event::HaploSummary),
@@ -1856,7 +1917,8 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             })
         }
         Command::PaintAncestryFromConsensus { biosample_guid } => {
-            // Painting from the consensus needs no genotyping pass — fast, no progress stream.
+            // A painting from the consensus needs no genotyping pass. It is fast, and it streams no
+            // progress.
             ev(
                 app.paint_local_ancestry_from_consensus(biosample_guid).await,
                 |result| Event::AncestryPainting {
@@ -1872,7 +1934,8 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             }
         }),
         Command::ComputeRohFromConsensus { biosample_guid } => {
-            // ROH from the consensus needs no genotyping pass — fast, no progress stream.
+            // ROH from the consensus needs no genotyping pass. It is fast, and it streams no
+            // progress.
             ev(app.compute_roh_from_consensus(biosample_guid).await, |result| {
                 Event::RohResultReady {
                     biosample_guid,
@@ -1887,7 +1950,7 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             })
         }
         Command::ComputeArchaicFromConsensus { biosample_guid } => {
-            // A pure read over the cached consensus + the marker panel — no genotyping pass.
+            // A pure read over the cached consensus and the marker panel, with no genotyping pass.
             ev(app.estimate_archaic_from_consensus(biosample_guid).await, |result| {
                 Event::ArchaicResultReady {
                     biosample_guid,
@@ -1923,8 +1986,9 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 .await
                 .unwrap_or(None)
                 .map(Box::new);
-            // Only ANCIENT_ADMIXTURE is read: the retired PCA_PROJECTION_GMM / G25_NMONTE rows may
-            // still exist in databases written before the rebuild, and must never be shown again.
+            // This reads ANCIENT_ADMIXTURE only. The retired PCA_PROJECTION_GMM and G25_NMONTE
+            // rows can still sit in a database from before the rebuild, and nothing must show them
+            // again.
             let ancient = if navigator_app::ANCIENT_ANCESTRY_ENABLED {
                 app.consensus_ancestry(biosample_guid, navigator_app::ANCIENT_ADMIXTURE)
                     .await
@@ -1939,8 +2003,8 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
                 ancient,
             }
         }
-        // RunFullAnalysis streams AnalysisProgress from the spawn loop; CancelAnalysis sets the
-        // shared cancel flag there. Reaching here would mean a routing bug.
+        // RunFullAnalysis streams AnalysisProgress from the spawn loop, and CancelAnalysis sets the
+        // shared cancel flag there. A path that arrives here would be a fault in the routes.
         Command::RunFullAnalysis { alignment_id } => {
             Event::Error(format!("internal: unrouted RunFullAnalysis {alignment_id}"))
         }
@@ -2163,8 +2227,9 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         },
         Command::RunIbdExchange { info, biosample_guid } => {
             let cfg = IbdDetectorConfig::default();
-            // A failure is recorded on the conversation rather than only surfaced as a transient
-            // toast — otherwise the request sits at READY and the user can not tell it was tried.
+            // The store records a failure on the conversation, and it is not only a toast that
+            // goes away. If not, the request sits at READY, and the user can not tell that anything
+            // tried it.
             let outcome = match app.open_exchange_session(&info).await {
                 Ok(session) => {
                     app.exchange_ibd_for_subject(&session, biosample_guid, &info.request_uri, None, cfg)
@@ -2234,8 +2299,9 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
         }),
         Command::Login { handle } => ev(app.login(&handle).await, |did| Event::Authenticated(Some(did))),
         Command::Logout => ev(app.logout().await, |_| Event::Authenticated(None)),
-        // Publishes enqueue to the durable outbox then drain — handled in the spawn loop (they emit
-        // multiple events: Queued + per-row Published + SyncPending). Reaching here is a routing bug.
+        // A publish goes into the durable outbox, and then drains. The spawn loop controls that,
+        // because it emits more than one event: Queued, then a Published for each row, then a
+        // pending-count update. A path that arrives here is a fault in the routes.
         Command::PublishCoverage(id) => Event::Error(format!("internal: unrouted PublishCoverage {id}")),
         Command::PublishVariants { alignment_id, .. } => {
             Event::Error(format!("internal: unrouted PublishVariants {alignment_id}"))
@@ -2331,8 +2397,9 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
             topic,
             publish_pds,
         } => match app.post_community(&content, topic.as_deref(), None).await {
-            // The native post landed. If the user opted into federation, also publish the durable
-            // `feed.post` record; a publish failure is surfaced but the post itself is not lost.
+            // The native post landed. When the user opted into federation, also publish the
+            // durable `feed.post` record. A publish that fails reaches the screen, and the post
+            // itself stays.
             Ok(_) => {
                 if publish_pds {
                     ev(app.publish_feed_post(&content, topic.as_deref()).await, |_| {
@@ -2354,17 +2421,18 @@ pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
     }
 }
 
-/// Resolve a reference build, emitting throttled `ReferenceProgress` events (and waking the
-/// UI) as bytes arrive, then a final `ReferenceReady`/`Error`. Run from the spawn loop so it
-/// can stream — `handle` returns only a single event.
+/// Resolve a reference build. It emits a throttled `ReferenceProgress` event as bytes arrive, and
+/// wakes the UI, then a final `ReferenceReady` or `Error`. It runs from the spawn loop, so that it
+/// can stream, because `handle` returns one event only.
 async fn resolve_reference_streaming(
     app: &App,
     build: String,
     evt_tx: &Sender<Event>,
     wake: &(dyn Fn() + Send + Sync),
 ) {
-    // The progress closure must be Send (it runs in a task) — capture an owned Sender clone
-    // and a label, not borrows. Throttle to ~every 25 MB so a multi-GB pull does not flood.
+    // The progress closure must be Send, because it runs in a task. So capture an owned Sender
+    // clone and a label, and not a borrow. Throttle it to about every 25 MB, so that a multi-GB
+    // download does not flood the channel.
     let tx = evt_tx.clone();
     let label = build.clone();
     let mut last_sent = 0u64;
@@ -2386,12 +2454,15 @@ async fn resolve_reference_streaming(
     wake();
 }
 
-/// Resolve each not-yet-cached build with a visible `ReferenceProgress` bar (via
-/// [`resolve_reference_streaming`]). Cached builds are skipped silently. The reference FASTA is a
-/// required artifact for any BAM/CRAM analysis and is fetched on demand (cache-first, else a
-/// multi-GB download) — without this the download runs deep inside a pure `App` method with a no-op
-/// callback, so the UI shows nothing and a first import looks like it "did not register". Call this
-/// from the worker after an import and before a reference-needing analysis so the pull is visible.
+/// Resolve each build that the cache does not hold, with a visible `ReferenceProgress` bar, through
+/// [`resolve_reference_streaming`]. A build the cache holds goes by with no message.
+///
+/// Any BAM or CRAM analysis needs the reference FASTA. The code reads it on demand: the cache
+/// first, and a multi-GB download if that misses. Without this, the download runs deep inside a
+/// pure
+/// `App` method, behind a callback that does nothing. The UI then shows nothing, and a first import
+/// looks as though it "did not register". Call this from the worker after an import, and before an
+/// analysis that needs a reference, so that the download is visible.
 async fn ensure_references_streaming(
     app: &App,
     builds: &[String],
@@ -2406,14 +2477,16 @@ async fn ensure_references_streaming(
     }
 }
 
-/// Build the alignment's coordinate index (`.bai`/`.crai`) if missing, emitting throttled
-/// `IndexProgress` then a final `IndexReady`. Query-driven analyses need the index to seek by region
-/// (else they error or degrade to a whole-file scan); building it eagerly — with a visible bar —
-/// keeps a freshly imported file from looking stuck on its first analysis. A file that already has
-/// an index returns instantly with `built: None` (no progress noise).
+/// Build the coordinate index (`.bai`/`.crai`) of the alignment when it is missing. It emits a
+/// throttled `IndexProgress`, then a final `IndexReady`. An analysis that runs queries needs the
+/// index to seek by region. Without it, that analysis errors, or it falls back to a scan of the
+/// whole file. A build up front, with a visible bar, keeps a file that just came in from a look of
+/// being stuck on its first analysis. A file that already has an index returns at once with
+/// `built: None`, and no progress noise.
 async fn ensure_index_streaming(app: &App, alignment_id: i64, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send + Sync)) {
-    // Progress runs on a blocking thread, so the callback must be Send — capture owned clones, not
-    // borrows. Throttling already happens in the analysis layer (per ~32 MB); forward each tick.
+    // Progress runs on a thread that blocks, so the callback must be Send. Capture owned clones,
+    // and not borrows. The analysis layer already throttles it, to about every 32 MB, so forward
+    // each tick.
     let tx = evt_tx.clone();
     let label = app
         .reference_build_of_alignment(alignment_id)
@@ -2429,9 +2502,10 @@ async fn ensure_index_streaming(app: &App, alignment_id: i64, evt_tx: &Sender<Ev
             total,
         });
     };
-    // This pre-flight is the first thing on a button's path to touch the file, so it is where an
-    // unreadable alignment/index surfaces first — and where the raw message is least informative
-    // (a failed *index build* reports the alignment's path). Diagnose before reporting.
+    // This pre-flight is the first thing on the path from a button to touch the file. So it is
+    // where an alignment or index that nothing can read appears first, and where the raw message
+    // says the least. An *index build* that fails reports the path of the alignment. Diagnose it
+    // before the report.
     let event = match app.ensure_alignment_index(alignment_id, progress).await {
         Ok(built) => Event::IndexReady { built },
         Err(e) => settle_alignment_command(app, alignment_id, Event::Error(e.to_string())).await,
@@ -2458,10 +2532,11 @@ async fn ensure_indexes_for_subject_streaming(
     }
 }
 
-/// Run a realignment, emitting `RealignProgress` as each stage begins and `RealignDone` at the end.
+/// Run a realignment. It emits a `RealignProgress` as each stage begins, and `RealignDone` at the
+/// end.
 ///
-/// The reference has to be resolved before the job starts — realigning to a build whose FASTA is
-/// not cached would otherwise stall silently at the index stage while gigabytes download.
+/// The reference must resolve before the job starts. A realignment to a build whose FASTA is not in
+/// the cache would otherwise stop at the index stage, with no message, while gigabytes download.
 async fn run_realign_streaming(
     app: &App,
     alignment_id: i64,
@@ -2470,11 +2545,11 @@ async fn run_realign_streaming(
     evt_tx: &Sender<Event>,
     wake: Arc<dyn Fn() + Send + Sync>,
 ) {
-    // Whose job this is, resolved once up front rather than per event.
+    // Whose job this is. The code resolves it one time at the start, and not on each event.
     let biosample_guid = app.subject_of_alignment(alignment_id).await.ok().flatten();
 
-    // Resolve (downloading if needed) the reference we are mapping to, streaming its progress the
-    // same way every other reference-dependent command does.
+    // Resolve the reference we map to, with a download when that is necessary. Stream its progress
+    // the same way as every other command that needs a reference.
     ensure_references_streaming(app, std::slice::from_ref(&target_build), evt_tx, &*wake).await;
 
     let reference = match app.cached_reference_path(&target_build) {
@@ -2511,11 +2586,11 @@ async fn run_realign_streaming(
         target_reference: reference,
         preset: None,
         scratch_root: None,
-        // Safe to opt in here because the scratch path is derived from this source alignment and
-        // this target build, so anything found in it belongs to the job about to run. Intermediates
-        // only survive at all when a previous attempt was killed outright — the machine went down,
-        // the session was torn down, the process was force-quit — and in that case a user who
-        // presses Realign again means "carry on", not "spend four hours re-deriving the same file".
+        // It is safe to opt in here, because the scratch path comes from this source alignment and
+        // this target build. So anything in it belongs to the job about to run. An intermediate
+        // survives at all only when something killed an earlier try outright. The machine went
+        // down, the session went down, or somebody force-quit the process. In that case a user who
+        // presses Realign again means "carry on", and not "spend four hours on the same file".
         resume: true,
     };
 
@@ -2525,8 +2600,8 @@ async fn run_realign_streaming(
             biosample_guid,
             new_alignment_id: Some(outcome.alignment.id),
             cancelled: false,
-            // A resumed job skips the stages that count these, so a figure may be genuinely
-            // unknown; saying so beats printing a zero the user would read as a result.
+            // A job that resumes steps over the stages that count these, so a figure can be truly
+            // unknown. To say so is better than a zero the user would read as a result.
             summary: {
                 let count = |n: Option<u64>| {
                     n.map(|n| n.to_string())
@@ -2556,9 +2631,10 @@ async fn run_realign_streaming(
     wake();
 }
 
-/// Run the full per-alignment analysis pipeline, emitting `AnalysisProgress` before each step
-/// and forwarding each step's own result event (so the detail tabs fill in live). `cancel` is
-/// checked between steps. Per-step errors are forwarded but do not abort the pipeline (best-effort).
+/// Run the full analysis pipeline of one alignment. It emits an `AnalysisProgress` before each
+/// step, and forwards the result event of each step, so that the detail tabs fill in live. It checks
+/// `cancel` between steps. It also forwards the error of a step, and that error does not stop the
+/// pipeline, which is best-effort.
 async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     app: &App,
     alignment_id: i64,
@@ -2567,22 +2643,25 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     evt_tx: &Sender<Event>,
     wake: Arc<W>,
 ) {
-    // Which steps run — and which are skipped because a trusted external caller already placed this
-    // alignment, or because it has no chrM reads — is decided by `App::plan_full_analysis`, the one
-    // definition shared with the CLI. This fn only turns those steps into progress + result events.
-    // Planned twice: the mitochondrial decision is a guess until step 1 has produced coverage.
-    // `include_sv = false`: SV is experimental and costs hours per whole-genome sample, so it is
-    // never folded into a Full Analysis. The Sources tab's "Call SV" button runs it on request.
+    // `App::plan_full_analysis` decides which steps run, and which ones go. A step goes when a
+    // trusted external caller already placed this alignment, or when it has no chrM reads. That
+    // plan is the one definition, and the CLI shares it. This function only turns those steps into
+    // progress and result events.
+    //
+    // It plans twice, because the decision on the mitochondrion is a guess until step 1 gives
+    // coverage. `include_sv = false`, because SV is experimental and costs hours for one
+    // whole-genome sample, so no Full Analysis ever takes it in. The "Call SV" button on the
+    // Sources tab runs it on request.
     let mut steps = app
         .plan_full_analysis(alignment_id, include_ancestry, false, None)
         .await
         .unwrap_or_else(|_| vec![AnalysisStep::QualityMetrics]);
     let mut total = steps.len();
 
-    // Step 1: unified quality metrics — coverage + callable, read-level QC, and sex inference in
-    // ONE pass over the alignment (was three separate steps reading the file 2–3×). The slow
-    // whole-genome read; stream per-contig sub-progress so the bar advances chromosome by
-    // chromosome instead of sitting at 0% for minutes.
+    // Step 1: unified quality metrics. It does coverage and callable, read-level QC, and sex
+    // inference in ONE pass over the alignment. Three separate steps used to read the file 2 to 3
+    // times. This is the slow whole-genome read, so stream the sub-progress of each contig. The bar
+    // then advances chromosome by chromosome, and does not stay at 0% for minutes.
     if !cancel.is_cancelled() {
         let _ = evt_tx.send(Event::AnalysisProgress {
             step: 1,
@@ -2592,10 +2671,11 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             fraction: 0.0,
         });
         wake();
-        // Reuse cached sub-results instead of re-scanning the whole genome (minutes) — only when
-        // all three are present, since they are persisted together by the unified walker. The
-        // coverage must also be at the right scope (a stale whole-genome result for a targeted-Y
-        // test reads as a miss) so it is recomputed restricted to the target contigs.
+        // Reuse the cached sub-results, instead of a second scan of the whole genome, which costs
+        // minutes. Do it only when all three are there, because the unified walker persists them
+        // together. The coverage must also cover the right scope: a stale whole-genome result for a
+        // targeted-Y test reads as a miss. So the code computes it again, over the target contigs
+        // only.
         let cached = match (
             app.cached_coverage_for_analysis(alignment_id).await,
             app.cached_read_metrics(alignment_id).await,
@@ -2607,8 +2687,8 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         let outcome = match cached {
             Some(triple) => Ok(triple),
             None => {
-                // The parallel walker invokes progress from worker threads, so the callback must
-                // be Fn + Sync; the event Sender is !Sync, so guard it with a Mutex.
+                // The parallel walker calls progress from worker threads, so the callback must be
+                // Fn + Sync. The event Sender is !Sync, so guard it with a Mutex.
                 let evt = Arc::new(Mutex::new(evt_tx.clone()));
                 let wk = wake.clone();
                 app.run_unified_metrics_with_progress(
@@ -2632,21 +2712,25 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                 .map(|r| (r.coverage, r.read_metrics, r.sex))
             }
         };
-        // Emit the same per-result events the old separate steps did, so the UI updates identically.
+        // Emit the same result events as the old separate steps, so that the UI updates the same
+        // way.
         match outcome {
             Ok((cov, rm, sex)) => {
-                // Re-plan from the just-computed coverage: a Big Y with zero chrM reads now
-                // correctly drops the chrM de-novo + mt-placement steps (the pre-flight plan above
-                // ran before this coverage existed). Adjusts the remaining-step total.
+                // Plan again from the coverage that just ran. A Big Y with zero chrM reads then
+                // correctly drops the chrM de-novo step and the mt-placement step. The pre-flight
+                // plan above ran before this coverage existed. This also adjusts the total of the
+                // steps that remain.
                 steps = app
                     .plan_full_analysis(alignment_id, include_ancestry, false, Some(&cov))
                     .await
                     .unwrap_or_else(|_| std::mem::take(&mut steps));
                 total = steps.len();
-                // Pin a generic FTDNA Targeted-Y to Big Y-500 vs -700 from its callable-chrY
-                // footprint. Done here (not only inside the metrics walker) so it also fires on the
-                // cached fast-path above, where the walker — and its in-method refine — is skipped.
-                // When the generation changed, reload the run card so it shows the new label.
+                // Pin a generic FTDNA Targeted-Y to Big Y-500 or Big Y-700, from its callable-chrY
+                // footprint. It happens here, and not inside the metrics walker alone. It then
+                // also fires on the cached fast path above, which steps over the walker and its
+                // internal refine. When the generation changed, load the run card again, so that
+                // it
+                // shows the new label.
                 if let Ok(Some(_)) = app.refine_big_y_generation_for_alignment(alignment_id, &cov).await {
                     if let Ok(guid) = app.biosample_of_alignment(alignment_id).await {
                         let _ = evt_tx.send(Event::RunsChanged(guid));
@@ -2666,8 +2750,9 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
                 });
             }
             Err(e) => {
-                // Persist the failure (corrupt/undecodable file) so the project report shows
-                // "Failed" rather than a silent blank, matching the CLI and batch paths.
+                // Persist the failure, from a file that is corrupt or that the decoder can not
+                // read. The project report then shows "Failed", and not a blank with no message.
+                // This matches the CLI path and the batch path.
                 app.record_analysis_error(alignment_id, "metrics", &e.to_string()).await;
                 let _ = evt_tx.send(Event::Error(e.to_string()));
             }
@@ -2675,9 +2760,10 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
         wake();
     }
 
-    // The remaining steps run via `handle`, which forwards each one's own result events. Y variant
-    // discovery is the callable-masked "private Y" pass, NOT a raw whole-chrY de-novo (which is
-    // enormous + mostly artifacts); chrM de-novo is fine (small, fully callable).
+    // The steps that remain run through `handle`, which forwards the result events of each one. Y
+    // variant discovery is the "private Y" pass behind the callable mask. It is NOT a raw
+    // whole-chrY de-novo, which is enormous and mostly artifacts. chrM de-novo is acceptable,
+    // because it is small and fully callable.
     let command_for = |step: &AnalysisStep| match step {
         // Step 1 ran above, with sub-progress; it is never dispatched as a command.
         AnalysisStep::QualityMetrics => None,
@@ -2698,8 +2784,9 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             biosample_guid: *biosample_guid,
         }),
     };
-    // Carry each step's 1-based position in the plan, so the progress numbering stays right no
-    // matter which steps the plan included or which are dispatched here rather than above.
+    // Carry the position of each step in the plan, counted from 1. The progress numbers then stay
+    // right, whatever steps the plan took in, and whichever ones this place dispatches instead of
+    // the code above.
     let steps: Vec<(usize, String, String, Command)> = steps
         .iter()
         .enumerate()
@@ -2717,9 +2804,9 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
             fraction: (step as f32 - 1.0) / total as f32,
         });
         wake();
-        // Runs to completion; we may cancel before the next step. Steps here bypass the outer
-        // match's per-command pre-flight, so this is also the only place their failures can pick up
-        // a file-level diagnosis.
+        // This runs to the end, and we can cancel before the next step. A step here goes around the
+        // pre-flight that the outer match does for each command. So this is also the only place
+        // where its failure can take up a diagnosis at file level.
         let ev = settle_alignment_command(app, alignment_id, handle(app, cmd, &cancel).await).await;
         let _ = evt_tx.send(ev);
         wake();
@@ -2731,16 +2818,11 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     wake();
 }
 
-/// Deep-analyze every sample in a project one at a time, emitting `DeepAnalyzeProgress` before
-/// each sample (so the bar advances sample by sample) and a final `ProjectAnalyzed`. `cancel` is
-/// checked before each sample — a stop leaves the already-computed artifacts in place (the pass is
-/// additive and idempotent). Each `analyze_biosample` awaits internally, so the worker runtime
-/// stays free for quick UI queries between samples.
-/// Run one workspace chore, emitting progress per item.
+/// Run one workspace chore, and emit progress for each item.
 ///
-/// The loop lives here rather than in `navigator-app` for the same reason `deep_analyze_project`'s
-/// does: the worker owns the event channel and the cancel token, and `App` stays free of UI
-/// plumbing. What each item *does* is an `App` method, shared with the CLI.
+/// The loop lives here, and not in `navigator-app`, for the same reason as the loop of
+/// `deep_analyze_project`. The worker owns the event channel and the cancel token, and `App` stays
+/// free of UI glue. What each item *does* is an `App` method, and the CLI shares it.
 async fn run_chore_streaming(
     app: &App,
     chore: navigator_app::Chore,
@@ -2789,8 +2871,8 @@ async fn run_chore_streaming(
             };
             let total = targets.len();
             let (mut calls_replaced, mut calls_failed, mut calls_skipped) = (0usize, 0usize, 0usize);
-            // One lookup for the whole batch rather than a query per subject just to label a
-            // progress line.
+            // One lookup for the whole batch. It does not run a query for each subject only to
+            // label a progress line.
             let names: std::collections::HashMap<_, _> = app
                 .list_all_biosamples()
                 .await
@@ -2804,11 +2886,11 @@ async fn run_chore_streaming(
                 }
                 let label = names.get(guid).cloned().unwrap_or_else(|| guid.0.to_string());
                 progress(chore, i, total, &label, evt_tx, &wake);
-                // Re-place the per-alignment calls *and* rebuild the pooled profiles — see
-                // `App::replace_against_current_tree`. Rebuilding only the profiles (what this used
-                // to do) left every `haplogroup_call` row on its old tree, which is both the
-                // "sources diverge" conflicts on the Y card and the reason a swept subject stayed
-                // due forever.
+                // Place the calls of each alignment again, *and* build the pooled profiles again.
+                // See `App::replace_against_current_tree`. A build of the profiles alone, which is
+                // what this used to do, left every `haplogroup_call` row on its old tree. That is
+                // both the "sources diverge" conflicts on the Y card, and the reason a subject the
+                // sweep touched stayed due for ever.
                 match app.replace_against_current_tree(*guid).await {
                     Ok(r) => {
                         outcome.done += 1;
@@ -2823,9 +2905,9 @@ async fn run_chore_streaming(
                     }
                 }
             }
-            // Skips are reported separately from failures: "file gone" is expected in a workspace
-            // whose vendor downloads have been cleaned out, and folding it into the error count
-            // makes a healthy run look broken.
+            // A skip is separate from a failure in the report. "file gone" is normal in a
+            // workspace where somebody cleaned out the vendor downloads. To put it into the error
+            // count makes a healthy run look broken.
             outcome.summary = format!(
                 "{} subject(s) re-placed against the current tree · {calls_replaced} call(s) re-placed{}{}",
                 outcome.done,
@@ -2877,8 +2959,8 @@ fn progress(
     wake();
 }
 
-/// A chore that could not start at all — surface the reason and close it out, so the UI never
-/// leaves a spinner running on a job that never began.
+/// A chore that could not start at all. Show the reason, and close it out, so that the UI never
+/// leaves a spinner on a job that never began.
 fn fail_chore(chore: navigator_app::Chore, err: String, evt_tx: &Sender<Event>, wake: &Arc<dyn Fn() + Send + Sync>) {
     let _ = evt_tx.send(Event::Error(err.clone()));
     let _ = evt_tx.send(Event::ChoreDone {
@@ -2891,6 +2973,11 @@ fn fail_chore(chore: navigator_app::Chore, err: String, evt_tx: &Sender<Event>, 
     wake();
 }
 
+/// Deep-analyze every sample in a project, one at a time. It emits a `DeepAnalyzeProgress` before
+/// each sample, so that the bar advances sample by sample, then a final `ProjectAnalyzed`. It checks
+/// `cancel` before each sample, and a stop leaves the artifacts that already exist in place, because
+/// the pass is additive and idempotent. Each `analyze_biosample` awaits inside, so the worker
+/// runtime stays free for a quick UI query between samples.
 async fn deep_analyze_project_streaming(
     app: &App,
     project_id: i64,
@@ -2954,9 +3041,10 @@ async fn deep_analyze_project_streaming(
     wake();
 }
 
-/// Import a NAS project directory, emitting `ImportProgress` per sample (so a 1000-sample import
-/// shows a live status instead of appearing frozen), then a final `ProjectImported`. A missing
-/// reference build surfaces as `ReferenceNeeded` (download prompt); other failures as `Error`.
+/// Import a NAS project directory. It emits an `ImportProgress` for each sample, so that an import
+/// of 1000 samples shows a live status, and does not look frozen. It ends with a final
+/// `ProjectImported`. A reference build that is missing comes back as `ReferenceNeeded`, which
+/// prompts a download, and any other failure comes back as `Error`.
 async fn import_project_dir_streaming(
     app: &App,
     dir: PathBuf,
@@ -3077,8 +3165,8 @@ async fn narrate_signal_streaming(
     wake();
 }
 
-/// Drain the outbox once and emit the outcome: a `Published` per sent row, the online flag, and the
-/// remaining pending count.
+/// Drain the outbox one time, and emit the outcome: one `Published` for each row it sent, the online
+/// flag, and how many rows still wait.
 async fn emit_drain(app: &App, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send + Sync)) {
     match app.drain_outbox().await {
         Ok(outcome) => {
@@ -3095,10 +3183,10 @@ async fn emit_drain(app: &App, evt_tx: &Sender<Event>, wake: &(dyn Fn() + Send +
     wake();
 }
 
-/// Spawn the worker thread: open the workspace at `db_path` inside the worker's runtime
-/// (so the connection pool lives there), then serve commands. `wake` is called after
-/// each event so the UI can `request_repaint`. Returns the command sender and event
-/// receiver the UI holds.
+/// Spawn the worker thread. It opens the workspace at `db_path` inside the runtime of the worker,
+/// so that the connection pool lives there, then it serves commands. It calls `wake` after each
+/// event, so that the UI can `request_repaint`. It returns the command sender, and the event
+/// receiver, that the UI holds.
 pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (UnboundedSender<Command>, Receiver<Event>) {
     let (cmd_tx, mut cmd_rx) = unbounded_channel::<Command>();
     let (evt_tx, evt_rx) = std::sync::mpsc::channel::<Event>();
@@ -3107,12 +3195,16 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
     std::thread::Builder::new()
         .name("navigator-worker".into())
         .spawn(move || {
-            // 64 MiB stacks. Two independent deep-recursion sources overflow tokio's default 2 MiB
-            // worker/blocking stack and abort the whole app mid-batch: (1) the Y/mt tree parse +
-            // placement recurse to the haplotree's depth (`flatten_du_node`, descent traversal) on
-            // deep lineages / the large FTDNA tree; (2) noodles' CRAM decoder recurses on
-            // `spawn_blocking` decode paths, deepest on CRAM 3.1 files (new range/fqzcomp/tokenizer
-            // codecs). Whole-genome record decode runs on `reader::decode_pool` instead; this covers
+            // 64 MiB stacks. Two independent sources of deep recursion overflow the default 2 MiB
+            // stack of a tokio thread. They abort the whole app in mid-batch.
+            //
+            // The first is the Y and mt tree parse, and the placement. Those recurse to the depth of
+            // the haplotree (`flatten_du_node`, and the descent traversal), on a deep lineage, or on
+            // the large FTDNA tree. The second is the CRAM decoder of noodles. That recurses on the
+            // `spawn_blocking` decode paths, and goes deepest on a CRAM 3.1 file, with its new
+            // range, fqzcomp and tokenizer codecs.
+            //
+            // A whole-genome record decode runs on `reader::decode_pool` instead, and this covers
             // the targeted decodes. See `NAVIGATOR_DECODE_STACK_MB`.
             let rt = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
@@ -3167,9 +3259,10 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             Command::ResolveReference { build } => {
                                 resolve_reference_streaming(&app, build, &evt_tx, &*wake).await;
                             }
-                            // Import, then eagerly resolve the imported alignments' reference(s) with a
-                            // visible progress bar — a first CRAM/BAM that needs a multi-GB reference
-                            // download otherwise looks like it did not register (§ ensure_references_streaming).
+                            // Import, then resolve the references of the imported alignments at
+                            // once, with a visible progress bar. A first CRAM or BAM that needs a
+                            // multi-GB reference download otherwise looks as though it did not
+                            // register. See `ensure_references_streaming`.
                             Command::AddDataBatch { biosample_guid, paths } => {
                                 let event = handle(
                                     &app,
@@ -3215,9 +3308,10 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     ensure_indexes_for_subject_streaming(&app, guid, &evt_tx, &*wake).await;
                                 }
                             }
-                            // Pre-resolve the subject's / alignment's reference and coordinate index (with a
-                            // progress bar) so a query-driven analysis does not trigger a silent download or
-                            // index build partway through.
+                            // Resolve the reference and the coordinate index of the subject, or of
+                            // the alignment, first, with a progress bar. An analysis that runs
+                            // queries then does not start a download, or an index build, with no
+                            // message, part of the way through.
                             Command::BuildAutosomalProfile { biosample_guid } => {
                                 if let Ok(builds) = app.reference_builds_for_subject(biosample_guid).await {
                                     ensure_references_streaming(&app, &builds, &evt_tx, &*wake).await;
@@ -3401,8 +3495,9 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                 let _ = evt_tx.send(event);
                                 wake();
                             }
-                            // Streams AnalysisProgress per step (+ each step's result), then AnalysisDone.
-                            // Ensure the coordinate index first (step 1's per-contig walker seeks by region).
+                            // This streams an AnalysisProgress for each step, plus the result of
+                            // each step, then AnalysisDone. Make sure the coordinate index exists
+                            // first, because the walker of step 1 seeks by region on each contig.
                             Command::RunFullAnalysis { alignment_id } => {
                                 ensure_index_streaming(&app, alignment_id, &evt_tx, &*wake).await;
                                 // Advanced: haplogroups/coverage only; ancestry is a separate action.
@@ -3445,23 +3540,25 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     }
                                 }
                             }
-                            // Streams DeepAnalyzeProgress per sample, then a final ProjectAnalyzed.
+                            // This streams a DeepAnalyzeProgress for each sample, then a final
+                            // ProjectAnalyzed.
                             Command::DeepAnalyzeProject(project_id) => {
                                 let (gen, cancel) = cancels.begin();
                                 deep_analyze_project_streaming(&app, project_id, cancel, &evt_tx, wake.clone()).await;
                                 cancels.end(gen);
                             }
-                            // Workspace chores stream ChoreProgress per item, then ChoreDone. They
-                            // walk the whole workspace, so running them inline would freeze the UI
-                            // for minutes with no sign of life.
+                            // A workspace chore streams a ChoreProgress for each item, then
+                            // ChoreDone. It walks the whole workspace, so a run inline would freeze
+                            // the UI for minutes, with no sign of life.
                             Command::RunChore { chore, force } => {
                                 let (gen, cancel) = cancels.begin();
                                 run_chore_streaming(&app, chore, force, cancel, &evt_tx, wake.clone()).await;
                                 cancels.end(gen);
                             }
-                            // Streams ImportProgress per sample, then a final ProjectImported (or
-                            // ReferenceNeeded / Error). Large NAS imports (1000s of samples) otherwise
-                            // appear frozen until the whole batch completes.
+                            // This streams an ImportProgress for each sample, then a final
+                            // ProjectImported, or ReferenceNeeded, or Error. A large NAS import, of
+                            // thousands of samples, otherwise looks frozen until the whole batch
+                            // ends.
                             Command::ImportProjectDir { dir, reference } => {
                                 import_project_dir_streaming(&app, dir, reference, &evt_tx, wake.clone()).await;
                             }
@@ -3499,8 +3596,9 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                                     .await;
                                     let was_cancelled = cancel.is_cancelled();
                                     cancels.end(gen);
-                                    // Cancel abandons the queue, not just the current sample —
-                                    // someone stopping a multi-day batch means all of it.
+                                    // A cancel abandons the queue, and not only the current
+                                    // sample. Somebody who stops a multi-day batch means all of
+                                    // it.
                                     if was_cancelled {
                                         abandoned = true;
                                         break;
@@ -3521,8 +3619,9 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             Command::CancelAnalysis => {
                                 cancels.cancel_current();
                             }
-                            // Publishes enqueue durably, then drain (send-now-if-online). The drain
-                            // emits Published per row + SyncPending; we emit Queued for instant feedback.
+                            // A publish goes into a durable queue, then drains, and it sends now
+                            // if the app is online. The drain emits one Published for each row, and
+                            // a pending count. We emit Queued for immediate feedback.
                             Command::PublishCoverage(id) => {
                                 publish_then_drain(
                                     &app,
@@ -3567,11 +3666,13 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             Command::DrainOutbox => {
                                 emit_drain(&app, &evt_tx, &*wake).await;
                             }
-                            // Streams narration text as it is generated, then a final BriefNarration.
+                            // This streams the narration text while the model writes it, then a
+                            // final BriefNarration.
                             Command::NarrateBrief(guid) => {
                                 narrate_brief_streaming(&app, guid, &evt_tx, &*wake).await;
                             }
-                            // Streams a chat answer as it is generated, then a final ChatAnswer.
+                            // This streams a chat answer while the model writes it, then a final
+                            // ChatAnswer.
                             Command::AskQuestion {
                                 guid,
                                 history,
@@ -3579,7 +3680,8 @@ pub fn spawn(db_path: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> (Unbo
                             } => {
                                 ask_question_streaming(&app, guid, history, question, &evt_tx, &*wake).await;
                             }
-                            // Streams a per-signal explanation as it is generated, then a final SignalNarration.
+                            // This streams the explanation of one signal while the model writes
+                            // it, then a final SignalNarration.
                             Command::NarrateSignal { guid, kind } => {
                                 narrate_signal_streaming(&app, guid, kind, &evt_tx, &*wake).await;
                             }
@@ -3676,7 +3778,7 @@ mod tests {
             other => panic!("expected Genealogy, got {other:?}"),
         }
 
-        // Binding a kit already owned by another subject is reported as an error.
+        // A bind of a kit that another subject already owns comes back as an error.
         let c = app.add_biosample(None, "OTHER", None, None).await.unwrap();
         app.add_external_id(c.guid, "FTDNA", "B9999").await.unwrap();
         let ev = handle(
@@ -3764,7 +3866,7 @@ mod tests {
             other => panic!("expected Coverage(None), got {other:?}"),
         }
 
-        // run + persist (uses the alignment's stored paths, via spawn_blocking)
+        // run and persist (it uses the stored paths of the alignment, through `spawn_blocking`)
         match handle(&app, Command::RunCoverage(aln.id), &CancelToken::none()).await {
             Event::Coverage { alignment_id, result } => {
                 assert_eq!(alignment_id, aln.id);
@@ -3779,7 +3881,7 @@ mod tests {
             other => panic!("expected cached Coverage, got {other:?}"),
         }
 
-        // de-novo on the fixture contig (cold -> run -> cached), per-contig keyed
+        // de-novo on the fixture contig (cold -> run -> cached), keyed on the contig
         match handle(
             &app,
             Command::LoadDenovo {
@@ -3981,7 +4083,7 @@ mod tests {
             other => panic!("got {other:?}"),
         }
 
-        // adding dependent data makes delete refuse with a conflict
+        // new dependent data makes the delete refuse, with a conflict
         match handle(
             &app,
             Command::AddRun(NewSequenceRun::new(guid, "ILLUMINA", "WGS")),
@@ -4002,7 +4104,7 @@ mod tests {
             other => panic!("got {other:?}"),
         }
 
-        // removing the run clears the conflict, so the subject can then be deleted (the
+        // a remove of the run clears the conflict, so the delete of the subject then works (the
         // end-to-end 'remove data first' path)
         let run_id = match handle(&app, Command::LoadRuns(guid), &CancelToken::none()).await {
             Event::Runs { runs, .. } => runs[0].id,
@@ -4116,7 +4218,7 @@ mod tests {
             other => panic!("got {other:?}"),
         }
 
-        // assigning to a non-existent project is refused
+        // an assign to a project that does not exist gets a refusal
         match handle(
             &app,
             Command::AssignBiosampleProject {
@@ -4131,7 +4233,7 @@ mod tests {
             other => panic!("expected Error, got {other:?}"),
         }
 
-        // clearing the project (None) removes it from the project list
+        // a clear of the project (None) removes it from the project list
         match handle(
             &app,
             Command::AssignBiosampleProject { guid, project_id: None },
@@ -4192,8 +4294,8 @@ mod tests {
             other => panic!("got {other:?}"),
         }
 
-        // A project with members can now be deleted — its members are detached (the subjects
-        // survive), rather than the delete being refused.
+        // A delete of a project with members now works. Its members detach, and the subjects stay.
+        // The delete no longer gets a refusal.
         match handle(
             &app,
             Command::AddBiosample(NewBiosample {
@@ -4271,7 +4373,7 @@ mod tests {
             other => panic!("got {other:?}"),
         };
 
-        // edit the run's descriptive fields; the read metric is preserved
+        // edit the descriptive fields of the run, and the read metric stays
         match handle(
             &app,
             Command::UpdateSequenceRun {
@@ -4343,9 +4445,10 @@ mod tests {
         }
     }
 
-    /// The streaming deep-analyze emits one progress event per sample and a final `ProjectAnalyzed`.
-    /// Samples without a BAM-bearing alignment are walked (so the bar advances) but not counted —
-    /// keeping the test free of any reference/network/tree dependency.
+    /// The streaming deep-analyze emits one progress event for each sample, then a final
+    /// `ProjectAnalyzed`. A sample with no alignment that carries a BAM still goes through the walk,
+    /// so that the bar advances, and the count leaves it out. That keeps the test free of any
+    /// dependency on a reference, a network, or a tree.
     #[tokio::test]
     async fn deep_analyze_streams_progress_then_a_final_summary() {
         let app = app().await;
@@ -4402,10 +4505,10 @@ mod tests {
         app.add_biosample(Some(p.id), "S1", None, None).await.unwrap();
         app.add_biosample(Some(p.id), "S2", None, None).await.unwrap();
 
-        // Cancel is raised from a wake hook fired on the first progress emission, simulating the
-        // user clicking Cancel once the first sample is under way. Note there is no re-arming here:
-        // the run no longer resets its own token at entry, which is precisely the race that used to
-        // swallow a cancel arriving between the spawn and the reset.
+        // A wake hook raises Cancel on the first progress event. That is what a user does when
+        // they click Cancel after the first sample starts. Nothing arms the token again here. The
+        // run no longer resets its own token at its start. That reset is exactly the race that used
+        // to swallow a cancel between the spawn and the reset.
         let (tx, rx) = std::sync::mpsc::channel::<Event>();
         let cancel = CancelToken::new();
         let armed = cancel.clone();

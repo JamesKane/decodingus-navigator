@@ -1,6 +1,6 @@
-//! Pure ancestry / genome-region visualization helpers, extracted from the UI shell. Leaf drawing
-//! functions over `egui` with no `App`/`self` state — easy to read, test, and reuse independently of
-//! the view code that calls them.
+//! Pure helpers that visualize ancestry and genome regions, taken out of the UI shell. They are
+//! leaf functions over `egui` that draw, with no `App` or `self` state. They are easy to read, to
+//! test, and to reuse apart from the view code that calls them.
 
 use eframe::egui;
 use navigator_app::{
@@ -24,10 +24,11 @@ fn chrom_sort_key(chr: &str) -> (u8, i64) {
     }
 }
 
-/// Draw a per-chromosome **IBD-segment ideogram** (gap §8): one horizontal bar per chromosome that
-/// carries a shared segment, scaled to the chromosome's true length when `regions` is available (else
-/// to the segments' own span), each IBD segment painted as a teal block (brighter = longer in cM) with
-/// per-segment hover details. Mirrors [`draw_chromosome_painting`]'s painter approach.
+/// Draw an **IBD-segment ideogram** for each chromosome (gap §8). There is one horizontal bar for
+/// each chromosome that carries a shared segment. The bar scales to the true length of the
+/// chromosome when `regions` is there, and to the span of the segments when it is not. Each IBD
+/// segment paints as a teal block, and a brighter block is longer in cM. Each segment has its own
+/// hover details. This mirrors the painter approach of [`draw_chromosome_painting`].
 pub(crate) fn draw_ibd_segments(ui: &mut egui::Ui, segments: &[IbdSegment], regions: Option<&GenomeRegions>) {
     use std::collections::BTreeMap;
     let mut by_chr: BTreeMap<String, Vec<&IbdSegment>> = BTreeMap::new();
@@ -111,14 +112,15 @@ fn roh_pattern_label(p: RohPattern) -> &'static str {
     }
 }
 
-/// Draw the runs-of-homozygosity view: a genome-wide summary line (F_ROH, pattern, length-class
-/// counts) followed by a per-chromosome ideogram of ROH blocks coloured by length class. Mirrors
-/// [`draw_ibd_segments`]. `regions` scales each bar to the chromosome's true length when available.
+/// Draw the runs-of-homozygosity view. First a genome-wide summary line (F_ROH, pattern, counts
+/// for each length class), then an ideogram for each chromosome of ROH blocks, coloured by class.
+/// Mirrors [`draw_ibd_segments`]. `regions` scales each bar to the true length of the chromosome,
+/// when it is there.
 pub(crate) fn draw_roh(ui: &mut egui::Ui, result: &RohResult, regions: Option<&GenomeRegions>) {
     use std::collections::BTreeMap;
     let s = &result.summary;
 
-    // Summary line: F_ROH is the headline inbreeding coefficient.
+    // Summary line: F_ROH is the main inbreeding coefficient.
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("F_ROH {:.3}", s.f_roh)).strong());
         ui.separator();
@@ -195,9 +197,10 @@ pub(crate) fn draw_roh(ui: &mut egui::Ui, result: &RohResult, regions: Option<&G
     }
 }
 
-/// Fill color for a painted segment: the super-population color, tinted (deterministically by the
-/// fine-population code) so distinct fine populations within one continent are distinguishable while
-/// still reading as that continent. Un-resolved segments keep the flat super-population color.
+/// Fill color for a painted segment: the super-population color, with a tint. The fine-population
+/// code sets that tint deterministically, so that two fine populations inside one continent look
+/// different, and both still read as that continent. A segment with no fine population keeps the
+/// flat super-population color.
 fn segment_color(s: &AncestrySegment) -> egui::Color32 {
     let base = parse_hex_color(&population_color(&s.population_code));
     match &s.fine_population_code {
@@ -206,8 +209,9 @@ fn segment_color(s: &AncestrySegment) -> egui::Color32 {
     }
 }
 
-/// Shift a color's lightness by a small deterministic amount keyed on `key` (±~0.18), keeping it in
-/// a visible range — used to separate fine populations that share a super-population base color.
+/// Shift the lightness of a color by a small deterministic amount, which `key` sets (±~0.18). It
+/// keeps the color in a visible range. This separates fine populations that share one
+/// super-population base color.
 fn tint_color(c: egui::Color32, key: &str) -> egui::Color32 {
     let h = key.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
     let f = ((h % 100) as f32 / 100.0 - 0.5) * 0.36; // -0.18..0.18
@@ -215,8 +219,9 @@ fn tint_color(c: egui::Color32, key: &str) -> egui::Color32 {
     egui::Color32::from_rgb(adj(c.r()), adj(c.g()), adj(c.b()))
 }
 
-/// The names of the `k` populations covering the most base pairs on `side` (fine where resolved,
-/// else super-population), most-covered first — the per-side summary for the Simple view.
+/// The names of the `k` populations that cover the most base pairs on `side`, with the largest
+/// first. It gives the fine population where one resolved, and the super-population where none did.
+/// This is the summary of each side for the Simple view.
 pub(crate) fn top_populations_for_side(segments: &[AncestrySegment], side: u8, k: usize) -> Vec<String> {
     use std::collections::HashMap;
     let mut bp: HashMap<String, i64> = HashMap::new();
@@ -232,13 +237,14 @@ pub(crate) fn top_populations_for_side(segments: &[AncestrySegment], side: u8, k
     v.into_iter().take(k).map(|(c, _)| population_name(&c)).collect()
 }
 
-/// Draw the per-chromosome local-ancestry painting: one horizontal bar per autosome (each normalized
-/// to full width) with two stacked side tracks (top = `side_labels[0]`, bottom = `side_labels[1]`),
-/// segments colored by ancestry (fine populations sub-shaded), per-segment hover, and a legend.
+/// Draw the local-ancestry painting for each chromosome. There is one horizontal bar for each
+/// autosome, and each bar normalizes to the full width. Each bar holds two stacked side tracks: the
+/// top is `side_labels[0]`, and the bottom is `side_labels[1]`. Ancestry colors the segments, and a
+/// fine population gets a sub-shade. Each segment has its own hover, and there is a legend.
 pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySegment], side_labels: &[String; 2]) {
     use std::collections::BTreeMap;
-    // Group by autosome number → the two sides' segments. Non-autosomes (X/Y/M / the chr99 fallback)
-    // are skipped — this is autosomal local ancestry.
+    // Group by autosome number → the segments of the two sides. This drops anything that is not an
+    // autosome (X, Y, M, and the chr99 fallback), because this is autosomal local ancestry.
     let mut by_chr: BTreeMap<i64, [Vec<&AncestrySegment>; 2]> = BTreeMap::new();
     for s in segments {
         let Ok(n) = navigator_domain::contig::bare(&s.contig).parse::<i64>() else {
@@ -254,9 +260,10 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
     let copy_h = 7.0; // each of the two side tracks
     let gap = 2.0;
 
-    // Cross-highlight: the population hovered last frame (legend entry or segment). Segments of that
-    // population stay full-color while the rest dim — so a single fine population reads clearly out of
-    // the shades of blue. Carried across frames in egui temp memory; recomputed into `next_hovered`.
+    // Cross-highlight: the population the pointer was over on the last frame, either a legend entry
+    // or a segment. The segments of that population stay at full color, and the rest go dim. One
+    // fine population then reads clearly out of the shades of blue. The temp memory of egui carries
+    // this across frames, and the code calculates it again into `next_hovered`.
     let hover_id = egui::Id::new("chrom_paint_pop_hover");
     let hovered: Option<String> = ui.data(|d| d.get_temp(hover_id));
     let mut next_hovered: Option<String> = None;
@@ -312,7 +319,8 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
                     painter.rect_filled(seg_rect, 0.0, col);
                 }
             }
-            // Per-segment hover: highlight that population + show side / population / Mb-range tooltip.
+            // Hover on a segment: highlight that population, and show a tooltip with the side,
+            // the population and the Mb range.
             if let Some(pos) = response.hover_pos() {
                 let c = if pos.y < rect.top() + copy_h + gap * 0.5 {
                     0usize
@@ -337,8 +345,9 @@ pub(crate) fn draw_chromosome_painting(ui: &mut egui::Ui, segments: &[AncestrySe
             }
         });
     }
-    // Legend: distinct populations present (fine where resolved), each with its tinted swatch. Hovering
-    // an entry highlights its segments above (and vice-versa).
+    // Legend: the distinct populations that are here (fine where one resolved), each with its
+    // tinted swatch. The pointer over an entry highlights its segments above, and the pointer over
+    // a segment highlights the entry.
     let mut seen: Vec<(String, egui::Color32)> = Vec::new();
     for s in segments {
         let code = seg_code(s);
@@ -399,9 +408,10 @@ fn arc_points(c: egui::Pos2, r: f32, a0: f32, a1: f32, steps: usize) -> Vec<egui
 }
 
 /// Draw a solid **pie** chart (`size`×`size`) from `(percentage, color)` slices. Each slice is a fan
-/// from the centre to the outer arc — a simple convex polygon egui tessellates cleanly. (The previous
-/// *donut* built an annular sector as one concave path, whose tessellation left a stray wedge in the
-/// middle.) Slices below 0.5 % are skipped; the first slice starts at 12 o'clock.
+/// from the centre to the outer arc, which is a simple convex polygon that egui tessellates cleanly.
+/// The earlier *donut* built an annular sector as one concave path, and its tessellation left a
+/// stray wedge in the middle. This drops a slice below 0.5 %, and the first slice starts at 12
+/// o'clock.
 pub(crate) fn draw_pie(ui: &mut egui::Ui, size: f32, slices: &[(f64, egui::Color32)]) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     let painter = ui.painter_at(rect);
@@ -414,9 +424,9 @@ pub(crate) fn draw_pie(ui: &mut egui::Ui, size: f32, slices: &[(f64, egui::Color
             continue;
         }
         let frac = *pct as f32 / total;
-        // A slice covering (essentially) the whole pie sweeps a full 360°, where the fan's first and
-        // last arc points coincide — that zero-width slit tessellates as a broken half-disc. Draw a
-        // plain filled circle for the degenerate full-circle case instead.
+        // A slice that covers almost the whole pie sweeps a full 360°, and the first and last arc
+        // points of the fan then meet. That slit of zero width tessellates as a broken half-disc.
+        // Draw a plain filled circle for that degenerate full-circle case instead.
         if frac >= 0.999 {
             painter.circle_filled(c, r, *color);
             break;
@@ -434,8 +444,8 @@ pub(crate) fn draw_pie(ui: &mut egui::Ui, size: f32, slices: &[(f64, egui::Color
     }
 }
 
-/// Pie chart of the super-population proportions (one slice per super-population, colored by
-/// continent).
+/// Pie chart of the super-population proportions: one slice for each super-population, coloured by
+/// continent.
 pub(crate) fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationSummary]) {
     let slices: Vec<(f64, egui::Color32)> = summary
         .iter()
@@ -447,22 +457,21 @@ pub(crate) fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationS
     draw_pie(ui, 120.0, &slices);
 }
 
-/// A generic donut from pre-colored `(percentage, color)` slices (used by the Simple-mode brief for
-/// the ancient-ancestry pie, whose components carry their own palette colors). Optionally labels the
-/// hole with the largest slice's share.
-/// Pie chart from explicit `(percentage, color)` slices (the ancient-component report, which carries
-/// its own colors). `_center_pct` is kept for call-site compatibility but no longer rendered — a
+/// A pie from explicit `(percentage, color)` slices that already carry their colors. The
+/// Simple-mode brief uses it for the ancient-ancestry pie, and the ancient-component report uses it
+/// too. `_center_pct` stays for compatibility at the call sites, and nothing draws it, because a
 /// solid pie has no centre to label.
 pub(crate) fn draw_color_donut(ui: &mut egui::Ui, slices: &[(f64, egui::Color32)], _center_pct: Option<f64>) {
     draw_pie(ui, 120.0, slices);
 }
 
-/// Draw a detailed ancestry breakdown (the fine-population or ancient-component report): the
-/// estimate's `components`, sorted by share, as a name/percentage grid with a proportion bar, plus a
-/// provenance line (method + SNP count). `id_salt` keeps each report's grid distinct.
+/// Draw a detailed ancestry breakdown: the fine-population report, or the ancient-component report.
+/// It takes the `components` of the estimate, sorts them by share, and draws a grid of name and
+/// percentage with a proportion bar. It adds a provenance line with the method and the SNP count.
+/// `id_salt` keeps the grid of each report distinct.
 pub(crate) fn draw_population_components(ui: &mut egui::Ui, result: &AncestryResult, _id_salt: &str, top_n: usize) {
-    // (friendly name, code, percentage) — the component carries `population_name` (e.g. EEF → "Early
-    // European Farmer"), so the legend reads in plain language rather than codes.
+    // (friendly name, code, percentage). The component carries `population_name`, for example EEF →
+    // "Early European Farmer", so the legend reads in plain language and not in codes.
     let mut comps: Vec<(&str, &str, f64)> = result
         .components
         .iter()
@@ -480,8 +489,9 @@ pub(crate) fn draw_population_components(ui: &mut egui::Ui, result: &AncestryRes
         .map(|(_, code, pct)| (*pct, parse_hex_color(&population_color(code))))
         .collect();
 
-    // Horizontal: pie on the left, a colour-swatch legend (friendly name + %) on the right — compact
-    // vertically, so the modern + ancient panels can sit side by side in the Advanced view.
+    // Horizontal: the pie on the left, and a colour-swatch legend (friendly name and %) on the
+    // right. It is compact from top to bottom, so the modern panel and the ancient panel can sit
+    // side by side in the Advanced view.
     ui.horizontal_top(|ui| {
         draw_pie(ui, 108.0, &slices);
         ui.add_space(12.0);
@@ -529,7 +539,7 @@ pub(crate) fn draw_composition_bar(ui: &mut egui::Ui, summary: &[SuperPopulation
     }
 }
 
-/// Parse a `#RRGGBB` hex color, falling back to grey on a malformed string.
+/// Parse a `#RRGGBB` hex color. A malformed string gives grey.
 pub(crate) fn parse_hex_color(hex: &str) -> egui::Color32 {
     let h = hex.trim_start_matches('#');
     if h.len() == 6 {
@@ -546,9 +556,11 @@ pub(crate) fn parse_hex_color(hex: &str) -> egui::Color32 {
 
 /// Marks for [`asset_status_line`]: verified · present-but-unverified · absent.
 ///
-/// Named constants rather than literals so the glyph test can assert them. A character with no
-/// glyph in egui's Proportional family renders as an empty box that no other test and no compiler
-/// can see — which is how this line shipped with `✓` and `✗`, neither of which egui can draw.
+/// These constants have names, and they are not literals, so that the glyph test can assert them.
+/// A character
+/// with no glyph in the Proportional family of egui draws as an empty box, which no other test and
+/// no compiler can see. That is how this line went out with `✓` and `✗`, and egui can draw
+/// neither.
 pub(crate) const MARK_VERIFIED: &str = "✔";
 pub(crate) const MARK_PRESENT: &str = "•";
 pub(crate) const MARK_ABSENT: &str = "✖";
@@ -593,7 +605,8 @@ pub(crate) struct VariantMark {
     pub state: &'static str,
 }
 
-/// A shaded background region on a variant track (chrY PAR/heterochromatin, chrM HVR/coding).
+/// A shaded background region on a variant track (chrY PAR or heterochromatin, chrM HVR or
+/// coding).
 pub(crate) struct TrackRegion {
     pub start: i64,
     pub end: i64,
@@ -601,11 +614,11 @@ pub(crate) struct TrackRegion {
     pub label: String,
 }
 
-/// Draw a single-chromosome **variant track**: one horizontal bar scaled to `length`, optional
-/// shaded background regions, and a vertical tick per variant colored by its consensus state. Hover
-/// over the bar surfaces the nearest variant (`name · pos · state`) and any region under the cursor.
-/// Replaces the genome-wide karyotype ideogram for the Y/mt variant views. Mirrors the
-/// [`draw_ibd_segments`] painter approach (no `egui_plot`).
+/// Draw a **variant track** for one chromosome. It has one horizontal bar that scales to `length`,
+/// optional shaded background regions, and one vertical tick for each variant, coloured by its
+/// consensus state. The pointer over the bar shows the nearest variant (`name · pos · state`), and
+/// any region under the cursor. This replaces the genome-wide karyotype ideogram for the Y and mt
+/// variant views. It mirrors the painter approach of [`draw_ibd_segments`], with no `egui_plot`.
 pub(crate) fn draw_variant_track(
     ui: &mut egui::Ui,
     chrom_label: &str,
@@ -625,7 +638,7 @@ pub(crate) fn draw_variant_track(
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 3.0, egui::Color32::from_gray(28));
 
-    // Background region shading.
+    // The shade behind each region.
     for r in regions {
         let x0 = rect.left() + (r.start.max(0) as f32 / len).clamp(0.0, 1.0) * rect.width();
         let x1 = rect.left() + (r.end.max(0) as f32 / len).clamp(0.0, 1.0) * rect.width();
@@ -724,7 +737,7 @@ pub(crate) fn draw_pca_scatter(ui: &mut egui::Ui, sample: Option<(f64, f64)>, re
                 );
             }
         });
-    // Compact super-population legend (matches the dot colors via a representative member).
+    // Compact super-population legend. It matches the dot colors through a representative member.
     let mut seen: Vec<&str> = Vec::new();
     let mut legend: Vec<(String, egui::Color32)> = Vec::new();
     for (code, _, _) in reference {
@@ -746,7 +759,7 @@ pub(crate) fn draw_pca_scatter(ui: &mut egui::Ui, sample: Option<(f64, f64)>, re
     }
 }
 
-/// egui_plot bar chart. Shared by the whole-genome and per-contig coverage views.
+/// egui_plot bar chart. The whole-genome coverage view and the view for each contig share it.
 pub(crate) fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &str) {
     use egui_plot::{Bar, BarChart, Plot};
     ui.label(format!("Depth histogram — {title}  (depth ≥1; x = depth, y = bases)"));
@@ -761,8 +774,9 @@ pub(crate) fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &
     let max_depth = hist.len().max(2) as f64;
     let max_count = hist.iter().skip(1).copied().max().unwrap_or(1) as f64;
     let chart = BarChart::new(bars).name("bases");
-    // Fixed, non-interactive view: lock pan/zoom/scroll and pin the bounds to the data so the
-    // axes can't drift into negative space or be dragged off-screen.
+    // A fixed view that the user can not move. Lock pan, zoom and scroll, and pin the bounds to
+    // the data. The axes can then not move into negative space, and the user can not drag them off
+    // the screen.
     Plot::new(format!("coverage_histogram_{title}"))
         .height(180.0)
         .allow_drag(false)
@@ -778,15 +792,17 @@ pub(crate) fn coverage_histogram_chart(ui: &mut egui::Ui, hist: &[u64], title: &
         .show(ui, |plot_ui| plot_ui.bar_chart(chart));
 }
 
-/// Draw archaic (Tier B) segments as a per-chromosome track.
+/// Draw archaic (Tier B) segments as a track for each chromosome.
 ///
-/// Deliberately one colour: lineage attribution is gated off (design §7 — a Denisovan split for a
-/// European would be manufactured), so colouring by `ArchaicSource` would imply a distinction the
-/// data does not support. When attribution lands, colour by source here.
+/// One colour, on purpose. The code gates lineage attribution off, because a Denisovan split for a
+/// European would be an invention (design §7). A colour from `ArchaicSource` would suggest a
+/// difference the data does not support. When attribution lands, take the colour from the source
+/// here.
 pub(crate) fn draw_archaic_segments(ui: &mut egui::Ui, result: &navigator_app::ArchaicSegmentResult) {
     use std::collections::BTreeMap;
-    // Order rows NUMERICALLY, not lexicographically: keying a BTreeMap on the contig string gives
-    // chr1, chr10, chr11 … chr19, chr2, chr20 — which reads as a bug to anyone scanning the track.
+    // Order rows NUMERICALLY, and not lexicographically. A BTreeMap with the contig string as the
+    // key gives chr1, chr10, chr11 … chr19, chr2, chr20. To anybody who reads the track, that looks
+    // like a fault.
     let mut by_chr: BTreeMap<(u32, &str), Vec<&navigator_app::ArchaicSegment>> = BTreeMap::new();
     for s in &result.segments {
         let n = s.contig.trim_start_matches("chr").parse::<u32>().unwrap_or(u32::MAX); // non-numeric contigs sort last, keeping their own order

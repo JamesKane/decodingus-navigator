@@ -1,15 +1,15 @@
-//! The desktop workspace aggregate: Project → Biosample → SequenceRun → Alignment,
-//! plus analysis artifacts. A reference-linked graph (the legacy Scala model used
-//! string `atUri`/ref fields); here links are typed foreign keys.
+//! The desktop workspace aggregate: Project → Biosample → SequenceRun → Alignment, plus analysis
+//! artifacts. It is a graph of links. The legacy Scala model used string `atUri` and ref fields;
+//! here a link is a typed foreign key.
 //!
-//! Read metrics live as flat fields (not a 22-tuple JSONB blob), per plan §3. Each
-//! entity has a `New*` form without the DB-assigned id for inserts.
+//! Read metrics live as flat fields, and not as a 22-tuple JSONB blob, as plan §3 says. Each entity
+//! has a `New*` form for inserts, without the id that the DB assigns.
 
 use chrono::{DateTime, Utc};
 use du_domain::ids::SampleGuid;
 use serde::{Deserialize, Serialize};
 
-/// A research project grouping samples.
+/// A research project that groups samples.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     pub id: i64,
@@ -38,13 +38,14 @@ pub struct Biosample {
 }
 
 impl Biosample {
-    /// A biosample with only its identity set — everything descriptive left unpopulated.
+    /// A biosample with only its identity set, and every descriptive field empty.
     ///
     /// This and its siblings ([`SequenceRun::new`], [`NewSequenceRun::new`], [`Alignment::new`],
-    /// [`NewAlignment::new`]) take exactly the fields that have no sensible empty value. They exist
-    /// so the callers that genuinely only know the identity — fixtures, and imports that fill the
-    /// rest in later — stop restating a column of `None`s. Callers that do know more should say so
-    /// with functional-update syntax: `Biosample { sex: Some("M".into()), ..Biosample::new(g, id) }`.
+    /// [`NewAlignment::new`]) take exactly the fields that have no sensible empty value. Some
+    /// callers truly know only the identity: fixtures, and imports that fill the rest in later.
+    /// These constructors stop those callers from a column of `None` values. A caller that does
+    /// know more must say so with functional-update syntax:
+    /// `Biosample { sex: Some("M".into()), ..Biosample::new(g, id) }`.
     pub fn new(guid: SampleGuid, donor_identifier: impl Into<String>) -> Self {
         Biosample {
             guid,
@@ -60,11 +61,12 @@ impl Biosample {
 
 /// A sequencing run for a biosample, with summary read metrics as flat fields.
 ///
-/// The lab/instrument identity block (`instrument_id`/`sample_name`/`library_id`/`platform_unit`/
-/// `flowcell_id`) is inferred from the alignment at import (read-name scan + `@RG` tags) and is the
-/// crowd-source input for resolving the sequencing facility. `sequencing_facility` is the lab
-/// (FGC/FTDNA/YSEQ/Dante/Nebula…) — set manually for now, resolved from `instrument_id` once the
-/// AppView lookup endpoint ships (roadmap D8). All `None` until populated.
+/// The lab and instrument identity block is `instrument_id`, `sample_name`, `library_id`,
+/// `platform_unit` and `flowcell_id`. The import infers it from the alignment, with a read-name
+/// scan and the `@RG` tags. It is the crowd-source input that resolves the sequencing facility.
+/// `sequencing_facility` is the lab (FGC/FTDNA/YSEQ/Dante/Nebula…). A person sets it by hand for
+/// now, and it will come from `instrument_id` when the AppView lookup endpoint ships (roadmap D8).
+/// All of these are `None` until something fills them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SequenceRun {
     pub id: i64,
@@ -77,29 +79,30 @@ pub struct SequenceRun {
     pub pf_reads_aligned: Option<i64>,
     pub mean_read_length: Option<f64>,
     pub mean_insert_size: Option<f64>,
-    /// Exact total sequenced yield in base pairs (Σ read_length_histogram) — the "Gbases" figure of
-    /// the standardized test label. Populated post-analysis; `None` until a read-metrics pass runs.
+    /// Exact total sequenced yield in base pairs (Σ read_length_histogram). This is the "Gbases"
+    /// figure of the standardized test label. It is `None` until a read-metrics pass runs.
     pub total_bases: Option<i64>,
-    /// Read chemistry/mode inferred at import (`SHORT`/`HIFI`/`CLR`/`ONT_SIMPLEX`/`ONT_DUPLEX`) — the
-    /// long-read arm of the standardized test label. `None` until a library-stats scan runs.
+    /// Read chemistry or mode that the import inferred
+    /// (`SHORT`/`HIFI`/`CLR`/`ONT_SIMPLEX`/`ONT_DUPLEX`). This is the long-read arm of the
+    /// standardized test label. `None` until a library-stats scan runs.
     pub read_type: Option<String>,
     /// The sequencing laboratory (a [`crate::labs`] display name), e.g. "YSEQ", "Dante Labs".
     pub sequencing_facility: Option<String>,
     /// Most-frequent instrument serial from the read names / `@RG` (e.g. `A00123`, `m84…`).
     pub instrument_id: Option<String>,
-    /// `@RG SM` — sample name as tagged in the alignment (may differ from the biosample).
+    /// `@RG SM`: the sample name in the alignment tags (it can differ from the biosample).
     pub sample_name: Option<String>,
-    /// `@RG LB` — library id (stable across re-alignments).
+    /// `@RG LB`: library id (stable across realignments).
     pub library_id: Option<String>,
-    /// `@RG PU` — platform unit (flowcell.lane.barcode).
+    /// `@RG PU`: platform unit (flowcell.lane.barcode).
     pub platform_unit: Option<String>,
     /// Most-frequent flowcell id from the read names.
     pub flowcell_id: Option<String>,
 }
 
 impl SequenceRun {
-    /// A run with only the fields the database requires — the whole metrics and lab-identity block
-    /// left `None`, which is exactly its state until an analysis pass fills it in. See
+    /// A run with only the fields the database needs. The whole metrics block and lab-identity
+    /// block stay `None`, which is exactly their state until an analysis pass fills them. See
     /// [`Biosample::new`] for why these constructors exist.
     pub fn new(
         id: i64,
@@ -129,9 +132,9 @@ impl SequenceRun {
         }
     }
 
-    /// The standardized, vendor-neutral test label (`WGS150 45Gbases`, `HiFi 90Gbases`, `BigY-700`),
-    /// or `None` when this is not a yield/product test we standardize (chips, panels) — the caller
-    /// falls back to the raw `test_type`. See [`du_domain::testprofile`].
+    /// The standardized, vendor-neutral test label (`WGS150 45Gbases`, `HiFi 90Gbases`,
+    /// `BigY-700`). `None` when this is not a yield or product test we standardize (chips, panels),
+    /// and the caller then falls back to the raw `test_type`. See [`du_domain::testprofile`].
     pub fn standardized_label(&self) -> Option<String> {
         du_domain::testprofile::standardized_label(&du_domain::testprofile::RunProfile {
             test_type: Some(self.test_type.as_str()),
@@ -184,17 +187,18 @@ pub struct Alignment {
     pub variant_caller: Option<String>,
     pub bam_path: Option<String>,
     pub reference_path: Option<String>,
-    /// SHA-256 of the alignment file's content (hex), computed at import (lazily on first
-    /// analysis for batch-imported files). The file's content identity — used to invalidate
-    /// cached analyses only when the file actually changes. `None` until computed.
+    /// SHA-256 of the content of the alignment file (hex). The import computes it, or the first
+    /// analysis does for a file that came from a batch import. It is the content identity of the
+    /// file, and it invalidates a cached analysis only when the file itself changes. `None` until
+    /// something computes it.
     pub content_sha256: Option<String>,
-    /// The alignment this one was produced from, for a row Navigator derived rather than imported.
-    /// `None` means this is an original — a vendor's alignment, or anything imported directly.
+    /// The alignment this one came from, for a row Navigator derived and did not import. `None`
+    /// means this is an original: the alignment of a vendor, or anything a direct import made.
     ///
-    /// Set by realignment, which re-maps a vendor alignment's reads to another reference and
-    /// registers the result under the same `sequence_run_id`: the same physical library, mapped
-    /// differently. Without this a subject with both builds present has two alignments and no way
-    /// to tell which came from which.
+    /// Realignment sets it. Realignment maps the reads of a vendor alignment to another reference,
+    /// and registers the result under the same `sequence_run_id`. That is the same physical
+    /// library, mapped a different way. Without this field, a subject that has both builds has two
+    /// alignments, and no way to tell which came from which.
     pub derived_from_alignment_id: Option<i64>,
     /// How it was derived, as `realign:<backend>-<preset>` (e.g. `realign:minimap2-sr`). `None`
     /// alongside a `None` parent. [`Alignment::aligner`] still carries the mapper alone.
@@ -202,9 +206,8 @@ pub struct Alignment {
 }
 
 impl Alignment {
-    /// An alignment with only the fields the database requires — no file paths, no caller, and no
-    /// derivation, i.e. an original rather than something Navigator produced. See
-    /// [`Biosample::new`].
+    /// An alignment with only the fields the database needs: no file paths, no caller, and no
+    /// derivation. That is an original, and not something Navigator made. See [`Biosample::new`].
     pub fn new(id: i64, sequence_run_id: i64, reference_build: impl Into<String>, aligner: impl Into<String>) -> Self {
         Alignment {
             id,
@@ -220,11 +223,11 @@ impl Alignment {
         }
     }
 
-    /// Whether Navigator produced this alignment from another one, rather than importing it.
+    /// True when Navigator made this alignment from another one, and did not import it.
     ///
-    /// The distinction is user-facing: a derived alignment can be deleted and rebuilt from its
-    /// source, and the UI has to say where it came from rather than presenting it as something the
-    /// vendor supplied.
+    /// The user sees this distinction. A derived alignment can go, and the code can build it again
+    /// from its source. The UI must also say where it came from, and must not show it as something
+    /// the vendor supplied.
     pub fn is_derived(&self) -> bool {
         self.derived_from_alignment_id.is_some()
     }
@@ -240,7 +243,7 @@ pub struct NewAlignment {
     pub reference_path: Option<String>,
     /// Content SHA-256 if already known at creation (else `None`; filled in lazily).
     pub content_sha256: Option<String>,
-    /// The alignment this was derived from; see [`Alignment::derived_from_alignment_id`].
+    /// The alignment this one came from; see [`Alignment::derived_from_alignment_id`].
     pub derived_from_alignment_id: Option<i64>,
     /// How it was derived; see [`Alignment::derivation`].
     pub derivation: Option<String>,
@@ -263,9 +266,9 @@ impl NewAlignment {
     }
 }
 
-/// A persisted analysis result, keyed by `(alignment, kind, algorithm_version)`. The
-/// version is part of the key so a cache entry is invalidated when the algorithm
-/// changes (plan §6 cache-versioning fix). `payload` is JSON of the result type.
+/// A persisted analysis result, with the key `(alignment, kind, algorithm_version)`. The version
+/// is part of the key, so a change of the algorithm invalidates a cache entry (plan §6, the cache
+/// version fix). `payload` is JSON of the result type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnalysisArtifact {
     pub id: i64,
@@ -274,14 +277,14 @@ pub struct AnalysisArtifact {
     pub algorithm_version: String,
     pub created_at: DateTime<Utc>,
     pub payload: String,
-    /// How this result was produced: `navigator-walk` (CRAM walk) or `pipeline-sidecar`
-    /// (fast-path ingest). `None` for pre-provenance rows → treated as `navigator-walk`.
+    /// What made this result: `navigator-walk` (CRAM walk) or `pipeline-sidecar` (fast-path
+    /// ingest). `None` for a row from before this field → the code reads it as `navigator-walk`.
     pub source: Option<String>,
     /// `full` or `partial` (e.g. lite coverage from sidecars, upgradeable by the deep pass).
     /// `None` → treated as `full`.
     pub completeness: Option<String>,
-    /// The source file's signature (`mtime:size`) when this artifact was computed, for staleness
-    /// checks — a changed BAM/CRAM invalidates it. `None` for pre-feature rows / non-file sources
-    /// (treated as fresh).
+    /// The signature (`mtime:size`) of the source file when the code computed this artifact, for
+    /// a staleness check. A BAM or CRAM that changed invalidates it. `None` for a row from before
+    /// this field, and for a source that is not a file. The code reads those as fresh.
     pub source_sig: Option<String>,
 }
