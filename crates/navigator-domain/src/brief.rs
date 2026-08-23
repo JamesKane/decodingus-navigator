@@ -449,13 +449,6 @@ pub fn ancestry_summary(lang: Lang, super_pops: &[SuperPopulationSummary]) -> St
     }
 }
 
-/// Put the plain-language words on the runs-of-homozygosity verdict that the analysis engine
-/// already reached. `pattern` is the [`RohPattern`] of `navigator_analysis::roh` itself. This does
-/// *not* derive the classification again. So the Simple brief and the Advanced ROH chart can never
-/// disagree about whether a subject reads as outbred, endogamous, or recently consanguineous. The
-/// words are strictly about *shared ancestry between the lines of the parents*. That is a
-/// genealogical read, and never a clinical one.
-///
 /// The casual-mode read of the archaic (Neanderthal) marker count.
 ///
 /// This says it the same way as the Advanced card, on purpose. It gives a **count over what the
@@ -513,6 +506,12 @@ pub fn archaic_brief(
     }
 }
 
+/// Put the plain-language words on the runs-of-homozygosity verdict that the analysis engine
+/// already reached. `pattern` is the [`RohPattern`] of `navigator_analysis::roh` itself. This does
+/// *not* derive the classification again. So the Simple brief and the Advanced ROH chart can never
+/// disagree about whether a subject reads as outbred, endogamous, or recently consanguineous. The
+/// words are strictly about *shared ancestry between the lines of the parents*. That is a
+/// genealogical read, and never a clinical one.
 pub fn roh_brief(
     lang: Lang,
     pattern: RohPattern,

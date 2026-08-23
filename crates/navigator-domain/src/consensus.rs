@@ -320,6 +320,13 @@ fn strand_ambiguous(a: char, d: char) -> bool {
     pair == ['A', 'T'] || pair == ['C', 'G']
 }
 
+/// Sentinel observed "base" for an indel locus the sample **carries** (derived). The indel
+/// genotyper (`navigator_analysis::caller::call_indels_at`) writes it. Mirrors
+/// `navigator_analysis::haplo::INDEL_DERIVED`.
+pub const INDEL_DERIVED: char = '+';
+/// Sentinel for an indel locus the sample does not carry (ancestral). Mirrors `haplo::INDEL_ANCESTRAL`.
+pub const INDEL_ANCESTRAL: char = '-';
+
 /// Make a [`ConsensusState`] from an observed `base`, against the `ancestral` and `derived` alleles
 /// of a variant. This is the canonical projection that turns a stored base back into derived or
 /// ancestral. Genotyping applies it ([`ConsensusObs::observed`]), and [`reproject`] applies it again
@@ -330,14 +337,6 @@ fn strand_ambiguous(a: char, d: char) -> bool {
 ///
 /// Mirrors `navigator_analysis::haplo::locus_state`, which works on the analysis `CallState` and
 /// `Locus` types. Keep the two in step.
-///
-/// Sentinel observed "base" for an indel locus the sample **carries** (derived). The indel
-/// genotyper (`navigator_analysis::caller::call_indels_at`) writes it. Mirrors
-/// `navigator_analysis::haplo::INDEL_DERIVED`.
-pub const INDEL_DERIVED: char = '+';
-/// Sentinel for an indel locus the sample does not carry (ancestral). Mirrors `haplo::INDEL_ANCESTRAL`.
-pub const INDEL_ANCESTRAL: char = '-';
-
 pub fn impute_state(base: Option<char>, ancestral: &str, derived: &str) -> ConsensusState {
     // Indel or MNP (an allele of more than one character). One *base* can not evaluate it. But the
     // indel genotyper resolves it and passes its verdict as a sentinel, so obey that first.
