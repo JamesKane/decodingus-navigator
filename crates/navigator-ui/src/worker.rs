@@ -317,10 +317,8 @@ pub enum Command {
     LoadDonorPrivateY {
         biosample_guid: SampleGuid,
     },
-    /// Load the multi-source Y-variant profile of the subject, which is the concordance over all Y
-    /// sources.
-    ///
-    /// Load the persisted Y-profile snapshot. The cost is low, and nothing genotypes.
+    /// Load the persisted snapshot of the multi-source Y-variant profile of the subject, which is
+    /// the concordance over all Y sources. The cost is low, and nothing genotypes.
     LoadYProfile {
         biosample_guid: SampleGuid,
     },
@@ -1478,8 +1476,6 @@ async fn settle_alignment_command(app: &App, alignment_id: i64, event: Event) ->
     }
 }
 
-/// Do one command against the app, and map its success or failure to an [`Event`].
-///
 /// Read the genealogy bundle of a subject again (the vendor ids, the FTDNA member, and the MDKA),
 /// and wrap it as an [`Event::Genealogy`]. This is the refresh that follows any genealogy mutation,
 /// so that the detail card shows the new state, with no separate "changed" round-trip.
@@ -1511,6 +1507,7 @@ fn ev<T, E: std::fmt::Display>(result: Result<T, E>, ok: impl FnOnce(T) -> Event
     }
 }
 
+/// Do one command against the app, and map its success or failure to an [`Event`].
 pub async fn handle(app: &App, cmd: Command, cancel: &CancelToken) -> Event {
     match cmd {
         Command::LoadOverview => ev(app.project_overview().await, Event::Overview),
@@ -2821,12 +2818,6 @@ async fn run_full_analysis_streaming<W: Fn() + Send + Sync + 'static>(
     wake();
 }
 
-/// Deep-analyze every sample in a project, one at a time. It emits a `DeepAnalyzeProgress` before
-/// each sample, so that the bar advances sample by sample, then a final `ProjectAnalyzed`. It checks
-/// `cancel` before each sample, and a stop leaves the artifacts that already exist in place, because
-/// the pass is additive and idempotent. Each `analyze_biosample` awaits inside, so the worker
-/// runtime stays free for a quick UI query between samples.
-///
 /// Run one workspace chore, and emit progress for each item.
 ///
 /// The loop lives here, and not in `navigator-app`, for the same reason as the loop of
@@ -2982,6 +2973,11 @@ fn fail_chore(chore: navigator_app::Chore, err: String, evt_tx: &Sender<Event>, 
     wake();
 }
 
+/// Deep-analyze every sample in a project, one at a time. It emits a `DeepAnalyzeProgress` before
+/// each sample, so that the bar advances sample by sample, then a final `ProjectAnalyzed`. It checks
+/// `cancel` before each sample, and a stop leaves the artifacts that already exist in place, because
+/// the pass is additive and idempotent. Each `analyze_biosample` awaits inside, so the worker
+/// runtime stays free for a quick UI query between samples.
 async fn deep_analyze_project_streaming(
     app: &App,
     project_id: i64,

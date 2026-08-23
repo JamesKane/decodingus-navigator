@@ -457,13 +457,10 @@ pub(crate) fn draw_ancestry_donut(ui: &mut egui::Ui, summary: &[SuperPopulationS
     draw_pie(ui, 120.0, &slices);
 }
 
-/// A generic donut from `(percentage, color)` slices that already carry their colors. The
-/// Simple-mode brief uses it for the ancient-ancestry pie, whose components carry their own palette
-/// colors. It can also label the hole with the share of the largest slice.
-///
-/// Pie chart from explicit `(percentage, color)` slices (the ancient-component report, which carries
-/// its own colors). `_center_pct` stays for compatibility at the call sites, and nothing draws it,
-/// because a solid pie has no centre to label.
+/// A pie from explicit `(percentage, color)` slices that already carry their colors. The
+/// Simple-mode brief uses it for the ancient-ancestry pie, and the ancient-component report uses it
+/// too. `_center_pct` stays for compatibility at the call sites, and nothing draws it, because a
+/// solid pie has no centre to label.
 pub(crate) fn draw_color_donut(ui: &mut egui::Ui, slices: &[(f64, egui::Color32)], _center_pct: Option<f64>) {
     draw_pie(ui, 120.0, slices);
 }

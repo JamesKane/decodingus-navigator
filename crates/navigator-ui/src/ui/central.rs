@@ -110,8 +110,6 @@ impl NavigatorApp {
         }
     }
 
-    /// The Subjects work area: the detail of the selected subject, with a header and sub-tabs.
-    ///
     /// A segmented sub-tab bar: one row of selectable labels, and a separator. It takes the current
     /// selection by value, and returns the new one. A caller then avoids a `&mut self.field` borrow
     /// clash with `self.tr` inside the row.
@@ -275,6 +273,7 @@ impl NavigatorApp {
         });
     }
 
+    /// The Subjects work area: the detail of the selected subject, with a header and sub-tabs.
     pub(crate) fn subjects_central(&mut self, ui: &mut egui::Ui) {
         let Some(guid) = self.selected_sample else {
             // The first launch, in Simple mode with an empty workspace, has no left panel, and so

@@ -3,15 +3,6 @@
 use super::*;
 
 impl NavigatorApp {
-    /// Y-STR profiles for the selected subject, and an import form for a CSV or TSV marker table.
-    ///
-    /// Donor-level Y-STR consensus over all the panels of the subject (Phase 2 rollup): the modal
-    /// value of each marker, with a flag where the panels disagree.
-    ///
-    /// Y-STR report in the FTDNA or YSEQ style. It has a summary header with a provider toggle,
-    /// tier badges and a conflict count. Below that comes a By-Panel, All-Markers or Consensus
-    /// view. It draws from the `str_profiles` that are already in memory.
-    ///
     /// Y-STR that the code called from sequence (the HipSTR caller → the FTDNA convention), against
     /// the vendor profile that an import gave.
     pub(crate) fn ystr_sequence_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
@@ -250,6 +241,9 @@ impl NavigatorApp {
             });
     }
 
+    /// Y-STR report in the FTDNA or YSEQ style. It has a summary header with a provider toggle,
+    /// tier badges and a conflict count. Below that comes a By-Panel, All-Markers or Consensus
+    /// view. It draws from the `str_profiles` that are already in memory.
     pub(crate) fn ystr_report_section(&mut self, ui: &mut egui::Ui) {
         if self.str_profiles.is_empty() {
             ui.label(egui::RichText::new("No STR profiles yet — import one under Data Sources.").weak());
@@ -353,6 +347,8 @@ impl NavigatorApp {
         }
     }
 
+    /// Donor-level Y-STR consensus over all the panels of the subject (Phase 2 rollup): the modal
+    /// value of each marker, with a flag where the panels disagree.
     fn str_consensus_section(&mut self, ui: &mut egui::Ui) {
         if self.str_profiles.is_empty() {
             ui.label(egui::RichText::new("No STR profiles yet — import one under Data Sources.").weak());
@@ -395,9 +391,6 @@ impl NavigatorApp {
             });
     }
 
-    /// The donor-level ancestry summary (Phase 3): the best estimate over the sources of the
-    /// subject, with the source and the method it came from.
-    ///
     /// The projected (PC1, PC2) of the donor. Only ADMIXTURE carries PCA coordinates now. The deep
     /// (ancient) breakdown is a frequency model, and it has no position in PC space.
     fn sample_pca(&self) -> Option<(f64, f64)> {
@@ -437,6 +430,8 @@ impl NavigatorApp {
         draw_pca_scatter(ui, self.sample_pca(), reference);
     }
 
+    /// The donor-level ancestry summary (Phase 3): the best estimate over the sources of the
+    /// subject, with the source and the method it came from.
     pub(crate) fn donor_ancestry_summary(&self, ui: &mut egui::Ui) {
         let Some((aln, r)) = &self.donor_ancestry else {
             ui.label(egui::RichText::new("No ancestry estimate for any source yet.").weak());
@@ -596,14 +591,13 @@ impl NavigatorApp {
         self.mt_profile_query = query;
     }
 
-    /// The multi-source autosomal consensus (diploid 0/1/2) over the canonical IBD-panel sites.
-    /// Build and Refresh compute it again, and genotype every WGS and chip source at the panel. The
-    /// cached snapshot loads at once.
+    /// The **Summary** sub-tab of the multi-source autosomal consensus, which is a diploid 0/1/2
+    /// call over the canonical IBD-panel sites.
     ///
-    /// The **Summary** sub-tab of the autosomal consensus. It has the build and refresh control,
-    /// plus a one-line digest with the site count and the overall confidence, after a profile
-    /// exists. The heavy table of each site lives on the Profile sub-tab
-    /// ([`autosomal_profile_table`]).
+    /// It has the build and refresh control, plus a one-line digest with the site count and the
+    /// overall confidence, after a profile exists. Build and Refresh compute the consensus again,
+    /// and genotype every WGS and chip source at the panel, and a cached snapshot loads at once.
+    /// The heavy table of each site lives on the Profile sub-tab ([`autosomal_profile_table`]).
     pub(crate) fn autosomal_summary_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         if self.profile_build_control(
             ui,
@@ -1242,6 +1236,7 @@ impl NavigatorApp {
         }
     }
 
+    /// Y-STR profiles for the selected subject, and an import form for a CSV or TSV marker table.
     fn str_section(&mut self, ui: &mut egui::Ui, guid: SampleGuid) {
         let mut want_delete: Option<DataDelete> = None;
         for p in &self.str_profiles {
