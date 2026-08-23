@@ -17,8 +17,9 @@
 //! beam width `B`, and the candidate count `M`.
 //!
 //! The [`Phaser`] trait holds the seam steady. Two other phasers can then go in, and no caller
-//! changes. One is a Mendelian [`TrioPhaser`], for a workspace that holds a parent sample. The
-//! other is a full PBWT phaser.
+//! changes. One is a Mendelian trio phaser, for a workspace that holds a parent sample. The other
+//! is a full PBWT phaser. **Nobody has written either one.** [`ReferencePhaser`] is the only
+//! implementation today, and the beam search above is what stands in for the PBWT.
 
 use std::collections::HashMap;
 
@@ -49,8 +50,8 @@ pub struct PhasedGenotypes {
     pub sites: Vec<PhasedSite>,
 }
 
-/// The phasing strategy. Reference-based statistical phasing by default; a Mendelian trio phaser
-/// when a parent is available (see [`TrioPhaser`]).
+/// The phasing strategy. [`ReferencePhaser`] is the only implementation. A Mendelian trio phaser,
+/// for a workspace that holds a parent sample, goes behind this same trait when someone writes it.
 pub trait Phaser {
     /// Phase the sample's genotypes into two consistent parental sides.
     fn phase(&self, genotypes: &[SiteGenotype]) -> PhasedGenotypes;
