@@ -1,7 +1,14 @@
 # DecodingUs Grid — distributed community realignment & analysis
 
-Status: **design / specification only** (no code). Cross-repo: **Navigator** (edge worker) +
-**AppView** (`decodingus`, coordinator) + **shared** (`decodingus-shared`, wire records).
+Status: **design / specification only** (no code — re-verified by grep 2026-08-24). Cross-repo:
+**Navigator** (edge worker) + **AppView** (`decodingus`, coordinator) + **shared**
+(`decodingus-shared`, wire records).
+
+> **Read [§11](#11-reconnaissance-refresh-2026-08-24) before costing any of this.** The doc was
+> drafted while realignment was still a plan. Realignment has since shipped, and it shipped on a
+> **different aligner backend than D1 locks in** — which is why D1 and §7.3 below are struck and
+> corrected. Three of the four §2 "greenfield" items also moved. The design's shape survives the
+> refresh intact; its estimates do not.
 
 A Seti@Home / Folding@Home–style layer. The AppView publishes a list of **work units** — public
 ENA samples. Navigator instances volunteer to reserve a unit for a bounded lease, fetch the data
@@ -21,7 +28,7 @@ These four forks were decided before drafting; the doc is built on them.
 
 | # | Decision | Choice | Why |
 |---|----------|--------|-----|
-| D1 | **Aligner integration** | **minimap2 via `minimap2-rs` FFI** (`static` + `simde`) | Single-binary spirit preserved; independently the chosen backend in [`realignment-module.md`](realignment-module.md). The Grid *consumes* that module's engine — it does not re-decide it. |
+| D1 | **Aligner integration** | ~~minimap2 via `minimap2-rs` FFI (`static` + `simde`)~~ → **`minimap2-pure-rs` (pure Rust)** — corrected 2026-08-24, [§11](#11-reconnaissance-refresh-2026-08-24) | The rationale held and the answer changed under it. This row said the Grid *consumes* the realignment module's engine rather than re-deciding it — correct, and that module shipped on a **pure-Rust translation of minimap2 v2.31**, not an FFI binding. No C toolchain, so every Rust target builds, **Windows included**. Measured 99.74 % byte-identical to the C implementation, with zero disagreements at MAPQ > 0. |
 | D2 | **Trust model** | **Adaptive replication** | Untrusted nodes run in shadow/quorum; reputation graduates them to trusted single-run + random spot-recheck. BOINC-proven; K× cost only where trust is unearned. |
 | D3 | **First cut** | **Staged — CRAM-passthrough first** | Phase 1 claims ENA samples that already have a CRAM/BAM, skips realignment, and just runs the stack. Proves the whole lease→submit→validate→leaderboard loop with zero aligner risk. Phase 2 adds FASTQ→minimap2. |
 | D4 | **Result home** | **Contributor PDS + AppView canonical** | Contributor publishes fed records into their *own* repo, tagged with the ENA accession as subject + a `computedBy`/provenance block; AppView ingests, dedups by `(accession, method)`, promotes a canonical copy. Keeps federation; requires the new subject≠contributor split. |
@@ -57,9 +64,11 @@ mostly already in the AppView DB.**
   (coverage+read_metrics+sex), `run_sv`, `run_denovo_caller`, + `haplogroup.rs`
   (`assign_y_haplogroup`, `assign_mtdna_haplogroup_from_alignment`, `place_{y,mt}_consensus`,
   `estimate_ancestry_from_consensus`). Each computes + persists a versioned artifact.
-- **The realignment engine** — [`realignment-module.md`](realignment-module.md) fully specifies
-  revert → minimap2-rs align → sort/markdup/CRAM → register, incl. the `.mmi` index cache and
-  per-tech presets. **The Grid is that module's first heavy consumer.**
+- **The realignment engine — SHIPPED, no longer merely specified.**
+  [`realignment-module.md`](realignment-module.md) merged as `bf576ab` and released in
+  `v0.1.0-alpha.17`: revert → map → sort / duplicate-mark / CRAM → register, with the aligner-index
+  cache and the per-technology presets, in the `navigator-align` crate. **The Grid is that module's
+  first heavy consumer** — and it is no longer waiting on it. This is what unblocked the Grid.
 - **Reference fetch/cache** — `navigator-refgenome::Gateway::resolve_reference("chm13v2", …)`
   (streaming download, SHA-pinned, on-disk cache).
 - **Durable publish outbox** — `publish_*` (`ibd_exchange.rs`) → `enqueue_publish` → `sync_outbox`
@@ -75,8 +84,11 @@ mostly already in the AppView DB.**
 - `du-atproto::signature::verify_did_key` + `did.rs` (`did:key` ↔ Ed25519).
 
 ### Greenfield (net-new)
-1. **ENA sequence fetch** — Navigator has *zero* download code; AppView pulls study metadata only.
-   Need run-level file resolution (FASTQ/CRAM URLs, md5, bytes) + a resilient downloader.
+1. **ENA sequence fetch — the AppView half is largely built already** (corrected 2026-08-24, §11).
+   `EnaClient::run_files` resolves the run-level `filereport` and returns exactly the fields a work
+   unit needs; `du-jobs/crawl_project.rs` groups those runs by sample and materializes the files. The
+   genuinely missing piece is the **Navigator-side downloader** — resumable and **md5**-verified,
+   which is *not* what `refgenome::download` gives you (SHA-256, no `Range`, one blind retry).
 2. **Work-unit coordination** — the lease-*acquisition* SQL (`… WHERE lease_expires_at < now() …
    FOR UPDATE SKIP LOCKED RETURNING`), the `grid.work_unit` catalog, and the claim/submit/validate
    endpoints. The tables partly exist; the logic does not.
@@ -130,7 +142,8 @@ quorum alone, with ~5 % of such units randomly re-queued for a shadow replica.
 
 ## 4. AppView — data model & coordination
 
-New Postgres schema **`grid`** (migration `0059_grid.sql`, next in sequence). Reuse `fed.pds_node`
+New Postgres schema **`grid`** (migration `0075_grid.sql` — next in sequence as of 2026-08-24; the
+doc originally guessed `0059`). Reuse `fed.pds_node`
 + `fed.device_key`; everything work-specific is new so we don't overload `fed.pds_submission`'s
 existing semantics.
 
@@ -330,6 +343,12 @@ compare a small canonical digest of **discrete calls** plus **bucketed** continu
 }
 ```
 
+> **`mt_terminal` is a problem, not a field.** It demands an exact match, but the analysis path
+> deliberately does not produce it: `App::analyze_biosample` states in its own doc comment that it
+> "does not assign mtDNA, by design. That value is not final on CHM13." Since the whole Grid
+> realigns *to* CHM13, this is not a wiring gap to route around. Settle it before P1 — see
+> [§11](#11-reconnaissance-refresh-2026-08-24).
+
 - **Digest is signed** with the device key (`grid.submission.digest_sig`) — the same
   `verify_did_key` path proves *this node* produced *this digest*.
 - **Comparison rule:** two digests **agree** iff all discrete calls match exactly and every bucketed
@@ -414,9 +433,12 @@ P1 (passthrough, no realign) pays `base + analysis_factor` — lighter, reflecti
     downloads the manifest's URLs). Resilient/resumable/md5-verified, mirroring `refgenome::download`.
   - `grid.rs` — the coordination client (register/claim/heartbeat/submit/release) using the
     device-key-signed pattern from `ibd_exchange.rs`, and the **per-unit driver**.
-  - Lift `run_full_analysis_streaming` (currently in `navigator-ui/src/worker.rs`) into an
-    app-level `App::run_full_analysis(alignment_id, progress)` so the same sequence runs headless.
-    This is a prerequisite refactor (the worker keeps calling the lifted function).
+  - ~~Lift `run_full_analysis_streaming` into an app-level `App::run_full_analysis`~~ — **this
+    prerequisite mostly landed already** (2026-08-24, §11). `App::analyze_biosample`
+    (`queries.rs:975`) is the headless, cancellable, resumable, preflighted **unit of work for one
+    sample**, built for batch analysis in PR #47. The driver calls it, plus
+    `estimate_ancestry_from_consensus` for the biosample-level ancestry. It covers coverage, Y, sex
+    and read metrics — **not** mtDNA and **not** SV, both by deliberate choice, which §11 unpacks.
 - **`navigator-ui`** — a "Contribute / Grid" panel (claimed units, per-stage progress, credits,
   leaderboard rank, pause/resume, resource budget) + `cli.rs` `contribute` subcommand.
 
@@ -431,7 +453,7 @@ claim unit → preflight (disk budget for download + scratch + output; refuse ea
   → P1  CRAM/BAM: index if needed; register Alignment on its stored build
      P2  FASTQ:    minimap2-rs → CHM13 → sort/markdup/CRAM → register Alignment
                     (realignment-module.md Stages B–D; no revert — inputs are already unaligned)
-  → App::run_full_analysis(alignment_id)  → coverage/sex/read_metrics/SV/Y/mt
+  → App::analyze_biosample(biosample)     → coverage/sex/read_metrics/Y  (NOT SV — see §11)
   → estimate_ancestry_from_consensus (biosample level)
   → build result DIGEST; sign with DeviceKey
   → build fed records (Provenance{computed_by=self, …}, ExternalId ENA=<acc>) → publish_* (sync_outbox)
@@ -444,11 +466,20 @@ claim unit → preflight (disk budget for download + scratch + output; refuse ea
   (`NAVIGATOR_ANALYSIS_THREADS` / `NAVIGATOR_REALIGN_THREADS`), pause on AC/thermal (nice-to-have).
 - **CLI:** `navigator contribute --data-kind cram --max-units 4 --lease-days 3 --max-disk 200G`.
 
-### 7.3 Platform reality
-P1 (passthrough) runs everywhere Navigator does. P2 (realign) inherits the realignment module's
-**macOS + Linux (incl. Apple Silicon via `simde`)** target; Windows nodes can still contribute in P1
-(passthrough) and get FASTQ realignment once the Windows FFI spike lands. `/grid/claim` filters by
-the node's advertised capabilities so Windows nodes are simply never offered FASTQ units.
+### 7.3 Platform reality (rewritten 2026-08-24 — the constraint this section was built on is gone)
+
+**Both phases run everywhere Navigator does, Windows included.** The original text below the fold
+assumed the aligner reached the node through a C FFI binding, which is why it split the fleet by
+operating system. `navigator-align` ships a **pure-Rust** mapper (D1), so there is no C toolchain,
+no `simde` target list, and no Windows spike to wait for. A Windows node can take FASTQ units on the
+day P2 opens.
+
+`/grid/claim` should still filter on advertised capabilities — but on **RAM, free disk and thread
+count**, which is what actually decides whether a node can finish a 30× WGS unit. Not on OS.
+
+> ~~*Superseded:* "P2 (realign) inherits the realignment module's macOS + Linux (incl. Apple Silicon
+> via `simde`) target; Windows nodes can still contribute in P1 (passthrough) and get FASTQ
+> realignment once the Windows FFI spike lands."~~
 
 ---
 
@@ -456,11 +487,11 @@ the node's advertised capabilities so Windows nodes are simply never offered FAS
 
 | Phase | Deliverable | Proves |
 |-------|-------------|--------|
-| **P0** | Shared: `Provenance` block + subject/`computedBy` on records; `messages::grid` canonical strings; AppView `grid` schema (`0059`) + reaper; `du-jobs` ENA curation (CRAM-only). | Wire contracts + coordination substrate. |
+| **P0** | Shared: `Provenance` block + subject/`computedBy` on records; `messages::grid` canonical strings; AppView `grid` schema (`0075` — the tree is at `0074`, not the `0059` this doc guessed) + reaper; `du-jobs` ENA curation (CRAM-only). | Wire contracts + coordination substrate. |
 | **P1** | **CRAM passthrough, end-to-end.** Navigator `ena.rs` + `grid.rs` + lifted `run_full_analysis`; `contribute` CLI; register/claim/heartbeat/submit/release; validator (adaptive replication) + `grid.credit` + `/grid/leaderboard`. No aligner. | The **whole distributed loop** (lease→compute→submit→validate→canonical→credit→board) with zero aligner risk. |
 | **P2** | **FASTQ → minimap2 realign.** Wire the realignment engine ([`realignment-module.md`](realignment-module.md)) into the driver for `data_kind=FASTQ`; open FASTQ curation; per-Gbp credit. | The real vision — uniform hs1 realignment of arbitrary ENA reads. |
 | **P3** | GUI Grid panel (progress, credits, rank, budget); rolling leaderboards; public `/grid/work/{acc}` result pages; grid-wide stats. | Community-facing polish + the visible leaderboard. |
-| **P4** | Hardening: trust-tier tuning, divergence-penalty calibration, spot-check rate tuning, ENA fair-use throttles, Windows FASTQ (realignment P5 spike). | Robustness at scale. |
+| **P4** | Hardening: trust-tier tuning, divergence-penalty calibration, spot-check rate tuning, ENA fair-use throttles. (~~Windows FASTQ~~ — no longer a milestone; the pure-Rust mapper made it free. See §11.) | Robustness at scale. |
 
 ---
 
@@ -497,3 +528,138 @@ the node's advertised capabilities so Windows nodes are simply never offered FAS
   here; `du-web/src/sig.rs` + `fed.device_key` — the reused edge-auth primitive;
   `social.reputation_event` — the reused credit ledger.
 - `du-domain::fed` — the wire records extended with `Provenance` + subject/`computedBy`.
+
+---
+
+## 11. Reconnaissance refresh (2026-08-24)
+
+§2 was written against the three repos as they stood when the Grid was still blocked on
+realignment. Realignment shipped on 2026-08-14, and this section re-walks §2's claims against the
+tree. **Every claim below was checked by grep, not by reading a status header.**
+
+The headline: the design's *shape* survives intact — staged phases, adaptive replication, digest
+comparison, the lease state machine. What moved is the **cost**, and it moved down. One locked
+decision was overtaken, one prerequisite refactor turned out to be mostly built, and one greenfield
+item turned out to be half-built in the AppView.
+
+### 11.1 The aligner is pure Rust, so the fleet is not split by OS
+
+D1 locked "minimap2 via `minimap2-rs` FFI (`static` + `simde`)". `navigator-align` instead uses
+**`minimap2-pure-rs`**, a pure-Rust translation of minimap2 v2.31 — the crate's own module doc says
+it "does not link the C library through FFI. It needs no C toolchain, so Windows and every other
+Rust target build unchanged," with a parity measurement of **99.74 % byte-identical output and zero
+disagreements at MAPQ > 0**.
+
+This is the single largest correction in this refresh, because §7.3 built a two-tier fleet on top of
+the assumption it contradicts:
+
+| Assumed | Actual |
+|---|---|
+| P2 realign is macOS + Linux only | P2 realign runs on every Rust target |
+| Windows nodes are P1-only until an FFI spike lands | Windows nodes take FASTQ units the day P2 opens |
+| `/grid/claim` filters by OS capability | `/grid/claim` should filter on **RAM / disk / threads** |
+| P4 carries "Windows FASTQ (realignment P5 spike)" | That milestone does not exist |
+
+§7.3 is rewritten and the P4 row is corrected in place.
+
+### 11.2 The §7.1 prerequisite refactor is mostly done — PR #47 did it for other reasons
+
+§7.1 called for lifting `run_full_analysis_streaming` out of `navigator-ui/src/worker.rs` into the
+app so the sequence could run headless. That function is still in `worker.rs`, but the Grid no
+longer needs it lifted: **`App::analyze_biosample` (`queries.rs:975`) is already that unit of work**,
+built in `331e8cb` (PR #47, "Make batch analysis tractable"). Its own doc comment calls it "the unit
+of work for one sample. The project pass and the deep-analyze job both call it." It is headless,
+cancellable mid-sample, resumable (skips what the store already holds), and runs a preflight before
+any I/O so a batch does not discover a file problem the slow way — all properties the per-unit driver
+in §7.2 would otherwise have had to grow itself.
+
+**But read what it deliberately omits, because §5.2 depends on one of them.**
+
+### 11.3 `mt_terminal` in the digest contradicts the analysis path
+
+`analyze_biosample` states: *"The method does not assign mtDNA, by design. That value is not final on
+CHM13. See the notes on the reconciliation and the liftover."* §5.2's digest lists `mt_terminal` as a
+field requiring an **exact match** for two submissions to agree.
+
+The Grid realigns everything **to** CHM13. So this is not a wiring gap that the driver can route
+around by calling one more method — the value the digest wants to compare is the value the analysis
+path declines to state on this reference. Three ways out, in the order I would consider them:
+
+1. **Drop `mt_terminal` from the agreement test** and publish it in the full records only, exactly as
+   §5.2 already does for continuous fields. Cheapest, and loses little: `y_terminal`, sex, and the
+   ancestry argmax already carry the discrete signal.
+2. **Resolve CHM13 mt placement first**, and make it a P1 prerequisite rather than a Grid concern.
+   Correct, but it puts a research question on the critical path of an infrastructure milestone.
+3. **Pin the digest to `Chm13v2MaskedRcrs`** (the rCRS-masked analysis reference), which is the same
+   fork §9 already flags as an open question under "Target reference". If mt is to stay in the
+   digest, this is the coherent way — and it makes §9's question load-bearing rather than academic.
+
+**Recommendation: (1) for P1, and let §9's reference question settle on its own timeline.** Shipping
+the coordination loop should not wait on an mtDNA placement decision.
+
+### 11.4 SV does not belong in the per-unit driver
+
+§7.2's driver line listed SV. `analyze_biosample` excludes it, and `CLAUDE.md` is explicit that SV is
+opt-in and never automatic because it walks every read for its own sake: **2–5 h per WGS sample,
+against ~1 h for the entire rest of the stack**. Putting it in the driver roughly triples what a
+volunteer pays per unit — to compute a signal the digest never compares. Removed from §7.2.
+
+### 11.5 The AppView already resolves ENA at run level, and already curates
+
+§2 greenfield #1 said "AppView pulls study metadata only". That has not been true for some time:
+
+- **`EnaClient::run_files(accession)`** (`du-external/src/ena.rs`) enumerates every run for a study
+  or BioProject through the ENA `filereport` endpoint, requesting exactly the columns a work unit
+  needs: `submitted_ftp`, `submitted_md5`, `submitted_bytes`, `submitted_format`, `fastq_ftp`,
+  `fastq_md5`, `fastq_bytes`, `instrument_model`, `library_layout`, `read_count`, `first_public`.
+  Parsing is header-driven, so it tolerates ENA reordering fields.
+- **`du-jobs/src/crawl_project.rs`** already groups those runs by sample, upserts each biosample with
+  `source = EXTERNAL`, links it to the study's publications, and materializes the files through
+  `du_db::sequence::ingest_libraries` — idempotent at sample granularity. It already separates
+  `ALIGNED = [BAM, CRAM]` from `INDEX = [CRAI, BAI]`, **which is precisely D3's CRAM-passthrough
+  selector**.
+
+So §4.5's "curating the work list" is closer to a **query over `genomics.sequence_file` plus a
+`grid.work_unit` projection** than to a new ENA integration. The politeness discipline §6.2 asks for
+(bounded batches, a request gap) is already the crawl job's practice.
+
+### 11.6 The Navigator downloader is a real build, not a copy
+
+§7.1 said `ena.rs` should mirror `refgenome::download`. It cannot, quite. That function streams to a
+`.part` file, computes **SHA-256** inline so the caller needs no second read, and retries exactly
+once on a transient error — but it sends **no `Range` header, so it cannot resume**, and ENA
+publishes **md5**. On multi-GB run files over a volunteer's connection, resume is the feature that
+decides whether a unit ever completes. Budget `ena.rs` as new code: resumable, md5-verified,
+bounded-concurrency. The `.part` + rename discipline is worth copying; the hash and the retry are not.
+
+### 11.7 Everything else in §2 still holds
+
+Re-verified unchanged:
+
+- **The `fed.pds_*` lease/node/submission scaffold is still dormant** — the only references anywhere
+  in the AppView are a migrations test and the dedup repointer. Still available, still unwired.
+- **`Provenance` does not exist** in `du-domain` (§5.1 remains fully greenfield). `ExternalId
+  { namespace, value }` does exist and is ready to carry the ENA accession.
+- **No `grid` schema exists.** The AppView is at migration **`0074`**, so the Grid schema is `0075`,
+  not the `0059` §8 guessed.
+- **Navigator's signing and publishing spine is intact** — `navigator-sync::DeviceKey`, the
+  `exchange_get_poll` signed-GET pattern (`ibd_exchange.rs:613`), `enqueue_publish` → `sync_outbox` →
+  `drain_outbox`.
+- **Edge auth got stronger, not weaker.** The AppView now has `verify_signed_fresh` alongside
+  `verify_signed`/`ensure_fresh_ts`, plus a `signed_request_seen` table (migration `0067`) — a
+  replay-**seen** guard, where §6.2 assumed only the ±300 s freshness window.
+
+### Where this leaves the plan
+
+**P0/P1 as written, with the corrections above folded in.** D3 staged CRAM-passthrough first to
+retire aligner risk before the coordination loop — and that risk has since evaporated on its own, so
+what P1 now buys is purely the value of proving lease → compute → submit → validate → canonical →
+credit end to end on the cheapest possible unit. That is still worth doing first.
+
+**The critical path is the AppView half**, not Navigator's. `grid.work_unit` + the
+`FOR UPDATE SKIP LOCKED` claim + the validator job are the parts with no existing analogue. On the
+Navigator side, P1 is now roughly: a signed HTTP client (copy `exchange_get_poll`), a resumable md5
+downloader (§11.6), and a driver that calls `analyze_biosample` and
+`estimate_ancestry_from_consensus` and signs a digest.
+
+**One decision to settle before writing P1 code:** `mt_terminal` in the digest (§11.3).

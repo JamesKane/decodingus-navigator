@@ -140,6 +140,14 @@ here under its old number so that existing references still resolve.
   instances reserve a lease, fetch, realign to CHM13, run the analysis stack, submit signed results,
   and earn capped compute credit. Cross-repo (Navigator worker + AppView coordinator + shared wire
   records). **Depended on 2.1, which has now shipped — this is unblocked for the first time.**
+- **Re-scoped 2026-08-24** — the design's §11 is a reconnaissance refresh against all three repos.
+  Net: cheaper than drafted. The aligner turned out to be **pure Rust**, so there is no OS split and
+  no Windows spike (D1 and §7.3 corrected in place); `App::analyze_biosample` from PR #47 is already
+  the headless per-unit driver the design asked someone to build; and the AppView already resolves
+  ENA at run level and curates it (`EnaClient::run_files` + `du-jobs/crawl_project.rs`). The
+  critical path is the **AppView half** — `grid.work_unit`, the `SKIP LOCKED` claim, the validator.
+  **One decision to settle before P1 code:** `mt_terminal` sits in the agreement digest, but
+  `analyze_biosample` declines to assign mtDNA on CHM13 by design (§11.3).
 
 ### 2.3 Academic / public-dataset (ENA) import
 - **Design:** [`design/academic-ena-import.md`](design/academic-ena-import.md)
