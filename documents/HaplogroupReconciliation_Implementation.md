@@ -1,5 +1,13 @@
 # Haplogroup Reconciliation Implementation
 
+> **STALE — Scala-era document (header added 2026-08-24).** The types and file paths below were
+> deleted at the Rust cutover (`0dee32c`, 2026-06-19). The **problem it states still holds** — a chip
+> result must not overwrite a WGS result, and calls must be tracked per tree provider — but the
+> mechanism is now `navigator-domain::consensus` (`reconcile` / `ConsensusStatus`) plus
+> `reconciliation::CallProvenance` for caller precedence. Read
+> [`design/MultiSource_Reconciliation.md`](design/MultiSource_Reconciliation.md) and
+> [`design/external-caller-precedence.md`](design/external-caller-precedence.md) instead.
+
 ## Overview
 
 This document describes the multi-run haplogroup reconciliation system implemented to prevent lower-quality results (e.g., chip data) from overwriting higher-quality results (e.g., WGS data), and to properly track results across different tree providers.

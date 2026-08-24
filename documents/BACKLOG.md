@@ -1,7 +1,8 @@
 # DUNavigator Backlog
 
-Last reviewed: 2026-08-05 (§3.3 block tree built; §1.1 archaic status corrected; four
-pre-existing bugs found during that work recorded under Cross-cutting). Rewritten against the Rust
+Last reviewed: 2026-08-24 (§3.3 corrected — the block tree merged, and the private-Y batch has had a
+GUI trigger since PR #47; §1.2 re-verified genuinely open; the `project_report` item closed).
+Earlier passes: 2026-08-23 (design-header audit, PR #58) and 2026-08-05. Rewritten against the Rust
 tree 2026-07-26.
 
 > **This file was rewritten.** The previous version was the **Scala-era** inventory (last reviewed
@@ -48,6 +49,10 @@ Code exists or the design is settled; these are the near-term threads.
 - **Scope:** a GUI trigger for panel genotyping (`genotype_panel_for_subject` is CLI-only today —
   `navigator genotype-panel`), and folding panel batch mode into the project-wide analyze /
   deep-analyze streaming flow with progress.
+- **Re-verified open 2026-08-24:** `genotype_panel_for_subject` still has exactly two callers,
+  itself and `cli.rs:1945`. The **workspace chore table** (`navigator-app/src/maintenance.rs`, PR
+  #47) is now the obvious home — it already answers the identical question for the private-Y batch,
+  and a fourth chore is one row.
 
 ### 1.3 Chromosome painter v2 — tail
 - **Memory:** `chromosome-painter-v2.md`
@@ -135,6 +140,14 @@ here under its old number so that existing references still resolve.
   instances reserve a lease, fetch, realign to CHM13, run the analysis stack, submit signed results,
   and earn capped compute credit. Cross-repo (Navigator worker + AppView coordinator + shared wire
   records). **Depended on 2.1, which has now shipped — this is unblocked for the first time.**
+- **Re-scoped 2026-08-24** — the design's §11 is a reconnaissance refresh against all three repos.
+  Net: cheaper than drafted. The aligner turned out to be **pure Rust**, so there is no OS split and
+  no Windows spike (D1 and §7.3 corrected in place); `App::analyze_biosample` from PR #47 is already
+  the headless per-unit driver the design asked someone to build; and the AppView already resolves
+  ENA at run level and curates it (`EnaClient::run_files` + `du-jobs/crawl_project.rs`). The
+  critical path is the **AppView half** — `grid.work_unit`, the `SKIP LOCKED` claim, the validator.
+  **One decision to settle before P1 code:** `mt_terminal` sits in the agreement digest, but
+  `analyze_biosample` declines to assign mtDNA on CHM13 by design (§11.3).
 
 ### 2.3 Academic / public-dataset (ENA) import
 - **Design:** [`design/academic-ena-import.md`](design/academic-ena-import.md)
@@ -171,14 +184,18 @@ here under its old number so that existing references still resolve.
 - **Status:** **Mostly built.** Per-subject: `ui/descent.rs` draws the root→terminal path
   (YFull-YReport style, Simple and Advanced densities) and `ui/branch.rs` gives a per-marker branch
   report with TSV export. Cohort: the project **block tree** below.
-- **Built, cohort-scoped** — [`design/project-block-tree.md`](design/project-block-tree.md), branch
-  `feat/project-block-tree` (13 commits, unpushed). A project Y **block tree**: induced subtree over
-  the members' terminals, equivalent-SNP blocks, and **candidate branches** inferred from private
-  variants two or more members share — the thing a published tree cannot show. A `ProjectTab::Tree`
-  canvas draws it; clicking a candidate opens the per-carrier read evidence behind it.
+- **Built, cohort-scoped** — [`design/project-block-tree.md`](design/project-block-tree.md), merged
+  to `main` as `4cb9eca` (PR #45, 2026-08-06) and released in `v0.1.0-alpha.16`. A project Y **block
+  tree**: induced subtree over the members' terminals, equivalent-SNP blocks, and **candidate
+  branches** inferred from private variants two or more members share — the thing a published tree
+  cannot show. A `ProjectTab::Tree` canvas draws it; clicking a candidate opens the per-carrier read
+  evidence behind it.
 - **Scope remaining:** a zoomable/searchable *whole-tree* view (this is cohort-scoped by design), and
-  the open items in that doc's §11 — chiefly **no GUI trigger for the private-Y batch** (CLI only,
-  and candidates cannot fire without it) and 162 `:`-suffixed terminals that fall to `unplaced`.
+  the open items in that doc's §11 — chiefly the **untested canvas interaction layer** (all 13 tests
+  drive the pure `layout()` function, which has no input handling; the click bug that made candidate
+  review unreachable shipped because of exactly that gap). The private-Y batch **does** have a GUI
+  trigger now — the chore table from PR #47 — and the 162 `:`-suffixed terminals are closed as
+  won't-fix (§11.5: stale placements against a superseded tree generation, not a naming convention).
 - **Note:** phase 3 grew well past its original scope because private-Y existed for exactly one
   subject workspace-wide. That pulled in a `private-y --project` batch, a **VCF-backed private-Y
   engine** for the majority of members who have no alignment, and an artefact-filter stack. Four
@@ -224,9 +241,10 @@ here under its old number so that existing references still resolve.
     could have answered (50–90 s → 1.3–3.3 s);
   - **`localize` leaked its alignment copies** — cleanup lived in one caller while three created
     them; reached 687 files / **145 GB** and filled the volume mid-run. Now RAII with a refcount.
-- **`project_report` reads every artifact payload** — it still uses the unfiltered
-  `artifact::list_for_alignments`, which pulled gigabytes of `tree-genotype` JSON to read a few small
-  kinds. `artifact::list_for_alignments_of_kind` exists; convert the caller.
+- **`project_report` read every artifact payload — done** (`c0994d0`, 2026-08-23). It used the
+  unfiltered `artifact::list_for_alignments`, which pulled gigabytes of `tree-genotype` JSON to read
+  a few small kinds; it now reads only the five kinds it uses (`PROJECT_REPORT_KINDS`) through
+  `artifact::list_for_alignments_of_kind`.
 - **mtDNA FASTA export** — the Scala app had it; the Rust `export.rs` covers coverage / read-metrics
   / ancestry / mtDNA-variants / IBD-segments / branch / descent / callable-BED / subject-brief
   (TSV + HTML), but **not** FASTA. Carry it over if still wanted. No PDF export exists either.
