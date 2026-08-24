@@ -1,11 +1,13 @@
 # Realignment module — design & options
 
-Status: **built and validated — phases 1–5 complete (2026-08-14).** Branch: `worktree-realignment`,
-not yet merged. The measurements from the phase 0 spike (2026-08-08), the backend parity work
+Status: **MERGED and SHIPPED** — phases 1–5 complete (2026-08-14), merged to `main` as `bf576ab`
+(2026-08-14), first released in **`v0.1.0-alpha.17`**. The branch was `worktree-realignment`; a
+follow-up simplification pass ran on `chore/realign-simplify-pass`. The measurements from the
+phase 0 spike (2026-08-08), the backend parity work
 (2026-08-10), the first whole-genome run (2026-08-12), the second (2026-08-13) and the third — which
 passed every acceptance criterion — are folded in below. See
 [Phase 5 result](#phase-5-result--wgs229-end-to-end-2026-08-14).
-Scope if built: `navigator-analysis` (revert + post-process), a new `navigator-align` crate
+Scope as built: `navigator-analysis` (revert + post-process), a new `navigator-align` crate
 (the mapper — see Decision 1), `navigator-refgenome` (aligner-index cache), `navigator-app`
 (job orchestration + provenance), `navigator-store` (alignment provenance migration),
 `navigator-ui` (opt-in background job + warnings).

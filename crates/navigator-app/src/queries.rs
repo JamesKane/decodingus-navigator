@@ -11,7 +11,12 @@ use super::*;
 ///
 /// A project report reads five kinds of artifact for each alignment of each member. So the earlier
 /// form, one read for each cell, sent thousands of queries to open one tab. This type reads each
-/// artifact in one `IN` query and stats each BAM file one time.
+/// wanted kind in one `IN` query and stats each BAM file one time.
+///
+/// The load asks for the kinds that the caller names, and for no other kind. A read of every kind
+/// is not correct here. Some payloads are very large. A `tree-genotype` row runs to megabytes, and
+/// a cohort of them is gigabytes of JSON that no report builder reads. One narrow query for each
+/// kind costs less than one wide query, because the wide query selects every payload.
 ///
 /// The rule for an old result is the rule of [`App::load_analysis`]. A cached payload is absent when
 /// the `mtime:size` value of the source file changed after the calculation.
@@ -25,13 +30,16 @@ struct AlignmentArtifacts {
 }
 
 impl AlignmentArtifacts {
-    async fn load(store: &Store, alignments: &[&Alignment]) -> Result<Self, AppError> {
+    /// `kinds` holds the `(kind, algorithm version)` pairs to read. A pair that the caller does not
+    /// name is absent from the result, and [`Self::raw`] gives `None` for it.
+    async fn load(store: &Store, alignments: &[&Alignment], kinds: &[(&str, &str)]) -> Result<Self, AppError> {
         let ids: Vec<i64> = alignments.iter().map(|a| a.id).collect();
-        let by_key = artifact::list_for_alignments(store.pool(), &ids)
-            .await?
-            .into_iter()
-            .map(|a| ((a.alignment_id, a.kind.clone(), a.algorithm_version.clone()), a))
-            .collect();
+        let mut by_key = HashMap::new();
+        for (kind, version) in kinds {
+            for a in artifact::list_for_alignments_of_kind(store.pool(), &ids, kind, version).await? {
+                by_key.insert((a.alignment_id, a.kind.clone(), a.algorithm_version.clone()), a);
+            }
+        }
         // One stat call for each alignment, from the row that the code already holds. The code
         // does not make one stat call for each artifact.
         let sigs = alignments
@@ -71,6 +79,18 @@ impl AlignmentArtifacts {
         })
     }
 }
+
+/// Each `(kind, algorithm version)` pair that [`App::project_report`] reads.
+///
+/// Keep this list and the body of that method together. A cell that reads a kind which is absent
+/// here gets `None` at all times. The column then stays empty for each member of the project.
+const PROJECT_REPORT_KINDS: &[(&str, &str)] = &[
+    ("coverage", coverage::COVERAGE_VERSION),
+    ("sex", "1"),
+    ("read_metrics", "1"),
+    ("sv", "1"),
+    (ERROR_KIND, ERROR_VERSION),
+];
 
 impl App {
     // ---- queries -----------------------------------------------------------
@@ -570,7 +590,7 @@ impl App {
             by_subject.entry(guid).or_default().push(aln);
         }
         let all_alignments: Vec<&Alignment> = by_subject.values().flatten().collect();
-        let artifacts = AlignmentArtifacts::load(&self.store, &all_alignments).await?;
+        let artifacts = AlignmentArtifacts::load(&self.store, &all_alignments, PROJECT_REPORT_KINDS).await?;
         // The order is the same as the order in `haplogroup_consensus`. It is the vote of each
         // run, then the placed label, then a value that the user set.
         let terminals = self.haplogroup_terminals().await?;

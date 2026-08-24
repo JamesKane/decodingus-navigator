@@ -103,7 +103,10 @@
 //! **But the reported extent puts the two populations in the wrong order.** The truth puts the
 //! archaic extent of East Asia at **1.217x** that of Europe. The extent that this caller reports
 //! is **0.937x**. A user would read that an East Asian carries *less* archaic ancestry than a
-//! European. That is the wrong way round, and it is the one reason that this module stays gated.
+//! European. That is the wrong way round.
+//!
+//! This is the reason that the shipped report is a **within-population** measure, and the reason
+//! that the UI states the limit under the number. See *Where this landed* at the end.
 //!
 //! Here is the cause. The reported extent is the true positives *plus* the false positives. The
 //! load of false positives depends on the population, at a precision of 32.2 % against 41.9 %.
@@ -176,14 +179,40 @@
 //! number that you can compare across populations is not possible this way at present.** The
 //! caller is defensible inside one population, and not between two.
 //!
-//! **This is still not enough to turn the module on.** Beyond the order of the populations, there
-//! are three more reasons.
+//! ## What this left open, and what answered it
 //!
-//! The precision is 34.9 % without the filter, on held-out Europeans. The cohort is **chr21 and
-//! chr22 alone**. And the reference callset itself has weak support: the tracts of hmmix show an
+//! The module was still off at this point. Three things counted against it. Two of them now have
+//! an answer, and the third stands.
+//!
+//! **The cohort was chr21 and chr22 alone.** The genome-wide run answers this. Read *Across the
+//! genome* above: three Europeans, all 22 autosomes, sensitivity of 40 to 43 % and precision of
+//! about 46 %. Both are better than the two-chromosome figures. So those figures are careful, and
+//! the caller keeps its accuracy outside the two chromosomes that the fit used.
+//!
+//! **The precision was 34.9 % without the filter.** The path that ships applies the filter. The
+//! app calls [`filter_by_concordance`] at [`MIN_CONCORDANCE`] after [`call_from_observations`],
+//! and that configuration measures 90 %.
+//!
+//! **The reference callset has weak support.** This one stands. The tracts of hmmix show an
 //! enrichment of only 1.84x for their own archaic SNPs. Agreement with that callset then stops
 //! well below 100 %, even for a caller that is correct. F1 alone can not tell you when this work
 //! reaches its end.
+//!
+//! ## Where this landed
+//!
+//! **The module is on.** `ARCHAIC_SEGMENTS_ENABLED` in `navigator-app` is `true`, and Tier B
+//! shipped in `v0.1.0-alpha.15`. The sections above read as a record of the work, and they stop
+//! before that decision, so read this one for the result.
+//!
+//! It reports a **within-population** measure, for the reason that *A concordance filter* gives
+//! above. The UI states that limit under the number, and gives no universal percentage. **You
+//! must not use this number to compare people of different ancestries.**
+//!
+//! Tier A is a different measure, and its rule does not change. Tier A reports a **count** of
+//! marker copies, and never a percentage.
+//!
+//! § 11 of `documents/design/ArchaicAncestry_Design.md` records the same history for a reader who
+//! starts from the design. This doc-comment stays the detailed record.
 
 use std::collections::BTreeMap;
 

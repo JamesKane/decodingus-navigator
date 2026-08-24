@@ -1,8 +1,19 @@
 # UI Redesign Proposal: DUNavigator
 
+> **STALE — Scala-era document (header added 2026-08-23).** Last touched December 2024, before the
+> Rust cutover (`0dee32c`, 2026-06-19). "Phases 1-3 Complete" refers to the **ScalaFX** UI, which was
+> deleted. The redesign it proposes was carried into the Rust app and **shipped**: the egui Workbench
+> (dark theme, tabs, virtualized subjects table, cards) is live, and Simple mode (left rail + panels,
+> deepest-past → present, with AI narration) went in on top of it.
+>
+> Read this for the *design intent* — the dashboard-centric, entity-focused direction it argues for
+> is still the direction — and not for status, component names, or file paths. Current UI work is
+> tracked in [`BACKLOG.md`](BACKLOG.md) and
+> [`design/subject-brief-simple-mode.md`](design/subject-brief-simple-mode.md).
+
 **Date:** December 2024
 **Last Updated:** December 17, 2024
-**Status:** In Progress - Phases 1-3 Complete
+**Status:** Superseded — the ScalaFX phases below were overtaken by the Rust rewrite (see above)
 **Target Users:** Genetic genealogists and scientists managing large subject collections
 
 ---
