@@ -393,6 +393,14 @@ compare a small canonical digest of **discrete calls** plus **bucketed** continu
 
 - **Digest is signed** with the device key (`grid.submission.digest_sig`) — the same
   `verify_did_key` path proves *this node* produced *this digest*.
+> **Amended 2026-08-24: the node signs *raw* values and the AppView buckets them at comparison
+> time** — [§12.6](#126-validation-and-two-contracts-that-did-not-need-to-exist). Bucketing on the
+> client would make the bucket function a cross-repo contract, so every Navigator release would have
+> to round exactly as the AppView expects and any drift would surface as unexplained `DIVERGENT`
+> verdicts against honest nodes. Server-side, the rule exists once and can be retuned without
+> redeploying a client. The signature still covers what the node computed, and boundary sensitivity
+> is identical either way.
+
 - **Comparison rule:** two digests **agree** iff all discrete calls match exactly and every bucketed
   metric matches its bucket. Only digests with **compatible** `(reference_build, stack_version-major)`
   are compared; a stack-major bump can re-open units (define a compatibility window per metric).
@@ -741,6 +749,8 @@ path, because it is the half with no existing analogue anywhere in the three rep
 | `du-db/src/grid.rs` | `claim` · `heartbeat` · `release` · `reap_expired` · `submit` · `award_credit` · `leaderboard` · `register_node`, plus `messages` — the canonical signed strings. |
 | `du-db/tests/grid.rs` | Ten live-Postgres tests, **all passing**: replica bounds, self-replication, the data-kind filter, lease lapse vs reaping, node retry after overrun, submit/resubmit, credit idempotence, and the three curation cases. |
 | `du-db::grid::curation_candidates` + `du-jobs/src/grid_curate.rs` | The `run-once grid-curate` job (§4.5), projecting crawled samples into the work list. |
+| `du-db::grid::digest` | The agreement test (§5.2), pure and unit-tested. |
+| `du-jobs/src/grid_validate.rs` | `run-once grid-validate` (adaptive replication, §6.1) and `run-once grid-reap`. |
 
 Building it settled three things the design had left ambiguous or wrong. Each is recorded in the
 migration header as well, because `sqlx::migrate!` checksums applied migrations — the SQL that ran
@@ -815,11 +825,52 @@ with a count, rather than leaving a silent hole. **The fix, before credit goes l
 `base_count` to `RUN_FIELDS`, carry it through `crawl_project`, and store it — either as a column on
 `sequence_library` or in the `atproto` provenance slot that already holds `run_accession`.
 
+### 12.6 Validation, and two contracts that did not need to exist
+
+`run-once grid-validate` clusters the digests on a unit, canonicalizes when one cluster clears both
+the replica bar and the trust policy, and credits whoever agreed. `run-once grid-reap` closes lapsed
+leases. **Sixteen unit tests and thirteen live-Postgres tests pass.**
+
+**Trust is derived from grid work only, never from the social reputation score.** Those are
+different claims: social standing says a person participates well in the community, while grid trust
+has to say their *machine produces correct results*. Letting the first vouch for the second would let
+a well-regarded member canonicalize bad output on reputation alone — precisely the attack adaptive
+replication exists to stop. §6.4 still fires a capped reputation event *for* grid work; the arrow
+only points that way.
+
+Two places where the design implied a contract that turned out to be avoidable:
+
+1. **Client-side bucketing (§5.2) would have been a cross-repo contract.** Moved to the server, as
+   above. This session has spent two PRs on contracts drifting between repos; the cheapest such
+   contract is the one that never exists.
+2. **The spot-check needed no `SHADOW` state and no schema column.** When a trusted node's lone
+   submission draws the 5 %, the unit simply does not canonicalize yet: `required_replicas` rises to
+   2 and it stays claimable, so the shadow arrives through the ordinary claim path and the next pass
+   confirms or contests it. One code path, not two. The draw is made by Postgres `random()` rather
+   than by hashing the unit id, because §6.2 requires spot-checks to be AppView-chosen — anything
+   derived from the unit or the digest is a rule a contributor could compute in advance and route
+   around. It also avoids pulling a random-number crate in for one coin flip.
+
+**A contested unit blames nobody.** With two conflicting clusters there is no evidence about *which*
+is wrong, so no submission is marked `DIVERGENT` and no reputation is docked; the bar rises by one
+and the tie-breaker assigns blame on the next pass. A coin-flip penalty would punish honest work, and
+a contributor wrongly marked divergent loses its tier — under `MAX_DIVERGENCE_FOR_TRUSTED = 0`, for
+good.
+
+**Two independent contributors agreeing always suffice, whatever their tier.** Requiring a trusted
+node on top of independent agreement would deadlock a young fleet in which nobody is trusted yet, so
+the tier rule only governs whether *one* submission can stand alone.
+
+**The constants are placeholders and are meant to be** (§9 asks for exactly that): `AGREED_FOR_*`,
+`MAX_DIVERGENCE_FOR_TRUSTED = 0`, and the credit weights. They are deliberately strict, because
+promoting too slowly costs duplicated compute while promoting too quickly costs a wrong canonical
+result — and only one of those is recoverable.
+
 ### What is NOT yet built
 
-The `grid-reap` and `grid-validate` `run-once` jobs, the `/api/v1/grid/*` signed endpoints,
-`Provenance` in `du-domain` (§5.1), and the whole Navigator edge (`ena.rs`, `grid.rs`, the driver,
-the `contribute` CLI).
+The `/api/v1/grid/*` signed endpoints, `Provenance` in `du-domain` (§5.1), and the whole Navigator
+edge (`ena.rs`, `grid.rs`, the driver, the `contribute` CLI). Plus the `est_bases` gap in §12.4,
+which must close before credit goes live.
 
 ### 12.5 What the reaper is actually for
 
