@@ -298,8 +298,13 @@ unique index + a "not already a submitter" filter).
 
 ### 4.4 Signed edge endpoints (`/api/v1/grid/*`)
 
-All mutations verify via `sig::verify_signed(did, canonical_message, sig)` + `ensure_fresh_ts`,
-exactly like `/exchange/*`. Canonical messages get byte-for-byte twins in a shared
+> **Built 2026-08-24** — `du-web/src/routes/grid_edge.rs`. Three changes from the table below, all
+> in [§12.7](#127-the-edge-api-and-what-a-signature-has-to-cover): `/grid/node/heartbeat` is gone,
+> `/grid/heartbeat` does not extend a lease, and a signed `/grid/mine` was added.
+
+All mutations verify via `sig::verify_signed_fresh(did, ts, canonical_message, sig)`, which frames
+the message as `{ts}\n{base}` so one signature binds both the timestamp and the operation —
+exactly like `/exchange/*` and the recruitment Edge. Canonical messages get byte-for-byte twins in a shared
 `messages::grid` module (mirroring `exchange::messages`) so Navigator and AppView agree.
 
 | Method | Path | Auth | Purpose |
@@ -751,6 +756,7 @@ path, because it is the half with no existing analogue anywhere in the three rep
 | `du-db::grid::curation_candidates` + `du-jobs/src/grid_curate.rs` | The `run-once grid-curate` job (§4.5), projecting crawled samples into the work list. |
 | `du-db::grid::digest` | The agreement test (§5.2), pure and unit-tested. |
 | `du-jobs/src/grid_validate.rs` | `run-once grid-validate` (adaptive replication, §6.1) and `run-once grid-reap`. |
+| `du-web/src/routes/grid_edge.rs` | The nine `/api/v1/grid/*` endpoints (§4.4). |
 
 Building it settled three things the design had left ambiguous or wrong. Each is recorded in the
 migration header as well, because `sqlx::migrate!` checksums applied migrations — the SQL that ran
@@ -866,11 +872,51 @@ the tier rule only governs whether *one* submission can stand alone.
 promoting too slowly costs duplicated compute while promoting too quickly costs a wrong canonical
 result — and only one of those is recoverable.
 
+### 12.7 The edge API, and what a signature has to cover
+
+Nine endpoints. Five signed mutations (`node/register`, `claim`, `heartbeat`, `release`, `submit`),
+one signed read (`mine`), three public (`leaderboard`, `work/{accession}`, `stats`). **Nineteen unit
+tests and sixteen live-Postgres tests pass.**
+
+**`submit` recomputes the digest hash instead of trusting it.** The signed message covers a hash of
+the digest, and the handler recomputes that hash from the body that actually arrived. Without the
+recomputation a node could sign the hash of a good result and post a different one, and the stored
+`digest_sig` would still look valid to an auditor reading it later. The canonicalization is
+deliberately the smallest contract available — `serde_json::to_vec`, which is key-sorted and
+whitespace-free because this workspace does not enable `preserve_order`, and Navigator uses the same
+crate under the same default. No field order to agree on, no float formatting rules. A test pins it,
+so if `preserve_order` is ever switched on the failure lands there rather than as unexplained 400s
+against desktop clients.
+
+**`claim` normalizes before it verifies.** `data_kinds` is uppercased, deduplicated and sorted, and
+the signed message covers the normalized form; otherwise `["CRAM","cram"]` and `["cram","CRAM"]` are
+different signed strings for the same request and a node whose ordering differs gets an unexplained
+403. The signature also covers what the node **asked for**, not what the server clamped it to — a
+node cannot know our bounds, and making it guess them to produce a valid signature would be an
+unusable API.
+
+**Two endpoints from the table above are deliberately absent.** `/grid/node/heartbeat` is
+redundant: `register_node` already stamps `last_heartbeat` and is idempotent, so re-registering *is*
+the node heartbeat, and two endpoints writing one row is drift waiting to happen. And
+`/grid/heartbeat` does not take the "optional TTL extension" the table offers, for the reason
+already given in §4.3 and §12.5.
+
+**`/grid/mine` was added.** Every endpoint above is either mutating or public, which left
+`messages::poll` with no caller — and §7.1's Grid panel needs the contributor's own leases, history,
+credit and rank, which is not public data. One signed read closes both gaps.
+
+**An uncredited contributor's `rank` is `null`, not a number.** The query happily returns the
+position a contributor *would* hold, but to a node with its first unit still in flight that renders
+as "you are last" — a discouraging answer to a question nobody asked, about a board the contributor
+does not yet appear on. `null` means unranked, which is what is true.
+
 ### What is NOT yet built
 
-The `/api/v1/grid/*` signed endpoints, `Provenance` in `du-domain` (§5.1), and the whole Navigator
-edge (`ena.rs`, `grid.rs`, the driver, the `contribute` CLI). Plus the `est_bases` gap in §12.4,
-which must close before credit goes live.
+`Provenance` in `du-domain` (§5.1) and the whole Navigator edge (`ena.rs`, `grid.rs`, the driver,
+the `contribute` CLI). Plus the `est_bases` gap in §12.4, which **must close before credit goes
+live** — `grid-validate` already pays `BASE_CREDIT + per-Gbp`, and with `est_bases` null every
+FASTQ unit pays the base only, so a 90 Gbp realignment currently earns exactly what a passthrough
+does.
 
 ### 12.5 What the reaper is actually for
 
