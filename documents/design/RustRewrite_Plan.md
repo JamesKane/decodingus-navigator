@@ -5,8 +5,9 @@ original plan, kept as the architectural rationale.) The legacy ScalaFX app was 
 (commit `0dee32c`, 2026-06-19) and lives in git history only; the Rust workspace is `main` and ships
 signed installers. Per-phase status is **not** tracked here — the authoritative sources are
 `documents/design/HANDOFF.md` (orientation), `documents/design/scala-rust-gap-analysis.md` (what the
-Scala app had that Rust did not), and agent memory. §4e (self-referential callable loci) is still
-flagged "not yet built" in place.
+Scala app had that Rust did not), and agent memory. §4e (self-referential callable loci) **was built
+on 2026-06-03** (`04728ba`); its sub-heading and its "Missing" list said otherwise for almost three
+months, while the measured result sat in the same section all along.
 **Date:** 2026-06-01 (plan)
 **Decisions locked:** egui/eframe GUI · purpose-built pure-Rust haploid caller (no GATK/JVM) · shared crates extracted, Navigator in its own Cargo workspace
 
@@ -159,7 +160,7 @@ If the caller's validation lags the rest of the rewrite, the JVM GATK can run as
 proceeds unblocked — explicitly temporary, removed once §4c passes. (This is *not* the
 shipped architecture; the end state is JVM-free.)
 
-### 4e. Self-referential callable loci (design note — not yet built)
+### 4e. Self-referential callable loci (BUILT — `04728ba`, 2026-06-03)
 
 **Idea.** Derive the callable-region mask from *the sample's own alignment* (a per-sample
 callable-loci BED), rather than gating against a fixed external mask. The CallableLoci BED
@@ -190,7 +191,8 @@ mappability track**.
   pass (~13 min observed) to the reliable subset.
 
 **Ingredients in place:** per-position `CallableState` classification (`coverage` walker);
-read/fragment-length estimates (`read_metrics` walker). **Missing:** coalesce CALLABLE
+read/fragment-length estimates (`read_metrics` walker). **Missing *when this was written*** (every
+item but the stored artifact now ships — see *Built + validated* below): coalesce CALLABLE
 runs → BED, the run-length gate, store as a per-alignment artifact, and route it into
 `private_y_variants` / de-novo region restriction / force-call site selection in place of
 external masks. `ExcessiveCoverage` (collapsed-repeat pileups) stays non-callable; the
@@ -206,6 +208,10 @@ derives tech-adaptive params; `private_y_variants_self_masked` consumes the samp
 BED; UI exposes self-referential / external-BED / none. The haploid **caller** depth is
 now tech-adaptive too (long reads → `min_depth 2`), mirroring the mask — the two no longer
 disagree.
+
+**The one piece still not done** (re-verified 2026-08-24): the BED is computed on demand and can be
+*exported* (`export::callable_bed`), but it is not persisted as a per-alignment artifact, so each
+consumer recomputes it.
 
 Real-data validation (same individual, GRCh38):
 - *Callable chrY:* WGS229 short-read ~13× → 13.9 Mb (3336 runs); GFX0457637 HiFi ~1.6× →

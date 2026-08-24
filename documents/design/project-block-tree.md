@@ -376,12 +376,17 @@ engine widened the input and the gates tightened around it.
 
 ### Open
 
-4. **Where the private-Y batch lives — half answered.** The batch itself exists as
-   `navigator private-y --project` (resumable; `--force` recomputes; skips alignments whose file is
-   gone). **There is no GUI trigger**, so a user who never touches the CLI cannot populate private-Y —
-   and without it candidate branches cannot fire at all. The original question stands: a bespoke
-   button, or folded into the project-wide analyze / deep-analyze streaming flow. `BACKLOG.md` §1.2
-   faces the same choice for panel genotyping and probably wants the same answer.
+4. **Where the private-Y batch lives — ✅ answered, and not with a bespoke button.** The batch
+   exists as `navigator private-y --project` (resumable; `--force` recomputes; skips alignments
+   whose file is gone), and it now has a GUI trigger. `navigator-app/src/maintenance.rs` +
+   `ui/central.rs::maintenance_section` put all three chores that were CLI-only — `private-y
+   --project`, `rebuild-signatures --stale-tree`, `publish-origins` — into **one chore table**. That
+   is the "one answer, not a third separate button" this question asked for: a fourth chore is a new
+   row, not a new screen. The survey runs only when the user presses the button, because two of the
+   three chores cost real work to measure. Landed in `331e8cb` (PR #47, 2026-08-09).
+
+   `BACKLOG.md` §1.2 (panel genotyping) is **not** closed by this — the table holds three chores and
+   `genotype_panel_for_subject` is not one of them. The same answer is available to it: add a row.
 
 5. **Suffixed terminal names — ✅ diagnosed; the proposed fix was wrong.** The draft suggested
    stripping the `:` suffix and matching the parent. **Do not.** Those 162 labels are not a naming
@@ -413,10 +418,11 @@ engine widened the input and the gates tightened around it.
 
 ### Debts this work incurred
 
-- **`project_report` still uses the unfiltered `artifact::list_for_alignments`**, which selects
-  `payload` for every artifact kind — the query that read gigabytes of `tree-genotype` JSON and took
-  the block-tree build from 1.5 s to 25 s. `artifact::list_for_alignments_of_kind` exists now; that
-  caller was never converted.
+- **`project_report` used the unfiltered `artifact::list_for_alignments` — ✅ paid** (`c0994d0`,
+  2026-08-23). That query selected `payload` for every artifact kind, which is what read gigabytes of
+  `tree-genotype` JSON and took the block-tree build from 1.5 s to 25 s. The caller now reads only
+  the five kinds it uses (`PROJECT_REPORT_KINDS`, `queries.rs:87`) through
+  `artifact::list_for_alignments_of_kind`.
 - **The canvas has no interaction test coverage, and the rendering rework widened the gap.** The
   click bug that made candidate review unreachable shipped in phase 2 and the layout tests could not
   have caught it: they exercise the pure `layout()` function, which has no input handling. The

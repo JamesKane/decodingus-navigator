@@ -1,5 +1,15 @@
 # DecodingUs haplogroup tree provider — plan
 
+**Status: IMPLEMENTED, and DecodingUs is the default provider** (header added 2026-08-24; this doc
+had no status line of any kind). Both halves of the plan ship: the AppView serves
+`/api/v1/y-tree/full`, and Navigator parses it with `haplo::parse_decodingus_json` behind the
+`YTreeProvider` enum (`navigator-app/src/lib.rs:2636`). All three "Decisions to confirm" resolved —
+**Q1** the separate `/full` endpoint; **Q2** DecodingUs as the default with FTDNA as the fallback
+(`resolve_y_provider`); **Q3** env *and* a persisted setting *and* a Settings-modal dropdown
+(`NAVIGATOR_Y_TREE_PROVIDER` wins, then `AppSettings::y_tree_provider`), which is more than the plan
+asked for. The native-`hs1` no-liftover path is the point of the whole exercise and it works. Y-DNA
+only, as scoped — mtDNA stays on FTDNA.
+
 Last updated: 2026-06-10. Repos: **DUNavigator** (`rust-rewrite`) + **decodingus** AppView
 (`rust-rewrite-foundation`). Both are ours. Source of truth for the DecodingUs tree is the
 **Rust AppView**, not the live `decoding-us.com` site.

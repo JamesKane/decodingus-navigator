@@ -1,5 +1,14 @@
 # Y Chromosome Profile & Region-Aware Haplogroup Reporting
 
+> **Partly stale — Scala-era document (header added 2026-08-24).** Every `.scala` path below refers
+> to code deleted at the Rust cutover (`0dee32c`, 2026-06-19). **Both capabilities it describes were
+> carried into Rust and shipped**: the unified Y profile is `App::build_y_profile` /
+> `cached_y_profile` over the DNA-type-agnostic consensus engine (`navigator-domain::consensus`),
+> surfaced as the Y-profile concordance card and its source-audit modal; region-aware reporting is
+> the `YRegionClass` quality-modifier ladder
+> (`navigator-analysis/src/mask.rs:110`). Read the **concepts** here; do not trust the class names,
+> file paths, or schema. Current designs: [`design/MultiSource_Reconciliation.md`](design/MultiSource_Reconciliation.md).
+
 ## Executive Summary
 
 Decoding-Us Navigator now provides two powerful capabilities for Y chromosome analysis:

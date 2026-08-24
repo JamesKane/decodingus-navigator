@@ -1,5 +1,12 @@
 # Ancestry Analysis Design
 
+> **Header added 2026-08-24.** The design body is **Scala-era** and its file paths no longer exist,
+> but the approach it locks in — PCA projection plus a Gaussian mixture, rather than ADMIXTURE — is
+> the one that shipped. The Rust state is recorded in *Implementation status (Rust rewrite)* further
+> down this file, and the panels have since been rebuilt at 200k depth with continental-European
+> populations. Deep (qpAdm) ancestry is a separate design:
+> [`ancient-ancestry-rebuild.md`](ancient-ancestry-rebuild.md).
+
 ## Overview
 
 Population percentage estimation using autosomal DNA (atDNA) with reference panels from 1000 Genomes and HGDP/SGDP. Provides ADMIXTURE-style ancestry breakdowns at sub-continental granularity.
