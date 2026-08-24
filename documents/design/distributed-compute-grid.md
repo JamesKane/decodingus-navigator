@@ -272,14 +272,29 @@ so a second independent node picks them up (never the same `node_did` — enforc
 unique index + a "not already a submitter" filter).
 
 ### 4.3 Lease honesty & reclamation
+
+> **Corrected 2026-08-24 against the built behaviour** — [§12.5](#125-what-the-reaper-is-actually-for).
+> Two of the four bullets described something the code does not do, and in both cases what it does
+> instead is better.
+
 - **Bounded TTL.** Node requests a lease of *X* days; AppView clamps to `[min, max]` (e.g. 1–14 d)
-  sized against `est_download_bytes`/`est_bases` so a node can't hoard the pool.
-- **Heartbeat renewal.** `POST /grid/heartbeat` (signed) updates `last_heartbeat` and may extend
-  `expires_at` while progress continues (carries `stage` + `pct` for UI/telemetry).
-- **Reaper** (`du-jobs` interval): `UPDATE grid.lease SET state='EXPIRED' WHERE state='ACTIVE' AND
-  expires_at < now()`; the freed unit returns to `AVAILABLE`. Straggler mitigation: a unit one
-  replica short of quorum with a stale lease is re-offered early.
-- **Voluntary release** on shutdown/cancel so units recycle fast.
+  sized against `total_bytes`/`est_bases` so a node can't hoard the pool.
+- **Heartbeat does *not* renew.** ~~"may extend `expires_at` while progress continues"~~ — a node
+  that can heartbeat but never finish would then hold a unit forever, which is the exact failure the
+  bound exists to prevent. The heartbeat records liveness and the current stage and leaves
+  `expires_at` alone; a node needing longer re-claims. It also reports whether the lease is *still
+  the caller's*, so a node that lost one stops rather than finishing a unit it no longer holds.
+- **Expiry frees the slot; the reaper does not.** ~~"the freed unit returns to `AVAILABLE`"~~ — the
+  claim query ignores any lease past `expires_at`, so a unit held by a crashed node becomes
+  claimable **the moment the lease lapses, with no job run in between**. That is what makes the
+  bound honest: a vanished node costs the catalogue one lease duration *even if the reaper is down*.
+- **The reaper** (`run-once grid-reap`, not an interval — §2) exists for the two things that do need
+  a row write: recording the `EXPIRED` outcome, which trust tiering needs and no derived query can
+  recover, and letting the **same** node take a fresh lease after overrunning.
+- **Voluntary release** on shutdown/cancel so units recycle fast — and `submit` closes the lease in
+  the same transaction that records the result, so a node can never lose one without the other.
+- Straggler mitigation (a unit one replica short of quorum with a stale lease, re-offered early)
+  falls out of the above for free: the stale lease already stopped counting.
 
 ### 4.4 Signed edge endpoints (`/api/v1/grid/*`)
 
@@ -724,7 +739,7 @@ path, because it is the half with no existing analogue anywhere in the three rep
 |---|---|
 | `rust/migrations/0075_grid.sql` | `grid.work_unit` / `lease` / `submission` / `credit`. Reuses `fed.pds_node` (registry) and `fed.device_key` (auth); does **not** reuse `fed.pds_submission`, whose status lifecycle means curator review of a proposed call — a different thing from digest quorum, and overloading it would make both unreadable. |
 | `du-db/src/grid.rs` | `claim` · `heartbeat` · `release` · `reap_expired` · `submit` · `award_credit` · `leaderboard` · `register_node`, plus `messages` — the canonical signed strings. |
-| `du-db/tests/grid.rs` | Nine live-Postgres tests: replica bounds, self-replication, the data-kind filter, reclamation, submit/resubmit, credit idempotence, and the three curation cases. |
+| `du-db/tests/grid.rs` | Ten live-Postgres tests, **all passing**: replica bounds, self-replication, the data-kind filter, lease lapse vs reaping, node retry after overrun, submit/resubmit, credit idempotence, and the three curation cases. |
 | `du-db::grid::curation_candidates` + `du-jobs/src/grid_curate.rs` | The `run-once grid-curate` job (§4.5), projecting crawled samples into the work list. |
 
 Building it settled three things the design had left ambiguous or wrong. Each is recorded in the
@@ -806,22 +821,52 @@ The `grid-reap` and `grid-validate` `run-once` jobs, the `/api/v1/grid/*` signed
 `Provenance` in `du-domain` (§5.1), and the whole Navigator edge (`ena.rs`, `grid.rs`, the driver,
 the `contribute` CLI).
 
-**One honest caveat on what did land:** the nine integration tests **compile but have not been run**.
-The development host has no reachable Postgres — no local server, no Docker, and the Apple
-`container` runtime's published port accepts TCP but resets on protocol traffic, the same
-limitation that blocked live-PDS validation earlier. The claim SQL is therefore **unverified
-against a real database**, which is exactly the part most worth verifying: `FOR UPDATE SKIP
-LOCKED`, a partial-index `ON CONFLICT`, and replica arithmetic across two other tables only mean
-anything inside a real transaction. The curation query is in the same position, and is if anything
-more exposed: it reads JSONB paths (`http_locations->0->>'file_url'`,
-`checksums->0->>'checksum'`) whose shape is defined only by `sequence::ingest_libraries` — which is
-why the curation tests seed through that function rather than writing their own rows, so a test
-cannot agree with the query while both disagree with the crawl. Two type ambiguities were removed
-pre-emptively for the same reason (`LIMIT` takes a bigint; `bigint * interval` has no operator, so
-`make_interval` is used instead).
-**Run them before building anything on top:**
+### 12.5 What the reaper is actually for
+
+**All ten integration tests pass** (2026-08-24). Running them was worth it twice over. They found a
+`SUM()` returning `NUMERIC` where the Rust type said `i64` — invisible to review, because the very
+next column carried the `::bigint` cast that made the omission look consistent. And they found that
+**the design's account of reclamation is wrong**.
+
+§4.3 said the reaper returns a freed unit to the pool. It does not, because it need not: `claim`
+ignores any lease past `expires_at`, so the replica slot frees itself the instant the lease lapses.
+The catalogue keeps flowing **even while the reaper is down** — a strictly better property than the
+design claimed for it.
+
+What the reaper is really for is the two things that genuinely need a row write:
+
+1. **Recording the `EXPIRED` outcome.** Trust tiering (§6.1) has to tell "timed out" from "gave it
+   back", and no query over live state recovers that distinction after the fact.
+2. **Letting the same node retry.** The self-replication guard keys on an unreleased lease
+   regardless of expiry, deliberately — relaxing it would let a node re-claim a unit it already has
+   a row for, whereupon the partial unique index turns `ON CONFLICT DO NOTHING` into a silently
+   empty result with no explanation. So a node that overran waits for the reaper before retrying,
+   which is the honest ordering: its first attempt really is over.
+
+Both are pinned by tests. This is the concrete argument for running a suite before building on it:
+`grid-validate`'s trust tiering was about to be written on top of a wrong model of when a lease
+stops counting.
+
+The other reason to run them: the queries reach places review cannot. The claim path is `FOR UPDATE
+SKIP LOCKED` plus a partial-index `ON CONFLICT` plus replica arithmetic over two other tables, none
+of which means anything outside a real transaction. The curation query reads JSONB paths
+(`http_locations->0->>'file_url'`, `checksums->0->>'checksum'`) whose shape is defined only by
+`sequence::ingest_libraries` — which is why the curation tests seed through that function rather
+than writing their own rows, so a test cannot agree with the query while both disagree with the
+crawl.
+
+**Verifying locally.** The dev host has no native Postgres and no Docker. An Apple `container`
+PostGIS works, but **its published port is broken** — it completes the TCP handshake and resets on
+the first protocol byte, from any shell, sandboxed or not. Connect to the container's own vmnet
+address instead, and re-derive it after every recreate, because the address changes:
 
 ```
-DATABASE_URL='postgres://…@localhost:5432/postgres?sslmode=disable' \
-  cargo test -p du-db --test grid -- --nocapture
+PGHOST=$(container inspect du-testpg \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['networks'][0]['ipv4Address'].split('/')[0])")
+DATABASE_URL="postgres://postgres:dev@$PGHOST:5432/postgres?sslmode=disable" \
+  cargo test -p du-db --test grid -- --test-threads=1
 ```
+
+Run serially and give the container **≥4 GB**: each test migrates its own database, and ten
+concurrent `CREATE EXTENSION postgis` calls against a 1 GB container kill the backends at
+migration 1.
