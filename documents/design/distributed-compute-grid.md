@@ -724,7 +724,8 @@ path, because it is the half with no existing analogue anywhere in the three rep
 |---|---|
 | `rust/migrations/0075_grid.sql` | `grid.work_unit` / `lease` / `submission` / `credit`. Reuses `fed.pds_node` (registry) and `fed.device_key` (auth); does **not** reuse `fed.pds_submission`, whose status lifecycle means curator review of a proposed call — a different thing from digest quorum, and overloading it would make both unreadable. |
 | `du-db/src/grid.rs` | `claim` · `heartbeat` · `release` · `reap_expired` · `submit` · `award_credit` · `leaderboard` · `register_node`, plus `messages` — the canonical signed strings. |
-| `du-db/tests/grid.rs` | Six live-Postgres tests over replica bounds, self-replication, the data-kind filter, reclamation, submit/resubmit, and credit idempotence. |
+| `du-db/tests/grid.rs` | Nine live-Postgres tests: replica bounds, self-replication, the data-kind filter, reclamation, submit/resubmit, credit idempotence, and the three curation cases. |
+| `du-db::grid::curation_candidates` + `du-jobs/src/grid_curate.rs` | The `run-once grid-curate` job (§4.5), projecting crawled samples into the work list. |
 
 Building it settled three things the design had left ambiguous or wrong. Each is recorded in the
 migration header as well, because `sqlx::migrate!` checksums applied migrations — the SQL that ran
@@ -774,21 +775,50 @@ not gate canonicalization. This unblocks P1 without putting a research question 
 placement — on an infrastructure milestone's critical path, and it leaves §9's `Chm13v2` vs
 `Chm13v2MaskedRcrs` question free to settle on its own timeline.
 
+### 12.4 Curation is a projection, and it exposed a hole in the credit formula
+
+`run-once grid-curate` publishes the work list, and it makes **no network calls at all**. §11.5 was
+right that the AppView already resolves ENA at run level: `crawl_project` has already grouped runs
+by sample and written every file URL, md5 and size into `genomics.sequence_file`. Curation is one
+query over tables we have. That also *is* the ENA fair-use control §6.2 asks for — a node receives a
+finished manifest and never goes discovering files for itself.
+
+`data_kind` is decided per sample and **the manifest is then filtered to match it**: a sample with
+any CRAM/BAM is a passthrough unit carrying only aligned files, otherwise a FASTQ unit carrying only
+reads. `build_libraries` already prefers aligned over FASTQ per sample, so the two normally agree —
+deciding it again here means a manifest can never list a file the data kind says the node will not
+open, and the download budget cannot be inflated by files nobody fetches.
+
+**The hole: `est_bases` is `NULL` for essentially every unit.** It is `reads × read_length`, and the
+crawl sets `read_length` to `None` — ENA's `filereport` does expose `base_count`, but
+`du-external`'s `RUN_FIELDS` does not request it and `genomics.sequence_library` has nowhere to put
+it. So the **per-Gbp term of the credit formula (§6.3) has nothing to weigh a FASTQ unit by**.
+
+A byte-derived estimate was the tempting fix and is the wrong one: a fabricated number in a ledger
+that pays people is worse than an honest null. So curation publishes the null and the job *warns*
+with a count, rather than leaving a silent hole. **The fix, before credit goes live:** add
+`base_count` to `RUN_FIELDS`, carry it through `crawl_project`, and store it — either as a column on
+`sequence_library` or in the `atproto` provenance slot that already holds `run_accession`.
+
 ### What is NOT yet built
 
-Everything else. Specifically: the `grid-curate` job projecting `genomics.sequence_file` into work
-units, the `grid-reap` and `grid-validate` `run-once` jobs, the `/api/v1/grid/*` signed endpoints,
+The `grid-reap` and `grid-validate` `run-once` jobs, the `/api/v1/grid/*` signed endpoints,
 `Provenance` in `du-domain` (§5.1), and the whole Navigator edge (`ena.rs`, `grid.rs`, the driver,
 the `contribute` CLI).
 
-**One honest caveat on what did land:** the six integration tests **compile but have not been run**.
+**One honest caveat on what did land:** the nine integration tests **compile but have not been run**.
 The development host has no reachable Postgres — no local server, no Docker, and the Apple
 `container` runtime's published port accepts TCP but resets on protocol traffic, the same
 limitation that blocked live-PDS validation earlier. The claim SQL is therefore **unverified
 against a real database**, which is exactly the part most worth verifying: `FOR UPDATE SKIP
 LOCKED`, a partial-index `ON CONFLICT`, and replica arithmetic across two other tables only mean
-anything inside a real transaction. Two type ambiguities were removed pre-emptively for that reason
-(`LIMIT` takes a bigint; `bigint * interval` has no operator, so `make_interval` is used instead).
+anything inside a real transaction. The curation query is in the same position, and is if anything
+more exposed: it reads JSONB paths (`http_locations->0->>'file_url'`,
+`checksums->0->>'checksum'`) whose shape is defined only by `sequence::ingest_libraries` — which is
+why the curation tests seed through that function rather than writing their own rows, so a test
+cannot agree with the query while both disagree with the crawl. Two type ambiguities were removed
+pre-emptively for the same reason (`LIMIT` takes a bigint; `bigint * interval` has no operator, so
+`make_interval` is used instead).
 **Run them before building anything on top:**
 
 ```
