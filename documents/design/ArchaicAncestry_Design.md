@@ -1234,10 +1234,19 @@ So Tier B ships as a **within-population** measure (`b39db0b`), and the UI state
 than implying a universal percentage. **You must not use it to compare people of different
 ancestries.** The Tier A rule is unchanged and separate: Tier A reports a **count**, never a percent.
 
-### Known stale prose in the module
+### A note on how to read the module doc-comment
 
-`archaic_match.rs` was written across 13 commits, and several passages in its doc-comment still say
-the module "stays gated" or that a finding is "not enough to turn the module on". Those were true
-when written and were overtaken by `b39db0b` (ship as within-population) and `9fca4c1` (genome-wide
-validation passes). The flag is the truth: `ARCHAIC_SEGMENTS_ENABLED = true` in
-`navigator-app/src/lib.rs`, whose comment is current.
+`archaic_match.rs` was written across 13 commits, and its doc-comment is chronological: it walks
+the evidence in the order the work produced it. Until 2026-08-23 it also *ended* in the order the
+work produced it, which meant it closed on "this is still not enough to turn the module on" —
+a verdict that `b39db0b` (ship as within-population) and `9fca4c1` (genome-wide validation passes)
+had already overtaken.
+
+It now closes with two sections that carry the outcome: **What this left open, and what answered
+it** (the chr21+22 cohort and the unfiltered precision were both answered; the weak reference
+callset stands) and **Where this landed** (the module is on, the measure is within-population, and
+Tier A's count rule is unchanged). Read those two first if you want the result rather than the
+history.
+
+The flag remains the final authority: `ARCHAIC_SEGMENTS_ENABLED = true` in
+`navigator-app/src/lib.rs`.
