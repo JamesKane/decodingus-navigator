@@ -4,7 +4,9 @@ Status: **design / specification only** (no code — re-verified by grep 2026-08
 **Navigator** (edge worker) + **AppView** (`decodingus`, coordinator) + **shared**
 (`decodingus-shared`, wire records).
 
-> **Read [§11](#11-reconnaissance-refresh-2026-08-24) before costing any of this.** The doc was
+> **Read [§11](#11-reconnaissance-refresh-2026-08-24) before costing any of this, and
+> [§12](#12-what-was-built-and-what-the-build-changed) for what has since been built and the three
+> places where building it changed the design.** The doc was
 > drafted while realignment was still a plan. Realignment has since shipped, and it shipped on a
 > **different aligner backend than D1 locks in** — which is why D1 and §7.3 below are struck and
 > corrected. Three of the four §2 "greenfield" items also moved. The design's shape survives the
@@ -30,7 +32,7 @@ These four forks were decided before drafting; the doc is built on them.
 |---|----------|--------|-----|
 | D1 | **Aligner integration** | ~~minimap2 via `minimap2-rs` FFI (`static` + `simde`)~~ → **`minimap2-pure-rs` (pure Rust)** — corrected 2026-08-24, [§11](#11-reconnaissance-refresh-2026-08-24) | The rationale held and the answer changed under it. This row said the Grid *consumes* the realignment module's engine rather than re-deciding it — correct, and that module shipped on a **pure-Rust translation of minimap2 v2.31**, not an FFI binding. No C toolchain, so every Rust target builds, **Windows included**. Measured 99.74 % byte-identical to the C implementation, with zero disagreements at MAPQ > 0. |
 | D2 | **Trust model** | **Adaptive replication** | Untrusted nodes run in shadow/quorum; reputation graduates them to trusted single-run + random spot-recheck. BOINC-proven; K× cost only where trust is unearned. |
-| D3 | **First cut** | **Staged — CRAM-passthrough first** | Phase 1 claims ENA samples that already have a CRAM/BAM, skips realignment, and just runs the stack. Proves the whole lease→submit→validate→leaderboard loop with zero aligner risk. Phase 2 adds FASTQ→minimap2. |
+| D3 | **First cut** | ~~Staged — CRAM-passthrough first~~ → **both data kinds in P1** (amended 2026-08-24, [§12](#12-what-was-built-and-what-the-build-changed)) | The staging existed to retire aligner risk before the coordination loop. That risk evaporated when realignment shipped on a pure-Rust mapper (D1), so the reason for the stage went with it. P1 now claims both CRAM (passthrough) and FASTQ (realign), and `data_kind` is on the work unit from the first migration rather than bolted on later. |
 | D4 | **Result home** | **Contributor PDS + AppView canonical** | Contributor publishes fed records into their *own* repo, tagged with the ENA accession as subject + a `computedBy`/provenance block; AppView ingests, dedups by `(accession, method)`, promotes a canonical copy. Keeps federation; requires the new subject≠contributor split. |
 
 ---
@@ -56,8 +58,11 @@ mostly already in the AppView DB.**
   `social.user_reputation_score`, `record_event`/`record_once`, seeded event types. Per-**user**.
 - **Jetstream ingest** — `du-jobs/src/jetstream.rs` already dispatches `com.decodingus.*` records by
   NSID into `fed.*` upserts. Grid result records ride this same pipe.
-- **`du-jobs` scheduler** — in-process interval jobs (`scheduler.rs`); the natural home for the
-  lease-reaper and the validation/canonicalization job.
+- **`du-jobs` job runner** — ~~in-process interval jobs (`scheduler.rs`)~~ **that scheduler is
+  retired** (found 2026-08-24): it "fired every job on startup and let same-period jobs overlap,
+  spiking DB + memory". Jobs now run as `run-once <job>` under systemd timers, serialized by one
+  Postgres advisory lock (`DU_JOBS_LOCK`). The lease-reaper and the validator are therefore
+  `run-once` jobs, not loops — a better fit, since both are naturally batch.
 
 ### Reuse — Navigator (`DUNavigator`)
 - **Full analysis stack, per-alignment** — `navigator-app/src/analysis.rs`: `run_unified_metrics`
@@ -138,6 +143,12 @@ A unit needs `required_replicas` (default 2, computed from the trust of submitte
 reaches **CANONICAL** when a quorum of *agreeing* digests exists; a trusted node can satisfy the
 quorum alone, with ~5 % of such units randomly re-queued for a shadow replica.
 
+> **The unit state machine above is superseded** — see
+> [§12.1](#121-claimability-is-derived-the-state-machine-above-cannot-express-replication).
+> `LEASED` and `SUBMITTED` cannot coexist with `required_replicas > 1`, which the sentence directly
+> above this note requires. What shipped keeps only the exclusive milestones as states and derives
+> claimability. The diagram is kept because the *lifecycle* it draws is still right.
+
 ---
 
 ## 4. AppView — data model & coordination
@@ -148,6 +159,12 @@ doc originally guessed `0059`). Reuse `fed.pds_node`
 existing semantics.
 
 ### 4.1 Tables (sketch)
+
+> **Superseded by `rust/migrations/0075_grid.sql` in the `decodingus` repo**, which is the truth:
+> applied migrations are checksummed by `sqlx::migrate!`, so the SQL that ran is the SQL that is.
+> The sketch below is kept as the intent. Two things came out different — the state model
+> ([§12.1](#121-claimability-is-derived-the-state-machine-above-cannot-express-replication)) and
+> the credit units ([§12.2](#122-the-credit-ledger-is-an-integer)).
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS grid;
@@ -225,6 +242,11 @@ node table. The migrations test (`du-db/tests/migrations.rs`) gets the new table
 
 ### 4.2 The claim (the one piece of genuinely new concurrency)
 
+> **Built as `du_db::grid::claim`.** The sketch below is close but wrong in one way that matters:
+> it flips the unit to `LEASED`, which makes the unit unclaimable by the *second* replica the same
+> design requires. What shipped never mutates the unit on claim —
+> [§12.1](#121-claimability-is-derived-the-state-machine-above-cannot-express-replication).
+
 Atomic multi-worker claim — pick available units the node can handle, lease them, all in one
 statement:
 
@@ -285,9 +307,12 @@ A new interval job (or `run-once` backfill) turns ENA metadata into `grid.work_u
   `.../filereport?accession=<run>&result=read_run&fields=run_accession,sample_accession,
   fastq_ftp,fastq_bytes,fastq_md5,submitted_ftp,submitted_md5,library_layout,instrument_platform,
   instrument_model,read_count,base_count&format=tsv`.
-- **P1 curation:** only emit units where `submitted_ftp` (or an ENA analysis object) exposes a
-  **CRAM/BAM** → `data_kind = CRAM`, skip-align path. **P2:** open FASTQ-only samples
-  (`data_kind = FASTQ`) once realignment is wired.
+- **P1 curation (amended 2026-08-24):** emit **both** kinds. `submitted_ftp` exposing a CRAM/BAM →
+  `data_kind = CRAM` (skip-align); FASTQ-only samples → `data_kind = FASTQ` (realign). The original
+  text deferred FASTQ to P2; D3's staging is gone, so the split is now only a per-unit label, and
+  the node's advertised kinds decide what it is offered.
+- Much of this is **already built AppView-side** — `EnaClient::run_files` and
+  `du-jobs/crawl_project.rs`. See [§11.5](#115-the-appview-already-resolves-ena-at-run-level-and-already-curates).
 - Store the run manifest (URLs + md5 + bytes + layout + inferred `read_type`) on the unit; set
   `est_bases`/`est_download_bytes` for weighting and preflight.
 
@@ -335,7 +360,7 @@ compare a small canonical digest of **discrete calls** plus **bucketed** continu
   "calls": {
     "sex": "XY",
     "y_terminal": "R-FGC29071",           // exact match required
-    "mt_terminal": "U5a1b1g",             // exact match required
+    // "mt_terminal" was here. REMOVED 2026-08-24 — see the note below and §12.3.
     "ancestry_superpop_argmax": "EUR",    // exact match required
     "coverage_mean_bucket": 30,           // bucketed (e.g. round to nearest 2×) — float drift tolerant
     "callable_fraction_bucket": 0.94      // bucketed to 2 decimals
@@ -343,11 +368,13 @@ compare a small canonical digest of **discrete calls** plus **bucketed** continu
 }
 ```
 
-> **`mt_terminal` is a problem, not a field.** It demands an exact match, but the analysis path
-> deliberately does not produce it: `App::analyze_biosample` states in its own doc comment that it
-> "does not assign mtDNA, by design. That value is not final on CHM13." Since the whole Grid
-> realigns *to* CHM13, this is not a wiring gap to route around. Settle it before P1 — see
-> [§11](#11-reconnaissance-refresh-2026-08-24).
+> **`mt_terminal` was a problem, not a field — and it is now DECIDED (2026-08-24).** It demanded an
+> exact match, but the analysis path deliberately does not produce it: `App::analyze_biosample`
+> states in its own doc comment that it "does not assign mtDNA, by design. That value is not final
+> on CHM13." Since the whole Grid realigns *to* CHM13, that was not a wiring gap to route around.
+> **Resolution: mt is out of the agreement test**, exactly as §5.2 already treats continuous
+> fields — still published in the full records, simply not gating canonicalization. `y_terminal`,
+> sex and the ancestry argmax carry the discrete signal. See [§12.3](#123-mt_terminal-is-out-of-the-agreement-test).
 
 - **Digest is signed** with the device key (`grid.submission.digest_sig`) — the same
   `verify_did_key` path proves *this node* produced *this digest*.
@@ -362,6 +389,10 @@ compare a small canonical digest of **discrete calls** plus **bucketed** continu
 ## 6. Validation, credit, reputation, leaderboard
 
 ### 6.1 Adaptive replication (the validator job, `du-jobs`)
+
+> The validator is a **`run-once` job under a systemd timer**, not an in-process loop — the
+> interval scheduler this section assumed is retired (§2). Batch suits it: the loop below is
+> already written as "per SUBMITTED unit", which is a pass, not a daemon.
 Trust tiers derived from the contributor's grid history (not social score alone):
 
 | Tier | Entry condition | Replication policy |
@@ -395,6 +426,14 @@ Validator loop, per `SUBMITTED` unit:
   the work list is curated centrally so nodes don't hammer ENA discovering files.
 
 ### 6.3 Credit formula (cobblestones)
+
+> **Ledger units (built 2026-08-24):** `grid.credit.cobblestones_milli` is an exact integer in
+> **thousandths**, and `du_db::grid::COBBLESTONE = 1_000`. `NUMERIC` would need a decimal feature
+> this workspace's sqlx is not built with, and `f64` is the wrong shape for a column that gets
+> SUMmed over every contribution ever made. Three decimals was the intended precision anyway, so
+> the integer *is* the value. Divide at the point of rendering, never before —
+> [§12.2](#122-the-credit-ledger-is-an-integer).
+
 Credit ∝ work magnitude, awarded **only** on `AGREED`/canonical:
 ```
 cobblestones = base
@@ -405,7 +444,9 @@ quorum agreement    → QUORUM_AGREE (full)
 shadow spot-check   → SPOTCHECK_PASS (small)
 divergent           → 0 (+ reputation penalty)
 ```
-P1 (passthrough, no realign) pays `base + analysis_factor` — lighter, reflecting the smaller compute.
+A **passthrough** unit pays `base + analysis_factor` — lighter, reflecting the smaller compute. (This
+read "P1 … pays" when P1 was passthrough-only; since D3 was amended it is a property of the unit's
+`data_kind`, not of the phase.)
 
 ### 6.4 Reputation & leaderboard
 - **Compute-credit leaderboard** — the primary artifact of the ask. `grid.credit` summed per user:
@@ -487,9 +528,9 @@ count**, which is what actually decides whether a node can finish a 30× WGS uni
 
 | Phase | Deliverable | Proves |
 |-------|-------------|--------|
-| **P0** | Shared: `Provenance` block + subject/`computedBy` on records; `messages::grid` canonical strings; AppView `grid` schema (`0075` — the tree is at `0074`, not the `0059` this doc guessed) + reaper; `du-jobs` ENA curation (CRAM-only). | Wire contracts + coordination substrate. |
-| **P1** | **CRAM passthrough, end-to-end.** Navigator `ena.rs` + `grid.rs` + lifted `run_full_analysis`; `contribute` CLI; register/claim/heartbeat/submit/release; validator (adaptive replication) + `grid.credit` + `/grid/leaderboard`. No aligner. | The **whole distributed loop** (lease→compute→submit→validate→canonical→credit→board) with zero aligner risk. |
-| **P2** | **FASTQ → minimap2 realign.** Wire the realignment engine ([`realignment-module.md`](realignment-module.md)) into the driver for `data_kind=FASTQ`; open FASTQ curation; per-Gbp credit. | The real vision — uniform hs1 realignment of arbitrary ENA reads. |
+| **P0** | Shared: `Provenance` block + subject/`computedBy` on records; `messages::grid` canonical strings; AppView `grid` schema (`0075`) + reaper; `du-jobs` ENA curation (both kinds). **Partly built — see [§12](#12-what-was-built-and-what-the-build-changed).** | Wire contracts + coordination substrate. |
+| **P1** | **The whole loop, both data kinds** (amended 2026-08-24 — P2 folded in, D3). Navigator `ena.rs` + `grid.rs` + the driver over `App::analyze_biosample`; `contribute` CLI; register/claim/heartbeat/submit/release; validator (adaptive replication) + `grid.credit` + `/grid/leaderboard`; the realignment engine wired for `data_kind = FASTQ`; per-Gbp credit live. | lease→compute→submit→validate→canonical→credit→board, **and** the uniform-hs1 payoff. |
+| ~~**P2**~~ | *Folded into P1.* Kept as a heading so existing references resolve. The aligner risk that justified staging it separately no longer exists ([§11.1](#111-the-aligner-is-pure-rust-so-the-fleet-is-not-split-by-os)). | — |
 | **P3** | GUI Grid panel (progress, credits, rank, budget); rolling leaderboards; public `/grid/work/{acc}` result pages; grid-wide stats. | Community-facing polish + the visible leaderboard. |
 | **P4** | Hardening: trust-tier tuning, divergence-penalty calibration, spot-check rate tuning, ENA fair-use throttles. (~~Windows FASTQ~~ — no longer a milestone; the pure-Rust mapper made it free. See §11.) | Robustness at scale. |
 
@@ -497,9 +538,11 @@ count**, which is what actually decides whether a node can finish a 30× WGS uni
 
 ## 9. Open questions
 
-- **Work-unit granularity** — per ENA *sample* (merge runs; matches per-biosample analysis) vs per
-  *run* (finer leases, simpler downloads, but multiple runs per sample need re-merging for
-  consensus haplogroups). Leaning sample-level; runs listed in the manifest.
+- ~~**Work-unit granularity**~~ — **RESOLVED 2026-08-24: per ENA *sample***, with the runs listed in
+  the unit's manifest. It is the grain Navigator already analyses at (`App::analyze_biosample`),
+  the grain consensus haplogroups need, and the grain `du-jobs/crawl_project.rs` already groups ENA
+  runs into. A multi-run sample is one lease; merging its runs is work the node must do anyway
+  before consensus means anything. `grid.work_unit.sample_accession` is the unit's identity.
 - **Target reference** — `Chm13v2` vs the analysis-tuned `Chm13v2MaskedRcrs` (PAR-masked + rCRS).
   Must match whatever the ancestry/IBD panels are built against; realignment-module.md flags the
   same question. The digest's `reference_build` must pin the exact choice.
@@ -595,7 +638,8 @@ path declines to state on this reference. Three ways out, in the order I would c
    digest, this is the coherent way — and it makes §9's question load-bearing rather than academic.
 
 **Recommendation: (1) for P1, and let §9's reference question settle on its own timeline.** Shipping
-the coordination loop should not wait on an mtDNA placement decision.
+the coordination loop should not wait on an mtDNA placement decision. — **Taken, 2026-08-24. See
+[§12.3](#123-mt_terminal-is-out-of-the-agreement-test); the field is gone from §5.2's digest.**
 
 ### 11.4 SV does not belong in the per-unit driver
 
@@ -662,4 +706,92 @@ Navigator side, P1 is now roughly: a signed HTTP client (copy `exchange_get_poll
 downloader (§11.6), and a driver that calls `analyze_biosample` and
 `estimate_ancestry_from_consensus` and signs a digest.
 
-**One decision to settle before writing P1 code:** `mt_terminal` in the digest (§11.3).
+~~**One decision to settle before writing P1 code:** `mt_terminal` in the digest (§11.3).~~
+**Settled 2026-08-24**, along with two others that the build then surfaced. What that decision was,
+and what has since been built on it, is [§12](#12-what-was-built-and-what-the-build-changed) — read
+that for the current state; this section is the reconnaissance that preceded it.
+
+---
+
+## 12. What was built, and what the build changed (2026-08-24)
+
+The first increment is the AppView coordination substrate — the half §11 identified as the critical
+path, because it is the half with no existing analogue anywhere in the three repos.
+
+**Landed:**
+
+| Artefact | What it is |
+|---|---|
+| `rust/migrations/0075_grid.sql` | `grid.work_unit` / `lease` / `submission` / `credit`. Reuses `fed.pds_node` (registry) and `fed.device_key` (auth); does **not** reuse `fed.pds_submission`, whose status lifecycle means curator review of a proposed call — a different thing from digest quorum, and overloading it would make both unreadable. |
+| `du-db/src/grid.rs` | `claim` · `heartbeat` · `release` · `reap_expired` · `submit` · `award_credit` · `leaderboard` · `register_node`, plus `messages` — the canonical signed strings. |
+| `du-db/tests/grid.rs` | Six live-Postgres tests over replica bounds, self-replication, the data-kind filter, reclamation, submit/resubmit, and credit idempotence. |
+
+Building it settled three things the design had left ambiguous or wrong. Each is recorded in the
+migration header as well, because `sqlx::migrate!` checksums applied migrations — the SQL that ran
+can never be edited, so its comments are the one explanation that cannot drift from it.
+
+### 12.1 Claimability is derived; the state machine above cannot express replication
+
+§3 gives the work unit `AVAILABLE → LEASED → SUBMITTED → CANONICAL`, and §4.2's sketch flips the
+unit to `LEASED` on claim. Two paragraphs after that diagram, the same document says
+`required_replicas` defaults to **2** — so a unit routinely needs a second independent result while
+a first node still holds a lease. Under the sketch, that second node can never get it: the unit is
+no longer `AVAILABLE`.
+
+`LEASED` and `SUBMITTED` would each have to mean "…and also still claimable", which is not a state.
+So what shipped keeps on `work_unit.state` only the milestones that are genuinely exclusive —
+`AVAILABLE` / `CANONICAL` / `CONTESTED` / `RETIRED` — and **derives** claimability:
+
+```
+claimable  ⇔  state IN ('AVAILABLE','CONTESTED')
+              AND (active leases + non-divergent submissions) < required_replicas
+              AND the calling DID holds no lease and no submission on the unit
+```
+
+One `SELECT … FOR UPDATE SKIP LOCKED` answers that, which is what §4.2 wanted in the first place.
+The lease and submission tables are the source of truth for how many replicas are in flight, so no
+counter is maintained and no counter can drift from the rows it summarises. A claim never mutates
+the work unit at all.
+
+The third clause is a **correctness** rule, not a rate limit: quorum means *independent* results, so
+a contributor must never be handed a unit it already holds or has already answered.
+
+### 12.2 The credit ledger is an integer
+
+`grid.credit.cobblestones_milli BIGINT`, with `du_db::grid::COBBLESTONE = 1_000`, rather than the
+`NUMERIC` §4.1 sketched. This workspace builds sqlx without any decimal feature and nothing else in
+the repo uses one, so `NUMERIC` has no Rust mapping — and adding a workspace-wide dependency for a
+single column is out of proportion to what it buys. `f64` was the other option and is the wrong
+shape for a column summed over every contribution ever made. Since `NUMERIC(12,3)` had already
+chosen three decimal places, the integer **is** the value at the intended precision, and it sums
+exactly. Divide by 1000 when rendering, never before.
+
+### 12.3 `mt_terminal` is out of the agreement test
+
+Decided as §11.3 recommended: option (1). The digest keeps `sex`, `y_terminal` and
+`ancestry_superpop_argmax` as exact-match fields; mtDNA is published in the full records and does
+not gate canonicalization. This unblocks P1 without putting a research question — CHM13 mt
+placement — on an infrastructure milestone's critical path, and it leaves §9's `Chm13v2` vs
+`Chm13v2MaskedRcrs` question free to settle on its own timeline.
+
+### What is NOT yet built
+
+Everything else. Specifically: the `grid-curate` job projecting `genomics.sequence_file` into work
+units, the `grid-reap` and `grid-validate` `run-once` jobs, the `/api/v1/grid/*` signed endpoints,
+`Provenance` in `du-domain` (§5.1), and the whole Navigator edge (`ena.rs`, `grid.rs`, the driver,
+the `contribute` CLI).
+
+**One honest caveat on what did land:** the six integration tests **compile but have not been run**.
+The development host has no reachable Postgres — no local server, no Docker, and the Apple
+`container` runtime's published port accepts TCP but resets on protocol traffic, the same
+limitation that blocked live-PDS validation earlier. The claim SQL is therefore **unverified
+against a real database**, which is exactly the part most worth verifying: `FOR UPDATE SKIP
+LOCKED`, a partial-index `ON CONFLICT`, and replica arithmetic across two other tables only mean
+anything inside a real transaction. Two type ambiguities were removed pre-emptively for that reason
+(`LIMIT` takes a bigint; `bigint * interval` has no operator, so `make_interval` is used instead).
+**Run them before building anything on top:**
+
+```
+DATABASE_URL='postgres://…@localhost:5432/postgres?sslmode=disable' \
+  cargo test -p du-db --test grid -- --nocapture
+```
