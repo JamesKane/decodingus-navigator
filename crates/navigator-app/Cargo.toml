@@ -35,6 +35,9 @@ base64 = "0.22"
 # ENA publishes an md5 for every run file (`grid::ena`). Already in the lock transitively, so a
 # direct dependency adds nothing to the graph.
 md-5 = "0.10"
+# `grid::canonical_sha256_b64` — the digest hash that the submit signature covers. Must give the
+# same answer as `du_db::grid::digest::canonical_sha256_b64` on the AppView.
+sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # Holds the auth HTTP client (built by navigator-sync::dev_http_client). Pinned to 0.12
 # with rustls to match du-atproto / navigator-sync.

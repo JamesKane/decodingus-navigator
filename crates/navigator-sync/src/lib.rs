@@ -10,6 +10,7 @@
 pub mod device_key;
 pub mod error;
 pub mod exchange;
+pub mod grid;
 pub mod oauth;
 pub mod publish;
 pub mod records;

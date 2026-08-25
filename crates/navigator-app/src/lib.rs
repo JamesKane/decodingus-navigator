@@ -3093,6 +3093,7 @@ mod dm;
 pub mod ena;
 mod fastpath;
 mod ftdna_import;
+pub mod grid;
 mod haplogroup;
 mod ibd_exchange;
 mod import_profiles;
