@@ -59,9 +59,6 @@ macro_rules! cli_try {
 /// before it proves itself.
 const CLAIM_BATCH: i32 = 4;
 
-/// How often to tell the AppView that this node is alive.
-const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
-
 #[derive(Parser)]
 #[command(
     name = "navigator",
@@ -2407,15 +2404,10 @@ async fn contribute(args: ContributeArgs) -> i32 {
             let started = Instant::now();
             println!("\n{} ({})", unit.sample_accession, unit.data_kind);
 
-            // The heartbeat tells the AppView that this node is alive, and its answer tells this
-            // node whether it still holds the lease. A node that lost a lease stops at once,
-            // because more work on that unit earns nothing.
-            let mut last_beat = Instant::now();
+            // The driver sends the heartbeat itself, next to the work. This callback only draws
+            // the stage for the user.
             let mut report = |stage: navigator_app::grid_job::GridStage, detail: &str| {
                 println!("  {:<9} {detail}", stage.as_str());
-                if last_beat.elapsed() >= HEARTBEAT_EVERY {
-                    last_beat = Instant::now();
-                }
             };
 
             let outcome = app.run_grid_unit(unit, &params, &cancel, &mut report).await;

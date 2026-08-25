@@ -28,6 +28,7 @@ use crate::grid::ClaimedUnit;
 use du_domain::fed::Provenance;
 use navigator_analysis::CancelToken;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// The stage that a node is on. The node sends this with each heartbeat, and the fleet view of the
 /// AppView shows it.
@@ -65,6 +66,12 @@ pub struct UnitOutcome {
     /// Why the unit did not finish. The node then gives the lease back.
     pub error: Option<String>,
 }
+
+/// How often a node tells the AppView that it is alive, while it works on a unit.
+///
+/// The value is far below the shortest lease. A node that stops between two beats is still inside
+/// its lease, so a lost beat costs nothing.
+const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// How a node contributes.
 #[derive(Debug, Clone)]
@@ -378,7 +385,32 @@ impl App {
         };
         let dir = params.scratch_root.join(&unit.sample_accession);
 
-        match self.grid_unit_inner(unit, params, &dir, cancel, report).await {
+        // The stage that the beat reports. The work writes this value and the beat reads it. So
+        // the AppView shows the stage that the node is on now, and not the first stage.
+        let stage = Arc::new(Mutex::new(GridStage::Fetch));
+
+        // The work and the beat run together. Neither one can be a separate task, because both use
+        // `&self`, and a task needs a value that lives for the whole program. `select!` needs no
+        // such value: it drives two futures that borrow the same data.
+        let result = {
+            let stage_for_work = Arc::clone(&stage);
+            let mut record = |s: GridStage, detail: &str| {
+                if let Ok(mut cur) = stage_for_work.lock() {
+                    *cur = s;
+                }
+                report(s, detail);
+            };
+            let work = self.grid_unit_inner(unit, params, &dir, cancel, &mut record);
+            let beat = self.beat_while_working(unit.lease_id, &stage, cancel);
+            tokio::pin!(work);
+            tokio::pin!(beat);
+            tokio::select! {
+                r = &mut work => r,
+                e = &mut beat => Err(e),
+            }
+        };
+
+        match result {
             Ok(id) => outcome.submission_id = Some(id),
             Err(e) => {
                 outcome.error = Some(e.to_string());
@@ -391,6 +423,38 @@ impl App {
         // week fills the disk of its owner.
         let _ = tokio::fs::remove_dir_all(&dir).await;
         outcome
+    }
+
+    /// Tell the AppView that this node is alive, until the unit ends.
+    ///
+    /// This future never finishes on its own. It ends when the work beside it finishes, and
+    /// `select!` then drops it. It returns only when the node **loses** the lease, which is a
+    /// reason to stop the work at once.
+    ///
+    /// A node that lost its lease receives no credit for more work on that unit. Without this
+    /// check, such a node can spend hours on a unit that another node already finished. The value
+    /// that the AppView sends back is the only way for the node to learn that.
+    async fn beat_while_working(&self, lease_id: i64, stage: &Arc<Mutex<GridStage>>, cancel: &CancelToken) -> AppError {
+        loop {
+            tokio::time::sleep(HEARTBEAT_EVERY).await;
+            if cancel.is_cancelled() {
+                // The work stops by itself. This future must not end the unit with an error that
+                // hides the true reason.
+                continue;
+            }
+            let now = stage.lock().map(|s| *s).unwrap_or(GridStage::Analyze);
+            match self.grid_heartbeat(lease_id, now.as_str(), None).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    cancel.cancel();
+                    return AppError::Import("another node now holds this unit".into());
+                }
+                // A beat that did not arrive is not proof that the lease is gone. The network of a
+                // volunteer is not always available, and the work continues. The lease has its own
+                // time limit, and the AppView reclaims it if this node truly stopped.
+                Err(_) => {}
+            }
+        }
     }
 
     async fn grid_unit_inner(

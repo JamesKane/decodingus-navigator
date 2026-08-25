@@ -38,7 +38,9 @@ md-5 = "0.10"
 # `grid::canonical_sha256_b64` — the digest hash that the submit signature covers. Must give the
 # same answer as `du_db::grid::digest::canonical_sha256_b64` on the AppView.
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+# `time`, for the retry delay in `ena` and the heartbeat interval in `grid_job`. Both already
+# compiled through feature unification from another crate, which is not a property to depend on.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 # Holds the auth HTTP client (built by navigator-sync::dev_http_client). Pinned to 0.12
 # with rustls to match du-atproto / navigator-sync.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
