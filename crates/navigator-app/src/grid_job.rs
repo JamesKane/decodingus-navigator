@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 pub enum GridStage {
     Fetch,
     Import,
+    Map,
     Analyze,
     Ancestry,
     Submit,
@@ -44,6 +45,7 @@ impl GridStage {
         match self {
             GridStage::Fetch => "fetch",
             GridStage::Import => "import",
+            GridStage::Map => "map",
             GridStage::Analyze => "analyze",
             GridStage::Ancestry => "ancestry",
             GridStage::Submit => "submit",
@@ -79,32 +81,172 @@ pub struct GridJobParams {
 /// A `CRAM` unit arrives with an alignment that a laboratory already made. The node imports that
 /// file and analyzes it.
 ///
-/// A `FASTQ` unit needs the node to map the reads first. That path is not here yet. So this list
-/// does not hold `FASTQ`, and the AppView never offers such a unit to this node. The capability
-/// filter is not a suggestion. It is what stops a node when it can not do the work. See
-/// [`map_reads`].
+/// A `FASTQ` unit holds reads only, so the node maps them first. See [`map_unit_reads`].
+///
+/// This list is the one place that decides. The AppView selects work with it, so a node never
+/// receives work that this module can not do.
 pub fn supported_data_kinds() -> Vec<String> {
-    vec!["CRAM".to_string()]
+    vec!["CRAM".to_string(), "FASTQ".to_string()]
 }
 
-/// Map the reads of a FASTQ unit to the target build. **This is not written yet.**
+/// Sort the read files of a FASTQ unit into the first mate file, the second mate file, and the
+/// reads with no mate.
 ///
-/// The work is small but it is not zero, and it touches a module that is already in use. The
-/// realignment job (`realign_job`) has the stages that a FASTQ unit needs: index, map, sort, mark
-/// duplicates, and finalize. Its stage A recovers reads from an alignment and writes them as FASTQ
-/// files. Its stage B then maps those files. So a FASTQ unit from ENA is the same pipeline with a
-/// different source for stage A.
+/// ENA gives the mate number in the file name, as `_1` and `_2` before the extension. A run with
+/// one file only is a set of reads with no mate, and a long-read run is always such a set.
+fn split_mates(files: &[PathBuf]) -> (Option<PathBuf>, Option<PathBuf>, Vec<PathBuf>) {
+    let (mut r1, mut r2, mut singles) = (None, None, Vec::new());
+    for f in files {
+        let name = f.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        // `_1.` and not `_1`: a run accession such as `ERR1_1.fastq.gz` must not match on the
+        // accession itself.
+        if name.contains("_1.") && r1.is_none() {
+            r1 = Some(f.clone());
+        } else if name.contains("_2.") && r2.is_none() {
+            r2 = Some(f.clone());
+        } else {
+            singles.push(f.clone());
+        }
+    }
+    (r1, r2, singles)
+}
+
+/// Map the reads of a FASTQ unit to the target build, and give back a finished CRAM file.
 ///
-/// To make that possible, stage A of `realign_job` must accept read files from outside. That is a
-/// change to a module that shipped in `v0.1.0-alpha.17` and that phase 5 validated on a full
-/// genome. Such a change belongs in its own commit, where a reviewer can compare it against that
-/// validated behaviour. It does not belong inside a first version of this driver.
+/// # Why this does not call the realignment job
 ///
-/// Until then [`supported_data_kinds`] does not hold `FASTQ`, so no node claims such a unit.
-fn map_reads(_reads: &[PathBuf], _target_build: &str) -> Result<PathBuf, AppError> {
-    Err(AppError::Import(
-        "this node can not map FASTQ reads yet; it must not have claimed a FASTQ unit".into(),
-    ))
+/// The realignment job (`realign_job`) does the same four operations, and the first plan was to
+/// call it here. A reading of that module changed the plan. That module holds its stages together
+/// with the machinery that continues a job which stopped: `Resumed`, `ScratchState`, and the rules
+/// about which file each stage may remove. A comment in that file records a fault in exactly those
+/// rules. That fault destroyed a 59 GB file and about four hours of work.
+///
+/// A Grid unit wants none of that machinery. It has no source alignment, so there is no revert
+/// stage. It does not continue a job that stopped, because a unit that fails gives its lease back
+/// and another node takes it from the start. And it registers no alignment against a source row.
+/// The only common part is the four operations below, and each one is already public.
+///
+/// So this function calls those four operations directly. That leaves the realignment module
+/// exactly as `v0.1.0-alpha.17` validated it on a full genome. The other method was to divide that
+/// module along its most dangerous line, with no way to run that validation again here.
+async fn map_unit_reads(
+    app: &App,
+    files: &[PathBuf],
+    dir: &Path,
+    target_build: &str,
+    cancel: &CancelToken,
+    report: &mut (dyn FnMut(GridStage, &str) + Send),
+) -> Result<PathBuf, AppError> {
+    use navigator_analysis::postprocess::{self, MarkDupParams, SortParams};
+
+    let (r1, r2, singles) = split_mates(files);
+    let paired = r1.is_some() && r2.is_some();
+    // A short-read preset for a set of reads with a mate, and a long-read preset for a set with no
+    // mate. A map of long reads under a short-read preset does not fail. It gives alignments that
+    // look correct and are wrong.
+    let preset = if paired {
+        navigator_align::Preset::ShortRead
+    } else {
+        navigator_align::Preset::MapHifi
+    };
+
+    report(GridStage::Map, "reference");
+    let reference = app.resolve_reference(target_build, &mut |_, _| {}).await?;
+
+    report(GridStage::Map, "index");
+    let index = {
+        let (build, reference) = (target_build.to_string(), reference.clone());
+        let batch = navigator_align::batch::BatchSize::for_this_machine();
+        tokio::task::spawn_blocking(move || {
+            navigator_align::index::ensure_index(
+                &navigator_align::index::cache_root(),
+                &build,
+                &reference,
+                preset,
+                batch,
+                &mut |_, _| {},
+            )
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??
+    };
+
+    let mapped = dir.join("mapped.bam");
+    let sorted = dir.join("sorted.bam");
+    let marked = dir.join("marked.bam");
+    let output = dir.join("aligned.cram");
+
+    report(GridStage::Map, "map");
+    {
+        let (out, work) = (mapped.clone(), dir.join("map"));
+        let token = cancel.clone();
+        let map_params = navigator_align::MapParams {
+            preset,
+            threads: 0,
+            read_group: None,
+            format: navigator_align::OutputFormat::Bam,
+            reference: None,
+        };
+        let (r1c, r2c, singlesc) = (r1.clone(), r2.clone(), singles.clone());
+        tokio::task::spawn_blocking(move || -> Result<(), AppError> {
+            let cancelled = move || token.is_cancelled();
+            if let (Some(a), Some(b)) = (&r1c, &r2c) {
+                navigator_align::map_pairs(&index, a, b, &out, &work, &map_params, &cancelled, &mut |_, _, _| {})?;
+            } else {
+                let single = singlesc
+                    .first()
+                    .or(r1c.as_ref())
+                    .ok_or_else(|| AppError::Import("the unit holds no read file".into()))?;
+                navigator_align::map_reads(&index, single, &out, &work, &map_params, &cancelled, &mut |_, _, _| {})?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+    }
+    // The reads have no more use, and a set of read files for a whole genome is tens of GB.
+    for f in files {
+        let _ = std::fs::remove_file(f);
+    }
+
+    report(GridStage::Map, "sort");
+    {
+        let (input, out, work) = (mapped.clone(), sorted.clone(), dir.join("sort"));
+        let token = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            postprocess::sort_alignment(&input, &out, &work, &SortParams::default(), &token, &mut |_| {})
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+    }
+    let _ = std::fs::remove_file(&mapped);
+
+    report(GridStage::Map, "duplicates");
+    {
+        let (input, out) = (sorted.clone(), marked.clone());
+        let token = cancel.clone();
+        // A long-read library usually needs no PCR step, and two long reads rarely have the same
+        // end points. So a mark on those reads removes real coverage.
+        let md_params = MarkDupParams {
+            enabled: paired,
+            ..Default::default()
+        };
+        tokio::task::spawn_blocking(move || {
+            postprocess::mark_duplicates(&input, &out, &md_params, &token, &mut |_| {})
+        })
+        .await
+        .map_err(|e| AppError::Join(e.to_string()))??;
+    }
+    let _ = std::fs::remove_file(&sorted);
+
+    report(GridStage::Map, "compress");
+    let finalized = {
+        let (input, out) = (marked.clone(), output.clone());
+        tokio::task::spawn_blocking(move || postprocess::finalize_bam(&input, &out))
+            .await
+            .map_err(|e| AppError::Join(e.to_string()))??
+    };
+    Ok(finalized.bam)
 }
 
 /// The values that go into the digest of a result.
@@ -229,7 +371,7 @@ impl App {
         // point, because `supported_data_kinds` does not advertise FASTQ. The check stays, because
         // a wrong advertisement must give a clear message and not a strange failure much later.
         let aligned = if unit.data_kind == "FASTQ" {
-            map_reads(&files, &params.reference_build)?
+            map_unit_reads(self, &files, dir, &params.reference_build, cancel, report).await?
         } else {
             primary.clone()
         };
@@ -362,16 +504,43 @@ mod tests {
         assert_eq!(d["aligner"], "minimap2-pure-rs");
     }
 
-    /// This node advertises only the kinds that it can process. A FASTQ unit needs a map stage that
-    /// does not exist yet, so the node must not advertise FASTQ.
+    /// This node advertises each kind that it can process, and no other. The AppView selects work
+    /// with this list, so a wrong entry here gives a node work that it can not do.
     #[test]
-    fn the_node_advertises_only_what_it_can_do() {
+    fn the_node_advertises_each_kind_that_it_can_do() {
         let kinds = supported_data_kinds();
-        assert!(kinds.contains(&"CRAM".to_string()));
-        assert!(
-            !kinds.contains(&"FASTQ".to_string()),
-            "the map stage is not written, so a FASTQ unit must never reach this node"
-        );
+        assert!(kinds.contains(&"CRAM".to_string()), "a unit with an alignment");
+        assert!(kinds.contains(&"FASTQ".to_string()), "a unit with reads only");
+    }
+
+    /// ENA names the two mate files with `_1` and `_2` before the extension.
+    #[test]
+    fn the_two_mate_files_are_found_by_name() {
+        let f = |n: &str| PathBuf::from(format!("/x/{n}"));
+        let (r1, r2, singles) = split_mates(&[f("ERR1_1.fastq.gz"), f("ERR1_2.fastq.gz")]);
+        assert_eq!(r1, Some(f("ERR1_1.fastq.gz")));
+        assert_eq!(r2, Some(f("ERR1_2.fastq.gz")));
+        assert!(singles.is_empty());
+    }
+
+    /// A run with one file has reads with no mate, and a long-read run is always such a run.
+    #[test]
+    fn one_file_gives_reads_with_no_mate() {
+        let f = PathBuf::from("/x/ERR1.fastq.gz");
+        let (r1, r2, singles) = split_mates(std::slice::from_ref(&f));
+        assert!(r1.is_none());
+        assert!(r2.is_none());
+        assert_eq!(singles, vec![f]);
+    }
+
+    /// The match is on `_1.` and not on `_1`. A run accession can hold those two characters, and a
+    /// file that matched on the accession would go to the wrong mate.
+    #[test]
+    fn the_mate_match_does_not_read_the_accession() {
+        let f = PathBuf::from("/x/ERR1_1_1.fastq.gz");
+        let (r1, _, singles) = split_mates(std::slice::from_ref(&f));
+        assert_eq!(r1, Some(f), "the mate marker is the one before the extension");
+        assert!(singles.is_empty());
     }
 
     /// An index file is never the primary file of a unit.
