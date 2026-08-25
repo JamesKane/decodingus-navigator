@@ -146,8 +146,15 @@ here under its old number so that existing references still resolve.
   the headless per-unit driver the design asked someone to build; and the AppView already resolves
   ENA at run level and curates it (`EnaClient::run_files` + `du-jobs/crawl_project.rs`). The
   critical path is the **AppView half** — `grid.work_unit`, the `SKIP LOCKED` claim, the validator.
-  **One decision to settle before P1 code:** `mt_terminal` sits in the agreement digest, but
-  `analyze_biosample` declines to assign mtDNA on CHM13 by design (§11.3).
+  Three decisions settled 2026-08-24 (design §12): units are **per ENA sample**; `mt_terminal` is
+  **out of the agreement digest** (the analysis path declines to assign mtDNA on CHM13, and the
+  Grid realigns *to* CHM13); and **P1 carries both data kinds**, since D3's staging existed only to
+  retire an aligner risk that no longer exists.
+- **In progress.** The AppView coordination substrate is built — migration `0075_grid.sql` and
+  `du_db::grid` (claim / lease / submit / credit / leaderboard) with six live-Postgres tests that
+  **have not yet been run** (no reachable Postgres on the dev host). Not yet built: `grid-curate`,
+  the reaper and validator jobs, the `/api/v1/grid/*` endpoints, `Provenance` in `du-domain`, and
+  the entire Navigator edge.
 
 ### 2.3 Academic / public-dataset (ENA) import
 - **Design:** [`design/academic-ena-import.md`](design/academic-ena-import.md)
