@@ -59,6 +59,10 @@ macro_rules! cli_try {
 /// before it proves itself.
 const CLAIM_BATCH: i32 = 4;
 
+/// How long a unit directory that a stop left may stay. A user who stops a run and continues it the
+/// same day keeps the transfer. A directory older than this holds files that no run will continue.
+const SCRATCH_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
 #[derive(Parser)]
 #[command(
     name = "navigator",
@@ -244,9 +248,6 @@ pub struct ProbeArgs {
     json: bool,
 }
 
-/// `archaic` takes an optional alignment override, so that a caller can genotype one specific build
-/// directly. Without it the app picks the best-callable alignment of the subject. The GRCh37 and
-/// GRCh38 code path is then out of reach on a subject that also has CHM13 data.
 #[derive(Args)]
 pub struct ContributeArgs {
     /// Workspace database path.
@@ -272,7 +273,10 @@ pub struct ContributeArgs {
     dry_run: bool,
 }
 
-#[derive(Parser, Debug)]
+/// `archaic` takes an optional alignment override, so that a caller can genotype one specific build
+/// directly. Without it the app picks the best-callable alignment of the subject. The GRCh37 and
+/// GRCh38 code path is then out of reach on a subject that also has CHM13 data.
+#[derive(Args)]
 pub struct ArchaicArgs {
     /// Subject donor identifier.
     #[arg(long, short)]
@@ -2359,10 +2363,22 @@ async fn contribute(args: ContributeArgs) -> i32 {
         }
     }
 
-    // Ctrl-C sets the token. Each stage of a unit tests it, so the node stops at the next step and
-    // not in the middle of a write.
-    let cancel = navigator_app::CancelToken::new();
-    let signal_token = cancel.clone();
+    // A directory that an earlier run stopped keeps its files, so that a transfer can continue.
+    // This removes the ones that no run continued.
+    let swept = navigator_app::grid_job::sweep_old_scratch(&scratch, SCRATCH_MAX_AGE).await;
+    if swept > 0 {
+        println!("  removed {swept} old unit directory(s)");
+    }
+
+    // Ctrl-C sets the **session** token. Each unit then gets its own token, because a
+    // `CancelToken` has no way back: `cancel.rs` states that a token covers exactly one run.
+    //
+    // One token for the whole session gave a fault. The beat of a unit cancels its token when the
+    // AppView reports that another node holds the lease. One token made that one lost lease stop
+    // the node for the rest of the run. The node then gave back each unit that it still held. A
+    // lost lease is a normal event, and it must cost one unit and no more.
+    let session = navigator_app::CancelToken::new();
+    let signal_token = session.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             eprintln!("\nstopping: the node gives back each lease that it holds…");
@@ -2373,7 +2389,7 @@ async fn contribute(args: ContributeArgs) -> i32 {
     let mut done = 0u32;
     let mut failed = 0u32;
     loop {
-        if cancel.is_cancelled() {
+        if session.is_cancelled() {
             break;
         }
         let want = match args.max_units {
@@ -2395,7 +2411,7 @@ async fn contribute(args: ContributeArgs) -> i32 {
         }
 
         for unit in &units {
-            if cancel.is_cancelled() {
+            if session.is_cancelled() {
                 // Units that this node claimed but did not start still hold a lease. Give each one
                 // back, so the catalogue does not wait out the lease time for work never begun.
                 let _ = app.grid_release(unit.lease_id, "stopped by the user").await;
@@ -2410,7 +2426,23 @@ async fn contribute(args: ContributeArgs) -> i32 {
                 println!("  {:<9} {detail}", stage.as_str());
             };
 
-            let outcome = app.run_grid_unit(unit, &params, &cancel, &mut report).await;
+            // A token for this unit only. A task copies the state of the session token into it,
+            // so Ctrl-C still stops the work inside a few moments. The unit token can also stop by
+            // itself, when this node loses the lease, and the session then continues.
+            let unit_cancel = navigator_app::CancelToken::new();
+            {
+                let (s, u) = (session.clone(), unit_cancel.clone());
+                tokio::spawn(async move {
+                    while !u.is_cancelled() {
+                        if s.is_cancelled() {
+                            u.cancel();
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    }
+                });
+            }
+            let outcome = app.run_grid_unit(unit, &params, &unit_cancel, &mut report).await;
             match (&outcome.submission_id, &outcome.error) {
                 (Some(id), _) => {
                     done += 1;

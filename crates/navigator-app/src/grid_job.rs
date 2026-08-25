@@ -365,6 +365,30 @@ fn primary_file<'a>(manifest: &'a [ManifestFile], files: &'a [PathBuf]) -> Optio
         .map(|(_, p)| p)
 }
 
+/// Remove each unit directory that is older than `max_age`.
+///
+/// A unit that the user stopped keeps its files, so that the transfer can continue. This
+/// removes the directories that no run continued. Call it when a node starts.
+pub async fn sweep_old_scratch(scratch_root: &Path, max_age: std::time::Duration) -> usize {
+    let Ok(mut entries) = tokio::fs::read_dir(scratch_root).await else {
+        return 0;
+    };
+    let mut removed = 0;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let old = entry
+            .metadata()
+            .await
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > max_age);
+        if old && tokio::fs::remove_dir_all(entry.path()).await.is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 impl App {
     /// Do the work of one unit, and always give the lease back.
     ///
@@ -428,9 +452,21 @@ impl App {
         if let Some(guid) = made {
             self.discard_unit_subject(guid).await;
         }
-        // The files of a unit are large. Remove them whatever the result, or a node that runs for a
-        // week fills the disk of its owner.
-        let _ = tokio::fs::remove_dir_all(&dir).await;
+
+        // Keep the files of a unit that the user stopped. Remove them in each other case.
+        //
+        // `ena` can continue a transfer that stopped. It keeps each `.part` file, and it reads the
+        // md5 state of that prefix again. A remove of the directory here would make all of that
+        // work impossible: a stop at 25 GB of a 30 GB file would lose those 25 GB.
+        //
+        // A unit that failed is different. Another node takes it, and this node may never see it
+        // again. So those files stay on the disk with no purpose, and a whole genome is tens of GB.
+        //
+        // [`sweep_old_scratch`] removes a directory that a stop left, after some days. Without that
+        // step, a user who stops a run and never continues it keeps those files for ever.
+        if !cancel.is_cancelled() {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+        }
         outcome
     }
 
@@ -532,6 +568,16 @@ impl App {
         if let Ok(mut g) = subject.lock() {
             *g = Some(biosample.guid);
         }
+        // The ENA accession as an external id. This is what makes the published record *about*
+        // the public sample.
+        //
+        // `BiosampleRecord` carries no accession field. That rule keeps personal data out of a
+        // published record. The record reads `external_ids` from this table instead.
+        //
+        // Without this call, the record goes out with an empty `externalIds`. No reader can then
+        // connect it to the sample, or join it with the record of a second contributor.
+        self.add_external_id(biosample.guid, "ENA", &unit.sample_accession)
+            .await?;
         self.add_data(biosample.guid, &aligned).await?;
 
         // ---- analyze ----
@@ -541,6 +587,21 @@ impl App {
             return Err(AppError::Import(format!(
                 "no alignment for {} after import",
                 unit.sample_accession
+            )));
+        }
+        // `analyze_biosample` puts the failure of one step in `errors` and still gives `Ok`. That
+        // is correct for a batch over the subjects of a user, where the other steps still give a
+        // result that a person can use. It is **not** correct here.
+        //
+        // A step that failed leaves its value out of the digest. The agreement test compares an
+        // absent value with an absent value as equal. So two nodes that both failed would agree,
+        // reach a quorum on a result with no content, and receive credit for it. A unit must fail
+        // instead, and another node then does the work.
+        if !analyzed.errors.is_empty() {
+            return Err(AppError::Import(format!(
+                "analysis of {} did not complete: {}",
+                unit.sample_accession,
+                analyzed.errors.join("; ")
             )));
         }
 
