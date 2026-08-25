@@ -63,7 +63,9 @@ navigator-app = { workspace = true }
 navigator-domain = { workspace = true }
 rfd = "0.17.2"
 serde_json = "1"
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros"] }
+# `signal`, so `navigator contribute` can catch Ctrl-C. A node that only exited would keep each
+# lease that it holds until the lease time ended, and no other node could take that work.
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "sync", "macros", "signal"] }
 
 [dev-dependencies]
 navigator-store = { workspace = true }
