@@ -100,6 +100,10 @@ pub struct ManifestFile {
     pub bytes: Option<i64>,
     #[serde(default)]
     pub format: String,
+    /// The instrument model that ENA reports, such as `Illumina NovaSeq 6000`. The node chooses a
+    /// mapper preset from it. Absent on a manifest that an older AppView made.
+    #[serde(default)]
+    pub instrument: Option<String>,
 }
 
 impl ManifestFile {
@@ -409,6 +413,7 @@ pub async fn fetch_unit(
                 md5: None,
                 bytes: None,
                 format: "INDEX".to_string(),
+                instrument: None,
             };
             let name = sidecar.file_name().to_string();
             let mut per_file = |recv: u64, total: Option<u64>| progress(&name, recv, total);
@@ -445,6 +450,7 @@ mod tests {
             md5: None,
             bytes: None,
             format: "CRAM".into(),
+            instrument: None,
         };
         assert_eq!(f.file_name(), "sample.cram");
     }

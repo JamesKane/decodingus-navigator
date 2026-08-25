@@ -142,6 +142,7 @@ fn split_mates(files: &[PathBuf]) -> (Option<PathBuf>, Option<PathBuf>, Vec<Path
 async fn map_unit_reads(
     app: &App,
     files: &[PathBuf],
+    manifest: &[ManifestFile],
     dir: &Path,
     target_build: &str,
     cancel: &CancelToken,
@@ -149,16 +150,26 @@ async fn map_unit_reads(
 ) -> Result<PathBuf, AppError> {
     use navigator_analysis::postprocess::{self, MarkDupParams, SortParams};
 
+    // The map step below decides pairing from whether both mates are present. The preset is a
+    // separate question, and it comes from the instrument.
     let (r1, r2, singles) = split_mates(files);
-    let paired = r1.is_some() && r2.is_some();
-    // A short-read preset for a set of reads with a mate, and a long-read preset for a set with no
-    // mate. A map of long reads under a short-read preset does not fail. It gives alignments that
-    // look correct and are wrong.
-    let preset = if paired {
-        navigator_align::Preset::ShortRead
-    } else {
-        navigator_align::Preset::MapHifi
-    };
+
+    // The preset comes from the **instrument**, and not from the count of mates.
+    //
+    // An earlier version chose a short-read preset for a set with two mates, and a HiFi preset for
+    // each other set. A single-end Illumina run has no mate, so that rule mapped short reads under
+    // a long-read preset. The comment on that rule gave the result. A map under the wrong preset
+    // does not fail, and it gives alignments that look correct and are wrong.
+    //
+    // `Preset::infer` gives an error for an instrument that it does not know, and this function
+    // passes that error on. A refusal is the correct answer. The unit then goes to another node,
+    // and no result of unknown quality reaches the quorum.
+    let instrument = manifest.iter().find_map(|m| m.instrument.clone());
+    let preset = navigator_align::Preset::infer(None, instrument.as_deref()).map_err(|e| {
+        AppError::Import(format!(
+            "this node can not choose a mapper for the reads of this unit: {e}"
+        ))
+    })?;
 
     report(GridStage::Map, "reference");
     let reference = app.resolve_reference(target_build, &mut |_, _| {}).await?;
@@ -237,8 +248,11 @@ async fn map_unit_reads(
         let token = cancel.clone();
         // A long-read library usually needs no PCR step, and two long reads rarely have the same
         // end points. So a mark on those reads removes real coverage.
+        // A long-read library usually needs no PCR step, and two long reads rarely have the same
+        // end points. So a mark on those reads removes real coverage. The test is on the preset and
+        // not on the mate count, because a single-end short-read run still wants the mark.
         let md_params = MarkDupParams {
-            enabled: paired,
+            enabled: preset == navigator_align::Preset::ShortRead,
             ..Default::default()
         };
         tokio::task::spawn_blocking(move || {
@@ -764,7 +778,16 @@ impl App {
         // point, because `supported_data_kinds` does not advertise FASTQ. The check stays, because
         // a wrong advertisement must give a clear message and not a strange failure much later.
         let aligned = if unit.data_kind == "FASTQ" {
-            map_unit_reads(self, &files, dir, &params.reference_build, cancel, report).await?
+            map_unit_reads(
+                self,
+                &files,
+                &unit.manifest,
+                dir,
+                &params.reference_build,
+                cancel,
+                report,
+            )
+            .await?
         } else {
             primary.clone()
         };
@@ -1315,6 +1338,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The mapper preset comes from the instrument. A single-end Illumina run has no mate, and an
+    /// earlier rule mapped it under a long-read preset for that reason alone.
+    #[test]
+    fn the_preset_comes_from_the_instrument_and_not_from_the_mate_count() {
+        use navigator_align::Preset;
+        assert_eq!(
+            Preset::infer(None, Some("Illumina NovaSeq 6000")).unwrap(),
+            Preset::ShortRead
+        );
+        assert_eq!(Preset::infer(None, Some("PacBio Revio")).unwrap(), Preset::MapHifi);
+        assert_eq!(
+            Preset::infer(None, Some("Oxford Nanopore PromethION")).unwrap(),
+            Preset::MapOnt
+        );
+    }
+
+    /// An instrument that the code does not know gives an error, and the unit then goes to another
+    /// node. A guess would give alignments that look correct and are wrong.
+    #[test]
+    fn an_unknown_instrument_is_refused_and_not_guessed() {
+        use navigator_align::Preset;
+        assert!(Preset::infer(None, Some("Some New Sequencer 9000")).is_err());
+        assert!(Preset::infer(None, None).is_err());
+    }
+
     /// A run with two mates and a file of reads that lost their mate is **one** run. ENA gives
     /// three files for such a run, and a count of files would refuse it.
     #[test]
@@ -1326,6 +1374,7 @@ mod tests {
             md5: None,
             bytes: None,
             format: "FASTQ".into(),
+            instrument: None,
         };
         let one_run = vec![
             f("ERR1", "ERR1_1.fastq.gz"),
@@ -1348,6 +1397,7 @@ mod tests {
             md5: None,
             bytes: None,
             format: "CRAM".into(),
+            instrument: None,
         };
         assert_eq!(runs_in(std::slice::from_ref(&f)), 1);
         assert_eq!(runs_in(&[]), 1);
@@ -1388,6 +1438,7 @@ mod tests {
             md5: None,
             bytes: None,
             format: fmt.into(),
+            instrument: None,
         };
         let manifest = vec![m("CRAI", "a.cram.crai"), m("CRAM", "a.cram")];
         let files = vec![PathBuf::from("/x/a.cram.crai"), PathBuf::from("/x/a.cram")];

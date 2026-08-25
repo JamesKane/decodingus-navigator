@@ -119,6 +119,7 @@ fn entry(addr: &str, name: &str, md5: Option<String>, bytes: Option<i64>) -> Man
         md5,
         bytes,
         format: "CRAM".into(),
+        instrument: None,
     }
 }
 
