@@ -748,7 +748,7 @@ fn log_buffer(stage: &str, bytes: usize) {
 /// A `free` value of 0 means that the platform gave no answer, and the function then permits the
 /// job. A job of many hours must not stop because a call for the free space failed. It is better to
 /// run that job and let it fail on a real write.
-fn has_room(needed: u64, free: u64) -> bool {
+pub(crate) fn has_room(needed: u64, free: u64) -> bool {
     free == 0 || free >= needed
 }
 
@@ -757,7 +757,7 @@ fn has_room(needed: u64, free: u64) -> bool {
 ///
 /// A zero means "unknown", and the preflight then permits the job. A refusal, because a call for the
 /// free space failed, is worse than a job that runs and then fails on a real write.
-fn free_space(path: &Path) -> u64 {
+pub(crate) fn free_space(path: &Path) -> u64 {
     // Walk up to the nearest existing ancestor: the scratch directory itself may not exist yet.
     let mut probe = path;
     loop {

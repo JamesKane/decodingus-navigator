@@ -54,6 +54,19 @@ macro_rules! cli_try {
     };
 }
 
+/// How many units to claim in one call. It is small for two reasons. A node that stops then has
+/// few leases to give back. And a node that is new does not take a large part of the catalogue
+/// before it proves itself.
+const CLAIM_BATCH: i32 = 4;
+
+/// How long a unit directory that a stop left may stay. A user who stops a run and continues it the
+/// same day keeps the transfer. A directory older than this holds files that no run will continue.
+const SCRATCH_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
+/// How often the node announces itself, so that the fleet view of the AppView shows it as alive.
+/// The value is far below any period that such a view would call dead.
+const NODE_LIVENESS_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 #[derive(Parser)]
 #[command(
     name = "navigator",
@@ -112,6 +125,14 @@ pub enum Command {
     /// Ancestry is then ready with no later lazy build. It is heavy: one whole-genome decode for
     /// each alignment.
     GenotypePanel(ShowArgs),
+    /// Give computer time to the DecodingUs Grid. The node takes public ENA samples from the
+    /// AppView, analyzes them, and sends back a signed result. Agreed results earn compute credit
+    /// on a public board.
+    ///
+    /// The node only takes work that it can do. It advertises its data kinds, and the AppView
+    /// gives it nothing else. Press Ctrl-C to stop: the node finishes no more units, gives back
+    /// each lease that it holds, and removes its temporary files.
+    Contribute(ContributeArgs),
     /// A branch report for each marker. It gives the genotype of the sample at every marker that
     /// defines a node in the descendant subtree of a Y or mtDNA tree node. Each row has the
     /// observed base, the derived or ancestral status, and the evidence. Use it to spot-check a
@@ -229,6 +250,35 @@ pub struct ProbeArgs {
     /// Emit JSON instead of a human-readable table.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Args)]
+pub struct ContributeArgs {
+    /// Workspace database path.
+    #[arg(long)]
+    db: Option<PathBuf>,
+    /// How many units to do before the node stops. Without this, the node continues until the
+    /// catalogue has no more work, or until Ctrl-C.
+    #[arg(long)]
+    max_units: Option<u32>,
+    /// How long to hold each lease, in days. The AppView reduces a value outside its own limits.
+    #[arg(long, default_value_t = 3)]
+    lease_days: i64,
+    /// Where to put the files of a unit. Each unit gets its own directory below this one, and the
+    /// node removes that directory when the unit ends.
+    #[arg(long)]
+    scratch: Option<PathBuf>,
+    /// The build to report in the result. It must match the build of the analysis.
+    #[arg(long, default_value = "chm13v2.0")]
+    reference_build: String,
+    /// How much disk space, in GB, this node gives to the work. The AppView uses this value to
+    /// select work that fits. Without it, the node reports the free space of the scratch volume.
+    #[arg(long)]
+    disk_gb: Option<u64>,
+    /// Show what the node would take, and then stop. The node claims nothing, gets no file,
+    /// and analyzes nothing.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 /// `archaic` takes an optional alignment override, so that a caller can genotype one specific build
@@ -570,6 +620,7 @@ pub fn run(command: Command) -> i32 {
             Command::Archaic(a) => archaic(a).await,
             Command::ArchaicSegments(a) => archaic_segments(a).await,
             Command::GenotypePanel(a) => genotype_panel(a).await,
+            Command::Contribute(a) => contribute(a).await,
             Command::BranchReport(a) => branch_report(a).await,
             Command::Doctor(a) => doctor(a).await,
             Command::Projects(a) => projects(a).await,
@@ -2267,4 +2318,214 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         format!("{}…", s.chars().take(max - 1).collect::<String>())
     }
+}
+
+/// Give computer time to the DecodingUs Grid.
+///
+/// The loop is: announce this node, claim a small group of units, do each one, and claim again. It
+/// ends when the user presses Ctrl-C, when the catalogue has no more work that this node can do, or
+/// when the node reaches `--max-units`.
+///
+/// **Ctrl-C must not lose a lease.** The signal sets the cancel token. The unit that is in progress
+/// stops at its next step, gives its lease back, and removes its files. A node that only exited
+/// would hold each of its units until the lease time ended, and no other node could take them.
+async fn contribute(args: ContributeArgs) -> i32 {
+    use std::time::Instant;
+    let app = cli_try!(open(args.db).await);
+    let kinds = navigator_app::grid_job::supported_data_kinds();
+
+    let scratch = args
+        .scratch
+        .unwrap_or_else(|| std::env::temp_dir().join("navigator-grid"));
+    let params = navigator_app::grid_job::GridJobParams {
+        max_units: CLAIM_BATCH,
+        lease_secs: args.lease_days.max(1) * 24 * 3600,
+        scratch_root: scratch.clone(),
+        reference_build: args.reference_build.clone(),
+    };
+
+    // Real values, and not zeros.
+    //
+    // `du_db::grid::claim` filters on the data kind only today. §11 of the design says that it must
+    // also filter on memory, free disk and thread count. On the day that filter arrives, a node
+    // that reports zero receives no work. It then prints the same "no more work for this node right
+    // now" that an empty catalogue gives. Nobody would find the true cause quickly.
+    let caps = navigator_app::grid::NodeCapabilities {
+        data_kinds: kinds.clone(),
+        threads: std::thread::available_parallelism()
+            .map(|n| n.get() as u32)
+            .unwrap_or(1),
+        disk_budget: args
+            .disk_gb
+            .map(|gb| gb.saturating_mul(1_000_000_000))
+            .unwrap_or_else(|| navigator_app::grid_job::free_space_for(&scratch)),
+        memory_bytes: navigator_app::grid_job::machine_memory_bytes(),
+    };
+
+    println!("DecodingUs Grid — this node offers: {}", kinds.join(", "));
+    println!("  scratch:   {}", scratch.display());
+    println!("  reference: {}", params.reference_build);
+    println!("  lease:     {} day(s)", args.lease_days.max(1));
+
+    if args.dry_run {
+        println!("\ndry run: nothing claimed. Remove --dry-run to contribute.");
+        return 0;
+    }
+
+    match app.grid_register(&caps).await {
+        Ok(id) => println!("  node id:   {id}"),
+        Err(e) => {
+            eprintln!("error: could not announce this node: {e}");
+            return ExitCode::exit_code(e);
+        }
+    }
+
+    // A directory that an earlier run stopped keeps its files, so that a transfer can continue.
+    // This removes the ones that no run continued.
+    let swept = navigator_app::grid_job::sweep_old_scratch(&scratch, SCRATCH_MAX_AGE).await;
+    if swept > 0 {
+        println!("  removed {swept} old unit directory(s)");
+    }
+
+    // Ctrl-C sets the **session** token. Each unit then gets its own token, because a
+    // `CancelToken` has no way back: `cancel.rs` states that a token covers exactly one run.
+    //
+    // One token for the whole session gave a fault. The beat of a unit cancels its token when the
+    // AppView reports that another node holds the lease. One token made that one lost lease stop
+    // the node for the rest of the run. The node then gave back each unit that it still held. A
+    // lost lease is a normal event, and it must cost one unit and no more.
+    let session = navigator_app::CancelToken::new();
+    let signal_token = session.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!("\nstopping: the node gives back each lease that it holds…");
+            signal_token.cancel();
+        }
+    });
+
+    // Tell the fleet view that this node is alive, on a timer of its own.
+    //
+    // Only the register call writes `fed.pds_node.last_heartbeat`. The beat of a unit writes the
+    // row of the lease, which is a different row.
+    //
+    // A unit of a whole genome takes hours. So a call between two units, or between two batches,
+    // leaves the node dead in that view for most of the time that it works.
+    {
+        let (app2, caps2, stop) = (app.clone(), caps.clone(), session.clone());
+        tokio::spawn(async move {
+            while !stop.is_cancelled() {
+                tokio::time::sleep(NODE_LIVENESS_EVERY).await;
+                if stop.is_cancelled() {
+                    return;
+                }
+                let _ = app2.grid_register(&caps2).await;
+            }
+        });
+    }
+
+    let mut done = 0u32;
+    let mut failed = 0u32;
+    loop {
+        if session.is_cancelled() {
+            break;
+        }
+        let want = match args.max_units {
+            Some(max) if done + failed >= max => break,
+            Some(max) => (max - done - failed).min(CLAIM_BATCH as u32) as i32,
+            None => CLAIM_BATCH,
+        };
+
+        let units = match app.grid_claim(&kinds, want, params.lease_secs).await {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("error: could not claim work: {e}");
+                return ExitCode::exit_code(e);
+            }
+        };
+        if units.is_empty() {
+            println!("\nno more work for this node right now.");
+            break;
+        }
+
+        for unit in &units {
+            if session.is_cancelled() {
+                // Units that this node claimed but did not start still hold a lease. Give each one
+                // back, so the catalogue does not wait out the lease time for work never begun.
+                let _ = app.grid_release(unit.lease_id, "stopped by the user").await;
+                continue;
+            }
+            let started = Instant::now();
+            println!("\n{} ({})", unit.sample_accession, unit.data_kind);
+
+            // The driver sends the heartbeat itself, next to the work. This callback only draws
+            // the stage for the user.
+            let mut report = |stage: navigator_app::grid_job::GridStage, detail: &str| {
+                println!("  {:<9} {detail}", stage.as_str());
+            };
+
+            // A token for this unit only. A task copies the state of the session token into it,
+            // so Ctrl-C still stops the work inside a few moments. The unit token can also stop by
+            // itself, when this node loses the lease, and the session then continues.
+            let unit_cancel = navigator_app::CancelToken::new();
+            // The bridge ends when this value goes out of scope, at the end of the unit. Without
+            // that signal, a unit that finished with no cancel would leave the task in its loop
+            // for the life of the process. A node that runs for days would then hold hundreds of
+            // tasks, and each one wakes four times each second.
+            let (stop_bridge, mut bridge_ended) = tokio::sync::oneshot::channel::<()>();
+            {
+                let (s, u) = (session.clone(), unit_cancel.clone());
+                tokio::spawn(async move {
+                    loop {
+                        if s.is_cancelled() {
+                            u.cancel();
+                            return;
+                        }
+                        tokio::select! {
+                            _ = &mut bridge_ended => return,
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+                        }
+                    }
+                });
+            }
+            let outcome = app.run_grid_unit(unit, &params, &unit_cancel, &mut report).await;
+            drop(stop_bridge);
+
+            // Send the records that the unit put in the queue.
+            //
+            // The unit gives the AppView the address of each record with its result. Only the
+            // graphical application empties that queue, on a timer.
+            //
+            // So a node that runs with no window named records that stayed in its own database for
+            // ever. That queue also grew by two rows for each unit.
+            if let Err(e) = app.drain_outbox().await {
+                eprintln!("  note      the records of this unit are still in the queue: {e}");
+            }
+            match (&outcome.submission_id, &outcome.error) {
+                (Some(id), _) => {
+                    done += 1;
+                    println!("  done      submission #{id} in {:.1?}", started.elapsed());
+                }
+                (None, Some(e)) => {
+                    failed += 1;
+                    eprintln!("  failed    {e}");
+                }
+                (None, None) => failed += 1,
+            }
+        }
+    }
+
+    println!("\n{done} unit(s) sent, {failed} failed.");
+    match app.grid_standing().await {
+        Ok(s) => {
+            let rank = s.rank.map(|r| format!("#{r}")).unwrap_or_else(|| "unranked".into());
+            println!(
+                "total: {:.2} cobblestones over {} unit(s), {rank}",
+                s.cobblestones, s.units_credited
+            );
+        }
+        // This total is only a courtesy at the end of a run. A failure to read it must not change
+        // the exit code of work that succeeded.
+        Err(e) => eprintln!("(could not read your standing: {e})"),
+    }
+    i32::from(failed > 0)
 }
