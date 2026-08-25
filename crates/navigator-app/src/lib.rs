@@ -3094,6 +3094,7 @@ pub mod ena;
 mod fastpath;
 mod ftdna_import;
 pub mod grid;
+pub mod grid_job;
 mod haplogroup;
 mod ibd_exchange;
 mod import_profiles;
