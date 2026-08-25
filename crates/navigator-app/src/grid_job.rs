@@ -355,6 +355,27 @@ fn grid_provenance(did: &str, reference_build: &str, aligner: Option<&str>) -> P
     .with_aligner(aligner.map(str::to_string))
 }
 
+/// A short class for the release call, from the error of a unit.
+///
+/// The message of an error can hold a local file path. The server keeps this value and the node
+/// signs it, so it must hold no name from the machine of the volunteer.
+fn release_reason(e: &AppError) -> &'static str {
+    let text = e.to_string().to_ascii_lowercase();
+    if text.contains("cancel") {
+        "stopped"
+    } else if text.contains("checksum") {
+        "checksum"
+    } else if text.contains("room") || text.contains("space") {
+        "disk"
+    } else if text.contains("merge runs") {
+        "unsupported"
+    } else if text.contains("analysis") {
+        "analysis"
+    } else {
+        "error"
+    }
+}
+
 /// The primary data file of a unit: the alignment for a CRAM unit, or the first read file for a
 /// FASTQ unit. An index file is never the primary file.
 fn primary_file<'a>(manifest: &'a [ManifestFile], files: &'a [PathBuf]) -> Option<&'a PathBuf> {
@@ -363,6 +384,17 @@ fn primary_file<'a>(manifest: &'a [ManifestFile], files: &'a [PathBuf]) -> Optio
         .zip(files)
         .find(|(m, _)| matches!(m.format.as_str(), "CRAM" | "BAM" | "FASTQ"))
         .map(|(_, p)| p)
+}
+
+/// The free space of the volume that holds `dir`, in bytes. Zero means that the code can not
+/// measure it.
+pub fn free_space_for(dir: &Path) -> u64 {
+    crate::realign_job::free_space(dir)
+}
+
+/// The physical memory of this machine, in bytes. Zero means that the code can not measure it.
+pub fn machine_memory_bytes() -> u64 {
+    navigator_align::batch::detect_memory().map(|m| m.total).unwrap_or(0)
 }
 
 /// Remove each unit directory that is older than `max_age`.
@@ -433,7 +465,17 @@ impl App {
             tokio::pin!(beat);
             tokio::select! {
                 r = &mut work => r,
-                e = &mut beat => Err(e),
+                lost = &mut beat => {
+                    // The beat already set the token. Wait for the work to see it and return.
+                    //
+                    // A `select!` that ends here would drop the work in the middle of an `await`.
+                    // The heavy stages run in `spawn_blocking`. A dropped handle does not stop such
+                    // a task. So the sort or the duplicate mark would continue, while the code
+                    // below removes the directory that it writes into. The code waits instead, and
+                    // the work stops at its next test of the token.
+                    let _ = (&mut work).await;
+                    Err(lost)
+                }
             }
         };
 
@@ -443,7 +485,13 @@ impl App {
                 outcome.error = Some(e.to_string());
                 // The unit goes back to the catalogue at once. Without this call, it waits for the
                 // full lease time, and no other node can take it.
-                let _ = self.grid_release(unit.lease_id, &e.to_string()).await;
+                //
+                // The reason that goes to the server is a short class and not the full message.
+                // The full message can hold a local path, because `ena` puts the path of a file in
+                // the text of an I/O error. The server keeps the reason, and the node signs it. So
+                // a path in that text would send the directory names of a volunteer to a public
+                // service. The full message stays here, in `outcome.error`.
+                let _ = self.grid_release(unit.lease_id, release_reason(&e)).await;
             }
         }
         // A unit is work, and it is not the data of the user. Remove the subject before the files,
@@ -536,6 +584,29 @@ impl App {
         report: &mut (dyn FnMut(GridStage, &str) + Send),
         subject: &Arc<Mutex<Option<SampleGuid>>>,
     ) -> Result<i64, AppError> {
+        // A sample with more than one run needs each run mapped and then all of them merged into
+        // one alignment. There is no merge stage here yet.
+        //
+        // The check occurs **before** the fetch, on purpose. The manifest arrives with the claim,
+        // so the node knows the count at no cost.
+        //
+        // An earlier version took the first file and ignored the others. It pulled every one of
+        // them first, from a public archive that gives us its bandwidth at no charge. It then gave
+        // a coverage value from one part of the sample, as a value for the whole sample.
+        let primaries = unit
+            .manifest
+            .iter()
+            .filter(|m| matches!(m.format.as_str(), "CRAM" | "BAM"))
+            .count();
+        let read_pairs = unit.manifest.iter().filter(|m| m.format == "FASTQ").count();
+        let multi_run = primaries > 1 || read_pairs > 2;
+        if multi_run {
+            return Err(AppError::Import(format!(
+                "{} holds more than one sequencing run, and this node can not merge runs yet",
+                unit.sample_accession
+            )));
+        }
+
         // ---- fetch ----
         report(GridStage::Fetch, &unit.sample_accession);
         let client = self.auth.http.clone();
@@ -715,20 +786,38 @@ impl App {
 
         // The coverage record holds the measurements behind the digest. A digest says that two
         // nodes agree; this record says what they agree about.
+        //
+        // A failure on one record must not discard the records that already went in the queue.
+        //
+        // `coverage_record` gives an error in two cases. The first is an alignment with no cached
+        // coverage. The second is a file that names a whole genome while its reads cover chrY only.
+        // Both occur on real ENA samples.
+        //
+        // An earlier version used `?` here. One such error then gave an empty list, and the
+        // submission named **no** record at all. It did not even name the anchor, which was
+        // already in the queue and which the AppView was going to publish.
         for aln in self.list_alignments_for_biosample(biosample.guid).await? {
             if results.coverage_mean.is_none() {
                 break;
             }
-            let value = attach_provenance(self.coverage_record(&did, aln.id).await?, &prov)?;
-            self.enqueue_publish(
-                "coverage",
-                &format!("alignment:{}", aln.id),
-                NS_ALIGNMENT,
-                Some(&alignment_rkey(aln.id)),
-                value,
-            )
-            .await?;
-            refs.push(format!("at://{did}/{NS_ALIGNMENT}/{}", alignment_rkey(aln.id)));
+            let built = match self.coverage_record(&did, aln.id).await {
+                Ok(v) => attach_provenance(v, &prov),
+                Err(e) => Err(e),
+            };
+            let Ok(value) = built else { continue };
+            if self
+                .enqueue_publish(
+                    "coverage",
+                    &format!("alignment:{}", aln.id),
+                    NS_ALIGNMENT,
+                    Some(&alignment_rkey(aln.id)),
+                    value,
+                )
+                .await
+                .is_ok()
+            {
+                refs.push(format!("at://{did}/{NS_ALIGNMENT}/{}", alignment_rkey(aln.id)));
+            }
         }
         Ok(refs)
     }
@@ -880,6 +969,31 @@ mod tests {
     fn a_record_that_is_not_an_object_is_refused() {
         let p = grid_provenance("did:plc:x", "chm13v2.0", None);
         assert!(attach_provenance(serde_json::json!("not a record"), &p).is_err());
+    }
+
+    /// The release reason that goes to the server must carry no local path. The message of an
+    /// error can hold one, because the fetch module puts the path of a file in its error text.
+    #[test]
+    fn the_release_reason_carries_no_local_path() {
+        let leaky = AppError::Import(
+            "/Users/someone/Library/navigator-grid/SAMEA1/x.cram.part: No space left on device".into(),
+        );
+        let reason = release_reason(&leaky);
+        assert_eq!(reason, "disk");
+        assert!(!reason.contains('/'), "a path must never reach the server");
+        assert!(!reason.contains("Users"));
+    }
+
+    /// Each class is short, and each one tells the operator of the AppView something different.
+    #[test]
+    fn each_failure_gives_its_own_short_class() {
+        let r = |m: &str| release_reason(&AppError::Import(m.into()));
+        assert_eq!(r("cancelled"), "stopped");
+        assert_eq!(r("checksum mismatch for x.cram"), "checksum");
+        assert_eq!(r("not enough room for this work unit"), "disk");
+        assert_eq!(r("this node can not merge runs yet"), "unsupported");
+        assert_eq!(r("analysis of SAMEA1 did not complete"), "analysis");
+        assert_eq!(r("something else"), "error");
     }
 
     /// An index file is never the primary file of a unit.

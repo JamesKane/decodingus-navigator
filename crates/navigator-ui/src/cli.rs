@@ -267,6 +267,10 @@ pub struct ContributeArgs {
     /// The build to report in the result. It must match the build of the analysis.
     #[arg(long, default_value = "chm13v2.0")]
     reference_build: String,
+    /// How much disk space, in GB, this node gives to the work. The AppView uses this value to
+    /// select work that fits. Without it, the node reports the free space of the scratch volume.
+    #[arg(long)]
+    disk_gb: Option<u64>,
     /// Show what the node would take, and then stop. The node claims nothing, gets no file,
     /// and analyzes nothing.
     #[arg(long)]
@@ -2336,13 +2340,22 @@ async fn contribute(args: ContributeArgs) -> i32 {
         reference_build: args.reference_build.clone(),
     };
 
+    // Real values, and not zeros.
+    //
+    // `du_db::grid::claim` filters on the data kind only today. §11 of the design says that it must
+    // also filter on memory, free disk and thread count. On the day that filter arrives, a node
+    // that reports zero receives no work. It then prints the same "no more work for this node right
+    // now" that an empty catalogue gives. Nobody would find the true cause quickly.
     let caps = navigator_app::grid::NodeCapabilities {
         data_kinds: kinds.clone(),
         threads: std::thread::available_parallelism()
             .map(|n| n.get() as u32)
             .unwrap_or(1),
-        disk_budget: 0,
-        memory_bytes: 0,
+        disk_budget: args
+            .disk_gb
+            .map(|gb| gb.saturating_mul(1_000_000_000))
+            .unwrap_or_else(|| navigator_app::grid_job::free_space_for(&scratch)),
+        memory_bytes: navigator_app::grid_job::machine_memory_bytes(),
     };
 
     println!("DecodingUs Grid — this node offers: {}", kinds.join(", "));
@@ -2397,6 +2410,12 @@ async fn contribute(args: ContributeArgs) -> i32 {
             Some(max) => (max - done - failed).min(CLAIM_BATCH as u32) as i32,
             None => CLAIM_BATCH,
         };
+
+        // Announce the node again before each claim. Only the register call writes
+        // `fed.pds_node.last_heartbeat`, and the beat of a unit writes a different row. Without
+        // this call, a node three days into a lease looks dead in the fleet view. A second register
+        // call is safe, so this costs one small request for each batch.
+        let _ = app.grid_register(&caps).await;
 
         let units = match app.grid_claim(&kinds, want, params.lease_secs).await {
             Ok(u) => u,

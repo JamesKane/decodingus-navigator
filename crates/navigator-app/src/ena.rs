@@ -71,10 +71,20 @@ fn backoff_secs(attempt: u32) -> u64 {
     1u64 << attempt.min(4)
 }
 
-/// How much disk space a unit needs before the module starts it. The value is a factor on the
-/// total size in the manifest. The files from ENA are the input. The analysis then writes its own
-/// output files next to them.
-const SPACE_MULTIPLE: u64 = 3;
+/// How much disk space a unit with an alignment needs, as a factor on the size of the manifest.
+/// The file arrives ready to read, so the node adds only its own analysis output.
+const SPACE_MULTIPLE_ALIGNED: u64 = 3;
+
+/// How much disk space a unit with reads needs, as a factor on the size of the manifest.
+///
+/// The factor is much larger here. The manifest names **compressed** reads, and the node then
+/// writes three files that hold the same data in a different form. `mapped.bam` comes from the
+/// reads. `sorted.bam` exists while `mapped.bam` is still on the disk, and the sort also spills to
+/// the disk. For 30 GB of compressed reads, the peak is far above 90 GB.
+///
+/// A value that is too small gives the exact failure that this check prevents. The disk fills in
+/// the middle of a unit, after hours of work.
+const SPACE_MULTIPLE_READS: u64 = 10;
 
 /// One file in a work unit's manifest, exactly as the AppView curated it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,7 +154,14 @@ pub fn checksum_ok(expected: Option<&str>, actual: &str) -> bool {
 /// refusal after a failed measurement is worse than a write that fails.
 pub fn preflight_space(dir: &Path, manifest: &[ManifestFile]) -> Result<(), AppError> {
     let total: u64 = manifest.iter().filter_map(|f| f.bytes).map(|b| b.max(0) as u64).sum();
-    let needed = total.saturating_mul(SPACE_MULTIPLE);
+    // A unit of reads needs much more room than a unit with an alignment. See the two constants.
+    let reads = manifest.iter().any(|f| f.format == "FASTQ");
+    let multiple = if reads {
+        SPACE_MULTIPLE_READS
+    } else {
+        SPACE_MULTIPLE_ALIGNED
+    };
+    let needed = total.saturating_mul(multiple);
     let free = crate::realign_job::free_space(dir);
     if !crate::realign_job::has_room(needed, free) {
         return Err(AppError::Import(format!(
@@ -362,6 +379,29 @@ pub async fn fetch_unit(
         let name = entry.file_name().to_string();
         let mut per_file = |recv: u64, total: Option<u64>| progress(&name, recv, total);
         out.push(fetch_file(client, dir, entry, cancel, &mut per_file).await?);
+
+        // Get the index file beside the alignment, when ENA has one.
+        //
+        // The index is some MB, and the alignment is 10 to 30 GB. Without the index, the node
+        // reads the whole alignment one more time to make its own. So this small transfer removes
+        // a full pass over the largest file of the unit.
+        //
+        // A failure here is not a failure of the unit. The node makes the index itself, which
+        // costs time and gives the same result.
+        if let Some(index_url) = entry.index_url.clone().filter(|u| !u.trim().is_empty()) {
+            let sidecar = ManifestFile {
+                run_accession: entry.run_accession.clone(),
+                url: index_url,
+                index_url: None,
+                // ENA publishes no checksum for the index file, so there is nothing to compare.
+                md5: None,
+                bytes: None,
+                format: "INDEX".to_string(),
+            };
+            let name = sidecar.file_name().to_string();
+            let mut per_file = |recv: u64, total: Option<u64>| progress(&name, recv, total);
+            let _ = fetch_file(client, dir, &sidecar, cancel, &mut per_file).await;
+        }
     }
     Ok(out)
 }
