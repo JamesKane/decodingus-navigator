@@ -809,8 +809,39 @@ impl App {
                 results.sex = sex_for_digest(sex.inferred_sex);
             }
         }
-        let y_calls = self.haplogroup_calls(biosample.guid, DnaType::Y).await?;
-        results.y_terminal = y_calls.first().map(|c| c.haplogroup.clone());
+        // The Y value that the digest carries is the **genome-level** label, and not the call of
+        // one alignment.
+        //
+        // `analyze_biosample` builds the Y profile of the subject, and `consensus_label` on that
+        // profile is the answer of the application for this sample. `haplogroup_calls(...).first()`
+        // gives the call of one walk, ordered by row id. That call is a step on the way to the
+        // label, and it is frequently a node higher in the tree. An earlier version sent that
+        // shallower value, so the Grid published an answer that this same application would not
+        // give for the same sample.
+        //
+        // A female sample carries no Y value at all. The unit makes its subject with no sex value.
+        // So the guard that stops a Y placement for a female subject can not fire, and the walk
+        // then places noise. `results.sex` holds the measured value at this point, and it decides.
+        let female = results.sex.as_deref() == Some("XX");
+        results.y_terminal = if female {
+            None
+        } else {
+            let placed = navigator_store::consensus_profile::get(self.store.pool(), biosample.guid, "Y")
+                .await?
+                .and_then(|p| p.consensus_label)
+                .filter(|s| !s.is_empty());
+            match placed {
+                Some(label) => Some(label),
+                // No profile means that the placement did not run, or did not finish. Take the
+                // call of the walk, because a value is better than none. The check on
+                // `analyzed.errors` above already failed the unit for a step that gave an error.
+                None => self
+                    .haplogroup_calls(biosample.guid, DnaType::Y)
+                    .await?
+                    .first()
+                    .map(|c| c.haplogroup.clone()),
+            }
+        };
 
         // ---- ancestry ----
         //
@@ -819,15 +850,34 @@ impl App {
         // ancestry value still agree. A unit that failed here would waste the hours of analysis
         // that are already complete.
         report(GridStage::Ancestry, &unit.sample_accession);
-        // An error here gives no message to the user. An absent estimate is a normal result, and
-        // the digest then holds no ancestry value.
-        if let Ok(a) = self.estimate_ancestry_from_consensus(biosample.guid).await {
-            results.ancestry_superpop_argmax = a
-                .super_population_summary
-                .iter()
-                .max_by(|x, y| x.percentage.total_cmp(&y.percentage))
-                .map(|s| s.super_population.clone());
-        }
+        // The autosomal consensus must exist before the estimate can run. Nothing else in a unit
+        // builds it, so an earlier version left `ancestry_superpop_argmax` absent for **every**
+        // unit, and this stage only printed a label.
+        //
+        // The build genotypes the alignment at the full panel, which is a second pass over the
+        // whole genome. That is a real cost for a volunteer, and it is not optional.
+        //
+        // **The setup of a node must never change the content of a digest.** Two honest nodes that
+        // analyze one sample must send the same set of keys.
+        //
+        // Take a flag that adds or removes the ancestry value. One node then sends a key that the
+        // other node does not send. The AppView reads two correct results as a disagreement. So
+        // this step runs for every unit, or the unit fails.
+        self.build_autosomal_profile(biosample.guid).await.map_err(|e| {
+            AppError::Import(format!(
+                "{}: could not build the autosomal consensus: {e}",
+                unit.sample_accession
+            ))
+        })?;
+        let ancestry = self
+            .estimate_ancestry_from_consensus(biosample.guid)
+            .await
+            .map_err(|e| AppError::Import(format!("{}: could not estimate ancestry: {e}", unit.sample_accession)))?;
+        results.ancestry_superpop_argmax = ancestry
+            .super_population_summary
+            .iter()
+            .max_by(|x, y| x.percentage.total_cmp(&y.percentage))
+            .map(|s| s.super_population.clone());
 
         let aligner = (unit.data_kind == "FASTQ").then_some("minimap2-pure-rs");
 
@@ -1089,6 +1139,74 @@ mod tests {
     fn a_record_that_is_not_an_object_is_refused() {
         let p = grid_provenance("did:plc:x", "chm13v2.0", None);
         assert!(attach_provenance(serde_json::json!("not a record"), &p).is_err());
+    }
+
+    /// The digest must hold the same set of keys for two honest nodes. A value that one node can
+    /// produce and another can not would read as a disagreement between two correct results.
+    #[test]
+    fn the_digest_keys_do_not_depend_on_the_node() {
+        let full = UnitResults {
+            sex: Some("XY".into()),
+            y_terminal: Some("R-A".into()),
+            ancestry_superpop_argmax: Some("EUR".into()),
+            coverage_mean: Some(30.0),
+            callable_fraction: Some(0.94),
+        };
+        let d = build_digest("SAMEA1", "chm13v2.0", "1.7.0", None, &full);
+        let keys: Vec<&str> = d["calls"].as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "ancestry_superpop_argmax",
+                "callable_fraction",
+                "coverage_mean",
+                "sex",
+                "y_terminal"
+            ],
+            "a unit that finishes sends these five keys and no other"
+        );
+    }
+
+    /// A sample with no Y chromosome carries no Y value. An `XX` result and a Y branch name in one
+    /// digest would be two statements that contradict each other.
+    #[test]
+    fn a_female_sample_carries_no_y_value() {
+        let female = UnitResults {
+            sex: Some("XX".into()),
+            y_terminal: None,
+            ancestry_superpop_argmax: Some("EUR".into()),
+            coverage_mean: Some(30.0),
+            callable_fraction: Some(0.94),
+        };
+        let d = build_digest("SAMEA1", "chm13v2.0", "1.7.0", None, &female);
+        assert_eq!(d["calls"]["sex"], "XX");
+        assert!(d["calls"].get("y_terminal").is_none());
+    }
+
+    /// The sex value on the wire is an explicit string, and it is not the `Debug` form of the enum.
+    #[test]
+    fn the_sex_value_is_explicit_and_uncertain_gives_none() {
+        use navigator_analysis::sex::InferredSex;
+        assert_eq!(sex_for_digest(InferredSex::Male).as_deref(), Some("XY"));
+        assert_eq!(sex_for_digest(InferredSex::Female).as_deref(), Some("XX"));
+        assert_eq!(
+            sex_for_digest(InferredSex::Unknown),
+            None,
+            "an uncertain result gives no value, and not the word Unknown"
+        );
+    }
+
+    /// This test refuses an accession that would leave the scratch directory. A recursive delete
+    /// runs on the path that such a name builds.
+    #[test]
+    fn an_accession_that_escapes_the_scratch_directory_is_refused() {
+        assert_eq!(safe_dir_name("SAMEA0000001"), Some("SAMEA0000001"));
+        assert_eq!(safe_dir_name(" ERR1_1 "), Some("ERR1_1"));
+        assert!(safe_dir_name("../../etc").is_none());
+        assert!(safe_dir_name("..").is_none());
+        assert!(safe_dir_name("a/b").is_none());
+        assert!(safe_dir_name("").is_none());
+        assert!(safe_dir_name(&"x".repeat(65)).is_none());
     }
 
     /// A run with two mates and a file of reads that lost their mate is **one** run. ENA gives
