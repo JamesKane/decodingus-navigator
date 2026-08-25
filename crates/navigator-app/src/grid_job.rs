@@ -25,6 +25,7 @@
 use super::*;
 use crate::ena::{self, ManifestFile};
 use crate::grid::ClaimedUnit;
+use du_domain::fed::Provenance;
 use navigator_analysis::CancelToken;
 use std::path::{Path, PathBuf};
 
@@ -37,6 +38,7 @@ pub enum GridStage {
     Map,
     Analyze,
     Ancestry,
+    Publish,
     Submit,
 }
 
@@ -48,6 +50,7 @@ impl GridStage {
             GridStage::Map => "map",
             GridStage::Analyze => "analyze",
             GridStage::Ancestry => "ancestry",
+            GridStage::Publish => "publish",
             GridStage::Submit => "submit",
         }
     }
@@ -303,6 +306,48 @@ pub fn build_digest(
     })
 }
 
+/// The key that the `provenance` block takes in a published record.
+///
+/// It is the serde name of the field on the record types of `du_domain::fed`. A test below makes a
+/// record with the typed method and then reads the key back. So a test checks this value against
+/// the type, and this value is not an assumption.
+const PROVENANCE_KEY: &str = "provenance";
+
+/// Put the Grid provenance block into a record that a builder already made.
+///
+/// The record builders of `publish.rs` serve the ordinary path, where a user publishes a record
+/// about their own genome. Such a record carries no provenance, and those builders have thirteen
+/// call sites. A new argument on each builder would put a `None` at each of those call sites, for a
+/// value that only the Grid supplies. That `None` would mean nothing to any of them.
+///
+/// So the Grid adds the block after the builder finishes. The value comes from the typed
+/// [`Provenance`] of `du_domain::fed`, so the shape and the field names come from the shared
+/// contract. Only the key is a string here, and a test checks that string against the type.
+fn attach_provenance(mut value: serde_json::Value, p: &Provenance) -> Result<serde_json::Value, AppError> {
+    let block = serde_json::to_value(p).map_err(|e| AppError::Import(e.to_string()))?;
+    match &mut value {
+        serde_json::Value::Object(map) => {
+            map.insert(PROVENANCE_KEY.to_string(), block);
+            Ok(value)
+        }
+        _ => Err(AppError::Import("a published record must be a JSON object".into())),
+    }
+}
+
+/// The provenance of a result that this node computed for the Grid.
+fn grid_provenance(did: &str, reference_build: &str, aligner: Option<&str>) -> Provenance {
+    Provenance::new(
+        did,
+        "navigator",
+        env!("CARGO_PKG_VERSION"),
+        reference_build,
+        // How the input arrived. It names the public origin, so a later reader can honour any term
+        // that the study of that sample sets.
+        "ena:read_run",
+    )
+    .with_aligner(aligner.map(str::to_string))
+}
+
 /// The primary data file of a unit: the alignment for a CRAM unit, or the first read file for a
 /// FASTQ unit. An index file is never the primary file.
 fn primary_file<'a>(manifest: &'a [ManifestFile], files: &'a [PathBuf]) -> Option<&'a PathBuf> {
@@ -428,10 +473,27 @@ impl App {
                 .map(|s| s.super_population.clone());
         }
 
+        let aligner = (unit.data_kind == "FASTQ").then_some("minimap2-pure-rs");
+
+        // ---- publish ----
+        //
+        // The records go to the repository of the contributor, and each one carries the provenance
+        // block. That block is what makes a record *about* a public sample that nobody owns while
+        // it is *made by* this node. See design §5.1.
+        //
+        // A failure here does not fail the unit. The analysis is complete and its digest is the
+        // thing that the quorum reads. The records are the full result behind that digest, and the
+        // outbox sends them again later. A unit that failed here would discard hours of work
+        // because a network call did not answer.
+        report(GridStage::Publish, &unit.sample_accession);
+        let record_refs = self
+            .publish_grid_records(&biosample, &results, params, aligner)
+            .await
+            .unwrap_or_default();
+
         // ---- submit ----
         report(GridStage::Submit, &unit.sample_accession);
         let stack_version = env!("CARGO_PKG_VERSION");
-        let aligner = (unit.data_kind == "FASTQ").then_some("minimap2-pure-rs");
         let digest = build_digest(
             &unit.sample_accession,
             &params.reference_build,
@@ -446,9 +508,64 @@ impl App {
             stack_version,
             &params.reference_build,
             aligner,
-            &[],
+            &record_refs,
         )
         .await
+    }
+
+    /// Put the records of a finished unit in the publish queue, and give back the `at://` address
+    /// of each one.
+    ///
+    /// The queue is the durable path that the rest of the application uses. It repeats a call that
+    /// failed. A second publish of the same record replaces the first record, and adds no second
+    /// record. A volunteer machine goes offline, and a direct write would then lose records that a
+    /// queue keeps.
+    ///
+    /// Each record here uses a **fixed** record key. That key gives the address of the record
+    /// before the write occurs. So this method can give those addresses to the submit call in the
+    /// same run, and it does not wait for the queue to empty.
+    async fn publish_grid_records(
+        &self,
+        biosample: &Biosample,
+        results: &UnitResults,
+        params: &GridJobParams,
+        aligner: Option<&str>,
+    ) -> Result<Vec<String>, AppError> {
+        let did = self.require_account()?;
+        let prov = grid_provenance(&did, &params.reference_build, aligner);
+        let mut refs = Vec::new();
+
+        // The biosample record is the anchor. It carries the ENA accession as an external id.
+        // That id makes the record about the public sample, and not about this contributor.
+        let anchor = attach_provenance(self.biosample_record(&did, biosample.guid).await?, &prov)?;
+        self.enqueue_publish(
+            "biosample",
+            &format!("biosample:{}", biosample.guid),
+            NS_BIOSAMPLE,
+            Some(&biosample_rkey(biosample.guid)),
+            anchor,
+        )
+        .await?;
+        refs.push(biosample_at_uri(&did, biosample.guid));
+
+        // The coverage record holds the measurements behind the digest. A digest says that two
+        // nodes agree; this record says what they agree about.
+        for aln in self.list_alignments_for_biosample(biosample.guid).await? {
+            if results.coverage_mean.is_none() {
+                break;
+            }
+            let value = attach_provenance(self.coverage_record(&did, aln.id).await?, &prov)?;
+            self.enqueue_publish(
+                "coverage",
+                &format!("alignment:{}", aln.id),
+                NS_ALIGNMENT,
+                Some(&alignment_rkey(aln.id)),
+                value,
+            )
+            .await?;
+            refs.push(format!("at://{did}/{NS_ALIGNMENT}/{}", alignment_rkey(aln.id)));
+        }
+        Ok(refs)
     }
 }
 
@@ -541,6 +658,63 @@ mod tests {
         let (r1, _, singles) = split_mates(std::slice::from_ref(&f));
         assert_eq!(r1, Some(f), "the mate marker is the one before the extension");
         assert!(singles.is_empty());
+    }
+
+    /// `PROVENANCE_KEY` must be the serde name of the field on the record types. This test makes a
+    /// record with the typed method and then reads the key back, so it checks the string against
+    /// the type. A new name in `du-domain` then fails here. Without this test, it would give a
+    /// record that the AppView reads and does not understand, with no message.
+    #[test]
+    fn the_provenance_key_matches_the_shared_type() {
+        let rec = du_domain::fed::BiosampleRecord::new(None, None, None, None, "2026-08-25T00:00:00Z")
+            .with_provenance(Some(grid_provenance("did:plc:x", "chm13v2.0", None)));
+        let value = serde_json::to_value(&rec).expect("serialize");
+        assert!(
+            value.get(PROVENANCE_KEY).is_some(),
+            "the typed record wrote its provenance under a different key: {value}"
+        );
+    }
+
+    /// The block that this module adds must equal the block that the typed method writes. If the
+    /// two differ, a Grid record and an ordinary record carry different shapes for one idea.
+    #[test]
+    fn the_added_block_equals_the_block_that_the_type_writes() {
+        let prov = grid_provenance("did:plc:x", "chm13v2.0", Some("minimap2-pure-rs"));
+        let typed = du_domain::fed::BiosampleRecord::new(None, None, None, None, "2026-08-25T00:00:00Z")
+            .with_provenance(Some(prov.clone()));
+        let from_type = serde_json::to_value(&typed).unwrap()[PROVENANCE_KEY].clone();
+
+        let plain = serde_json::to_value(du_domain::fed::BiosampleRecord::new(
+            None,
+            None,
+            None,
+            None,
+            "2026-08-25T00:00:00Z",
+        ))
+        .unwrap();
+        let added = attach_provenance(plain, &prov).unwrap()[PROVENANCE_KEY].clone();
+
+        assert_eq!(added, from_type);
+    }
+
+    /// A passthrough unit names no mapper, and the block then has no `aligner` key at all. That is
+    /// a fact about how the node made the result, and not a value that is missing.
+    #[test]
+    fn provenance_from_a_passthrough_unit_names_no_mapper() {
+        let p = grid_provenance("did:plc:x", "chm13v2.0", None);
+        assert!(p.aligner.is_none());
+        let v = serde_json::to_value(&p).unwrap();
+        assert!(v.get("aligner").is_none(), "an absent mapper is left out: {v}");
+        assert_eq!(v["computedBy"], "did:plc:x");
+        assert_eq!(v["source"], "ena:read_run");
+    }
+
+    /// A record that is not an object can not take a provenance block. That is a fault in the
+    /// builder, and it must give an error and not a record with no provenance.
+    #[test]
+    fn a_record_that_is_not_an_object_is_refused() {
+        let p = grid_provenance("did:plc:x", "chm13v2.0", None);
+        assert!(attach_provenance(serde_json::json!("not a record"), &p).is_err());
     }
 
     /// An index file is never the primary file of a unit.
