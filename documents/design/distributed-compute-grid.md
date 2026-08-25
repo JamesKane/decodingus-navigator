@@ -820,16 +820,12 @@ reads. `build_libraries` already prefers aligned over FASTQ per sample, so the t
 deciding it again here means a manifest can never list a file the data kind says the node will not
 open, and the download budget cannot be inflated by files nobody fetches.
 
-**The hole: `est_bases` is `NULL` for essentially every unit.** It is `reads × read_length`, and the
-crawl sets `read_length` to `None` — ENA's `filereport` does expose `base_count`, but
-`du-external`'s `RUN_FIELDS` does not request it and `genomics.sequence_library` has nowhere to put
-it. So the **per-Gbp term of the credit formula (§6.3) has nothing to weigh a FASTQ unit by**.
-
-A byte-derived estimate was the tempting fix and is the wrong one: a fabricated number in a ledger
-that pays people is worse than an honest null. So curation publishes the null and the job *warns*
-with a count, rather than leaving a silent hole. **The fix, before credit goes live:** add
-`base_count` to `RUN_FIELDS`, carry it through `crawl_project`, and store it — either as a column on
-`sequence_library` or in the `atproto` provenance slot that already holds `run_accession`.
+**The hole it found — now CLOSED, see [§12.8](#128-closing-the-est_bases-hole).** `est_bases` was
+`reads × read_length` and the crawl never set `read_length`, so it was `NULL` for essentially every
+unit and the per-Gbp term of §6.3 had nothing to weigh a FASTQ unit by. A byte-derived estimate was
+the tempting fix and the wrong one — a fabricated number in a ledger that pays people is worse than
+an honest null — so curation published the null and warned. The real fix was to ask ENA for the
+figure it had been publishing all along.
 
 ### 12.6 Validation, and two contracts that did not need to exist
 
@@ -910,13 +906,49 @@ position a contributor *would* hold, but to a node with its first unit still in 
 as "you are last" — a discouraging answer to a question nobody asked, about a board the contributor
 does not yet appear on. `null` means unranked, which is what is true.
 
+### 12.8 Closing the `est_bases` hole
+
+By the time `grid-validate` shipped, §12.4's gap had stopped being theoretical: the validator pays
+`BASE_CREDIT + per-Gbp`, so with `est_bases` null a 90 Gbp realignment earned exactly what a CRAM
+passthrough earned. The ledger would have gone live quietly wrong.
+
+**ENA had the figure all along.** `filereport` publishes `base_count` on `read_run`; `RUN_FIELDS`
+simply never asked for it. It now does, and migration `0076` adds
+`genomics.sequence_library.base_count` to hold it.
+
+**A typed column, not the `atproto` JSONB slot** — which was the other option, since that slot
+already carries `{source, run_accession}` for crawled runs. But that slot is *provenance*: where a
+row came from. `base_count` is a measurement of the library, the same kind of fact as the `reads`
+and `read_length` columns beside it, and it is summed in an aggregate that feeds a ledger paying
+real people. In a JSON blob a missing key reads identically to a zero; in a typed column a NULL is
+visible. That distinction is the whole point here.
+
+**It is the measured total, not the product.** `est_bases` now prefers `base_count` and falls back
+to `reads × read_length` only where a row predates the column. The product is a mean-length
+approximation and is wrong outright for variable-length reads — which is to say for every long-read
+platform the Grid will see.
+
+**Old rows needed a job, not a re-crawl.** `sequence::ingest_libraries` is idempotent at *sample*
+granularity and skips a sample that already has files. That property is what keeps re-crawls cheap,
+and weakening it for one column would be a bad trade. So `run-once ena-base-count` fills the column
+directly, one run at a time — `filereport` filters on whatever accession it is given, so a run
+accession returns just that run — in bounded batches with the same politeness gap as the study
+crawl. Re-run until it reports nothing examined.
+
+Two properties made explicit rather than left incidental, both about not corrupting a ledger:
+
+- **The backfill only ever fills a NULL.** Re-running it cannot overwrite a measurement and silently
+  change what a contributor was already paid for.
+- **An empty `base_count` from ENA leaves the NULL.** A submitter who never supplied the figure is
+  not the same as a run that sequenced nothing, and writing a zero would conflate them.
+
+Where no honest figure exists the null survives and `grid-curate` still warns with a count. That was
+right before and is still right; this only makes the null rare instead of universal.
+
 ### What is NOT yet built
 
 `Provenance` in `du-domain` (§5.1) and the whole Navigator edge (`ena.rs`, `grid.rs`, the driver,
-the `contribute` CLI). Plus the `est_bases` gap in §12.4, which **must close before credit goes
-live** — `grid-validate` already pays `BASE_CREDIT + per-Gbp`, and with `est_bases` null every
-FASTQ unit pays the base only, so a 90 Gbp realignment currently earns exactly what a passthrough
-does.
+the `contribute` CLI).
 
 ### 12.5 What the reaper is actually for
 
