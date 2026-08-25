@@ -355,6 +355,64 @@ fn grid_provenance(did: &str, reference_build: &str, aligner: Option<&str>) -> P
     .with_aligner(aligner.map(str::to_string))
 }
 
+/// The accession as a directory name, or `None` when it is not a safe name.
+///
+/// The accession arrives from the AppView, and the code makes a path from it and later **removes
+/// that path and everything below it**. A value with `..` in it would leave the scratch directory,
+/// and the remove would then delete a directory of the user.
+///
+/// The AppView is not an attacker. But a value from a server is still a value from outside, and a
+/// recursive delete is on the other side of it. Each archive that this code reads gives an
+/// accession of the form `[A-Za-z0-9_.-]+`, so this check refuses nothing real.
+fn safe_dir_name(accession: &str) -> Option<&str> {
+    let a = accession.trim();
+    let ok = !a.is_empty()
+        && a.len() <= 64
+        && a != "."
+        && a != ".."
+        && !a.contains("..")
+        && a.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    ok.then_some(a)
+}
+
+/// The value that the digest carries for the sex of a sample.
+///
+/// The mapping is explicit, and it does not use the `Debug` form of the enum. The AppView compares
+/// this value between two nodes. A new name for a variant would change the value, and no other
+/// thing would change. Two versions of Navigator would then disagree about one sample, and no
+/// reader could find the cause.
+///
+/// An uncertain result gives `None`, and the digest then holds no sex value. That is honest: two
+/// nodes that both could not tell agree, and a node that could tell does not agree with one that
+/// could not.
+fn sex_for_digest(sex: navigator_analysis::sex::InferredSex) -> Option<String> {
+    use navigator_analysis::sex::InferredSex;
+    match sex {
+        InferredSex::Male => Some("XY".to_string()),
+        InferredSex::Female => Some("XX".to_string()),
+        InferredSex::Unknown => None,
+    }
+}
+
+/// How many sequencing runs a manifest holds.
+///
+/// The count is of the **run accessions** and not of the files. A single run with two mates gives
+/// two files. ENA frequently gives a third file, for the reads of that run that lost their mate. A
+/// count of files would refuse such a run as though it held three runs.
+///
+/// An entry with no run accession counts as one run. So a manifest with no accession at all is one
+/// run. That is the safe reading: the node does the work, and it does not refuse a unit because a
+/// field was empty.
+fn runs_in(manifest: &[ManifestFile]) -> usize {
+    let named: std::collections::BTreeSet<&str> = manifest
+        .iter()
+        .map(|m| m.run_accession.trim())
+        .filter(|a| !a.is_empty())
+        .collect();
+    named.len().max(1)
+}
+
 /// A short class for the release call, from the error of a unit.
 ///
 /// The message of an error can hold a local file path. The server keeps this value and the node
@@ -442,11 +500,23 @@ impl App {
         // The subject that the unit makes, so the code can remove it at the end. See
         // [`discard_unit_subject`].
         let subject = Arc::new(Mutex::new(None));
-        let dir = params.scratch_root.join(&unit.sample_accession);
+        let Some(safe_name) = safe_dir_name(&unit.sample_accession) else {
+            let e = AppError::Import(format!(
+                "the accession \"{}\" is not a name that this node will make a directory from",
+                unit.sample_accession
+            ));
+            outcome.error = Some(e.to_string());
+            let _ = self.grid_release(unit.lease_id, release_reason(&e)).await;
+            return outcome;
+        };
+        let dir = params.scratch_root.join(safe_name);
 
         // The stage that the beat reports. The work writes this value and the beat reads it. So
         // the AppView shows the stage that the node is on now, and not the first stage.
         let stage = Arc::new(Mutex::new(GridStage::Fetch));
+        // Set by the beat when the AppView says that another node holds this lease. It separates
+        // that event from a stop by the user, and the two want different treatment of the files.
+        let lease_lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // The work and the beat run together. Neither one can be a separate task, because both use
         // `&self`, and a task needs a value that lives for the whole program. `select!` needs no
@@ -460,7 +530,7 @@ impl App {
                 report(s, detail);
             };
             let work = self.grid_unit_inner(unit, params, &dir, cancel, &mut record, &subject);
-            let beat = self.beat_while_working(unit.lease_id, &stage, cancel);
+            let beat = self.beat_while_working(unit.lease_id, &stage, cancel, &lease_lost);
             tokio::pin!(work);
             tokio::pin!(beat);
             tokio::select! {
@@ -473,8 +543,16 @@ impl App {
                     // a task. So the sort or the duplicate mark would continue, while the code
                     // below removes the directory that it writes into. The code waits instead, and
                     // the work stops at its next test of the token.
-                    let _ = (&mut work).await;
-                    Err(lost)
+                    // Take the result of the work when it has one.
+                    //
+                    // The work can reach the submit call inside this window and complete. A node
+                    // that reported a failure then would lose the credit for work that it
+                    // finished. It would also call release on a lease that the submit call had
+                    // already closed.
+                    match (&mut work).await {
+                        Ok(id) => Ok(id),
+                        Err(_) => Err(lost),
+                    }
                 }
             }
         };
@@ -501,7 +579,7 @@ impl App {
             self.discard_unit_subject(guid).await;
         }
 
-        // Keep the files of a unit that the user stopped. Remove them in each other case.
+        // Keep the files of a unit that **the user** stopped. Remove them in each other case.
         //
         // `ena` can continue a transfer that stopped. It keeps each `.part` file, and it reads the
         // md5 state of that prefix again. A remove of the directory here would make all of that
@@ -512,7 +590,12 @@ impl App {
         //
         // [`sweep_old_scratch`] removes a directory that a stop left, after some days. Without that
         // step, a user who stops a run and never continues it keeps those files for ever.
-        if !cancel.is_cancelled() {
+        //
+        // The beat also cancels this token, when another node takes the lease. That is not a stop
+        // by the user: this node never sees that unit again, so its files have no purpose. The
+        // caller says which of the two occurred.
+        let user_stopped = cancel.is_cancelled() && !lease_lost.load(std::sync::atomic::Ordering::Relaxed);
+        if !user_stopped {
             let _ = tokio::fs::remove_dir_all(&dir).await;
         }
         outcome
@@ -552,7 +635,13 @@ impl App {
     /// A node that lost its lease receives no credit for more work on that unit. Without this
     /// check, such a node can spend hours on a unit that another node already finished. The value
     /// that the AppView sends back is the only way for the node to learn that.
-    async fn beat_while_working(&self, lease_id: i64, stage: &Arc<Mutex<GridStage>>, cancel: &CancelToken) -> AppError {
+    async fn beat_while_working(
+        &self,
+        lease_id: i64,
+        stage: &Arc<Mutex<GridStage>>,
+        cancel: &CancelToken,
+        lease_lost: &Arc<std::sync::atomic::AtomicBool>,
+    ) -> AppError {
         loop {
             tokio::time::sleep(HEARTBEAT_EVERY).await;
             if cancel.is_cancelled() {
@@ -564,6 +653,7 @@ impl App {
             match self.grid_heartbeat(lease_id, now.as_str(), None).await {
                 Ok(true) => {}
                 Ok(false) => {
+                    lease_lost.store(true, std::sync::atomic::Ordering::Relaxed);
                     cancel.cancel();
                     return AppError::Import("another node now holds this unit".into());
                 }
@@ -593,14 +683,7 @@ impl App {
         // An earlier version took the first file and ignored the others. It pulled every one of
         // them first, from a public archive that gives us its bandwidth at no charge. It then gave
         // a coverage value from one part of the sample, as a value for the whole sample.
-        let primaries = unit
-            .manifest
-            .iter()
-            .filter(|m| matches!(m.format.as_str(), "CRAM" | "BAM"))
-            .count();
-        let read_pairs = unit.manifest.iter().filter(|m| m.format == "FASTQ").count();
-        let multi_run = primaries > 1 || read_pairs > 2;
-        if multi_run {
+        if runs_in(&unit.manifest) > 1 {
             return Err(AppError::Import(format!(
                 "{} holds more than one sequencing run, and this node can not merge runs yet",
                 unit.sample_accession
@@ -651,6 +734,24 @@ impl App {
             .await?;
         self.add_data(biosample.guid, &aligned).await?;
 
+        // Make the coordinate index when the alignment has none.
+        //
+        // The fetch step takes the index of ENA when ENA has one, and that path costs least. ENA
+        // does not always publish one, and that fetch can fail with no result.
+        //
+        // Without an index, each step that asks for a region fails. `analyze_biosample` puts those
+        // failures in `errors`, and the check below then fails the unit. That occurs **after** the
+        // walk over the whole file already succeeded. So the index comes first.
+        report(GridStage::Import, "index");
+        for aln in self.list_alignments_for_biosample(biosample.guid).await? {
+            if let Err(e) = self.ensure_alignment_index(aln.id, |_, _| {}).await {
+                return Err(AppError::Import(format!(
+                    "{}: no coordinate index, and this node could not make one: {e}",
+                    unit.sample_accession
+                )));
+            }
+        }
+
         // ---- analyze ----
         report(GridStage::Analyze, &unit.sample_accession);
         let analyzed = self.analyze_biosample(&biosample, cancel.clone()).await?;
@@ -678,6 +779,25 @@ impl App {
 
         let mut results = UnitResults::default();
         let alignments = self.list_alignments_for_biosample(biosample.guid).await?;
+
+        // The build that the calls are truly against.
+        //
+        // A `CRAM` unit is a passthrough. The submitter of that file chose its build, and that
+        // build is GRCh37 or GRCh38 for most of the archive. Nothing here maps it again. The header
+        // probe reads the true build during the import, and the row keeps it.
+        //
+        // An earlier version reported `params.reference_build` for each unit. That value is the
+        // default of the command line. So a result on GRCh38 went to the AppView as a result on
+        // CHM13.
+        //
+        // The AppView compares two results only when the build agrees. So such a result
+        // joined a group of true CHM13 results. It then compared the coverage and the Y value of
+        // two different references as one measurement.
+        let reference_build = alignments
+            .first()
+            .map(|a| a.reference_build.clone())
+            .unwrap_or_else(|| params.reference_build.clone());
+
         if let Some(aln) = alignments.first() {
             if let Some(cov) = self.cached_coverage(aln.id).await? {
                 results.coverage_mean = Some(cov.mean_coverage);
@@ -686,7 +806,7 @@ impl App {
                 }
             }
             if let Some(sex) = self.cached_sex(aln.id).await? {
-                results.sex = Some(format!("{:?}", sex.inferred_sex));
+                results.sex = sex_for_digest(sex.inferred_sex);
             }
         }
         let y_calls = self.haplogroup_calls(biosample.guid, DnaType::Y).await?;
@@ -723,7 +843,7 @@ impl App {
         // because a network call did not answer.
         report(GridStage::Publish, &unit.sample_accession);
         let record_refs = self
-            .publish_grid_records(&biosample, &results, params, aligner)
+            .publish_grid_records(&biosample, &results, &reference_build, aligner)
             .await
             .unwrap_or_default();
 
@@ -732,7 +852,7 @@ impl App {
         let stack_version = env!("CARGO_PKG_VERSION");
         let digest = build_digest(
             &unit.sample_accession,
-            &params.reference_build,
+            &reference_build,
             stack_version,
             aligner,
             &results,
@@ -742,7 +862,7 @@ impl App {
             Some(unit.lease_id),
             &digest,
             stack_version,
-            &params.reference_build,
+            &reference_build,
             aligner,
             &record_refs,
         )
@@ -764,11 +884,11 @@ impl App {
         &self,
         biosample: &Biosample,
         results: &UnitResults,
-        params: &GridJobParams,
+        reference_build: &str,
         aligner: Option<&str>,
     ) -> Result<Vec<String>, AppError> {
         let did = self.require_account()?;
-        let prov = grid_provenance(&did, &params.reference_build, aligner);
+        let prov = grid_provenance(&did, reference_build, aligner);
         let mut refs = Vec::new();
 
         // The biosample record is the anchor. It carries the ENA accession as an external id.
@@ -969,6 +1089,44 @@ mod tests {
     fn a_record_that_is_not_an_object_is_refused() {
         let p = grid_provenance("did:plc:x", "chm13v2.0", None);
         assert!(attach_provenance(serde_json::json!("not a record"), &p).is_err());
+    }
+
+    /// A run with two mates and a file of reads that lost their mate is **one** run. ENA gives
+    /// three files for such a run, and a count of files would refuse it.
+    #[test]
+    fn three_files_of_one_run_are_one_run() {
+        let f = |run: &str, name: &str| ManifestFile {
+            run_accession: run.into(),
+            url: format!("ftp/{name}"),
+            index_url: None,
+            md5: None,
+            bytes: None,
+            format: "FASTQ".into(),
+        };
+        let one_run = vec![
+            f("ERR1", "ERR1_1.fastq.gz"),
+            f("ERR1", "ERR1_2.fastq.gz"),
+            f("ERR1", "ERR1.fastq.gz"),
+        ];
+        assert_eq!(runs_in(&one_run), 1);
+
+        let two_runs = vec![f("ERR1", "ERR1_1.fastq.gz"), f("ERR2", "ERR2_1.fastq.gz")];
+        assert_eq!(runs_in(&two_runs), 2);
+    }
+
+    /// An empty accession must not refuse the unit. The safe reading is one run.
+    #[test]
+    fn a_manifest_with_no_accession_counts_as_one_run() {
+        let f = ManifestFile {
+            run_accession: String::new(),
+            url: "ftp/x.cram".into(),
+            index_url: None,
+            md5: None,
+            bytes: None,
+            format: "CRAM".into(),
+        };
+        assert_eq!(runs_in(std::slice::from_ref(&f)), 1);
+        assert_eq!(runs_in(&[]), 1);
     }
 
     /// The release reason that goes to the server must carry no local path. The message of an

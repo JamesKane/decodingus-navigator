@@ -313,10 +313,22 @@ async fn fetch_once(
     if let Resume::From(offset) = plan {
         req = req.header(reqwest::header::RANGE, format!("bytes={offset}-"));
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| AppError::Import(format!("{url}: {e}")))?
+    let resp = req.send().await.map_err(|e| AppError::Import(format!("{url}: {e}")))?;
+
+    // A `416` says that the range which this code asked for does not exist. There is one usual
+    // cause. The `.part` file already holds the whole file, and the manifest gave no size, so
+    // `resume_from` could not see that the file was complete.
+    //
+    // Remove the `.part` file and report an error. The next try then starts at zero and completes.
+    // Without this step, each try asks for the same range and receives the same `416`. The file
+    // never arrives, until a person removes that file by hand.
+    if resp.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        let _ = tokio::fs::remove_file(part).await;
+        return Err(AppError::Import(format!(
+            "{url}: the server refused the range; the next try starts at the beginning"
+        )));
+    }
+    let resp = resp
         .error_for_status()
         .map_err(|e| AppError::Import(format!("{url}: {e}")))?;
 

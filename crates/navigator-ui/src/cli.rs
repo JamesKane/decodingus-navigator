@@ -2449,19 +2449,28 @@ async fn contribute(args: ContributeArgs) -> i32 {
             // so Ctrl-C still stops the work inside a few moments. The unit token can also stop by
             // itself, when this node loses the lease, and the session then continues.
             let unit_cancel = navigator_app::CancelToken::new();
+            // The bridge ends when this value goes out of scope, at the end of the unit. Without
+            // that signal, a unit that finished with no cancel would leave the task in its loop
+            // for the life of the process. A node that runs for days would then hold hundreds of
+            // tasks, and each one wakes four times each second.
+            let (stop_bridge, mut bridge_ended) = tokio::sync::oneshot::channel::<()>();
             {
                 let (s, u) = (session.clone(), unit_cancel.clone());
                 tokio::spawn(async move {
-                    while !u.is_cancelled() {
+                    loop {
                         if s.is_cancelled() {
                             u.cancel();
                             return;
                         }
-                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        tokio::select! {
+                            _ = &mut bridge_ended => return,
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+                        }
                     }
                 });
             }
             let outcome = app.run_grid_unit(unit, &params, &unit_cancel, &mut report).await;
+            drop(stop_bridge);
             match (&outcome.submission_id, &outcome.error) {
                 (Some(id), _) => {
                     done += 1;
