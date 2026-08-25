@@ -164,7 +164,15 @@ impl App {
             "signature": sig,
         });
         let v = self.appview_post("grid/heartbeat", body).await?;
-        Ok(v.get("held").and_then(|x| x.as_bool()).unwrap_or(false))
+        // Only an explicit `false` means that this node lost the lease.
+        //
+        // An absent field, a new name for it, or a value of another type gives `None` here. An
+        // earlier version read each of those as `false`, and the node then stopped work of many
+        // hours.
+        //
+        // The lease has its own time limit. So the safe answer to an unclear reply is to continue.
+        // At worst, the node finishes a unit that another node also finished.
+        Ok(v.get("held").and_then(|x| x.as_bool()).unwrap_or(true))
     }
 
     /// Give a lease back with no result, so another node can take the unit immediately.

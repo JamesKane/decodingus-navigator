@@ -455,16 +455,52 @@ pub fn machine_memory_bytes() -> u64 {
     navigator_align::batch::detect_memory().map(|m| m.total).unwrap_or(0)
 }
 
-/// Remove each unit directory that is older than `max_age`.
+/// The file that marks a directory as one that this node made.
 ///
-/// A unit that the user stopped keeps its files, so that the transfer can continue. This
-/// removes the directories that no run continued. Call it when a node starts.
+/// [`sweep_old_scratch`] deletes a directory and everything below it. It must delete only what
+/// this node created, and this file is the proof of that.
+const UNIT_MARKER: &str = ".navigator-grid-unit";
+
+/// Make the directory of a unit, and mark it as one that this node made.
+async fn make_unit_dir(dir: &Path) -> Result<(), AppError> {
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|e| AppError::Import(format!("{}: {e}", dir.display())))?;
+    let _ = tokio::fs::write(dir.join(UNIT_MARKER), b"navigator grid unit\n").await;
+    Ok(())
+}
+
+/// Remove each **unit directory** below `scratch_root` that is older than `max_age`.
+///
+/// A unit that the user stopped keeps its files, so that the transfer can continue. This removes
+/// the directories that no run continued. Call it when a node starts.
+///
+/// # What this will not delete
+///
+/// `--scratch` takes any path that the user gives. An earlier version of this function removed
+/// **each** directory below that path that was old enough.
+///
+/// Take `navigator contribute --scratch ~/genomes`. That version deleted each directory in
+/// `~/genomes` that nobody had touched for a week. It did that at the start, before the node did
+/// any work at all.
+///
+/// Two conditions now guard each delete. The name must be a name that this node would make
+/// ([`safe_dir_name`]), and the directory must hold the marker file that this node writes. A
+/// directory of the user has neither, so this function passes over it.
 pub async fn sweep_old_scratch(scratch_root: &Path, max_age: std::time::Duration) -> usize {
     let Ok(mut entries) = tokio::fs::read_dir(scratch_root).await else {
         return 0;
     };
     let mut removed = 0;
     while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        let named_by_us = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| safe_dir_name(n).is_some());
+        if !named_by_us || !path.join(UNIT_MARKER).exists() {
+            continue;
+        }
         let old = entry
             .metadata()
             .await
@@ -472,7 +508,7 @@ pub async fn sweep_old_scratch(scratch_root: &Path, max_age: std::time::Duration
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age > max_age);
-        if old && tokio::fs::remove_dir_all(entry.path()).await.is_ok() {
+        if old && tokio::fs::remove_dir_all(&path).await.is_ok() {
             removed += 1;
         }
     }
@@ -510,6 +546,11 @@ impl App {
             return outcome;
         };
         let dir = params.scratch_root.join(safe_name);
+        if let Err(e) = make_unit_dir(&dir).await {
+            outcome.error = Some(e.to_string());
+            let _ = self.grid_release(unit.lease_id, release_reason(&e)).await;
+            return outcome;
+        }
 
         // The stage that the beat reports. The work writes this value and the beat reads it. So
         // the AppView shows the stage that the node is on now, and not the first stage.
@@ -683,9 +724,17 @@ impl App {
         // An earlier version took the first file and ignored the others. It pulled every one of
         // them first, from a public archive that gives us its bandwidth at no charge. It then gave
         // a coverage value from one part of the sample, as a value for the whole sample.
-        if runs_in(&unit.manifest) > 1 {
+        // More files than the code reads is the same fault as more runs than the code reads. A
+        // single run with two files that have no mate gives a coverage value from one of them.
+        let data_files = unit
+            .manifest
+            .iter()
+            .filter(|m| matches!(m.format.as_str(), "CRAM" | "BAM" | "FASTQ"))
+            .count();
+        let usable = if unit.data_kind == "FASTQ" { 3 } else { 1 };
+        if runs_in(&unit.manifest) > 1 || data_files > usable {
             return Err(AppError::Import(format!(
-                "{} holds more than one sequencing run, and this node can not merge runs yet",
+                "{} holds more data files than this node reads, and it can not merge them yet",
                 unit.sample_accession
             )));
         }
@@ -693,9 +742,19 @@ impl App {
         // ---- fetch ----
         report(GridStage::Fetch, &unit.sample_accession);
         let client = self.auth.http.clone();
+        // Report only when the whole number of percent changes.
+        //
+        // `ena` calls its progress function once for each chunk of the answer, and a chunk is some
+        // tens of KB. So a file of 30 GB gives some hundreds of thousands of calls. Each
+        // call here made a line on the screen and took a lock. The screen then held more lines than
+        // a person can read, and the work went slower.
+        let mut last_pct = u64::MAX;
         let mut on_bytes = |name: &str, recv: u64, total: Option<u64>| {
             let pct = total.filter(|t| *t > 0).map(|t| recv * 100 / t).unwrap_or(0);
-            report(GridStage::Fetch, &format!("{name} {pct}%"));
+            if pct != last_pct {
+                last_pct = pct;
+                report(GridStage::Fetch, &format!("{name} {pct}%"));
+            }
         };
         let files = ena::fetch_unit(&client, dir, &unit.manifest, cancel, &mut on_bytes).await?;
         let primary = primary_file(&unit.manifest, &files)
@@ -774,6 +833,23 @@ impl App {
                 "analysis of {} did not complete: {}",
                 unit.sample_accession,
                 analyzed.errors.join("; ")
+            )));
+        }
+        // A stop is **not** a failure that `errors` records. `analyze_biosample` gives `Ok` with an
+        // empty `errors` when a stop ends it, because a stop is not a fault of the sample.
+        //
+        // So the check above passes after a stop, and an earlier version continued. It built the
+        // autosomal consensus, which is a second pass over the whole genome and which takes no
+        // token of its own. It then published the records, and it sent a digest with the values of
+        // the steps that had finished. Two nodes that each stopped at the same step would agree on
+        // that digest.
+        //
+        // A stop also has to stop the node. Without this test, Ctrl-C left the node at work for
+        // hours, and a lost lease still sent a result.
+        if cancel.is_cancelled() {
+            return Err(AppError::Import(format!(
+                "the analysis of {} stopped before it finished",
+                unit.sample_accession
             )));
         }
 
@@ -1208,6 +1284,35 @@ mod tests {
         assert!(safe_dir_name("a/b").is_none());
         assert!(safe_dir_name("").is_none());
         assert!(safe_dir_name(&"x".repeat(65)).is_none());
+    }
+
+    /// The sweep must never remove a directory of the user. `--scratch` takes any path, so the
+    /// sweep runs where the user pointed it. It removes only what this node made.
+    #[tokio::test]
+    async fn the_sweep_passes_over_a_directory_that_this_node_did_not_make() {
+        let root = std::env::temp_dir().join(format!("navigator-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        // A directory of the user: a good name, but no marker.
+        let theirs = root.join("SAMEA9999999");
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(theirs.join("precious.cram"), b"do not delete").unwrap();
+
+        // A directory of this node: the same shape, with the marker.
+        let ours = root.join("SAMEA0000001");
+        make_unit_dir(&ours).await.unwrap();
+
+        // Age zero, so nothing is old enough yet.
+        assert_eq!(sweep_old_scratch(&root, std::time::Duration::from_secs(3600)).await, 0);
+        // Now with no minimum age, so each one that the guard permits goes.
+        let removed = sweep_old_scratch(&root, std::time::Duration::ZERO).await;
+        assert_eq!(removed, 1, "only the directory of this node");
+        assert!(theirs.exists(), "the directory of the user must stay");
+        assert!(theirs.join("precious.cram").exists());
+        assert!(!ours.exists());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A run with two mates and a file of reads that lost their mate is **one** run. ENA gives

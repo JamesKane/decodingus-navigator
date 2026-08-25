@@ -63,6 +63,10 @@ const CLAIM_BATCH: i32 = 4;
 /// same day keeps the transfer. A directory older than this holds files that no run will continue.
 const SCRATCH_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
 
+/// How often the node announces itself, so that the fleet view of the AppView shows it as alive.
+/// The value is far below any period that such a view would call dead.
+const NODE_LIVENESS_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 #[derive(Parser)]
 #[command(
     name = "navigator",
@@ -2399,6 +2403,26 @@ async fn contribute(args: ContributeArgs) -> i32 {
         }
     });
 
+    // Tell the fleet view that this node is alive, on a timer of its own.
+    //
+    // Only the register call writes `fed.pds_node.last_heartbeat`. The beat of a unit writes the
+    // row of the lease, which is a different row.
+    //
+    // A unit of a whole genome takes hours. So a call between two units, or between two batches,
+    // leaves the node dead in that view for most of the time that it works.
+    {
+        let (app2, caps2, stop) = (app.clone(), caps.clone(), session.clone());
+        tokio::spawn(async move {
+            while !stop.is_cancelled() {
+                tokio::time::sleep(NODE_LIVENESS_EVERY).await;
+                if stop.is_cancelled() {
+                    return;
+                }
+                let _ = app2.grid_register(&caps2).await;
+            }
+        });
+    }
+
     let mut done = 0u32;
     let mut failed = 0u32;
     loop {
@@ -2410,12 +2434,6 @@ async fn contribute(args: ContributeArgs) -> i32 {
             Some(max) => (max - done - failed).min(CLAIM_BATCH as u32) as i32,
             None => CLAIM_BATCH,
         };
-
-        // Announce the node again before each claim. Only the register call writes
-        // `fed.pds_node.last_heartbeat`, and the beat of a unit writes a different row. Without
-        // this call, a node three days into a lease looks dead in the fleet view. A second register
-        // call is safe, so this costs one small request for each batch.
-        let _ = app.grid_register(&caps).await;
 
         let units = match app.grid_claim(&kinds, want, params.lease_secs).await {
             Ok(u) => u,
@@ -2471,6 +2489,17 @@ async fn contribute(args: ContributeArgs) -> i32 {
             }
             let outcome = app.run_grid_unit(unit, &params, &unit_cancel, &mut report).await;
             drop(stop_bridge);
+
+            // Send the records that the unit put in the queue.
+            //
+            // The unit gives the AppView the address of each record with its result. Only the
+            // graphical application empties that queue, on a timer.
+            //
+            // So a node that runs with no window named records that stayed in its own database for
+            // ever. That queue also grew by two rows for each unit.
+            if let Err(e) = app.drain_outbox().await {
+                eprintln!("  note      the records of this unit are still in the queue: {e}");
+            }
             match (&outcome.submission_id, &outcome.error) {
                 (Some(id), _) => {
                     done += 1;
