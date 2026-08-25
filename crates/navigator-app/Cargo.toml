@@ -32,6 +32,9 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
 # Encode/decode the persisted DM session key (base64-STANDARD, matching navigator-sync's wire).
 base64 = "0.22"
+# ENA publishes an md5 for every run file (`grid::ena`). Already in the lock transitively, so a
+# direct dependency adds nothing to the graph.
+md-5 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # Holds the auth HTTP client (built by navigator-sync::dev_http_client). Pinned to 0.12
 # with rustls to match du-atproto / navigator-sync.
@@ -41,7 +44,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # `signal`, so the headless realignment harness can cancel through the job's own token on Ctrl-C
 # and let it clean up its scratch. Dev-only: the shipped crate does not need it.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+# `net`, so the ENA downloader's resume path can be tested against a real HTTP server rather than
+# mocked — Range handling and md5-over-a-resumed-prefix are exactly the things a mock would get
+# wrong in the same way the code does. Dev-only, like `signal` above.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "io-util"] }
 # Build a synthetic mtDNA FASTA from the bundled rCRS for the import test.
 navigator-analysis = { workspace = true }
 

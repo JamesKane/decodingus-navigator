@@ -3090,6 +3090,7 @@ pub use blocktree::COLLAPSE_MIN_RUN;
 mod brief;
 mod commands;
 mod dm;
+pub mod ena;
 mod fastpath;
 mod ftdna_import;
 mod haplogroup;
