@@ -826,10 +826,11 @@ impl App {
         results.y_terminal = if female {
             None
         } else {
-            let placed = navigator_store::consensus_profile::get(self.store.pool(), biosample.guid, "Y")
-                .await?
-                .and_then(|p| p.consensus_label)
-                .filter(|s| !s.is_empty());
+            let placed =
+                navigator_store::consensus_profile::get(self.store.pool(), biosample.guid, DnaType::Y.as_str())
+                    .await?
+                    .and_then(|p| p.consensus_label)
+                    .filter(|s| !s.is_empty());
             match placed {
                 Some(label) => Some(label),
                 // No profile means that the placement did not run, or did not finish. Take the
