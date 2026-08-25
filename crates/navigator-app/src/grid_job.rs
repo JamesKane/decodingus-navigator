@@ -383,6 +383,9 @@ impl App {
             submission_id: None,
             error: None,
         };
+        // The subject that the unit makes, so the code can remove it at the end. See
+        // [`discard_unit_subject`].
+        let subject = Arc::new(Mutex::new(None));
         let dir = params.scratch_root.join(&unit.sample_accession);
 
         // The stage that the beat reports. The work writes this value and the beat reads it. So
@@ -400,7 +403,7 @@ impl App {
                 }
                 report(s, detail);
             };
-            let work = self.grid_unit_inner(unit, params, &dir, cancel, &mut record);
+            let work = self.grid_unit_inner(unit, params, &dir, cancel, &mut record, &subject);
             let beat = self.beat_while_working(unit.lease_id, &stage, cancel);
             tokio::pin!(work);
             tokio::pin!(beat);
@@ -419,10 +422,41 @@ impl App {
                 let _ = self.grid_release(unit.lease_id, &e.to_string()).await;
             }
         }
+        // A unit is work, and it is not the data of the user. Remove the subject before the files,
+        // because the subject names those files.
+        let made = subject.lock().ok().and_then(|g| *g);
+        if let Some(guid) = made {
+            self.discard_unit_subject(guid).await;
+        }
         // The files of a unit are large. Remove them whatever the result, or a node that runs for a
         // week fills the disk of its owner.
         let _ = tokio::fs::remove_dir_all(&dir).await;
         outcome
+    }
+
+    /// Remove the subject that a unit made, with each row and each cached result below it.
+    ///
+    /// **A Grid unit must leave no subject in the workspace.** The subject exists only because the
+    /// analysis works on a subject. Its alignment names a file in the temporary directory of the
+    /// unit, and that directory goes away at the end of the unit. A subject that stayed would name
+    /// a file that is not there.
+    ///
+    /// Without this step, a node that contributes for one week puts some thousands of such
+    /// subjects among the true subjects of its owner. Each one holds no data that a person can use,
+    /// and each one is difficult to tell from a real subject. The result of the unit is already
+    /// safe: the digest went to the AppView, and the records went to the publish queue.
+    ///
+    /// The delete of a subject refuses while the subject holds data, so this removes each sequence
+    /// run first. A failure gives no message to the user, because the unit is already complete. A
+    /// subject that stays is a fault for a later version to correct. It is not a reason to report
+    /// a unit as failed.
+    async fn discard_unit_subject(&self, guid: SampleGuid) {
+        if let Ok(runs) = self.list_sequence_runs(guid).await {
+            for run in runs {
+                let _ = self.delete_sequence_run(run.id).await;
+            }
+        }
+        let _ = self.delete_biosample(guid).await;
     }
 
     /// Tell the AppView that this node is alive, until the unit ends.
@@ -464,6 +498,7 @@ impl App {
         dir: &Path,
         cancel: &CancelToken,
         report: &mut (dyn FnMut(GridStage, &str) + Send),
+        subject: &Arc<Mutex<Option<SampleGuid>>>,
     ) -> Result<i64, AppError> {
         // ---- fetch ----
         report(GridStage::Fetch, &unit.sample_accession);
@@ -492,6 +527,11 @@ impl App {
         let biosample = self
             .add_biosample(None, &unit.sample_accession, Some(unit.sample_accession.clone()), None)
             .await?;
+        // Record the subject at once, and before the import. A failure in any step after this
+        // point must still remove it.
+        if let Ok(mut g) = subject.lock() {
+            *g = Some(biosample.guid);
+        }
         self.add_data(biosample.guid, &aligned).await?;
 
         // ---- analyze ----
