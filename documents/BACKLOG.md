@@ -224,6 +224,19 @@ here under its old number so that existing references still resolve.
 
 ## Cross-cutting / smaller
 
+- **`navigator subjects --json` is an N+1 query storm — first item for the Beta perf pass** (found
+  2026-09-03, cutting `v0.1.0-beta.1`). `subjects()` (`navigator-ui/src/cli.rs:1385`) loops every
+  biosample and awaits ~7 sequential queries each — `list_sequence_runs` twice (redundant), then
+  per-run `list_alignments`, plus `list_str_profiles`/`list_variant_sets`/`list_chip_profiles`/
+  `list_mtdna_sequences` — with no batching. On a 17,797-biosample / 31 GB workspace DB that's
+  120,000+ round trips and the command never returns; this is almost certainly the `App::open`
+  "hangs on every CLI subcommand" PR #61 reported — it wasn't a hang, it was this. The alignment
+  count could switch today to the existing batch primitive `alignment::list_for_biosamples(pool,
+  &[SampleGuid])` (`navigator-store/src/alignment.rs:171`, already used by `project_report`,
+  `blocktree.rs`, `realign.rs`). STR profiles, variant sets, chip profiles, and mtDNA sequences have
+  **no batch sibling yet** — each needs a new `list_*_for_biosamples` following that same `IN (...)`
+  pattern before `subjects()` can collapse from ~7 queries/biosample to a handful of batch queries
+  total. Shipped unfixed in beta.1 by deliberate choice, not oversight.
 - **i18n tail** — `self.status` transient strings and `format!` dynamics are still English; the
   key-based UI is at en/es parity.
 - **IBD sliding-window rolling update** — `find_candidate_segments`
