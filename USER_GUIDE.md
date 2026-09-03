@@ -1,8 +1,9 @@
 # Decoding-Us Navigator User Guide
 
-> **Alpha release.** Navigator is under active development. The analyses below are usable today, but
-> outputs, file layouts, and the UI may still change between releases. Where a module's output has not
-> yet been independently validated, the guide says so.
+> **Beta release.** Navigator's feature set is complete; development now focuses on performance,
+> stability, and UX. The analyses below are usable today, but outputs, file layouts, and the UI may
+> still change between releases. Where a module's output has not yet been independently validated, the
+> guide says so.
 
 Welcome to the **Decoding-Us Navigator**, your private, local companion for advanced genomic analysis. This application lets you explore your DNA data with professional-grade bioinformatics directly on your own computer, keeping your genetic privacy intact while contributing to citizen science.
 

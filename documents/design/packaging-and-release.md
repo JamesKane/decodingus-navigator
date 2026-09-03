@@ -11,11 +11,13 @@ long after it stopped being true). The Developer ID identity is committed in
 and the release workflow signs, notarizes and staples the `.app` *and* submits the outer `.dmg`
 separately — cargo-packager only signs the dmg, so a download-and-open of the disk image would
 otherwise still be checked online. No Gatekeeper work-around is needed.
-**Still open:** Windows code signing (Authenticode / Azure Trusted Signing), deliberately deferred
-past alpha; and `default_reference_sha` is still `None` for all four builds
-(`navigator-refgenome/src/registry.rs:172`), awaiting confirmed publisher checksums.
+**Still open:** Windows code signing (Authenticode / Azure Trusted Signing) — carried unsigned into
+`v0.1.0-beta.1` (2026-09-03 decision: ship Beta with the documented SmartScreen work-around rather
+than hold the tag), still targeted before wider distribution; and `default_reference_sha` is still
+`None` for all four builds (`navigator-refgenome/src/registry.rs:172`), awaiting confirmed publisher
+checksums.
 **Date:** 2026-06-16 (design) · 2026-06-18 (implementation) · 2026-07-26 (status re-check)
-· 2026-08-15 (signing status corrected)
+· 2026-08-15 (signing status corrected) · 2026-09-03 (Beta cut, Windows signing still open)
 **Scope:** How to ship the Rust `navigator` binary as installable images for macOS
 (Apple Silicon + Intel), Linux (x86-64 + ARM), and Windows (x86-64 + ARM), and how to
 handle the bundled ancestry assets.
@@ -307,6 +309,9 @@ the manifest pattern to trees/masks/chains for uniform integrity.
 so testers don't fight Gatekeeper) and **Windows unsigned with a documented SmartScreen
 work-around** for Alpha; add Windows signing (Azure Trusted Signing) before wider beta.
 Linux: AppImage + `SHA256SUMS`, no signing.
+**Revisited (2026-09-03):** Windows signing was not yet in place when `v0.1.0-beta.1` was cut —
+shipped unsigned rather than holding the Beta tag on it. Still an open item, now tracked against
+wider Beta distribution rather than against Beta itself.
 
 ---
 

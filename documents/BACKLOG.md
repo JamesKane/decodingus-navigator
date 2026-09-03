@@ -105,10 +105,12 @@ Code exists or the design is settled; these are the near-term threads.
 - **Status:** Shipping (all four installers build on a `v*` tag; assets fetched on demand from the
   GitHub asset release).
 - **Scope:** **macOS signing + notarization are DONE** (2026-08-15) — only **Windows** code signing
-  (Authenticode / Azure Trusted Signing) is still open, deliberately deferred for alpha with a
-  documented SmartScreen work-around; the Linux glibc-2.28 container CI is authored but **has never
-  been run**; `default_reference_sha` is still `None` for all four builds
-  (`navigator-refgenome/src/registry.rs:191`), awaiting confirmed publisher checksums.
+  (Authenticode / Azure Trusted Signing) is still open; carried unsigned into `v0.1.0-beta.1`
+  (2026-09-03) with the documented SmartScreen work-around, still targeted before wider distribution.
+  The Linux glibc-2.28 container CI **has run successfully on every tagged release since
+  `v0.1.0-alpha.2`** (this entry previously said "never run" — stale); `default_reference_sha` is
+  still `None` for all four builds (`navigator-refgenome/src/registry.rs:191`), awaiting confirmed
+  publisher checksums.
 
 ---
 
